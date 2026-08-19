@@ -2,19 +2,7 @@
 
 Squire is a generic, Pith-compatible macro execution engine for AI agents and estate-wide automation. It reads local `squire.json` configuration files and dynamically maps string keys to raw shell execution, injecting positional arguments and preserving token-optimization wrappers if `pith` is present on the system.
 
-## Thneed Architecture Diagram
 
-```mermaid
-graph TD
-    CLI[AI Agent / CLI] -->|squire prep ZAR-126| MainGO[squire/main.go]
-    MainGO --> ConfigJSON[squire/squire.json]
-    ConfigJSON --> ArgInjection[Inject Positional Args $1]
-    ArgInjection --> CheckPith{pith installed?}
-    CheckPith -->|Yes| PithWrapper[Execute: pith pwsh -Command]
-    CheckPith -->|No| RawShell[Execute: pwsh -Command]
-    PithWrapper --> Worktree[Target Git Worktree Created]
-    RawShell --> Worktree
-```
 
 ## Installation
 
