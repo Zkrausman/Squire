@@ -14,8 +14,8 @@
     "role": { "enum": ["orchestrator", "plan", "implement", "review", "test"] },
     "activeState": { "enum": ["accepted", "preparing", "planning", "implementing", "reviewing", "testing", "publishing", "awaiting_approval"] },
     "state": { "enum": ["accepted", "preparing", "planning", "implementing", "reviewing", "testing", "publishing", "awaiting_approval", "approved", "failed", "cancelled", "expired"] },
-    "sandboxPath": { "type": "string", "pattern": "^/ticket(?:/|$)", "minLength": 8, "maxLength": 1024 },
-    "artifactPath": { "type": "string", "pattern": "^(?:artifacts|evidence)/(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$", "maxLength": 1024 },
+    "sandboxPath": { "type": "string", "pattern": "^/ticket(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$", "minLength": 7, "maxLength": 1024 },
+    "artifactPath": { "type": "string", "pattern": "^(?:artifacts|evidence)(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)+$", "maxLength": 1024 },
     "artifactReference": {
       "type": "object",
       "additionalProperties": false,

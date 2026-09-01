@@ -65,9 +65,9 @@ For every phase attempt, the controller performs this order:
 6. Recompute every referenced digest, verify canonical paths and file existence, validate structure and semantics against trusted run/session/Git context, and record accepted outputs before making them visible to the Orchestrator.
 7. Give the Orchestrator only validated artifacts. The controller executes a resulting `transition-request` only after another state/head reconciliation.
 
-An artifact path is relative to `/ticket` and is not proof of safety. The controller must reject symlink/path escapes, non-regular files, digest changes, duplicate acceptance, and references outside the run's artifact roots.
+Sandbox configuration paths must be canonical absolute `/ticket` paths with no `.` or `..` segments; artifact references must be canonical relative paths rooted at `artifacts/` or `evidence/`. Textual schema containment is still not proof of filesystem safety. The controller must resolve paths without following an escape, reject symlinks and non-regular files, and reject digest changes, duplicate acceptance, or references outside the run's artifact roots.
 
-Herdr and manual Pi prompts are audited steering events, not handoffs. A prompt that only asks for status does not alter inputs. If intervention changes scope, acceptance criteria, feedback, commands, or any other phase input, the controller stops or supersedes the attempt and creates a new immutable handoff with a new `handoffId`, incremented `attempt`, creation time, artifact path, and digest. It never edits the old artifact or treats chat history as the revised contract.
+Herdr and manual Pi prompts are audited steering events, not handoffs. A prompt that only asks for status does not alter inputs. If intervention changes scope, acceptance criteria, feedback, commands, or any other phase input, the controller stops or supersedes the attempt and creates a new immutable handoff with a new `handoffId`, exactly incremented `attempt`, later creation time, artifact path, and digest while preserving run, phase, target session, and input head. The controller supplies the independently recorded old and new artifact references when validating the revision. It never edits the old artifact or treats chat history as the revised contract.
 
 ## 5. Result and evidence invariants
 
@@ -82,7 +82,7 @@ Every `phase-result` requires:
 - a requested destination and reason; and
 - completion timestamp.
 
-Plan, Review, and Test are read-only with respect to Git, so their input and output heads must match. A pass cannot contain failures or unresolved blocking findings. Remediation requires a blocking finding or failure. Test pass requires successful, non-timed-out evidence for every configured required command at the current head. PR readiness requires every configured GitHub check and the configured Reviewer App approval at that same head; auto-merge must be disabled.
+Plan, Review, and Test are read-only with respect to Git, so their input and output heads must match. A pass cannot contain failures or unresolved blocking findings. Remediation requires a blocking finding or failure. Test pass requires successful, non-timed-out evidence for every configured required command at the current head. A phase transition must reference the exact path, digest, and schema identity of the controller-accepted phase result. PR readiness must bind repository, base branch, feature branch, PR number, PR URL, checks, and configured Reviewer App approval to trusted context at that same head; auto-merge must be disabled.
 
 JSON Schema validates shape. [`src/semantic-validation.mjs`](../src/semantic-validation.mjs) validates trusted-context bindings and cross-document/state invariants that JSON Schema cannot establish.
 
@@ -114,10 +114,11 @@ The controller rejects before state change or artifact consumption:
 - unknown schema IDs or versions;
 - wrong run, handoff, phase, attempt, target/actual session, or Orchestrator session IDs;
 - stale input, output, reviewed, tested, check, approval, PR, or transition SHAs;
-- missing, escaped, changed, or digest-mismatched artifacts/evidence;
+- missing, escaped, non-canonical, changed, or digest-mismatched artifacts/evidence and sandbox paths;
 - pass results contradicted by findings, failures, timeouts, exit codes, missing required commands/checks, or stale approval;
-- illegal transitions, incorrect transition triggers, skipped gates, or phase transitions without a validated result; and
-- silently edited handoffs or scope-changing steering without a new attempt.
+- illegal transitions, incorrect transition triggers, skipped gates, or phase transitions that substitute a result path/digest;
+- delivery state for an unexpected repository, branch, PR number, or PR URL; and
+- silently edited handoffs, identity-changing revisions, non-monotonic creation, or scope-changing steering without a newly allocated attempt artifact.
 
 A validation error is terminal for that requested action. Implementations may create a separately recorded retry only within configured budgets; they must not coerce, repair, or partially accept an invalid artifact.
 
@@ -126,8 +127,8 @@ A validation error is terminal for that requested action. Implementations may cr
 Examples are under [`fixtures/contracts/`](../fixtures/contracts/):
 
 - `valid/` contains one valid document for every top-level v1 schema;
-- `invalid/structural/` covers unknown versions and missing evidence; and
-- `invalid/semantic/` covers wrong run/session IDs, stale SHAs, contradictory pass, digest mismatch, missing command evidence, stale approval, remediation without immutable feedback, and illegal transitions.
+- `invalid/structural/` covers unknown versions, missing evidence, and sandbox path traversal; and
+- `invalid/semantic/` covers wrong run/session IDs, stale SHAs, contradictory pass, digest and accepted-result substitution, wrong delivery targets, non-monotonic identity-changing handoff revision, missing command evidence, stale approval, remediation without immutable feedback, and illegal transitions.
 
 Run:
 

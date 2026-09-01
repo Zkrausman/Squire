@@ -10,7 +10,8 @@ import {
   validatePullRequestDeliveryState,
   validateRevisedHandoff,
   validateTestEvidence,
-  validateTransitionRequest
+  validateTransitionRequest,
+  validateWorkflowConfig
 } from "../src/semantic-validation.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -50,12 +51,19 @@ test("short trigger is bound to the immutable input artifact digest", async () =
   assert.match(validatePhaseTrigger(invalid, input, valid.inputArtifact).join(" "), /digest/);
 });
 
-test("scope-changing steering requires a newly versioned handoff attempt", async () => {
+test("scope-changing steering requires a monotonic, identity-preserving, newly allocated handoff", async () => {
   const previous = await fixture("valid/phase-input/implement.json");
-  const silentlyMutated = { ...previous, feedback: [{ path: "artifacts/review/findings.json", sha256: "1".repeat(64), schemaId: "urn:squire:contracts:v1:review-findings" }] };
-  assert.equal(validateRevisedHandoff(previous, silentlyMutated).length, 3);
+  const previousArtifact = { path: "artifacts/handoffs/implement-1.json", sha256: "1".repeat(64), schemaId: "urn:squire:contracts:v1:phase-input" };
+  const revisedArtifact = { path: "artifacts/handoffs/implement-2.json", sha256: "2".repeat(64), schemaId: "urn:squire:contracts:v1:phase-input" };
+  const silentlyMutated = { ...previous, feedback: [{ path: "artifacts/review/findings.json", sha256: "3".repeat(64), schemaId: "urn:squire:contracts:v1:review-findings" }] };
+  assert.match(validateRevisedHandoff(previous, silentlyMutated, { previousArtifact, revisedArtifact: previousArtifact }).join(" "), /new handoffId.*increment attempt.*creation time.*new artifact path and digest/);
+
   const revised = { ...silentlyMutated, handoffId: "handoff_implement_2", attempt: 2, createdAt: "2026-09-01T12:40:00Z" };
-  assert.deepEqual(validateRevisedHandoff(previous, revised), []);
+  assert.deepEqual(validateRevisedHandoff(previous, revised, { previousArtifact, revisedArtifact }), []);
+
+  const substituted = await fixture("invalid/semantic/phase-input/revision-identity-substitution.json");
+  const errors = validateRevisedHandoff(previous, substituted, { previousArtifact, revisedArtifact }).join(" ");
+  assert.match(errors, /runId.*phase.*targetSessionId.*inputHead.*creation time/);
 });
 
 test("transition validator implements the documented graph and rejects skips", () => {
@@ -73,10 +81,14 @@ test("transition validator implements the documented graph and rejects skips", (
   ];
   for (const [fromState, toState, trigger, phase] of edges) {
     const request = { runId: "run_example01", orchestratorSessionId: "orch", fromState, toState, trigger, currentHead: headB, phaseResult: phase ? { path: "artifacts/result.json", sha256: "1".repeat(64), schemaId: "urn:squire:contracts:v1:phase-result" } : null };
-    assert.deepEqual(validateTransitionRequest(request, { runId: "run_example01", orchestratorSessionId: "orch", currentState: fromState, currentHead: headB }), []);
+    assert.deepEqual(validateTransitionRequest(request, { runId: "run_example01", orchestratorSessionId: "orch", currentState: fromState, currentHead: headB, phaseResult: request.phaseResult ?? undefined }), []);
   }
   const skip = { runId: "run_example01", orchestratorSessionId: "orch", fromState: "planning", toState: "publishing", trigger: "phase_pass", currentHead: headA, phaseResult: { path: "artifacts/result.json", sha256: "1".repeat(64), schemaId: "urn:squire:contracts:v1:phase-result" } };
-  assert.match(validateTransitionRequest(skip, { runId: "run_example01", orchestratorSessionId: "orch", currentState: "planning", currentHead: headA }).join(" "), /illegal transition/);
+  assert.match(validateTransitionRequest(skip, { runId: "run_example01", orchestratorSessionId: "orch", currentState: "planning", currentHead: headA, phaseResult: skip.phaseResult }).join(" "), /illegal transition/);
+
+  const accepted = { path: "artifacts/result.json", sha256: "1".repeat(64), schemaId: "urn:squire:contracts:v1:phase-result" };
+  const substituted = { runId: "run_example01", orchestratorSessionId: "orch", fromState: "reviewing", toState: "testing", trigger: "phase_pass", currentHead: headB, phaseResult: { ...accepted, sha256: "2".repeat(64) } };
+  assert.match(validateTransitionRequest(substituted, { runId: "run_example01", orchestratorSessionId: "orch", currentState: "reviewing", currentHead: headB, phaseResult: accepted }).join(" "), /does not match the controller-accepted result/);
 });
 
 test("pass requires complete current-head test and delivery evidence", async () => {
@@ -84,8 +96,24 @@ test("pass requires complete current-head test and delivery evidence", async () 
   const incomplete = await fixture("invalid/semantic/test-evidence/missing-required-command.json");
   assert.match(validateTestEvidence(incomplete, config, { runId: "run_example01", sessionId: "session-test-01", headSha: headB }).join(" "), /missing required command evidence: tests/);
 
+  const deliveryContext = { runId: "run_example01", headSha: headB, repository: "example/service", baseBranch: "main", featureBranch: "squire/aidev-215/run_example01", pullRequestNumber: 42, pullRequestUrl: "https://github.com/example/service/pull/42" };
   const stale = await fixture("invalid/semantic/pull-request-delivery-state/stale-approval.json");
-  const errors = validatePullRequestDeliveryState(stale, config, { runId: "run_example01", headSha: headB }).join(" ");
+  const errors = validatePullRequestDeliveryState(stale, config, deliveryContext).join(" ");
   assert.match(errors, /approval is stale/);
   assert.match(errors, /lacks configured Reviewer identity approval/);
+
+  const wrongTarget = await fixture("invalid/semantic/pull-request-delivery-state/wrong-target.json");
+  assert.match(validatePullRequestDeliveryState(wrongTarget, config, deliveryContext).join(" "), /repository.*baseBranch.*featureBranch.*pull request number.*pull request URL/);
+
+  const ready = await fixture("valid/pull-request-delivery-state/ready.json");
+  assert.match(validatePullRequestDeliveryState(ready, config).join(" "), /requires trusted runId context.*requires trusted pullRequestUrl context/);
+});
+
+test("sandbox configuration paths reject traversal structurally and semantically", async () => {
+  const config = await fixture("valid/workflow-config/basic.json");
+  config.validation.commands[0].cwd = "/ticket/../../etc";
+  config.pi.roles.review.instructionsPath = "/ticket/../attacker-role.md";
+  const errors = validateWorkflowConfig(config).join(" ");
+  assert.match(errors, /instructionsPath must be a canonical path beneath \/ticket/);
+  assert.match(errors, /cwd must be a canonical path beneath \/ticket/);
 });

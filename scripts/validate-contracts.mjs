@@ -9,6 +9,7 @@ import {
   validatePhaseResult,
   validatePhaseTrigger,
   validatePullRequestDeliveryState,
+  validateRevisedHandoff,
   validateTestEvidence,
   validateTransitionRequest,
   validateWorkflowConfig
@@ -88,8 +89,8 @@ async function main() {
     ["phase trigger", validatePhaseTrigger(trigger, input, inputArtifact)],
     ["phase result", validatePhaseResult(result, { runId: "run_example01", phase: "implement", sessionId: "session-implement-01", inputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", outputHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", handoffId: "handoff_implement_1", inputArtifact })],
     ["test evidence", validateTestEvidence(testEvidence, config, { runId: "run_example01", sessionId: "session-test-01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })],
-    ["transition", validateTransitionRequest(transition, { runId: "run_example01", orchestratorSessionId: "session-orchestrator-01", currentState: "reviewing", currentHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })],
-    ["delivery", validatePullRequestDeliveryState(delivery, config, { runId: "run_example01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })]
+    ["transition", validateTransitionRequest(transition, { runId: "run_example01", orchestratorSessionId: "session-orchestrator-01", currentState: "reviewing", currentHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", phaseResult: transition.phaseResult })],
+    ["delivery", validatePullRequestDeliveryState(delivery, config, { runId: "run_example01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", repository: "example/service", baseBranch: "main", featureBranch: "squire/aidev-215/run_example01", pullRequestNumber: 42, pullRequestUrl: "https://github.com/example/service/pull/42" })]
   ];
   for (const [label, errors] of semanticChecks) if (errors.length) throw new Error(`Valid ${label} rejected: ${errors.join("; ")}`);
 
@@ -99,9 +100,12 @@ async function main() {
     ["phase-result/wrong-identities.json", data => validatePhaseResult(data, { runId: "run_example01", phase: "implement", sessionId: "session-implement-01", inputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", outputHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", handoffId: "handoff_implement_1", inputArtifact })],
     ["phase-result/stale-sha.json", data => validatePhaseResult(data, { runId: "run_example01", phase: "review", sessionId: "session-review-01", inputHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", outputHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", handoffId: "handoff_review_1", inputArtifact: data.inputArtifact })],
     ["phase-result/contradictory-pass.json", data => validatePhaseResult(data, { runId: "run_example01", phase: "review", sessionId: "session-review-01", inputHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", outputHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", handoffId: "handoff_review_1", inputArtifact: data.inputArtifact })],
+    ["phase-input/revision-identity-substitution.json", data => validateRevisedHandoff(input, data, { previousArtifact: inputArtifact, revisedArtifact: { path: "artifacts/handoffs/implement-2.json", sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", schemaId: "urn:squire:contracts:v1:phase-input" } })],
     ["test-evidence/missing-required-command.json", data => validateTestEvidence(data, config, { runId: "run_example01", sessionId: "session-test-01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })],
-    ["transition-request/illegal-transition.json", data => validateTransitionRequest(data, { runId: "run_example01", orchestratorSessionId: "session-orchestrator-01", currentState: "planning", currentHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })],
-    ["pull-request-delivery-state/stale-approval.json", data => validatePullRequestDeliveryState(data, config, { runId: "run_example01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })]
+    ["transition-request/illegal-transition.json", data => validateTransitionRequest(data, { runId: "run_example01", orchestratorSessionId: "session-orchestrator-01", currentState: "planning", currentHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", phaseResult: data.phaseResult })],
+    ["transition-request/result-substitution.json", data => validateTransitionRequest(data, { runId: "run_example01", orchestratorSessionId: "session-orchestrator-01", currentState: "reviewing", currentHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", phaseResult: transition.phaseResult })],
+    ["pull-request-delivery-state/stale-approval.json", data => validatePullRequestDeliveryState(data, config, { runId: "run_example01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", repository: "example/service", baseBranch: "main", featureBranch: "squire/aidev-215/run_example01", pullRequestNumber: 42, pullRequestUrl: "https://github.com/example/service/pull/42" })],
+    ["pull-request-delivery-state/wrong-target.json", data => validatePullRequestDeliveryState(data, config, { runId: "run_example01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", repository: "example/service", baseBranch: "main", featureBranch: "squire/aidev-215/run_example01", pullRequestNumber: 42, pullRequestUrl: "https://github.com/example/service/pull/42" })]
   ];
   for (const [relative, check] of invalidChecks) {
     const data = await json(path.join(semanticRoot, relative));

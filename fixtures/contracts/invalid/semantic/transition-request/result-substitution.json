@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "requestId": "transition_review_test_1",
+  "runId": "run_example01",
+  "orchestratorSessionId": "session-orchestrator-01",
+  "fromState": "reviewing",
+  "toState": "testing",
+  "trigger": "phase_pass",
+  "currentHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "phaseResult": {
+    "path": "artifacts/results/substituted.json",
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "schemaId": "urn:squire:contracts:v1:phase-result"
+  },
+  "requestedAt": "2026-09-01T12:30:01Z"
+}

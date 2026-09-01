@@ -1,3 +1,5 @@
+import path from "node:path";
+
 const NORMAL_TRANSITIONS = new Map([
   ["accepted:preparing", "run_accepted"],
   ["preparing:planning", "preparation_complete"],
@@ -40,12 +42,24 @@ function sameReference(left, right) {
   return left && right && left.path === right.path && left.sha256 === right.sha256 && left.schemaId === right.schemaId;
 }
 
+function isCanonicalTicketPath(value) {
+  return typeof value === "string"
+    && (value === "/ticket" || value.startsWith("/ticket/"))
+    && path.posix.normalize(value) === value;
+}
+
 export function validateWorkflowConfig(config) {
   const errors = [];
   const commandIds = config.validation.commands.map(({ id }) => id);
   if (new Set(commandIds).size !== commandIds.length) errors.push("validation command IDs must be unique");
   if (config.github.deliveryIdentity.appSlug === config.github.reviewerIdentity.appSlug) {
     errors.push("delivery and reviewer GitHub identities must be distinct");
+  }
+  for (const [role, settings] of Object.entries(config.pi.roles)) {
+    if (!isCanonicalTicketPath(settings.instructionsPath)) errors.push(`${role} instructionsPath must be a canonical path beneath /ticket`);
+  }
+  for (const command of config.validation.commands) {
+    if (!isCanonicalTicketPath(command.cwd)) errors.push(`validation command ${command.id} cwd must be a canonical path beneath /ticket`);
   }
   return errors;
 }
@@ -85,11 +99,31 @@ export function validatePhaseTrigger(trigger, input, recordedArtifact) {
   return errors;
 }
 
-export function validateRevisedHandoff(previousInput, revisedInput) {
+export function validateRevisedHandoff(previousInput, revisedInput, context = {}) {
   const errors = [];
+  for (const field of ["runId", "phase", "targetSessionId", "inputHead"]) {
+    mismatch(errors, revisedInput[field], previousInput[field], `revised handoff ${field}`);
+  }
   if (revisedInput.handoffId === previousInput.handoffId) errors.push("a revised handoff requires a new handoffId");
   if (revisedInput.attempt !== previousInput.attempt + 1) errors.push("a revised handoff must increment attempt exactly once");
-  if (revisedInput.createdAt === previousInput.createdAt) errors.push("a revised handoff must be a newly created immutable artifact");
+
+  const previousTime = Date.parse(previousInput.createdAt);
+  const revisedTime = Date.parse(revisedInput.createdAt);
+  if (!Number.isFinite(previousTime) || !Number.isFinite(revisedTime) || revisedTime <= previousTime) {
+    errors.push("a revised handoff creation time must be later than the previous handoff");
+  }
+
+  const { previousArtifact, revisedArtifact } = context;
+  if (!previousArtifact || !revisedArtifact) {
+    errors.push("revised handoff validation requires trusted old and new artifact references");
+  } else {
+    if (previousArtifact.schemaId !== "urn:squire:contracts:v1:phase-input" || revisedArtifact.schemaId !== "urn:squire:contracts:v1:phase-input") {
+      errors.push("revised handoff artifacts must use the phase-input v1 schema");
+    }
+    if (sameReference(previousArtifact, revisedArtifact) || previousArtifact.path === revisedArtifact.path || previousArtifact.sha256 === revisedArtifact.sha256) {
+      errors.push("a revised handoff requires a new artifact path and digest");
+    }
+  }
   return errors;
 }
 
@@ -185,6 +219,11 @@ export function validateTransitionRequest(request, context = {}) {
   if (request.phaseResult && request.phaseResult.schemaId !== "urn:squire:contracts:v1:phase-result") {
     errors.push("transition must reference a phase-result v1 artifact");
   }
+  if (needsPhaseResult && !context.phaseResult) {
+    errors.push("phase transition requires the controller-accepted phase result in trusted context");
+  } else if (needsPhaseResult && !sameReference(request.phaseResult, context.phaseResult)) {
+    errors.push("transition phase result does not match the controller-accepted result");
+  }
   if (!needsPhaseResult && request.phaseResult !== null) errors.push("non-phase transition must not attach a phase result");
   return errors;
 }
@@ -193,11 +232,22 @@ export function validatePullRequestDeliveryState(delivery, config, context = {})
   const errors = [];
   mismatch(errors, delivery.runId, context.runId, "runId");
   mismatch(errors, delivery.headSha, context.headSha, "headSha");
+  mismatch(errors, delivery.repository, context.repository, "repository");
+  mismatch(errors, delivery.baseBranch, context.baseBranch, "baseBranch");
+  mismatch(errors, delivery.featureBranch, context.featureBranch, "featureBranch");
+  if (delivery.pullRequest) {
+    mismatch(errors, delivery.pullRequest.number, context.pullRequestNumber, "pull request number");
+    mismatch(errors, delivery.pullRequest.url, context.pullRequestUrl, "pull request URL");
+  }
   if (delivery.pullRequest && delivery.pullRequest.headSha !== delivery.headSha) errors.push("pull request head is stale");
   for (const check of delivery.checks) if (check.headSha !== delivery.headSha) errors.push(`check is stale: ${check.name}`);
   for (const approval of delivery.approvals) if (approval.headSha !== delivery.headSha) errors.push(`approval is stale: ${approval.appSlug}`);
 
   if (delivery.status === "ready_for_human_merge") {
+    const requiredContext = ["runId", "headSha", "repository", "baseBranch", "featureBranch", "pullRequestNumber", "pullRequestUrl"];
+    for (const field of requiredContext) {
+      if (context[field] === undefined) errors.push(`ready delivery requires trusted ${field} context`);
+    }
     if (!delivery.pullRequest) errors.push("ready delivery requires a pull request");
     if (!delivery.mergeable) errors.push("ready delivery must be mergeable");
     if (delivery.pullRequest?.authorAppSlug !== config.github.deliveryIdentity.appSlug) errors.push("pull request author is not the configured Delivery identity");

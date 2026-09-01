@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "ticket": {
+    "provider": "linear",
+    "issueId": "11111111-1111-4111-8111-111111111111",
+    "identifier": "AIDEV-215"
+  },
+  "repository": {
+    "owner": "example",
+    "name": "service",
+    "cloneUrl": "https://github.com/example/service.git",
+    "baseBranch": "main",
+    "objectFormat": "sha1"
+  },
+  "linear": {
+    "teamId": "22222222-2222-4222-8222-222222222222",
+    "states": {
+      "accepted": "30000000-0000-4000-8000-000000000001",
+      "inProgress": "30000000-0000-4000-8000-000000000002",
+      "awaitingHuman": "30000000-0000-4000-8000-000000000003",
+      "completed": "30000000-0000-4000-8000-000000000004",
+      "failed": "30000000-0000-4000-8000-000000000005",
+      "cancelled": "30000000-0000-4000-8000-000000000006"
+    }
+  },
+  "sandbox": {
+    "template": {
+      "name": "squire-node",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "resources": {
+      "cpus": 4,
+      "memoryMiB": 8192,
+      "diskGiB": 40
+    },
+    "network": {
+      "mode": "allow-all",
+      "allowedHosts": []
+    },
+    "retention": {
+      "onSuccessHours": 1,
+      "onFailureHours": 48
+    }
+  },
+  "pi": {
+    "version": "0.84.4",
+    "roles": {
+      "orchestrator": {
+        "provider": "openai",
+        "model": "gpt-5",
+        "timeoutSeconds": 1800,
+        "instructionsPath": "/ticket/config/orchestrator.md"
+      },
+      "plan": {
+        "provider": "openai",
+        "model": "gpt-5",
+        "timeoutSeconds": 1800,
+        "instructionsPath": "/ticket/config/plan.md"
+      },
+      "implement": {
+        "provider": "anthropic",
+        "model": "claude-sonnet",
+        "timeoutSeconds": 7200,
+        "instructionsPath": "/ticket/config/implement.md"
+      },
+      "review": {
+        "provider": "openai",
+        "model": "gpt-5",
+        "timeoutSeconds": 1800,
+        "instructionsPath": "/ticket/../attacker-role.md"
+      },
+      "test": {
+        "provider": "openai",
+        "model": "gpt-5",
+        "timeoutSeconds": 3600,
+        "instructionsPath": "/ticket/config/test.md"
+      }
+    }
+  },
+  "validation": {
+    "commands": [
+      {
+        "id": "contracts",
+        "command": [
+          "npm",
+          "run",
+          "validate:contracts"
+        ],
+        "cwd": "/ticket/workspace",
+        "timeoutSeconds": 300,
+        "required": true
+      },
+      {
+        "id": "tests",
+        "command": [
+          "npm",
+          "test"
+        ],
+        "cwd": "/ticket/workspace",
+        "timeoutSeconds": 600,
+        "required": true
+      }
+    ]
+  },
+  "remediation": {
+    "reviewAttempts": 2,
+    "testAttempts": 2,
+    "totalAttempts": 3
+  },
+  "artifactRetention": {
+    "trustedExportDays": 30,
+    "sessionDays": 14,
+    "evidenceDays": 30
+  },
+  "github": {
+    "deliveryIdentity": {
+      "appSlug": "squire-delivery",
+      "installationId": 1001
+    },
+    "reviewerIdentity": {
+      "appSlug": "squire-reviewer",
+      "installationId": 1002
+    },
+    "requiredChecks": [
+      "contracts",
+      "tests"
+    ],
+    "rules": {
+      "requirePullRequest": true,
+      "requiredApprovals": 1,
+      "dismissStaleApprovals": true,
+      "requireApprovalAfterLatestPush": true,
+      "denySquireMerge": true,
+      "denySquireBypass": true,
+      "denySquireBaseUpdate": true,
+      "humanMergeActors": [
+        "example/maintainers"
+      ]
+    }
+  }
+}
