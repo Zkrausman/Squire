@@ -7,9 +7,9 @@
     "concepts/immutable-handoff-validation",
     "entities/squire",
     "sources/SRC-2026-09-01-001",
-    "sources/SRC-2026-09-01-005",
     "sources/SRC-2026-09-01-006",
     "sources/SRC-2026-09-01-007",
+    "sources/SRC-2026-09-01-008",
     "sources/run-scoped-agent-runtime-resolution"
   ],
   "concepts/immutable-handoff-validation": [
@@ -18,14 +18,16 @@
     "entities/squire",
     "sources/SRC-2026-09-01-001",
     "sources/SRC-2026-09-01-004",
-    "sources/SRC-2026-09-01-007"
+    "sources/SRC-2026-09-01-007",
+    "sources/persisted-acceptance-authority-chain"
   ],
   "concepts/transition-remediation-and-fresh-gates": [
     "analyses/epic-boundary-project-wiki-maintenance",
     "concepts/immutable-handoff-validation",
     "concepts/trusted-controller-boundary",
     "sources/SRC-2026-09-01-001",
-    "sources/SRC-2026-09-01-004"
+    "sources/SRC-2026-09-01-004",
+    "sources/persisted-acceptance-authority-chain"
   ],
   "concepts/trusted-controller-boundary": [
     "analyses/epic-boundary-project-wiki-maintenance",
@@ -33,14 +35,16 @@
     "concepts/transition-remediation-and-fresh-gates",
     "entities/squire",
     "sources/SRC-2026-09-01-001",
-    "sources/SRC-2026-09-01-005",
     "sources/SRC-2026-09-01-006",
+    "sources/SRC-2026-09-01-008",
+    "sources/persisted-acceptance-authority-chain",
     "sources/run-scoped-agent-runtime-resolution",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
   "entities/squire": [
     "concepts/trusted-controller-boundary",
-    "sources/SRC-2026-09-01-001"
+    "sources/SRC-2026-09-01-001",
+    "sources/SRC-2026-09-01-008"
   ],
   "sources/SRC-2026-09-01-001": [
     "concepts/five-session-pi-rpc-topology",
@@ -48,6 +52,7 @@
     "concepts/transition-remediation-and-fresh-gates",
     "concepts/trusted-controller-boundary",
     "entities/squire",
+    "sources/persisted-acceptance-authority-chain",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
   "sources/SRC-2026-09-01-002": [
@@ -58,10 +63,8 @@
     "concepts/immutable-handoff-validation",
     "concepts/transition-remediation-and-fresh-gates",
     "concepts/trusted-controller-boundary",
-    "entities/squire"
-  ],
-  "sources/SRC-2026-09-01-005": [
-    "concepts/five-session-pi-rpc-topology"
+    "entities/squire",
+    "sources/persisted-acceptance-authority-chain"
   ],
   "sources/SRC-2026-09-01-006": [
     "analyses/epic-boundary-project-wiki-maintenance",
@@ -74,6 +77,12 @@
     "concepts/five-session-pi-rpc-topology",
     "sources/SRC-2026-09-01-004",
     "sources/run-scoped-agent-runtime-resolution"
+  ],
+  "sources/SRC-2026-09-01-008": [
+    "concepts/five-session-pi-rpc-topology"
+  ],
+  "sources/persisted-acceptance-authority-chain": [
+    "concepts/immutable-handoff-validation"
   ],
   "sources/run-scoped-agent-runtime-resolution": [
     "concepts/five-session-pi-rpc-topology"

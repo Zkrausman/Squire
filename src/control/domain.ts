@@ -11,7 +11,17 @@ export type TransitionTrigger = "run_accepted" | "preparation_complete" | "phase
 
 export interface ContractReference { path: string; sha256: string; schemaId: string }
 export interface ArtifactReference { path: string; sha256: string; mediaType: string; schemaId?: string }
-export interface SessionRegistration { runId: string; role: Role; sessionId: string; sessionFile: string; processGeneration: number; registeredAt: string }
+export type ProcessState = "registered" | "launching" | "live" | "exited" | "failed";
+export interface SessionRegistration {
+  runId: string;
+  role: Role;
+  sessionId: string;
+  sessionFile: string;
+  processGeneration: number;
+  processState?: ProcessState;
+  processIdentity?: string;
+  registeredAt: string;
+}
 export type DispatchState = "prepared" | "sent" | "accepted" | "settled" | "result_accepted";
 export interface DispatchRecord {
   operationKey: string;
@@ -22,6 +32,8 @@ export interface DispatchRecord {
   generation: number;
   cursor: string | null;
   recoveryPrompts: number;
+  launchCount?: number;
+  deadlineAt?: number;
 }
 export interface PhaseAttempt {
   phase: Phase;
@@ -32,9 +44,23 @@ export interface PhaseAttempt {
   input: ContractReference;
   feedback: readonly ArtifactReference[];
   acceptedResult?: ContractReference;
+  accepted?: AcceptedPhaseResult;
   dispatch: DispatchRecord;
 }
-export interface GateRecord { phase: "review" | "test"; head: string; result: ContractReference; acceptedAt: string; implementGeneration: number }
+export interface AcceptedPhaseResult {
+  reference: ContractReference;
+  phase: Phase;
+  handoffId: string;
+  attempt: number;
+  sessionId: string;
+  status: "pass" | "remediation_required" | "failed";
+  inputHead: string;
+  outputHead: string;
+  completedAt: string;
+  acceptedAt: string;
+  implementGeneration: number;
+}
+export interface GateRecord { phase: "review" | "test"; head: string; result: ContractReference; acceptedAt: string; completedAt: string; implementGeneration: number; attempt: number }
 export interface RemediationCounters { review: number; test: number; total: number }
 export interface TerminalError { code: string; message: string; at: string; evidence: readonly ArtifactReference[] }
 export interface ResolvedInstallation { version: string; installationId: string }
@@ -47,6 +73,7 @@ export interface RunSnapshot {
   state: WorkflowState;
   currentHead: string;
   implementGeneration: number;
+  implementCompletedAt?: string;
   sessions: Partial<Record<Role, SessionRegistration>>;
   attempts: readonly PhaseAttempt[];
   acceptedResultPaths: readonly string[];

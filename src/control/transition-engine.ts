@@ -35,8 +35,12 @@ export function decideTransition(request: TransitionRequest, context: Transition
 }
 function sameRef(a: ContractReference, b: ContractReference): boolean { return a.path === b.path && a.sha256 === b.sha256 && a.schemaId === b.schemaId; }
 function assertFreshGates(run: RunSnapshot): void {
-  const review = run.gates.review; const test = run.gates.test;
-  if (!review || !test || review.head !== run.currentHead || test.head !== run.currentHead || review.implementGeneration !== run.implementGeneration || test.implementGeneration !== run.implementGeneration) throw new Error("publishing requires fresh Review and Test gates at current head");
+  const review = run.gates.review; const test = run.gates.test; const implementTime = Date.parse(run.implementCompletedAt ?? "");
+  if (!review || !test || !Number.isFinite(implementTime) || review.head !== run.currentHead || test.head !== run.currentHead || review.implementGeneration !== run.implementGeneration || test.implementGeneration !== run.implementGeneration || Date.parse(review.completedAt) <= implementTime || Date.parse(test.completedAt) <= implementTime) throw new Error("publishing requires fresh Review and Test gates at current head");
+  for (const gate of [review, test]) {
+    const accepted = run.attempts.find(candidate => candidate.phase === gate.phase && candidate.attempt === gate.attempt)?.accepted;
+    if (!accepted || accepted.status !== "pass" || accepted.outputHead !== gate.head || accepted.implementGeneration !== gate.implementGeneration || accepted.completedAt !== gate.completedAt || accepted.acceptedAt !== gate.acceptedAt || !sameRef(accepted.reference, gate.result)) throw new Error("publishing gate is not backed by persisted accepted pass result");
+  }
 }
 
 export function decideTerminalCommand(command: TerminalCommand, run: RunSnapshot, observedHead: string): TransitionDecision {

@@ -9,7 +9,7 @@ interface Pending { resolve(value: RpcResponse): void; reject(error: Error): voi
 
 export class PiRpcClient extends EventEmitter {
   readonly #decoder: LfJsonlDecoder; readonly #pending = new Map<string, Pending>(); readonly #timeout: number; readonly #maxStderr: number; readonly #maxRendered: number;
-  #sequence = 0; #stderr = ""; #rendered = 0; #closed = false;
+  #sequence = 0; #stderr = ""; #rendered = 0; #closed = false; #failure: Error | undefined;
   constructor(readonly process: PiProcess, options: RpcClientOptions = {}) {
     super(); this.#timeout = options.commandTimeoutMs ?? 5_000; this.#maxStderr = options.maxStderrBytes ?? 256 * 1024; this.#maxRendered = options.maxRenderedBytes ?? 2 * 1024 * 1024;
     this.#decoder = new LfJsonlDecoder(options.maxLineBytes, options.maxBufferBytes);
@@ -18,19 +18,21 @@ export class PiRpcClient extends EventEmitter {
     process.on("exit", (code, signal) => { this.#closed = true; this.#fail(new ProtocolError(`Pi exited unexpectedly: ${code ?? signal ?? "unknown"}`)); this.emit("process_exit", { code, signal }); });
   }
   get stderr(): string { return this.#stderr; }
+  get failure(): Error | undefined { return this.#failure; }
   async command(command: Record<string, unknown>, timeoutMs = this.#timeout): Promise<RpcResponse> {
+    if (this.#failure) throw this.#failure;
     if (this.#closed) throw new ProtocolError("Pi process is closed");
     const id = `squire-${String(++this.#sequence).padStart(8, "0")}`;
     return new Promise<RpcResponse>((resolve, reject) => {
-      const timer = setTimeout(() => { this.#pending.delete(id); reject(new ProtocolError(`RPC command timed out: ${String(command["type"])}`)); }, timeoutMs);
+      const timer = setTimeout(() => this.#fail(new ProtocolError(`RPC command timed out: ${String(command["type"])}`)), timeoutMs);
       this.#pending.set(id, { resolve, reject, timer });
-      try { this.process.stdin.write(`${JSON.stringify({ id, ...command })}\n`); } catch (error) { clearTimeout(timer); this.#pending.delete(id); reject(asError(error)); }
+      try { if (!this.process.stdin.write(`${JSON.stringify({ id, ...command })}\n`)) throw new ProtocolError("Pi stdin rejected RPC write"); } catch (error) { this.#fail(asError(error)); }
     });
   }
   async getState(): Promise<PiState> { const response = await this.command({ type: "get_state" }); if (!response.success || !isState(response.data)) throw new ProtocolError("malformed get_state response"); return response.data; }
   async prompt(message: string): Promise<void> { const response = await this.command({ type: "prompt", message }); if (!response.success) throw new ProtocolError(response.error ?? "prompt rejected"); this.emit("prompt_accepted"); }
-  waitForSettled(timeoutMs = this.#timeout): Promise<void> { return new Promise((resolve, reject) => { const timer = setTimeout(() => { cleanup(); reject(new ProtocolError("agent_settled timed out")); }, timeoutMs); const settled = () => { cleanup(); resolve(); }; const failed = (error: Error) => { cleanup(); reject(error); }; const cleanup = () => { clearTimeout(timer); this.off("agent_settled", settled); this.off("protocol_error", failed); }; this.once("agent_settled", settled); this.once("protocol_error", failed); }); }
-  #consume(chunk: Buffer | string): void { try { for (const line of this.#decoder.push(chunk)) this.#line(line); } catch (error) { this.#fail(asError(error)); } }
+  waitForSettled(timeoutMs = this.#timeout): Promise<void> { if (this.#failure) return Promise.reject(this.#failure); return new Promise((resolve, reject) => { const timer = setTimeout(() => this.#fail(new ProtocolError("agent_settled timed out")), timeoutMs); const settled = () => { cleanup(); resolve(); }; const failed = (error: Error) => { cleanup(); reject(error); }; const cleanup = () => { clearTimeout(timer); this.off("agent_settled", settled); this.off("protocol_error", failed); }; this.once("agent_settled", settled); this.once("protocol_error", failed); }); }
+  #consume(chunk: Buffer | string): void { if (this.#closed) return; try { for (const line of this.#decoder.push(chunk)) this.#line(line); } catch (error) { this.#fail(asError(error)); } }
   #line(line: string): void {
     if (!line) return; let record: Record<string, unknown>; try { record = JSON.parse(line) as Record<string, unknown>; } catch { throw new ProtocolError("malformed JSON on Pi stdout"); }
     this.#rendered += Buffer.byteLength(line); if (this.#rendered > this.#maxRendered) throw new ProtocolError("rendered output limit exceeded");
@@ -39,7 +41,15 @@ export class PiRpcClient extends EventEmitter {
     if (record["type"] === "extension_ui_request") this.emit("extension_ui", record);
     this.emit("event", record);
   }
-  #fail(error: Error): void { for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.#pending.clear(); this.emit("protocol_error", error); }
+  #fail(error: Error): void {
+    if (this.#failure) return;
+    this.#failure = error;
+    this.#closed = true;
+    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+    this.#pending.clear();
+    this.emit("protocol_error", error);
+    if (this.process.exitCode === null) this.process.kill("SIGTERM");
+  }
 }
 function isState(value: unknown): value is PiState { if (!value || typeof value !== "object") return false; const v = value as Record<string, unknown>; const model = v["model"] as Record<string, unknown> | null; return typeof v["sessionFile"] === "string" && typeof v["sessionId"] === "string" && (model === null || (typeof model === "object" && typeof model["provider"] === "string" && typeof model["id"] === "string")); }
 function asError(value: unknown): Error { return value instanceof Error ? value : new Error(String(value)); }

@@ -19,17 +19,18 @@
 
 ## Sources
 
+- [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/run-scoped-agent-runtime-resolution]] — Run-scoped agent runtime resolution *(created: 2026-09-01)*
 - [[sources/SRC-2026-09-01-001]] — Squire MVP Architecture *(created: unknown)*
 - [[sources/SRC-2026-09-01-002]] — AIDEV-214 Independent Architecture Review *(created: unknown)*
 - [[sources/SRC-2026-09-01-004]] — AIDEV-215 Workflow and Handoff Contracts *(created: unknown)*
-- [[sources/SRC-2026-09-01-005]] — Docker Sandboxes Viability Spike *(created: unknown)*
 - [[sources/SRC-2026-09-01-006]] — Squire MVP Architecture — runtime policy revision *(created: unknown)*
 - [[sources/SRC-2026-09-01-007]] — AIDEV-215 Workflow Contracts — runtime policy revision *(created: unknown)*
+- [[sources/SRC-2026-09-01-008]] — Docker Sandboxes Viability Spike *(created: unknown)*
 
 ## Synthesiss
 
 - [[syntheses/aidev-216-and-aidev-224-ownership-boundary]] — aidev-216-and-aidev-224-ownership-boundary *(created: 2026-09-01)*
 
 ---
-*Last updated: 2026-09-01T19:24:01.565Z* | *Total pages: 14*
+*Last updated: 2026-09-01T20:29:50.256Z* | *Total pages: 15*

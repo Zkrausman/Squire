@@ -14,3 +14,7 @@
 {"source_id":"SRC-2026-09-01-006","format":"markdown","timestamp":"2026-09-01T19:13:11.554Z","kind":"capture"}
 {"source_id":"SRC-2026-09-01-007","format":"markdown","timestamp":"2026-09-01T19:13:14.542Z","kind":"capture"}
 {"slug":"run-scoped-agent-runtime-resolution","title":"Run-scoped agent runtime resolution","category":"architecture","timestamp":"2026-09-01T19:23:13.652Z","kind":"retro"}
+{"source_id":"SRC-2026-09-01-008","format":"markdown","timestamp":"2026-09-01T20:10:42.606Z","kind":"capture"}
+{"source_id":"SRC-2026-09-01-005","replacement_source_id":"SRC-2026-09-01-008","reason":"Replaced the complete source packet through compliant recapture because the superseded packet contained a local host profile path. Immutable packet bytes were not edited in place.","timestamp":"2026-09-01T20:12:37.647Z","kind":"source-withdrawal"}
+{"slug":"obs-2026-09-01-aidev-216-review-remediation-integrated","title":"AIDEV-216 Review remediation integrated","relevance":"high","timestamp":"2026-09-01T20:27:56.958Z","kind":"observe"}
+{"slug":"persisted-acceptance-authority-chain","title":"Persisted acceptance authority chain","category":"architecture","timestamp":"2026-09-01T20:28:44.976Z","kind":"retro"}

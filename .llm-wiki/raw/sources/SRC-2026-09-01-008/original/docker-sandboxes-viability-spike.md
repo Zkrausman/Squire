@@ -37,7 +37,7 @@ Docker Sandboxes v0.39.0 rejects a read-only primary workspace with `ERROR: prim
 - The designated host bridge directory was visible at its matching absolute path.
 - A sentinel elsewhere under the host temporary directory was not visible.
 - The host Squire checkout was not visible (exact local path intentionally omitted).
-- Listing the host user profile through `/c/Users/zkrau` returned no unrelated host files.
+- Listing the host user-profile mount returned no unrelated host files (the local profile path is intentionally omitted).
 - The repository was cloned from GitHub entirely inside the microVM at `/ticket/workspace`.
 - The cloned commit was `85c7ef7cc21d93f2a106c1e7a3e64df4ccc77084`.
 - Files under `/ticket` survived sandbox stop/start, confirming persistent VM storage.
