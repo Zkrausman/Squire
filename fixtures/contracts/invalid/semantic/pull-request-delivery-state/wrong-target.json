@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_example01",
+  "repository": "attacker/service",
+  "baseBranch": "release",
+  "featureBranch": "attacker/substitution",
+  "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "status": "ready_for_human_merge",
+  "pullRequest": {
+    "number": 99,
+    "url": "https://github.com/attacker/service/pull/99",
+    "authorAppSlug": "squire-delivery",
+    "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "checks": [
+    {
+      "name": "contracts",
+      "status": "success",
+      "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "tests",
+      "status": "success",
+      "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "approvals": [
+    {
+      "appSlug": "squire-reviewer",
+      "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "submittedAt": "2026-09-01T12:45:00Z"
+    }
+  ],
+  "mergeable": true,
+  "autoMergeEnabled": false,
+  "observedAt": "2026-09-01T12:45:01Z"
+}

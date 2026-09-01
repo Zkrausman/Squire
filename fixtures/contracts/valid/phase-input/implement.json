@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "handoffId": "handoff_implement_1",
+  "runId": "run_example01",
+  "phase": "implement",
+  "targetSessionId": "session-implement-01",
+  "attempt": 1,
+  "inputHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "ticket": { "path": "artifacts/input/ticket.json", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "schemaId": "urn:squire:contracts:v1:normalized-ticket" },
+  "configuration": { "path": "artifacts/input/config.json", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "schemaId": "urn:squire:contracts:v1:workflow-config" },
+  "artifacts": [
+    { "path": "artifacts/plan/plan.json", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "schemaId": "urn:squire:contracts:v1:implementation-plan" }
+  ],
+  "feedback": [],
+  "createdAt": "2026-09-01T12:10:00Z"
+}

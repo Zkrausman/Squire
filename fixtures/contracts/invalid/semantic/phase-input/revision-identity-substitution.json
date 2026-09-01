@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "handoffId": "handoff_substituted_2",
+  "runId": "run_attacker",
+  "phase": "review",
+  "targetSessionId": "session-attacker",
+  "attempt": 2,
+  "inputHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "ticket": {
+    "path": "artifacts/input/ticket.json",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "schemaId": "urn:squire:contracts:v1:normalized-ticket"
+  },
+  "configuration": {
+    "path": "artifacts/input/config.json",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "schemaId": "urn:squire:contracts:v1:workflow-config"
+  },
+  "artifacts": [
+    {
+      "path": "artifacts/implement/result.json",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "schemaId": "urn:squire:contracts:v1:phase-result"
+    }
+  ],
+  "feedback": [
+    {
+      "path": "artifacts/review/findings.json",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "schemaId": "urn:squire:contracts:v1:review-findings"
+    }
+  ],
+  "createdAt": "2020-01-01T00:00:00Z"
+}

@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:contracts:v1:workflow-config",
+  "title": "Squire workflow configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "ticket", "repository", "linear", "sandbox", "pi", "validation", "remediation", "artifactRetention", "github"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "ticket": {
+      "type": "object", "additionalProperties": false, "required": ["provider", "issueId", "identifier"],
+      "properties": {
+        "provider": { "const": "linear" },
+        "issueId": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" },
+        "identifier": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[1-9][0-9]*$" }
+      }
+    },
+    "repository": {
+      "type": "object", "additionalProperties": false, "required": ["owner", "name", "cloneUrl", "baseBranch", "objectFormat"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "cloneUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "baseBranch": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\.\\.)[^~^:?*\\[\\]\\\\]+$" },
+        "objectFormat": { "enum": ["sha1", "sha256"] }
+      }
+    },
+    "linear": {
+      "type": "object", "additionalProperties": false, "required": ["teamId", "states"],
+      "properties": {
+        "teamId": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" },
+        "states": {
+          "type": "object", "additionalProperties": false,
+          "required": ["accepted", "inProgress", "awaitingHuman", "completed", "failed", "cancelled"],
+          "properties": {
+            "accepted": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" },
+            "inProgress": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" },
+            "awaitingHuman": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" },
+            "completed": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" },
+            "failed": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" },
+            "cancelled": { "$ref": "urn:squire:contracts:v1:common#/$defs/uuid" }
+          }
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object", "additionalProperties": false, "required": ["template", "resources", "network", "retention"],
+      "properties": {
+        "template": {
+          "type": "object", "additionalProperties": false, "required": ["name", "digest"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          }
+        },
+        "resources": {
+          "type": "object", "additionalProperties": false, "required": ["cpus", "memoryMiB", "diskGiB"],
+          "properties": {
+            "cpus": { "type": "integer", "minimum": 1 },
+            "memoryMiB": { "type": "integer", "minimum": 1024 },
+            "diskGiB": { "type": "integer", "minimum": 10 }
+          }
+        },
+        "network": {
+          "type": "object", "additionalProperties": false, "required": ["mode", "allowedHosts"],
+          "properties": {
+            "mode": { "enum": ["allow-all", "allowlist", "deny-all"] },
+            "allowedHosts": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+          },
+          "allOf": [{ "if": { "properties": { "mode": { "const": "allowlist" } } }, "then": { "properties": { "allowedHosts": { "type": "array", "minItems": 1 } } }, "else": { "properties": { "allowedHosts": { "type": "array", "maxItems": 0 } } } }]
+        },
+        "retention": {
+          "type": "object", "additionalProperties": false, "required": ["onSuccessHours", "onFailureHours"],
+          "properties": {
+            "onSuccessHours": { "type": "integer", "minimum": 0 },
+            "onFailureHours": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "pi": {
+      "type": "object", "additionalProperties": false, "required": ["version", "roles"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "roles": {
+          "type": "object", "additionalProperties": false, "required": ["orchestrator", "plan", "implement", "review", "test"],
+          "properties": {
+            "orchestrator": { "$ref": "#/$defs/piRole" },
+            "plan": { "$ref": "#/$defs/piRole" },
+            "implement": { "$ref": "#/$defs/piRole" },
+            "review": { "$ref": "#/$defs/piRole" },
+            "test": { "$ref": "#/$defs/piRole" }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object", "additionalProperties": false, "required": ["commands"],
+      "properties": { "commands": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/validationCommand" } } }
+    },
+    "remediation": {
+      "type": "object", "additionalProperties": false, "required": ["reviewAttempts", "testAttempts", "totalAttempts"],
+      "properties": {
+        "reviewAttempts": { "type": "integer", "minimum": 0 },
+        "testAttempts": { "type": "integer", "minimum": 0 },
+        "totalAttempts": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifactRetention": {
+      "type": "object", "additionalProperties": false, "required": ["trustedExportDays", "sessionDays", "evidenceDays"],
+      "properties": {
+        "trustedExportDays": { "type": "integer", "minimum": 1 },
+        "sessionDays": { "type": "integer", "minimum": 1 },
+        "evidenceDays": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "github": {
+      "type": "object", "additionalProperties": false,
+      "required": ["deliveryIdentity", "reviewerIdentity", "requiredChecks", "rules"],
+      "properties": {
+        "deliveryIdentity": { "$ref": "#/$defs/githubIdentity" },
+        "reviewerIdentity": { "$ref": "#/$defs/githubIdentity" },
+        "requiredChecks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "rules": {
+          "type": "object", "additionalProperties": false,
+          "required": ["requirePullRequest", "requiredApprovals", "dismissStaleApprovals", "requireApprovalAfterLatestPush", "denySquireMerge", "denySquireBypass", "denySquireBaseUpdate", "humanMergeActors"],
+          "properties": {
+            "requirePullRequest": { "const": true },
+            "requiredApprovals": { "type": "integer", "minimum": 1 },
+            "dismissStaleApprovals": { "const": true },
+            "requireApprovalAfterLatestPush": { "const": true },
+            "denySquireMerge": { "const": true },
+            "denySquireBypass": { "const": true },
+            "denySquireBaseUpdate": { "const": true },
+            "humanMergeActors": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "piRole": {
+      "type": "object", "additionalProperties": false, "required": ["provider", "model", "timeoutSeconds", "instructionsPath"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "instructionsPath": { "$ref": "urn:squire:contracts:v1:common#/$defs/sandboxPath" }
+      }
+    },
+    "validationCommand": {
+      "type": "object", "additionalProperties": false, "required": ["id", "command", "cwd", "timeoutSeconds", "required"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+        "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "cwd": { "$ref": "urn:squire:contracts:v1:common#/$defs/sandboxPath" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "required": { "type": "boolean" }
+      }
+    },
+    "githubIdentity": {
+      "type": "object", "additionalProperties": false, "required": ["appSlug", "installationId"],
+      "properties": {
+        "appSlug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "installationId": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

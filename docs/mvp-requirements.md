@@ -48,7 +48,7 @@ A successful workflow run must:
 
 Squire must not hard-code itself to one repository or one ticket. The workflow, stage contracts, and repository-specific behavior must have a defined configuration boundary suitable for later extension.
 
-The research phase will determine the minimum configuration schema required by the MVP.
+The minimum v1 configuration and workflow contracts are defined in [AIDEV-215 Workflow and Handoff Contracts](aidev-215-workflow-contracts.md).
 
 ### PR-2: Single-ticket execution
 
@@ -135,7 +135,9 @@ Squire must manage the ticket branch through commit, push, pull-request creation
 - Agent work runs in one persistent Docker Sandboxes microVM per ticket run.
 - All five Pi sessions intentionally share that ticket boundary and its private Docker Engine.
 - Docker Sandboxes direct workspace mode and stock clone mode must not expose repository content from the host.
-- The sandbox receives only a minimal read-only host bridge; the repository and all Git metadata remain beneath `/ticket` inside the microVM.
+- Because Docker Sandboxes v0.39.0 requires the primary workspace to be writable, the sandbox receives only a dedicated, ticket-specific, read-write but otherwise empty host bridge.
+- The bridge contains no repository, credentials, home data, or unrelated host state; agents must not use it for repository work or trusted artifact publication.
+- Bridge contents are untrusted and deleted during ticket cleanup. The repository, Git metadata, sessions, and artifacts remain beneath `/ticket` inside the microVM, and controller-mediated `sbx cp` is the trusted export path.
 
 ### TR-5: Context and filesystem isolation
 
@@ -161,13 +163,15 @@ The isolation design must account for Git metadata: exposing a linked worktree m
 
 ### TR-7: Explicit handoff contracts
 
-The platform must define machine-readable or otherwise unambiguous contracts for:
+The platform must implement the versioned machine-readable contracts in [AIDEV-215 Workflow and Handoff Contracts](aidev-215-workflow-contracts.md) for:
 
-- ticket input;
-- phase-session input and output;
-- plans, findings, and test results;
-- session identity, progress, workflow status, and terminal outcomes; and
+- normalized ticket input;
+- phase input, short RPC trigger, and phase result;
+- plans, findings, and test evidence;
+- orchestrator transition requests; and
 - pull-request delivery state.
+
+For each attempt, the controller creates and validates an immutable phase-input artifact, records its path and SHA-256 with run, phase, attempt, target session, and head bindings, then sends a short Pi RPC trigger that references the artifact instead of embedding the task. The phase verifies the artifact and writes result/evidence artifacts; the controller validates those outputs before Orchestrator consumption. Herdr/manual prompts are audited steering only. Scope-changing intervention requires a new immutable handoff and incremented attempt rather than mutation of prior input.
 
 ### TR-8: Workflow and artifact state
 
@@ -253,4 +257,4 @@ AIDEV-214 selected the following implementation boundaries:
 - separate Squire Delivery and Squire Reviewer GitHub Apps; and
 - server-side GitHub rules that reserve merge for humans and deny Squire bypass/base-update authority.
 
-AIDEV-215 defines the configuration and result schemas. Later implementation tickets own credential brokering, retry defaults, GitHub deployment preflight, cleanup automation, and operational hardening. See [Squire MVP Architecture](mvp-architecture.md) and [Docker Sandboxes viability spike](docker-sandboxes-viability-spike.md).
+AIDEV-215 defines the [configuration and handoff contracts](aidev-215-workflow-contracts.md). Later implementation tickets own credential brokering, GitHub deployment preflight, cleanup automation, and operational hardening. See [Squire MVP Architecture](mvp-architecture.md) and [Docker Sandboxes viability spike](docker-sandboxes-viability-spike.md).

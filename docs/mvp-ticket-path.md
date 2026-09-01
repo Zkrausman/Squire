@@ -17,7 +17,7 @@ Use this order when working one ticket at a time:
 1. **[AIDEV-214 — Research and finalize the MVP technical design](https://linear.app/geltagentictrading/issue/AIDEV-214/research-and-finalize-the-mvp-technical-design)**
    Validate the architecture and refine the remaining ticket scopes.
 2. **[AIDEV-215 — Define configurable workflow and stage handoff contracts](https://linear.app/geltagentictrading/issue/AIDEV-215/define-configurable-workflow-and-stage-handoff-contracts)**
-   Establish the contracts every later component will implement.
+   Establish the [versioned configuration, immutable handoff, and workflow contracts](aidev-215-workflow-contracts.md) every later component will implement.
 3. **[AIDEV-222 — Provision an isolated Git worktree for each ticket](https://linear.app/geltagentictrading/issue/AIDEV-222/provision-an-isolated-git-worktree-for-each-ticket)**
    Make workspace isolation a foundational invariant.
 4. **[AIDEV-223 — Run agent sessions in a restricted sandbox](https://linear.app/geltagentictrading/issue/AIDEV-223/run-agent-sessions-in-a-restricted-sandbox)**

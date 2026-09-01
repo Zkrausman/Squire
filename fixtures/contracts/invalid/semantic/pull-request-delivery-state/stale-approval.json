@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_example01",
+  "repository": "example/service",
+  "baseBranch": "main",
+  "featureBranch": "squire/aidev-215/run_example01",
+  "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "status": "ready_for_human_merge",
+  "pullRequest": { "number": 42, "url": "https://github.com/example/service/pull/42", "authorAppSlug": "squire-delivery", "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "checks": [
+    { "name": "contracts", "status": "success", "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    { "name": "tests", "status": "success", "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+  ],
+  "approvals": [{ "appSlug": "squire-reviewer", "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "submittedAt": "2026-09-01T12:45:00Z" }],
+  "mergeable": true,
+  "autoMergeEnabled": false,
+  "observedAt": "2026-09-01T12:45:01Z"
+}

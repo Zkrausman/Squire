@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:contracts:v1:implementation-plan",
+  "title": "Implementation plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "ticketIdentifier", "inputHead", "summary", "assumptions", "steps", "risks", "validationCommandIds"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "$ref": "urn:squire:contracts:v1:common#/$defs/runId" },
+    "ticketIdentifier": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[1-9][0-9]*$" },
+    "inputHead": { "$ref": "urn:squire:contracts:v1:common#/$defs/sha" },
+    "summary": { "type": "string", "minLength": 1 },
+    "assumptions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "steps": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "description", "affectedPaths", "acceptanceCriteria"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^step-[1-9][0-9]*$" },
+          "description": { "type": "string", "minLength": 1 },
+          "affectedPaths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+          "acceptanceCriteria": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["risk", "mitigation"],
+        "properties": { "risk": { "type": "string", "minLength": 1 }, "mitigation": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "validationCommandIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" } }
+  }
+}
