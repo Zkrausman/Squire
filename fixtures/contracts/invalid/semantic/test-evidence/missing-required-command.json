@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_example01",
+  "sessionId": "session-test-01",
+  "testedHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "status": "pass",
+  "commands": [
+    {
+      "commandId": "contracts",
+      "startedAt": "2026-09-01T12:31:00Z",
+      "completedAt": "2026-09-01T12:31:02Z",
+      "exitCode": 0,
+      "timedOut": false,
+      "stdout": { "path": "evidence/test/contracts.stdout", "sha256": "7777777777777777777777777777777777777777777777777777777777777777", "mediaType": "text/plain", "kind": "command", "commandId": "contracts" },
+      "stderr": { "path": "evidence/test/contracts.stderr", "sha256": "8888888888888888888888888888888888888888888888888888888888888888", "mediaType": "text/plain", "kind": "command", "commandId": "contracts" }
+    }
+  ],
+  "failures": [],
+  "completedAt": "2026-09-01T12:31:05Z"
+}

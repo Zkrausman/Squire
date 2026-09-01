@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_example01",
+  "ticketIdentifier": "AIDEV-215",
+  "inputHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "summary": "Add and verify versioned contracts.",
+  "assumptions": ["Node.js 20 or newer is available"],
+  "steps": [
+    { "id": "step-1", "description": "Add strict JSON Schemas", "affectedPaths": ["contracts/v1"], "acceptanceCriteria": ["Valid fixtures pass", "Invalid fixtures fail closed"] }
+  ],
+  "risks": [{ "risk": "Schema cannot express runtime state", "mitigation": "Use semantic validation after structural validation" }],
+  "validationCommandIds": ["contracts", "tests"]
+}

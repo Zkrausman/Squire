@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:contracts:v1:phase-trigger",
+  "title": "Short Pi RPC phase trigger v1",
+  "description": "A bounded trigger pointing to an immutable, controller-validated phase input artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "handoffId", "runId", "phase", "attempt", "targetSessionId", "inputHead", "inputArtifact"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "handoffId": { "$ref": "urn:squire:contracts:v1:common#/$defs/handoffId" },
+    "runId": { "$ref": "urn:squire:contracts:v1:common#/$defs/runId" },
+    "phase": { "$ref": "urn:squire:contracts:v1:common#/$defs/phase" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "targetSessionId": { "$ref": "urn:squire:contracts:v1:common#/$defs/sessionId" },
+    "inputHead": { "$ref": "urn:squire:contracts:v1:common#/$defs/sha" },
+    "inputArtifact": { "$ref": "urn:squire:contracts:v1:common#/$defs/contractReference" }
+  }
+}

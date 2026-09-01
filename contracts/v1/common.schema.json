@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:contracts:v1:common",
+  "title": "Squire v1 common definitions",
+  "$defs": {
+    "runId": { "type": "string", "pattern": "^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "handoffId": { "type": "string", "pattern": "^handoff_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "uuid": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "phase": { "enum": ["plan", "implement", "review", "test"] },
+    "role": { "enum": ["orchestrator", "plan", "implement", "review", "test"] },
+    "activeState": { "enum": ["accepted", "preparing", "planning", "implementing", "reviewing", "testing", "publishing", "awaiting_approval"] },
+    "state": { "enum": ["accepted", "preparing", "planning", "implementing", "reviewing", "testing", "publishing", "awaiting_approval", "approved", "failed", "cancelled", "expired"] },
+    "sandboxPath": { "type": "string", "pattern": "^/ticket(?:/|$)", "minLength": 8, "maxLength": 1024 },
+    "artifactPath": { "type": "string", "pattern": "^(?:artifacts|evidence)/(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$", "maxLength": 1024 },
+    "artifactReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "mediaType"],
+      "properties": {
+        "path": { "$ref": "#/$defs/artifactPath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "schemaId": { "type": "string", "pattern": "^urn:squire:contracts:v[0-9]+:[a-z-]+$" }
+      }
+    },
+    "evidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "mediaType", "kind"],
+      "properties": {
+        "path": { "$ref": "#/$defs/artifactPath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "kind": { "enum": ["command", "log", "report", "session", "git", "delivery"] },
+        "schemaId": { "type": "string", "pattern": "^urn:squire:contracts:v[0-9]+:[a-z-]+$" },
+        "commandId": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" }
+      }
+    },
+    "contractReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "schemaId"],
+      "properties": {
+        "path": { "$ref": "#/$defs/artifactPath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "schemaId": { "type": "string", "pattern": "^urn:squire:contracts:v[0-9]+:[a-z-]+$" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "blocking", "summary", "details"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+        "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+        "blocking": { "type": "boolean" },
+        "summary": { "type": "string", "minLength": 1 },
+        "details": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "recommendation": { "type": "string", "minLength": 1 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "blocking", "summary"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+        "category": { "enum": ["validation", "timeout", "tool", "contract", "infrastructure", "policy"] },
+        "blocking": { "type": "boolean" },
+        "summary": { "type": "string", "minLength": 1 },
+        "commandId": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceReference" }, "uniqueItems": true }
+      }
+    },
+    "requestedTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toState", "reason"],
+      "properties": {
+        "toState": { "$ref": "#/$defs/state" },
+        "reason": { "enum": ["phase_pass", "remediation_required", "phase_failed"] }
+      }
+    }
+  }
+}

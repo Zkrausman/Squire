@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_example01",
+  "sessionId": "session-review-01",
+  "reviewedHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "status": "pass",
+  "summary": "No blocking findings.",
+  "findings": [],
+  "completedAt": "2026-09-01T12:30:00Z"
+}

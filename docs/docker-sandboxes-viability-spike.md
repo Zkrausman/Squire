@@ -25,6 +25,10 @@ This is a feasibility checkpoint, not the final architecture decision.
 
 The global `sbx` network policy was initialized as `allow-all`, matching the MVP requirement for normal outbound network access.
 
+### Primary workspace correction
+
+Docker Sandboxes v0.39.0 rejects a read-only primary workspace with `ERROR: primary workspace must be read/write (remove ':ro' or ':readonly')`. The required bridge is therefore dedicated per ticket and read-write, but otherwise empty. It contains no repository, credentials, home data, or unrelated host state. Its contents are untrusted, are not used by agents for repository work or trusted artifact publication, and are deleted during ticket cleanup. Repository state remains under `/ticket`, and controller-mediated `sbx cp` remains the trusted export path.
+
 ## Validated successfully
 
 ### MicroVM and filesystem isolation
@@ -101,7 +105,7 @@ Host-side command output is retained under:
 
 1. **Do not use default direct workspace mode for repository code.** It mounts the selected host directory read-write.
 2. **Do not rely on stock `--clone` mode for the strict Squire boundary.** Docker documents that the host source remains visible read-only at `/run/sandbox/source`.
-3. Use a minimal ticket bridge with no repository or unrelated host state, then clone the repository into persistent microVM storage at `/ticket/workspace`.
+3. Use a dedicated ticket-specific, read-write but otherwise empty bridge with no repository, credentials, home data, or unrelated host state; treat and delete its contents as untrusted. Keep repository work under persistent microVM storage at `/ticket/workspace`.
 4. Use Pi RPC and per-phase session directories as the authoritative orchestration seam; Herdr is the interactive presentation and manual-steering seam.
 5. Export delivery branches through a controller-mediated artifact operation such as Git bundle plus `sbx cp`. The trusted controller or Delivery GitHub App can publish the verified branch without mounting the host checkout into the sandbox.
 6. Set `MSYS_NO_PATHCONV=1` and `MSYS2_ARG_CONV_EXCL=*` for Windows controller commands carrying Linux sandbox paths.

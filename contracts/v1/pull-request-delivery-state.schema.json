@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:contracts:v1:pull-request-delivery-state",
+  "title": "Pull-request delivery state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "repository", "baseBranch", "featureBranch", "headSha", "status", "pullRequest", "checks", "approvals", "mergeable", "autoMergeEnabled", "observedAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "$ref": "urn:squire:contracts:v1:common#/$defs/runId" },
+    "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "baseBranch": { "type": "string", "minLength": 1 },
+    "featureBranch": { "type": "string", "minLength": 1 },
+    "headSha": { "$ref": "urn:squire:contracts:v1:common#/$defs/sha" },
+    "status": { "enum": ["unpublished", "branch_published", "pr_open", "awaiting_checks", "awaiting_approval", "ready_for_human_merge", "closed"] },
+    "pullRequest": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object", "additionalProperties": false, "required": ["number", "url", "authorAppSlug", "headSha"],
+          "properties": {
+            "number": { "type": "integer", "minimum": 1 },
+            "url": { "type": "string", "format": "uri" },
+            "authorAppSlug": { "type": "string", "minLength": 1 },
+            "headSha": { "$ref": "urn:squire:contracts:v1:common#/$defs/sha" }
+          }
+        }
+      ]
+    },
+    "checks": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "status", "headSha"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["pending", "success", "failure", "cancelled", "missing"] },
+          "headSha": { "$ref": "urn:squire:contracts:v1:common#/$defs/sha" }
+        }
+      }
+    },
+    "approvals": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false, "required": ["appSlug", "headSha", "submittedAt"],
+        "properties": {
+          "appSlug": { "type": "string", "minLength": 1 },
+          "headSha": { "$ref": "urn:squire:contracts:v1:common#/$defs/sha" },
+          "submittedAt": { "$ref": "urn:squire:contracts:v1:common#/$defs/timestamp" }
+        }
+      }
+    },
+    "mergeable": { "type": "boolean" },
+    "autoMergeEnabled": { "const": false },
+    "observedAt": { "$ref": "urn:squire:contracts:v1:common#/$defs/timestamp" }
+  }
+}

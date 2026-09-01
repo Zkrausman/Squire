@@ -138,7 +138,7 @@ MSYS2_ARG_CONV_EXCL=*
 
 The isolation unit is one Docker Sandboxes microVM per ticket, not one microVM per phase. All five sessions intentionally share the active ticket workspace and ticket-local artifacts.
 
-The sandbox is created from a versioned, digest-pinned Squire template with configurable CPU, memory, and disk limits. It receives only a minimal controller-created host bridge mounted read-only. Repository content is never supplied through Docker Sandboxes direct workspace mode or stock clone mode.
+The sandbox is created from a versioned, digest-pinned Squire template with configurable CPU, memory, and disk limits. Docker Sandboxes v0.39.0 requires its primary workspace mount to be read/write, so the sandbox receives only a dedicated, ticket-specific, read-write but otherwise empty controller-created host bridge. It contains no repository, credentials, home data, or unrelated host state. Repository content is never supplied through Docker Sandboxes direct workspace mode or stock clone mode.
 
 Inside the microVM, trusted setup creates:
 
@@ -200,8 +200,8 @@ Terminal alternatives are `failed`, `cancelled`, and `expired`.
 Allowed remediation transitions are:
 
 ```text
-reviewing --findings--> implementing → reviewing → testing
-testing   --failures--> implementing → reviewing → testing
+reviewing --remediation_required--> implementing → reviewing → testing
+testing   --remediation_required--> implementing → reviewing → testing
 ```
 
 A failed Test always requires a fresh Review and Test because remediation changes the head SHA. Retry and timeout values are configuration, with finite fail-closed defaults. Exhaustion moves the run to `failed` and preserves the sandbox and evidence for operator inspection.
@@ -210,35 +210,17 @@ Before every side effect, the controller re-reads local and remote state. Unique
 
 ## 7. Explicit handoff contract
 
-AIDEV-215 will define the complete schemas. Every phase result must at minimum bind the decision to the run, session, and commit:
+The complete v1 schemas and semantic rules are defined in [AIDEV-215 Workflow and Handoff Contracts](aidev-215-workflow-contracts.md). The production handoff is an authoritative immutable artifact plus a short trigger prompt:
 
-```json
-{
-  "schemaVersion": 1,
-  "runId": "run_...",
-  "phase": "review",
-  "sessionId": "...",
-  "inputHead": "<sha>",
-  "outputHead": "<sha>",
-  "status": "pass",
-  "artifacts": ["artifacts/review/report.json"],
-  "evidence": ["evidence/review/summary.json"],
-  "findings": [],
-  "requestedTransition": "test"
-}
-```
+1. the controller creates and validates a complete phase-input artifact;
+2. it records the artifact path and exact-byte SHA-256 with run, phase, attempt, target session, and head bindings;
+3. Pi RPC sends only a short trigger referencing that artifact;
+4. the phase verifies and reads it, then writes immutable result and evidence artifacts; and
+5. the controller validates all bindings, paths, digests, evidence, Git state, and semantics before the Orchestrator consumes the result.
 
-The controller rejects:
+Every phase result binds schema version, handoff and input artifact, run, phase, actual session, input/output head, status, artifacts, evidence, findings, failures, and requested transition. Unknown versions, wrong identities, stale SHAs, missing evidence, contradictory pass results, digest mismatches, and illegal transitions fail closed.
 
-- unknown schema versions or phases;
-- wrong run or session IDs;
-- stale or unexpected commit SHAs;
-- missing required artifacts or evidence;
-- illegal transitions;
-- a pass result with unresolved blocking findings; and
-- publication requests without Review and Test passes at the current head.
-
-Pi JSONL is session persistence, not the handoff protocol. Herdr terminal text is presentation, not the handoff protocol.
+Pi JSONL is session persistence, not the handoff protocol. Herdr terminal text and manual prompts are presentation and audited steering, not workflow truth. Scope-changing intervention creates a new immutable handoff and incremented attempt; it never mutates the accepted input or advances state from chat text.
 
 ## 8. Persistence and recovery
 
@@ -288,8 +270,9 @@ The MVP protects:
 - no host checkout, home, Docker socket, Herdr socket, or sibling mount;
 - no shared cross-sandbox skill store;
 - no host-local MCP servers unless explicitly approved;
-- a minimal read-only host bridge containing no repository data;
-- repository and all Git metadata beneath `/ticket`;
+- a dedicated ticket-specific, read-write but otherwise empty host bridge containing no repository, credentials, home data, or unrelated host state;
+- bridge contents treated as untrusted, never used for repository work or trusted artifact publication, and deleted during ticket cleanup;
+- repository and all Git metadata, sessions, and artifacts beneath `/ticket`;
 - resource limits and deterministic cleanup;
 - only ticket-scoped model credentials when proxy-managed credentials are incompatible; and
 - GitHub/Linear delivery credentials retained by the trusted controller.
@@ -330,7 +313,7 @@ A deployment preflight must prove that feature publication and PR creation succe
 
 ## 11. Configuration boundary
 
-AIDEV-215 will define a versioned configuration schema. The architecture requires configuration for:
+The versioned configuration schema is defined in [AIDEV-215 Workflow and Handoff Contracts](aidev-215-workflow-contracts.md). The architecture requires configuration for:
 
 - Linear team, allowed states, and state mappings;
 - GitHub repository, base branch, App installations, and required rules/checks;

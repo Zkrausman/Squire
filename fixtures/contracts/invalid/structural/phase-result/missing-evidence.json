@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "handoffId": "handoff_review_1",
+  "inputArtifact": { "path": "artifacts/handoffs/review-1.json", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "schemaId": "urn:squire:contracts:v1:phase-input" },
+  "runId": "run_example01",
+  "phase": "review",
+  "sessionId": "session-review-01",
+  "inputHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "outputHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "status": "pass",
+  "artifacts": [{ "path": "artifacts/review/report.json", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "mediaType": "application/json" }],
+  "evidence": [],
+  "findings": [],
+  "failures": [],
+  "requestedTransition": { "toState": "testing", "reason": "phase_pass" },
+  "completedAt": "2026-09-01T12:30:00Z"
+}

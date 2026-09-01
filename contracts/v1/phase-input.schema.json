@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:contracts:v1:phase-input",
+  "title": "Immutable phase input artifact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "handoffId", "runId", "phase", "targetSessionId", "attempt", "inputHead", "ticket", "configuration", "artifacts", "feedback", "createdAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "handoffId": { "$ref": "urn:squire:contracts:v1:common#/$defs/handoffId" },
+    "runId": { "$ref": "urn:squire:contracts:v1:common#/$defs/runId" },
+    "phase": { "$ref": "urn:squire:contracts:v1:common#/$defs/phase" },
+    "targetSessionId": { "$ref": "urn:squire:contracts:v1:common#/$defs/sessionId" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "inputHead": { "$ref": "urn:squire:contracts:v1:common#/$defs/sha" },
+    "ticket": { "$ref": "urn:squire:contracts:v1:common#/$defs/contractReference" },
+    "configuration": { "$ref": "urn:squire:contracts:v1:common#/$defs/contractReference" },
+    "artifacts": { "type": "array", "items": { "$ref": "urn:squire:contracts:v1:common#/$defs/contractReference" }, "uniqueItems": true },
+    "feedback": { "type": "array", "items": { "$ref": "urn:squire:contracts:v1:common#/$defs/contractReference" }, "uniqueItems": true },
+    "createdAt": { "$ref": "urn:squire:contracts:v1:common#/$defs/timestamp" }
+  }
+}
