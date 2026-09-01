@@ -26,8 +26,8 @@ Use this order when working one ticket at a time:
    Implement the session responsible for workflow control.
 6. **[AIDEV-224 — Integrate single-ticket intake and workflow state tracking](https://linear.app/geltagentictrading/issue/AIDEV-224/integrate-single-ticket-intake-and-workflow-state-tracking)**
    Give the orchestrator a single unit of work and durable stage state.
-7. **[AIDEV-217 — Integrate Herdr phase sessions using tabs or groups](https://linear.app/geltagentictrading/issue/AIDEV-217)**
-   Prove that isolated Pi phase sessions can be launched, read by the orchestrator, and observed without panes.
+7. **[AIDEV-217 — Integrate Herdr sessions using one tab per Pi session](https://linear.app/geltagentictrading/issue/AIDEV-217)**
+   Surface all five isolated Pi sessions in separate tabs with exactly one root pane each, no splits, authoritative RPC/session tracking, and manual steering.
 8. **[AIDEV-218 — Build the Plan phase Pi session](https://linear.app/geltagentictrading/issue/AIDEV-218)**
    Produce the implementation plan consumed by delivery.
 9. **[AIDEV-219 — Build the Implement phase Pi session](https://linear.app/geltagentictrading/issue/AIDEV-219)**
@@ -76,7 +76,7 @@ Parallel work must still use separate worktrees and sandboxes. A ticket starts o
 | AIDEV-222 | AIDEV-215 |
 | AIDEV-223 | AIDEV-222 |
 | AIDEV-224 | AIDEV-216 |
-| AIDEV-225 | AIDEV-222, AIDEV-224 |
+| AIDEV-225 | AIDEV-222, AIDEV-223, AIDEV-224 |
 | AIDEV-226 | AIDEV-220, AIDEV-221, AIDEV-225 |
 | AIDEV-227 | AIDEV-217, AIDEV-218, AIDEV-226 |
 | AIDEV-213 | AIDEV-227 |

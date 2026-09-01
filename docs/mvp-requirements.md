@@ -99,7 +99,7 @@ Detailed retry and failure policies are deferred to research.
 
 ### PR-5: Observable independent sessions
 
-The human operator must be able to observe the orchestrator and independent phase sessions through Herdr without relying on panes. The orchestrator must also be able to read the phase sessions and use their progress and outputs to coordinate the workflow.
+The human operator must be able to observe and manually steer the orchestrator and independent phase sessions through five Herdr tabs. Each tab contains exactly one unavoidable root pane; pane splits and multi-pane layouts are prohibited. The orchestrator must also be able to read the phase sessions and use their progress and outputs to coordinate the workflow.
 
 ### PR-6: Delivery automation
 
@@ -118,22 +118,24 @@ Squire must manage the ticket branch through commit, push, pull-request creation
 - A phase Pi session may use subagents for bounded internal work.
 - A subagent cannot serve as Plan, Implement, Review, or Test itself.
 - The orchestrator reads and coordinates the independent phase sessions; it does not collapse them into its own subagent tree.
-- Herdr launches or surfaces phase sessions using tabs or groups.
-- Tabs and groups are both acceptable for the MVP.
-- Panes are prohibited.
+- Herdr surfaces the five sessions in one ticket workspace with one tab per session.
+- Every tab contains exactly one unavoidable root pane.
+- Pane splits, multi-pane layouts, and using Herdr worktree groups as phase containers are prohibited.
 
 ### TR-3: Dedicated Git worktree
 
-- Every ticket run receives a dedicated branch and Git worktree.
+- Every ticket run receives a dedicated branch and Git worktree inside its ticket-private sandbox filesystem.
+- The ticket-private bare repository lives at `/ticket/git/repo.git` and its sole linked worktree lives at `/ticket/workspace`.
 - All ticket modifications occur in that worktree.
-- Agents must not operate in the primary checkout.
-- Worktree lifecycle and cleanup must be owned by the platform.
+- Agents must not operate in or inspect the primary host checkout.
+- Import, bundle export, worktree lifecycle, and cleanup are owned by the platform.
 
 ### TR-4: Sandboxed execution
 
-- Agent work runs in Docker or an equivalently strong sandbox.
-- Merely using a container is insufficient if host paths are broadly mounted.
-- The sandbox may expose only the active ticket workspace and resources explicitly required for the assigned work.
+- Agent work runs in one persistent Docker Sandboxes microVM per ticket run.
+- All five Pi sessions intentionally share that ticket boundary and its private Docker Engine.
+- Docker Sandboxes direct workspace mode and stock clone mode must not expose repository content from the host.
+- The sandbox receives only a minimal read-only host bridge; the repository and all Git metadata remain beneath `/ticket` inside the microVM.
 
 ### TR-5: Context and filesystem isolation
 
@@ -153,8 +155,9 @@ The isolation design must account for Git metadata: exposing a linked worktree m
 - Filesystem mounts, credentials, secrets, network access, and host integrations must be explicitly granted.
 - A stage receives only the capabilities and context required for its role.
 - The sandbox must prevent a worker from gaining unauthorized knowledge from other workspaces.
-
-The exact network and credential mechanism is deferred to research.
+- Normal outbound network access is allowed for the MVP; a model gateway is not required.
+- Model credentials may be ticket-scoped inside the microVM when proxy management is incompatible.
+- Linear and GitHub delivery credentials remain in the trusted controller and are never granted to phase sessions.
 
 ### TR-7: Explicit handoff contracts
 
@@ -199,7 +202,7 @@ The MVP is demonstrated when Squire can:
 2. create a dedicated branch and worktree;
 3. expose only that ticket workspace inside a restricted sandbox;
 4. run the orchestrator as a Pi session;
-5. launch Plan, Implement, Review, and Test as independent Pi sessions through Herdr tabs or groups;
+5. launch the Orchestrator, Plan, Implement, Review, and Test as independent Pi sessions through five Herdr tabs with one root pane each and no splits;
 6. have the orchestrator read and coordinate those sessions through Plan → Implement → Review → Test with explicit handoffs;
 7. handle at least the defined review and test feedback paths;
 8. commit and push the resulting change;
@@ -210,7 +213,7 @@ The MVP is demonstrated when Squire can:
 
 - Processing multiple tickets in one workflow run.
 - Automatically merging pull requests.
-- Running phase sessions in Herdr panes.
+- Running multiple phase sessions in one Herdr tab, splitting panes, or creating multi-pane layouts.
 - Implementing a lifecycle phase as a subagent.
 - Allowing phase sessions or their subagents to inspect sibling worktrees or unrelated host context.
 - Finalizing production-scale scheduling, distributed execution, or multi-tenant architecture before research establishes a need.
@@ -222,7 +225,7 @@ The MVP is demonstrated when Squire can:
 | Research and architecture refinement | AIDEV-214 |
 | Configuration and handoff contracts | AIDEV-215 |
 | Pi orchestration | AIDEV-216 |
-| Herdr tabs/groups and independent phase sessions | AIDEV-217 |
+| Herdr one-tab-per-session integration and independent phase sessions | AIDEV-217 |
 | Plan phase session | AIDEV-218 |
 | Implement phase session | AIDEV-219 |
 | Review phase session and remediation | AIDEV-220 |
@@ -235,19 +238,19 @@ The MVP is demonstrated when Squire can:
 | End-to-end acceptance | AIDEV-227 |
 | MVP epic | AIDEV-213 |
 
-## 8. Research-phase decisions still required
+## 8. Research decisions
 
-The agreed requirements intentionally leave these implementation choices open:
+AIDEV-214 selected the following implementation boundaries:
 
-- Squire's implementation language and packaging;
-- the configuration file format and schema;
-- Pi and Herdr launch/control integration points;
-- the sandbox runtime and image strategy;
-- safe Git metadata access from a worktree sandbox;
-- credentials, secrets, and network policy;
-- workflow-state persistence and recovery;
-- phase-session inspection, result schemas, and artifact storage;
-- retry, timeout, cancellation, and escalation policies; and
-- pull-request provider integration and approval identity.
+- TypeScript on supported Node.js LTS, packaged as one trusted controller service/CLI;
+- SQLite as the durable single-worker workflow ledger;
+- Pi RPC, persisted JSONL, and explicit result envelopes as authoritative session interfaces;
+- one Herdr ticket workspace with five tabs, one root pane per tab, and no splits;
+- one persistent Docker Sandboxes microVM per ticket;
+- ticket-private bare Git repository and linked worktree beneath `/ticket`;
+- normal outbound network access for MVP model and dependency traffic;
+- controller-mediated Git bundle export and trusted publication;
+- separate Squire Delivery and Squire Reviewer GitHub Apps; and
+- server-side GitHub rules that reserve merge for humans and deny Squire bypass/base-update authority.
 
-Research may refine these requirements, but it must preserve the product boundary, session topology, isolation guarantees, and human-only merge rule unless the MVP scope is explicitly changed.
+AIDEV-215 defines the configuration and result schemas. Later implementation tickets own credential brokering, retry defaults, GitHub deployment preflight, cleanup automation, and operational hardening. See [Squire MVP Architecture](mvp-architecture.md) and [Docker Sandboxes viability spike](docker-sandboxes-viability-spike.md).
