@@ -1,6 +1,0 @@
-{
-  "macros": {
-    "prep": "git fetch origin main; git worktree add ../ai-workspaces/$1 main",
-    "version": "echo \"Squire v1.0.0\""
-  }
-}
