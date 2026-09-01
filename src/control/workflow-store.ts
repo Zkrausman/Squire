@@ -11,8 +11,11 @@ export interface WorkflowStore {
   compareAndSet(runId: string, precondition: RunPrecondition, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot>;
   compareAndSetFenced(runId: string, precondition: RunPrecondition, lease: LeaseGuard, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot>;
   registerSession(runId: string, precondition: RunPrecondition, registration: SessionRegistration): Promise<RunSnapshot>;
+  /** Atomically verifies the current spawned allocation identity/token, registers, and clears it. */
+  registerSessionFenced(runId: string, precondition: RunPrecondition, lease: LeaseGuard, registration: SessionRegistration): Promise<RunSnapshot>;
   getSession(runId: string, role: Role): Promise<SessionRegistration | undefined>;
   recordRuntime(runId: string, precondition: RunPrecondition, resolution: RuntimeResolution): Promise<RunSnapshot>;
+  recordRuntimeFenced(runId: string, precondition: RunPrecondition, lease: LeaseGuard, resolution: RuntimeResolution): Promise<RunSnapshot>;
   acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined>;
   renewLease(runId: string, key: string, owner: string, fencingToken: number, now: number, ttlMs: number): Promise<Lease | undefined>;
   releaseLease(runId: string, key: string, owner: string, fencingToken: number): Promise<void>;

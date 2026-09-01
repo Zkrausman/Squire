@@ -13,10 +13,10 @@ export class FakePiProcess extends EventEmitter implements PiProcess {
 }
 export class FakePiProcessFactory implements PiProcessFactory {
   readonly launches: ProcessLaunch[] = []; readonly processes: FakePiProcess[] = [];
-  async spawn(spec: ProcessLaunch): Promise<FakePiProcess> { this.launches.push(spec); const process = new FakePiProcess(`process-${this.processes.length + 1}`); this.processes.push(process); return process; }
+  async spawn(spec: ProcessLaunch, signal?: AbortSignal): Promise<FakePiProcess> { if (signal?.aborted) throw new Error("spawn aborted"); this.launches.push(spec); const process = new FakePiProcess(`process-${this.processes.length + 1}`); this.processes.push(process); return process; }
 }
 export class FakeRuntimeResolver implements RuntimeResolver {
   calls = 0;
   constructor(readonly resolution: RuntimeResolution) {}
-  async resolve(runId: string): Promise<RuntimeResolution> { this.calls += 1; if (runId !== this.resolution.runId) throw new Error("wrong run"); return structuredClone(this.resolution); }
+  async resolve(runId: string, signal?: AbortSignal): Promise<RuntimeResolution> { this.calls += 1; if (signal?.aborted) throw new Error("resolution aborted"); if (runId !== this.resolution.runId) throw new Error("wrong run"); return structuredClone(this.resolution); }
 }

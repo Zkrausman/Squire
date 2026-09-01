@@ -11,6 +11,9 @@ export interface PiProcess {
   kill(signal: "SIGTERM" | "SIGKILL"): boolean;
 }
 export interface ProcessLaunch { command: string; args: readonly string[]; cwd: string; env: Readonly<Record<string, string>> }
-export interface PiProcessFactory { spawn(spec: ProcessLaunch): Promise<PiProcess> }
+export interface PiProcessFactory {
+  /** Aborting before settlement must reject and must not leave a created process alive. */
+  spawn(spec: ProcessLaunch, signal?: AbortSignal): Promise<PiProcess>;
+}
 /** Resolves the selected installations once; no repository-wide exact version pin is required. */
-export interface RuntimeResolver { resolve(runId: string): Promise<RuntimeResolution> }
+export interface RuntimeResolver { resolve(runId: string, signal?: AbortSignal): Promise<RuntimeResolution> }

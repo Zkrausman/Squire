@@ -22,6 +22,16 @@ export interface SessionRegistration {
   processIdentity?: string;
   registeredAt: string;
 }
+export type ProcessAllocationState = "reserved" | "spawning" | "spawned";
+/** Fenced first-session ownership. A spawning/spawned record is fail-closed until reconciliation. */
+export interface ProcessAllocation {
+  role: Role;
+  owner: string;
+  fencingToken: number;
+  state: ProcessAllocationState;
+  allocatedAt: string;
+  processIdentity?: string;
+}
 export type DispatchState = "prepared" | "sent" | "accepted" | "settled" | "result_accepted";
 export interface DispatchRecord {
   operationKey: string;
@@ -75,6 +85,7 @@ export interface RunSnapshot {
   implementGeneration: number;
   implementCompletedAt?: string;
   sessions: Partial<Record<Role, SessionRegistration>>;
+  processAllocations?: Partial<Record<Role, ProcessAllocation>>;
   attempts: readonly PhaseAttempt[];
   acceptedResultPaths: readonly string[];
   committedRequestIds: readonly string[];

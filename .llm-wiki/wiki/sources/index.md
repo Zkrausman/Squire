@@ -8,6 +8,8 @@
 - [Squire MVP Architecture — runtime policy revision](SRC-2026-09-01-006.md)
 - [AIDEV-215 Workflow Contracts — runtime policy revision](SRC-2026-09-01-007.md)
 - [Docker Sandboxes Viability Spike](SRC-2026-09-01-008.md)
+- [AIDEV-216 Review Attempt 3 Findings](SRC-2026-09-01-009.md)
+- [Fenced first-session allocation](fenced-first-session-allocation.md)
 - [Observation: Fenced dispatch authority invariant](obs-2026-09-01-fenced-dispatch-authority-invariant.md)
 - [Persisted acceptance authority chain](persisted-acceptance-authority-chain.md)
 - [Run-scoped agent runtime resolution](run-scoped-agent-runtime-resolution.md)

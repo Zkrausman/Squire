@@ -33,20 +33,33 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     return this.compareAndSet(runId, expected, mutate);
   }
   async registerSession(runId: string, expected: RunPrecondition, registration: SessionRegistration): Promise<RunSnapshot> {
-    return this.compareAndSet(runId, expected, current => {
-      const existingRole = current.sessions[registration.role];
-      const existingIdentity = Object.values(current.sessions).find(s => s?.sessionId === registration.sessionId || s?.sessionFile === registration.sessionFile);
-      if (existingRole || existingIdentity) throw new StoreConflictError("role or session identity already registered");
-      return { ...current, version: current.version + 1, sessions: { ...current.sessions, [registration.role]: copy(registration) } };
+    return this.compareAndSet(runId, expected, current => this.registrationMutation(current, registration));
+  }
+  async registerSessionFenced(runId: string, expected: RunPrecondition, guard: LeaseGuard, registration: SessionRegistration): Promise<RunSnapshot> {
+    return this.compareAndSetFenced(runId, expected, guard, current => {
+      const allocation = current.processAllocations?.[registration.role];
+      if (!allocation || allocation.owner !== guard.owner || allocation.fencingToken !== guard.fencingToken || allocation.state !== "spawned" || allocation.processIdentity !== registration.processIdentity) throw new StoreConflictError("session registration lacks current spawned allocation");
+      const next = this.registrationMutation(current, registration); const processAllocations = { ...next.processAllocations }; delete processAllocations[registration.role];
+      return { ...next, processAllocations };
     });
+  }
+  private registrationMutation(current: RunSnapshot, registration: SessionRegistration): RunSnapshot {
+    const existingRole = current.sessions[registration.role];
+    const existingIdentity = Object.values(current.sessions).find(s => s?.sessionId === registration.sessionId || s?.sessionFile === registration.sessionFile);
+    if (existingRole || existingIdentity) throw new StoreConflictError("role or session identity already registered");
+    return { ...current, version: current.version + 1, sessions: { ...current.sessions, [registration.role]: copy(registration) } };
   }
   async getSession(runId: string, role: Role): Promise<SessionRegistration | undefined> { return (await this.read(runId))?.sessions[role]; }
   async recordRuntime(runId: string, expected: RunPrecondition, resolution: RuntimeResolution): Promise<RunSnapshot> {
-    return this.compareAndSet(runId, expected, current => {
-      if (current.runtimeResolution) throw new StoreConflictError("runtime already resolved for run");
-      if (resolution.runId !== runId) throw new StoreConflictError("runtime resolution belongs to another run");
-      return { ...current, version: current.version + 1, runtimeResolution: copy(resolution) };
-    });
+    return this.compareAndSet(runId, expected, current => this.runtimeMutation(current, resolution));
+  }
+  async recordRuntimeFenced(runId: string, expected: RunPrecondition, guard: LeaseGuard, resolution: RuntimeResolution): Promise<RunSnapshot> {
+    return this.compareAndSetFenced(runId, expected, guard, current => this.runtimeMutation(current, resolution));
+  }
+  private runtimeMutation(current: RunSnapshot, resolution: RuntimeResolution): RunSnapshot {
+    if (current.runtimeResolution) throw new StoreConflictError("runtime already resolved for run");
+    if (resolution.runId !== current.runId) throw new StoreConflictError("runtime resolution belongs to another run");
+    return { ...current, version: current.version + 1, runtimeResolution: copy(resolution) };
   }
   async acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined> {
     const full = `${runId}:${key}`; const current = this.leases.get(full);

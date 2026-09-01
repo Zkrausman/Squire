@@ -19,6 +19,7 @@
 
 ## Sources
 
+- [[sources/fenced-first-session-allocation]] — Fenced first-session allocation *(created: 2026-09-01)*
 - [[sources/obs-2026-09-01-fenced-dispatch-authority-invariant]] — Observation: Fenced dispatch authority invariant *(created: 2026-09-01)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/run-scoped-agent-runtime-resolution]] — Run-scoped agent runtime resolution *(created: 2026-09-01)*
@@ -28,6 +29,7 @@
 - [[sources/SRC-2026-09-01-006]] — Squire MVP Architecture — runtime policy revision *(created: unknown)*
 - [[sources/SRC-2026-09-01-007]] — AIDEV-215 Workflow Contracts — runtime policy revision *(created: unknown)*
 - [[sources/SRC-2026-09-01-008]] — Docker Sandboxes Viability Spike *(created: unknown)*
+- [[sources/SRC-2026-09-01-009]] — AIDEV-216 Review Attempt 3 Findings *(created: unknown)*
 - [[sources/stable-history-trigger-resend-proof]] — Stable-history trigger resend proof *(created: 2026-09-01)*
 
 ## Synthesiss
@@ -35,4 +37,4 @@
 - [[syntheses/aidev-216-and-aidev-224-ownership-boundary]] — aidev-216-and-aidev-224-ownership-boundary *(created: 2026-09-01)*
 
 ---
-*Last updated: 2026-09-01T21:32:51.629Z* | *Total pages: 17*
+*Last updated: 2026-09-01T22:32:16.145Z* | *Total pages: 19*

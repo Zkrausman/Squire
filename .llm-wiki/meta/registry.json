@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-01T21:32:51.629Z",
+  "last_updated": "2026-09-01T22:32:16.145Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -108,6 +108,24 @@
       "format": "markdown",
       "captured": "2026-09-01",
       "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-009": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 3 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-009/extracted.md",
+      "source_id": "SRC-2026-09-01-009",
+      "format": "json",
+      "captured": "2026-09-01"
+    },
+    "sources/fenced-first-session-allocation": {
+      "type": "source",
+      "title": "Fenced first-session allocation",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "fenced-first-session-allocation",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
     },
     "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": {
       "type": "source",
