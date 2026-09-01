@@ -50,6 +50,8 @@ function isCanonicalTicketPath(value) {
 
 export function validateWorkflowConfig(config) {
   const errors = [];
+  // pi.version is a legacy v1 advisory only. Runtime selection is resolved once per run
+  // and recorded as runtime-resolution evidence; no exact repository-wide pin is enforced.
   const commandIds = config.validation.commands.map(({ id }) => id);
   if (new Set(commandIds).size !== commandIds.length) errors.push("validation command IDs must be unique");
   if (config.github.deliveryIdentity.appSlug === config.github.reviewerIdentity.appSlug) {

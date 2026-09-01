@@ -1,0 +1,11 @@
+{
+  "id": "SRC-2026-09-01-005",
+  "captured": "2026-09-01",
+  "packet_version": "1.0",
+  "title": "docker-sandboxes-viability-spike.md",
+  "file_path": "/ticket/workspace/docs/docker-sandboxes-viability-spike.md",
+  "format": "markdown",
+  "extractor": "passthrough",
+  "extraction_status": "success",
+  "content_type": "text/markdown"
+}

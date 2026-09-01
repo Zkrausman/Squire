@@ -1,0 +1,129 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-09-01T19:24:01.565Z",
+  "pages": {
+    "analyses/epic-boundary-project-wiki-maintenance": {
+      "type": "analysis",
+      "title": "epic-boundary-project-wiki-maintenance",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "concepts/five-session-pi-rpc-topology": {
+      "type": "concept",
+      "title": "five-session-pi-rpc-topology",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "concepts/immutable-handoff-validation": {
+      "type": "concept",
+      "title": "immutable-handoff-validation",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "concepts/transition-remediation-and-fresh-gates": {
+      "type": "concept",
+      "title": "transition-remediation-and-fresh-gates",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "concepts/trusted-controller-boundary": {
+      "type": "concept",
+      "title": "trusted-controller-boundary",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "entities/squire": {
+      "type": "entity",
+      "title": "squire",
+      "category": "project",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "sources/SRC-2026-09-01-001": {
+      "type": "source",
+      "title": "Squire MVP Architecture",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-001/extracted.md",
+      "source_id": "SRC-2026-09-01-001",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-002": {
+      "type": "source",
+      "title": "AIDEV-214 Independent Architecture Review",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-002/extracted.md",
+      "source_id": "SRC-2026-09-01-002",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-004": {
+      "type": "source",
+      "title": "AIDEV-215 Workflow and Handoff Contracts",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-004/extracted.md",
+      "source_id": "SRC-2026-09-01-004",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-005": {
+      "type": "source",
+      "title": "Docker Sandboxes Viability Spike",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-005/extracted.md",
+      "source_id": "SRC-2026-09-01-005",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-006": {
+      "type": "source",
+      "title": "Squire MVP Architecture — runtime policy revision",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-006/extracted.md",
+      "source_id": "SRC-2026-09-01-006",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-007": {
+      "type": "source",
+      "title": "AIDEV-215 Workflow Contracts — runtime policy revision",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-007/extracted.md",
+      "source_id": "SRC-2026-09-01-007",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/run-scoped-agent-runtime-resolution": {
+      "type": "source",
+      "title": "Run-scoped agent runtime resolution",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "run-scoped-agent-runtime-resolution",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary": {
+      "type": "synthesis",
+      "title": "aidev-216-and-aidev-224-ownership-boundary",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_example01",
+  "pi": { "version": "0.84.4", "executable": "/usr/local/bin/pi", "installationId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "llmWiki": { "version": "0.9.0", "installationId": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "resolvedAt": "2026-09-01T12:00:00Z"
+}

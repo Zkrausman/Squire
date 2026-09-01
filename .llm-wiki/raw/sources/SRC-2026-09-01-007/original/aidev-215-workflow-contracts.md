@@ -34,7 +34,7 @@ Schemas live under [`contracts/v1/`](../contracts/v1/) and use closed objects un
 | `test-evidence` | Per-command timestamps, exit status, timeout state, immutable stdout/stderr references, and failures |
 | `transition-request` | Orchestrator request bound to run, orchestrator session, current state, current head, and validated phase result when applicable |
 | `pull-request-delivery-state` | Current-head PR, checks, Reviewer approval, mergeability, and human-only merge state |
-| `runtime-resolution` | Exact observed Pi and pi-llm-wiki versions, Pi executable, and installation identities resolved once for one run |
+| `runtime-resolution` | Exact observed Pi and pi-llm-wiki versions, executable paths, and installation identities resolved once for one run |
 | `common` | IDs, SHAs, artifact references, evidence, findings, failures, phases, and states |
 
 `schemaVersion` is an integer discriminator and is `1` in every v1 top-level artifact. Schema IDs are stable `urn:squire:contracts:v1:<name>` values. Schema changes that alter accepted meaning require `v2`; additive prose clarification or stricter implementation tests may remain v1 only when existing valid artifacts retain the same meaning.

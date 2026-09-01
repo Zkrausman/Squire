@@ -1,0 +1,23 @@
+import type { Lease, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "./domain.js";
+
+export class StoreConflictError extends Error {
+  constructor(message: string) { super(message); this.name = "StoreConflictError"; }
+}
+
+/** Persistence port only. AIDEV-224 supplies SQLite, migrations, intake, and startup reconciliation. */
+export interface WorkflowStore {
+  create(snapshot: RunSnapshot): Promise<void>;
+  read(runId: string): Promise<RunSnapshot | undefined>;
+  compareAndSet(runId: string, precondition: RunPrecondition, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot>;
+  registerSession(runId: string, precondition: RunPrecondition, registration: SessionRegistration): Promise<RunSnapshot>;
+  getSession(runId: string, role: Role): Promise<SessionRegistration | undefined>;
+  recordRuntime(runId: string, precondition: RunPrecondition, resolution: RuntimeResolution): Promise<RunSnapshot>;
+  acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined>;
+  releaseLease(runId: string, key: string, owner: string): Promise<void>;
+}
+
+export function assertPrecondition(current: RunSnapshot, expected: RunPrecondition): void {
+  if (current.version !== expected.version) throw new StoreConflictError("stale run version");
+  if (expected.state !== undefined && current.state !== expected.state) throw new StoreConflictError("stale workflow state");
+  if (expected.currentHead !== undefined && current.currentHead !== expected.currentHead) throw new StoreConflictError("stale Git head");
+}

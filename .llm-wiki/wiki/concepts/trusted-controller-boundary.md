@@ -1,0 +1,14 @@
+---
+type: concept
+created: 2026-09-01
+updated: 2026-09-01
+domain: engineering
+confidence: high
+sources: [sources/SRC-2026-09-01-001, sources/SRC-2026-09-01-004]
+---
+
+# Trusted controller boundary
+
+The [Squire](/entities/squire.md) controller is trusted infrastructure, not the Pi Orchestrator. It observes state and Git independently, validates immutable artifacts and requested transitions, applies compare-and-set mutations, and emits typed side-effect directives. It does not infer pass/fail from chat or replace Orchestrator reasoning. [Architecture](/sources/SRC-2026-09-01-001.md) · [Contracts](/sources/SRC-2026-09-01-004.md)
+
+Persistence, process creation, filesystem access, time, and Git observation remain injected seams. This supports deterministic tests and preserves the [AIDEV-216/AIDEV-224 boundary](/syntheses/aidev-216-and-aidev-224-ownership-boundary.md). It also governs [transition and gate invariants](/concepts/transition-remediation-and-fresh-gates.md).

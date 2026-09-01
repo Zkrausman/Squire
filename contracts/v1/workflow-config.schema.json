@@ -79,9 +79,9 @@
       }
     },
     "pi": {
-      "type": "object", "additionalProperties": false, "required": ["version", "roles"],
+      "type": "object", "additionalProperties": false, "required": ["roles"],
       "properties": {
-        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "description": "Legacy advisory field retained for v1 compatibility; controllers resolve and record the active runtime once per run rather than requiring this version." },
         "roles": {
           "type": "object", "additionalProperties": false, "required": ["orchestrator", "plan", "implement", "review", "test"],
           "properties": {

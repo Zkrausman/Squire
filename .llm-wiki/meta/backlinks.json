@@ -1,0 +1,87 @@
+{
+  "analyses/epic-boundary-project-wiki-maintenance": [
+    "sources/SRC-2026-09-01-002",
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary"
+  ],
+  "concepts/five-session-pi-rpc-topology": [
+    "concepts/immutable-handoff-validation",
+    "entities/squire",
+    "sources/SRC-2026-09-01-001",
+    "sources/SRC-2026-09-01-005",
+    "sources/SRC-2026-09-01-006",
+    "sources/SRC-2026-09-01-007",
+    "sources/run-scoped-agent-runtime-resolution"
+  ],
+  "concepts/immutable-handoff-validation": [
+    "concepts/five-session-pi-rpc-topology",
+    "concepts/transition-remediation-and-fresh-gates",
+    "entities/squire",
+    "sources/SRC-2026-09-01-001",
+    "sources/SRC-2026-09-01-004",
+    "sources/SRC-2026-09-01-007"
+  ],
+  "concepts/transition-remediation-and-fresh-gates": [
+    "analyses/epic-boundary-project-wiki-maintenance",
+    "concepts/immutable-handoff-validation",
+    "concepts/trusted-controller-boundary",
+    "sources/SRC-2026-09-01-001",
+    "sources/SRC-2026-09-01-004"
+  ],
+  "concepts/trusted-controller-boundary": [
+    "analyses/epic-boundary-project-wiki-maintenance",
+    "concepts/five-session-pi-rpc-topology",
+    "concepts/transition-remediation-and-fresh-gates",
+    "entities/squire",
+    "sources/SRC-2026-09-01-001",
+    "sources/SRC-2026-09-01-005",
+    "sources/SRC-2026-09-01-006",
+    "sources/run-scoped-agent-runtime-resolution",
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary"
+  ],
+  "entities/squire": [
+    "concepts/trusted-controller-boundary",
+    "sources/SRC-2026-09-01-001"
+  ],
+  "sources/SRC-2026-09-01-001": [
+    "concepts/five-session-pi-rpc-topology",
+    "concepts/immutable-handoff-validation",
+    "concepts/transition-remediation-and-fresh-gates",
+    "concepts/trusted-controller-boundary",
+    "entities/squire",
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary"
+  ],
+  "sources/SRC-2026-09-01-002": [
+    "analyses/epic-boundary-project-wiki-maintenance",
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary"
+  ],
+  "sources/SRC-2026-09-01-004": [
+    "concepts/immutable-handoff-validation",
+    "concepts/transition-remediation-and-fresh-gates",
+    "concepts/trusted-controller-boundary",
+    "entities/squire"
+  ],
+  "sources/SRC-2026-09-01-005": [
+    "concepts/five-session-pi-rpc-topology"
+  ],
+  "sources/SRC-2026-09-01-006": [
+    "analyses/epic-boundary-project-wiki-maintenance",
+    "concepts/five-session-pi-rpc-topology",
+    "sources/SRC-2026-09-01-001",
+    "sources/run-scoped-agent-runtime-resolution"
+  ],
+  "sources/SRC-2026-09-01-007": [
+    "analyses/epic-boundary-project-wiki-maintenance",
+    "concepts/five-session-pi-rpc-topology",
+    "sources/SRC-2026-09-01-004",
+    "sources/run-scoped-agent-runtime-resolution"
+  ],
+  "sources/run-scoped-agent-runtime-resolution": [
+    "concepts/five-session-pi-rpc-topology"
+  ],
+  "syntheses/aidev-216-and-aidev-224-ownership-boundary": [
+    "analyses/epic-boundary-project-wiki-maintenance",
+    "concepts/trusted-controller-boundary",
+    "sources/SRC-2026-09-01-001",
+    "sources/SRC-2026-09-01-002"
+  ]
+}

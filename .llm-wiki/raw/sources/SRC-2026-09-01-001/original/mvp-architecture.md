@@ -318,7 +318,7 @@ The versioned configuration schema is defined in [AIDEV-215 Workflow and Handoff
 - Linear team, allowed states, and state mappings;
 - GitHub repository, base branch, App installations, and required rules/checks;
 - sandbox template digest, resources, retention, and network policy;
-- Pi provider/model, role instructions, and phase timeouts; runtime installation versions are observed and recorded once per run rather than repository-wide exact pins;
+- Pi version, provider/model, role instructions, and phase timeouts;
 - validation commands;
 - remediation attempt limits;
 - artifact/evidence retention; and
@@ -333,7 +333,7 @@ Repository-specific instructions and commands belong in validated configuration,
 - **Linear:** official TypeScript SDK.
 - **GitHub:** Octokit App/REST clients.
 - **Sandbox:** Docker Sandboxes `sbx`, pinned to a validated release and template digest.
-- **Agent runtime:** selected installation resolved once per run; exact observed Pi and pi-llm-wiki versions/installation identities are recorded and reused by all five sessions without an in-run upgrade or repository-wide exact-version requirement.
+- **Agent runtime:** pinned `@earendil-works/pi-coding-agent` version.
 - **Operator surface:** pinned compatible Herdr preview/stable release and protocol.
 
 The controller is packaged as one service/CLI for the MVP. The sandbox template, controller, schema, and Pi/Herdr compatibility versions are released together.

@@ -1,0 +1,16 @@
+{"topic":"Squire orchestration control plane","mode":"company","timestamp":"2026-09-01T18:48:07.767Z","kind":"bootstrap"}
+{"source_id":"SRC-2026-09-01-001","format":"markdown","timestamp":"2026-09-01T18:48:30.808Z","kind":"capture"}
+{"source_id":"SRC-2026-09-01-002","format":"markdown","timestamp":"2026-09-01T18:48:33.964Z","kind":"capture"}
+{"source_id":"SRC-2026-09-01-003","format":"markdown","timestamp":"2026-09-01T18:48:36.840Z","kind":"capture"}
+{"source_id":"SRC-2026-09-01-004","format":"markdown","timestamp":"2026-09-01T18:48:40.102Z","kind":"capture"}
+{"page_type":"entity","title":"Squire","path":"entities/squire","timestamp":"2026-09-01T19:07:04.195Z","kind":"ensure_page"}
+{"page_type":"concept","title":"Trusted controller boundary","path":"concepts/trusted-controller-boundary","timestamp":"2026-09-01T19:07:04.199Z","kind":"ensure_page"}
+{"page_type":"concept","title":"Five-session Pi RPC topology","path":"concepts/five-session-pi-rpc-topology","timestamp":"2026-09-01T19:07:04.202Z","kind":"ensure_page"}
+{"page_type":"concept","title":"Immutable handoff validation","path":"concepts/immutable-handoff-validation","timestamp":"2026-09-01T19:07:04.205Z","kind":"ensure_page"}
+{"page_type":"concept","title":"Transition remediation and fresh gates","path":"concepts/transition-remediation-and-fresh-gates","timestamp":"2026-09-01T19:07:04.207Z","kind":"ensure_page"}
+{"page_type":"synthesis","title":"AIDEV-216 and AIDEV-224 ownership boundary","path":"syntheses/aidev-216-and-aidev-224-ownership-boundary","timestamp":"2026-09-01T19:07:04.210Z","kind":"ensure_page"}
+{"page_type":"analysis","title":"Epic-boundary project wiki maintenance","path":"analyses/epic-boundary-project-wiki-maintenance","timestamp":"2026-09-01T19:07:04.213Z","kind":"ensure_page"}
+{"source_id":"SRC-2026-09-01-005","format":"markdown","timestamp":"2026-09-01T19:11:56.456Z","kind":"capture"}
+{"source_id":"SRC-2026-09-01-006","format":"markdown","timestamp":"2026-09-01T19:13:11.554Z","kind":"capture"}
+{"source_id":"SRC-2026-09-01-007","format":"markdown","timestamp":"2026-09-01T19:13:14.542Z","kind":"capture"}
+{"slug":"run-scoped-agent-runtime-resolution","title":"Run-scoped agent runtime resolution","category":"architecture","timestamp":"2026-09-01T19:23:13.652Z","kind":"retro"}

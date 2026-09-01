@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:contracts:v1:runtime-resolution",
+  "title": "Resolved run runtime observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "pi", "llmWiki", "resolvedAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "$ref": "urn:squire:contracts:v1:common#/$defs/runId" },
+    "pi": { "$ref": "#/$defs/piInstallation" },
+    "llmWiki": { "$ref": "#/$defs/installation" },
+    "resolvedAt": { "$ref": "urn:squire:contracts:v1:common#/$defs/timestamp" }
+  },
+  "$defs": {
+    "installation": {
+      "type": "object", "additionalProperties": false, "required": ["version", "installationId"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "installationId": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "piInstallation": {
+      "type": "object", "additionalProperties": false, "required": ["version", "executable", "installationId"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "executable": { "type": "string", "pattern": "^/(?:[^/\\u0000]+/)*[^/\\u0000]+$", "maxLength": 1024 },
+        "installationId": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    }
+  }
+}
