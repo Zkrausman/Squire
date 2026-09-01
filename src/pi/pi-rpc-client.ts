@@ -5,7 +5,8 @@ import type { PiProcess } from "./pi-process.js";
 export interface RpcResponse { id?: string; type: "response"; command: string; success: boolean; data?: unknown; error?: string }
 export interface PiState { model: { provider: string; id: string } | null; sessionFile: string; sessionId: string; isStreaming?: boolean }
 export interface RpcClientOptions { commandTimeoutMs?: number; maxLineBytes?: number; maxBufferBytes?: number; maxStderrBytes?: number; maxRenderedBytes?: number }
-interface Pending { resolve(value: RpcResponse): void; reject(error: Error): void; timer: NodeJS.Timeout }
+type SupportedCommand = "get_state" | "get_entries" | "prompt" | "clear_queue" | "abort_retry" | "abort";
+interface Pending { command: SupportedCommand; resolve(value: RpcResponse): void; reject(error: Error): void; timer: NodeJS.Timeout }
 
 export class PiRpcClient extends EventEmitter {
   readonly #decoder: LfJsonlDecoder; readonly #pending = new Map<string, Pending>(); readonly #timeout: number; readonly #maxStderr: number; readonly #maxRendered: number;
@@ -22,10 +23,12 @@ export class PiRpcClient extends EventEmitter {
   async command(command: Record<string, unknown>, timeoutMs = this.#timeout): Promise<RpcResponse> {
     if (this.#failure) throw this.#failure;
     if (this.#closed) throw new ProtocolError("Pi process is closed");
+    const commandType = command["type"];
+    if (!isSupportedCommand(commandType)) throw new ProtocolError("unsupported RPC command");
     const id = `squire-${String(++this.#sequence).padStart(8, "0")}`;
     return new Promise<RpcResponse>((resolve, reject) => {
-      const timer = setTimeout(() => this.#fail(new ProtocolError(`RPC command timed out: ${String(command["type"])}`)), timeoutMs);
-      this.#pending.set(id, { resolve, reject, timer });
+      const timer = setTimeout(() => this.#fail(new ProtocolError(`RPC command timed out: ${commandType}`)), timeoutMs);
+      this.#pending.set(id, { command: commandType, resolve, reject, timer });
       try { if (!this.process.stdin.write(`${JSON.stringify({ id, ...command })}\n`)) throw new ProtocolError("Pi stdin rejected RPC write"); } catch (error) { this.#fail(asError(error)); }
     });
   }
@@ -36,7 +39,13 @@ export class PiRpcClient extends EventEmitter {
   #line(line: string): void {
     if (!line) return; let record: Record<string, unknown>; try { record = JSON.parse(line) as Record<string, unknown>; } catch { throw new ProtocolError("malformed JSON on Pi stdout"); }
     this.#rendered += Buffer.byteLength(line); if (this.#rendered > this.#maxRendered) throw new ProtocolError("rendered output limit exceeded");
-    if (record["type"] === "response") { const id = record["id"]; if (typeof id !== "string" || !this.#pending.has(id)) throw new ProtocolError("uncorrelated RPC response"); const pending = this.#pending.get(id)!; clearTimeout(pending.timer); this.#pending.delete(id); pending.resolve(record as unknown as RpcResponse); return; }
+    if (record["type"] === "response") {
+      const id = record["id"];
+      if (typeof id !== "string" || !this.#pending.has(id)) throw new ProtocolError("uncorrelated RPC response");
+      const pending = this.#pending.get(id)!;
+      const response = validateResponse(record, pending.command);
+      clearTimeout(pending.timer); this.#pending.delete(id); pending.resolve(response); return;
+    }
     if (record["type"] === "agent_settled") this.emit("agent_settled");
     if (record["type"] === "extension_ui_request") this.emit("extension_ui", record);
     this.emit("event", record);
@@ -51,5 +60,24 @@ export class PiRpcClient extends EventEmitter {
     if (this.process.exitCode === null) this.process.kill("SIGTERM");
   }
 }
-function isState(value: unknown): value is PiState { if (!value || typeof value !== "object") return false; const v = value as Record<string, unknown>; const model = v["model"] as Record<string, unknown> | null; return typeof v["sessionFile"] === "string" && typeof v["sessionId"] === "string" && (model === null || (typeof model === "object" && typeof model["provider"] === "string" && typeof model["id"] === "string")); }
+function validateResponse(record: Record<string, unknown>, expectedCommand: SupportedCommand): RpcResponse {
+  const allowed = new Set(["id", "type", "command", "success", "data", "error"]);
+  if (Object.keys(record).some(key => !allowed.has(key))) throw new ProtocolError("RPC response contains unknown fields");
+  if (record["type"] !== "response" || record["command"] !== expectedCommand || typeof record["success"] !== "boolean") throw new ProtocolError("malformed or mismatched RPC response");
+  const hasData = Object.hasOwn(record, "data"); const hasError = Object.hasOwn(record, "error");
+  if (record["success"] === false) {
+    if (!hasError || typeof record["error"] !== "string" || record["error"].length === 0 || hasData) throw new ProtocolError("malformed failed RPC response");
+  } else {
+    if (hasError) throw new ProtocolError("successful RPC response must not contain error");
+    if (expectedCommand === "get_state" && (!hasData || !isState(record["data"]))) throw new ProtocolError("malformed get_state response");
+    if (expectedCommand === "get_entries" && (!hasData || !isEntries(record["data"]))) throw new ProtocolError("malformed get_entries response");
+    if (expectedCommand === "clear_queue" && (!hasData || !isClearQueue(record["data"]))) throw new ProtocolError("malformed clear_queue response");
+    if (["prompt", "abort_retry", "abort"].includes(expectedCommand) && hasData) throw new ProtocolError("RPC response contains forbidden data");
+  }
+  return record as unknown as RpcResponse;
+}
+function isSupportedCommand(value: unknown): value is SupportedCommand { return typeof value === "string" && ["get_state", "get_entries", "prompt", "clear_queue", "abort_retry", "abort"].includes(value); }
+function isEntries(value: unknown): boolean { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; return Object.keys(v).every(key => key === "entries" || key === "leafId") && Array.isArray(v["entries"]) && (v["leafId"] === null || typeof v["leafId"] === "string"); }
+function isClearQueue(value: unknown): boolean { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; return Object.keys(v).every(key => key === "steering" || key === "followUp") && Array.isArray(v["steering"]) && v["steering"].every(item => typeof item === "string") && Array.isArray(v["followUp"]) && v["followUp"].every(item => typeof item === "string"); }
+function isState(value: unknown): value is PiState { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; const model = v["model"] as Record<string, unknown> | null; return typeof v["sessionFile"] === "string" && typeof v["sessionId"] === "string" && (model === null || (typeof model === "object" && typeof model["provider"] === "string" && typeof model["id"] === "string")); }
 function asError(value: unknown): Error { return value instanceof Error ? value : new Error(String(value)); }

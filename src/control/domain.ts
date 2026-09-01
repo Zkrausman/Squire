@@ -85,7 +85,8 @@ export interface RunSnapshot {
   runtimeResolution?: RuntimeResolution;
 }
 export interface RunPrecondition { version: number; state?: WorkflowState; currentHead?: string }
-export interface Lease { key: string; owner: string; expiresAt: number }
+export interface Lease { key: string; owner: string; fencingToken: number; expiresAt: number }
+export interface LeaseGuard { key: string; owner: string; fencingToken: number; now: number }
 export interface Clock { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> }
 export interface GitHeadObserver { observeHead(): Promise<string> }
 

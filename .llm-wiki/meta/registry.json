@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-01T20:29:50.256Z",
+  "last_updated": "2026-09-01T21:32:51.629Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -109,6 +109,24 @@
       "captured": "2026-09-01",
       "confidence": "high"
     },
+    "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": {
+      "type": "source",
+      "title": "Observation: Fenced dispatch authority invariant",
+      "tags": [
+        "AIDEV-216",
+        "orchestration",
+        "fencing",
+        "RPC",
+        "recovery"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-01-fenced-dispatch-authority-invariant",
+      "relevance": "high",
+      "observed_at": "2026-09-01T21:25:31.077Z",
+      "source_context": "Implement remediation attempt 4",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
     "sources/persisted-acceptance-authority-chain": {
       "type": "source",
       "title": "Persisted acceptance authority chain",
@@ -124,6 +142,15 @@
       "category": "architecture",
       "status": "insight",
       "slug": "run-scoped-agent-runtime-resolution",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "sources/stable-history-trigger-resend-proof": {
+      "type": "source",
+      "title": "Stable-history trigger resend proof",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "stable-history-trigger-resend-proof",
       "created": "2026-09-01",
       "updated": "2026-09-01"
     },

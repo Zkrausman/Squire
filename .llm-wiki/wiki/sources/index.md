@@ -8,5 +8,7 @@
 - [Squire MVP Architecture — runtime policy revision](SRC-2026-09-01-006.md)
 - [AIDEV-215 Workflow Contracts — runtime policy revision](SRC-2026-09-01-007.md)
 - [Docker Sandboxes Viability Spike](SRC-2026-09-01-008.md)
+- [Observation: Fenced dispatch authority invariant](obs-2026-09-01-fenced-dispatch-authority-invariant.md)
 - [Persisted acceptance authority chain](persisted-acceptance-authority-chain.md)
 - [Run-scoped agent runtime resolution](run-scoped-agent-runtime-resolution.md)
+- [Stable-history trigger resend proof](stable-history-trigger-resend-proof.md)

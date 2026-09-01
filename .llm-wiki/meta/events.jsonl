@@ -18,3 +18,5 @@
 {"source_id":"SRC-2026-09-01-005","replacement_source_id":"SRC-2026-09-01-008","reason":"Replaced the complete source packet through compliant recapture because the superseded packet contained a local host profile path. Immutable packet bytes were not edited in place.","timestamp":"2026-09-01T20:12:37.647Z","kind":"source-withdrawal"}
 {"slug":"obs-2026-09-01-aidev-216-review-remediation-integrated","title":"AIDEV-216 Review remediation integrated","relevance":"high","timestamp":"2026-09-01T20:27:56.958Z","kind":"observe"}
 {"slug":"persisted-acceptance-authority-chain","title":"Persisted acceptance authority chain","category":"architecture","timestamp":"2026-09-01T20:28:44.976Z","kind":"retro"}
+{"slug":"obs-2026-09-01-fenced-dispatch-authority-invariant","title":"Fenced dispatch authority invariant","relevance":"high","timestamp":"2026-09-01T21:25:31.079Z","kind":"observe"}
+{"slug":"stable-history-trigger-resend-proof","title":"Stable-history trigger resend proof","category":"architecture","timestamp":"2026-09-01T21:32:08.948Z","kind":"retro"}

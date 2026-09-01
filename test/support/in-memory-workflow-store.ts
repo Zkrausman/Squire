@@ -1,5 +1,5 @@
 import { assertPrecondition, StoreConflictError, type WorkflowStore } from "../../src/control/workflow-store.js";
-import type { Lease, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
+import type { Lease, LeaseGuard, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -7,6 +7,7 @@ const copy = <T>(value: T): T => structuredClone(value);
 export class InMemoryWorkflowStore implements WorkflowStore {
   readonly runs = new Map<string, RunSnapshot>();
   readonly leases = new Map<string, Lease>();
+  readonly leaseTokens = new Map<string, number>();
   async create(snapshot: RunSnapshot): Promise<void> {
     if (this.runs.has(snapshot.runId)) throw new StoreConflictError("run already exists");
     this.runs.set(snapshot.runId, copy(snapshot));
@@ -26,6 +27,11 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     this.runs.set(runId, copy(next));
     return copy(next);
   }
+  async compareAndSetFenced(runId: string, expected: RunPrecondition, guard: LeaseGuard, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot> {
+    const lease = this.leases.get(`${runId}:${guard.key}`);
+    if (!lease || lease.owner !== guard.owner || lease.fencingToken !== guard.fencingToken || lease.expiresAt <= guard.now) throw new StoreConflictError("stale or expired lease fencing token");
+    return this.compareAndSet(runId, expected, mutate);
+  }
   async registerSession(runId: string, expected: RunPrecondition, registration: SessionRegistration): Promise<RunSnapshot> {
     return this.compareAndSet(runId, expected, current => {
       const existingRole = current.sessions[registration.role];
@@ -44,10 +50,16 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   }
   async acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined> {
     const full = `${runId}:${key}`; const current = this.leases.get(full);
-    if (current && current.expiresAt > now && current.owner !== owner) return undefined;
-    const lease = { key, owner, expiresAt: now + ttlMs }; this.leases.set(full, lease); return copy(lease);
+    if (current && current.expiresAt > now) return current.owner === owner ? copy(current) : undefined;
+    const fencingToken = (this.leaseTokens.get(full) ?? 0) + 1; this.leaseTokens.set(full, fencingToken);
+    const lease = { key, owner, fencingToken, expiresAt: now + ttlMs }; this.leases.set(full, lease); return copy(lease);
   }
-  async releaseLease(runId: string, key: string, owner: string): Promise<void> {
-    const full = `${runId}:${key}`; if (this.leases.get(full)?.owner === owner) this.leases.delete(full);
+  async renewLease(runId: string, key: string, owner: string, fencingToken: number, now: number, ttlMs: number): Promise<Lease | undefined> {
+    const full = `${runId}:${key}`; const current = this.leases.get(full);
+    if (!current || current.owner !== owner || current.fencingToken !== fencingToken || current.expiresAt <= now) return undefined;
+    const renewed = { ...current, expiresAt: now + ttlMs }; this.leases.set(full, renewed); return copy(renewed);
+  }
+  async releaseLease(runId: string, key: string, owner: string, fencingToken: number): Promise<void> {
+    const full = `${runId}:${key}`; const current = this.leases.get(full); if (current?.owner === owner && current.fencingToken === fencingToken) this.leases.delete(full);
   }
 }

@@ -9,7 +9,7 @@ const STATE_PHASE: Partial<Record<RunSnapshot["state"], Phase>> = { planning: "p
 export class OrchestrationService {
   constructor(readonly store: WorkflowStore, readonly git: GitHeadObserver, readonly validator: V1ArtifactValidator) {}
 
-  async transition(requestReference: ContractReference, orchestratorSessionId: string): Promise<TransitionDecision> {
+  async transition(requestReference: ContractReference): Promise<TransitionDecision> {
     const requestBytes = await this.validator.validate<TransitionRequest & JsonObject>(requestReference, {
       schemaId: "urn:squire:contracts:v1:transition-request",
       semantic: () => []
@@ -17,6 +17,9 @@ export class OrchestrationService {
     const request = requestBytes.document;
     const current = await this.store.read(request.runId);
     if (!current) throw new Error("run not found");
+    const orchestrator = current.sessions.orchestrator;
+    if (!orchestrator || orchestrator.runId !== current.runId || orchestrator.role !== "orchestrator") throw new Error("run has no trusted registered Orchestrator session");
+    if (request.orchestratorSessionId !== orchestrator.sessionId) throw new Error("transition request is not from the registered Orchestrator session");
     const observedHead = await this.git.observeHead();
     const expectedPhase = STATE_PHASE[current.state];
     const phaseAttempt = expectedPhase ? [...current.attempts].reverse().find(attempt => attempt.phase === expectedPhase) : undefined;
@@ -29,7 +32,7 @@ export class OrchestrationService {
     const snapshotWithGate = accepted?.status === "pass" && ((accepted.phase === "review" && request.toState === "testing") || (accepted.phase === "test" && request.toState === "publishing")) ? recordPassingGate(current, accepted) : current;
     const decision = decideTransition(request, {
       run: snapshotWithGate,
-      orchestratorSessionId,
+      orchestratorSessionId: orchestrator.sessionId,
       observedHead,
       ...(accepted ? { acceptedPhaseResult: accepted.reference } : {})
     });

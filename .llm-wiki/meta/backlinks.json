@@ -19,7 +19,9 @@
     "sources/SRC-2026-09-01-001",
     "sources/SRC-2026-09-01-004",
     "sources/SRC-2026-09-01-007",
-    "sources/persisted-acceptance-authority-chain"
+    "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
+    "sources/persisted-acceptance-authority-chain",
+    "sources/stable-history-trigger-resend-proof"
   ],
   "concepts/transition-remediation-and-fresh-gates": [
     "analyses/epic-boundary-project-wiki-maintenance",
@@ -27,6 +29,7 @@
     "concepts/trusted-controller-boundary",
     "sources/SRC-2026-09-01-001",
     "sources/SRC-2026-09-01-004",
+    "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
     "sources/persisted-acceptance-authority-chain"
   ],
   "concepts/trusted-controller-boundary": [
@@ -37,8 +40,10 @@
     "sources/SRC-2026-09-01-001",
     "sources/SRC-2026-09-01-006",
     "sources/SRC-2026-09-01-008",
+    "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
     "sources/persisted-acceptance-authority-chain",
     "sources/run-scoped-agent-runtime-resolution",
+    "sources/stable-history-trigger-resend-proof",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
   "entities/squire": [
@@ -52,7 +57,9 @@
     "concepts/transition-remediation-and-fresh-gates",
     "concepts/trusted-controller-boundary",
     "entities/squire",
+    "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
     "sources/persisted-acceptance-authority-chain",
+    "sources/stable-history-trigger-resend-proof",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
   "sources/SRC-2026-09-01-002": [
@@ -64,7 +71,9 @@
     "concepts/transition-remediation-and-fresh-gates",
     "concepts/trusted-controller-boundary",
     "entities/squire",
-    "sources/persisted-acceptance-authority-chain"
+    "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
+    "sources/persisted-acceptance-authority-chain",
+    "sources/stable-history-trigger-resend-proof"
   ],
   "sources/SRC-2026-09-01-006": [
     "analyses/epic-boundary-project-wiki-maintenance",
@@ -81,16 +90,23 @@
   "sources/SRC-2026-09-01-008": [
     "concepts/five-session-pi-rpc-topology"
   ],
+  "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": [
+    "concepts/trusted-controller-boundary"
+  ],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
   ],
   "sources/run-scoped-agent-runtime-resolution": [
     "concepts/five-session-pi-rpc-topology"
   ],
+  "sources/stable-history-trigger-resend-proof": [
+    "concepts/immutable-handoff-validation"
+  ],
   "syntheses/aidev-216-and-aidev-224-ownership-boundary": [
     "analyses/epic-boundary-project-wiki-maintenance",
     "concepts/trusted-controller-boundary",
     "sources/SRC-2026-09-01-001",
-    "sources/SRC-2026-09-01-002"
+    "sources/SRC-2026-09-01-002",
+    "sources/stable-history-trigger-resend-proof"
   ]
 }

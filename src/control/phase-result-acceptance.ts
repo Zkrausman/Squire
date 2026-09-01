@@ -1,5 +1,5 @@
 import type { JsonObject, PhaseResultDocument, V1ArtifactValidator } from "../contracts/v1-artifact-validator.js";
-import { isTerminal, type AcceptedPhaseResult, type Clock, type ContractReference, type GitHeadObserver, type RunSnapshot } from "./domain.js";
+import { isTerminal, type AcceptedPhaseResult, type Clock, type ContractReference, type GitHeadObserver, type LeaseGuard, type RunSnapshot } from "./domain.js";
 import type { AttemptResultPort } from "./attempt-coordinator.js";
 import type { WorkflowStore } from "./workflow-store.js";
 
@@ -10,7 +10,7 @@ export type TransitiveSemanticPolicy = (context: { run: RunSnapshot; attempt: Ru
 export class PhaseResultAcceptanceService {
   constructor(readonly store: WorkflowStore, readonly git: GitHeadObserver, readonly validator: V1ArtifactValidator, readonly clock: Clock, readonly semanticPolicy: TransitiveSemanticPolicy) {}
 
-  async accept(runId: string, handoffId: string, reference: ContractReference): Promise<{ run: RunSnapshot; accepted: AcceptedPhaseResult; result: PhaseResultDocument }> {
+  async accept(runId: string, handoffId: string, reference: ContractReference, lease: LeaseGuard): Promise<{ run: RunSnapshot; accepted: AcceptedPhaseResult; result: PhaseResultDocument }> {
     const current = await this.store.read(runId);
     if (!current) throw new Error("run not found");
     if (isTerminal(current.state)) throw new Error("terminal run retains late result as audit-only");
@@ -48,7 +48,8 @@ export class PhaseResultAcceptanceService {
       acceptedAt: new Date(this.clock.now()).toISOString(),
       implementGeneration: nextGeneration
     };
-    const committed = await this.store.compareAndSet(runId, { version: current.version, state: current.state, currentHead: current.currentHead }, snapshot => {
+    const precondition = { version: current.version, state: current.state, currentHead: current.currentHead };
+    const mutate = (snapshot: RunSnapshot): RunSnapshot => {
       if (isTerminal(snapshot.state)) throw new Error("terminal run retains late result as audit-only");
       const persisted = snapshot.attempts[index];
       if (!persisted || persisted.handoffId !== handoffId || persisted.accepted) throw new Error("attempt changed before result acceptance");
@@ -56,14 +57,9 @@ export class PhaseResultAcceptanceService {
       attempts[index] = { ...persisted, acceptedResult: reference, accepted, dispatch: { ...persisted.dispatch, state: "result_accepted" } };
       const acceptedResultPaths = [...snapshot.acceptedResultPaths, reference.path];
       const implement = result.phase === "implement" && result.status === "pass";
-      return {
-        ...snapshot,
-        version: snapshot.version + 1,
-        attempts,
-        acceptedResultPaths,
-        ...(implement ? { currentHead: result.outputHead, implementGeneration: nextGeneration, implementCompletedAt: result.completedAt, gates: {} } : {})
-      };
-    });
+      return { ...snapshot, version: snapshot.version + 1, attempts, acceptedResultPaths, ...(implement ? { currentHead: result.outputHead, implementGeneration: nextGeneration, implementCompletedAt: result.completedAt, gates: {} } : {}) };
+    };
+    const committed = await this.store.compareAndSetFenced(runId, precondition, { ...lease, now: this.clock.now() }, mutate);
     return { run: committed, accepted, result };
   }
 }
@@ -71,7 +67,7 @@ export class PhaseResultAcceptanceService {
 export class PersistedPhaseResultPort implements AttemptResultPort {
   constructor(readonly acceptance: PhaseResultAcceptanceService, readonly discoverResult: (attempt: RunSnapshot["attempts"][number]) => Promise<ContractReference | undefined>) {}
   discover(attempt: RunSnapshot["attempts"][number]): Promise<ContractReference | undefined> { return this.discoverResult(attempt); }
-  async accept(runId: string, handoffId: string, reference: ContractReference): Promise<void> { await this.acceptance.accept(runId, handoffId, reference); }
+  async accept(runId: string, handoffId: string, reference: ContractReference, lease: LeaseGuard): Promise<void> { await this.acceptance.accept(runId, handoffId, reference, lease); }
 }
 
 export function createPhaseSemanticPolicy(requiredCommandIds: readonly string[] = []): TransitiveSemanticPolicy {
@@ -98,11 +94,17 @@ export function createPhaseSemanticPolicy(requiredCommandIds: readonly string[] 
       if (document["testedHead"] !== observedOutputHead) errors.push("test head mismatch");
       if (document["status"] !== result.status) errors.push("test status contradicts phase result");
       const commands = Array.isArray(document["commands"]) ? document["commands"] as Array<{ commandId?: unknown; exitCode?: unknown; timedOut?: unknown }> : [];
-      for (const id of requiredCommandIds) {
-        const command = commands.find(candidate => candidate.commandId === id);
-        if (!command) errors.push(`missing required command: ${id}`);
-        else if (result.status === "pass" && (command.exitCode !== 0 || command.timedOut !== false)) errors.push(`required command did not pass: ${id}`);
+      const commandIds = commands.map(command => command.commandId);
+      if (new Set(commandIds).size !== commandIds.length) errors.push("test evidence command IDs must be unique");
+      for (const id of new Set(requiredCommandIds)) {
+        const matching = commands.filter(candidate => candidate.commandId === id);
+        if (matching.length === 0) errors.push(`missing required command: ${id}`);
+        else if (matching.length !== 1) errors.push(`required command must appear exactly once: ${id}`);
+        else if (result.status === "pass" && (matching[0]?.exitCode !== 0 || matching[0]?.timedOut !== false)) errors.push(`required command did not pass: ${id}`);
       }
+      const failures = Array.isArray(document["failures"]) ? document["failures"] as Array<{ blocking?: unknown }> : [];
+      if (result.status === "pass" && failures.length > 0) errors.push("passing test evidence contains failures");
+      if (result.status === "remediation_required" && !failures.some(failure => failure.blocking === true)) errors.push("remediation test evidence has no blocking failure");
       return errors;
     },
     "urn:squire:contracts:v1:runtime-resolution": document => document["runId"] === run.runId ? [] : ["runtime resolution runId mismatch"]

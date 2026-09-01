@@ -68,7 +68,7 @@ export class PiRunner {
       if (process?.exitCode === null) process.kill("SIGTERM");
       if (claimed) await this.#markProcess(runId, role, claimed.processGeneration, process?.identity, "failed").catch(() => undefined);
       throw error;
-    } finally { await this.store.releaseLease(runId, leaseKey, owner); }
+    } finally { await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken); }
   }
 
   async #claimGeneration(existing: SessionRegistration): Promise<SessionRegistration> {

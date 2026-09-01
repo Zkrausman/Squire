@@ -1,4 +1,4 @@
-import type { Lease, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "./domain.js";
+import type { Lease, LeaseGuard, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "./domain.js";
 
 export class StoreConflictError extends Error {
   constructor(message: string) { super(message); this.name = "StoreConflictError"; }
@@ -9,11 +9,13 @@ export interface WorkflowStore {
   create(snapshot: RunSnapshot): Promise<void>;
   read(runId: string): Promise<RunSnapshot | undefined>;
   compareAndSet(runId: string, precondition: RunPrecondition, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot>;
+  compareAndSetFenced(runId: string, precondition: RunPrecondition, lease: LeaseGuard, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot>;
   registerSession(runId: string, precondition: RunPrecondition, registration: SessionRegistration): Promise<RunSnapshot>;
   getSession(runId: string, role: Role): Promise<SessionRegistration | undefined>;
   recordRuntime(runId: string, precondition: RunPrecondition, resolution: RuntimeResolution): Promise<RunSnapshot>;
   acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined>;
-  releaseLease(runId: string, key: string, owner: string): Promise<void>;
+  renewLease(runId: string, key: string, owner: string, fencingToken: number, now: number, ttlMs: number): Promise<Lease | undefined>;
+  releaseLease(runId: string, key: string, owner: string, fencingToken: number): Promise<void>;
 }
 
 export function assertPrecondition(current: RunSnapshot, expected: RunPrecondition): void {
