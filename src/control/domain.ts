@@ -22,15 +22,27 @@ export interface SessionRegistration {
   processIdentity?: string;
   registeredAt: string;
 }
-export type ProcessAllocationState = "reserved" | "spawning" | "spawned";
+export type ProcessAllocationState = "reserved" | "spawning" | "spawned" | "failed";
 /** Fenced first-session ownership. A spawning/spawned record is fail-closed until reconciliation. */
 export interface ProcessAllocation {
   role: Role;
   owner: string;
   fencingToken: number;
+  generation: number;
   state: ProcessAllocationState;
   allocatedAt: string;
+  sessionId?: string;
+  sessionFile?: string;
   processIdentity?: string;
+}
+/** Exact-token compensating cleanup after the owner's asynchronous side effect settled. */
+export interface ProcessAllocationRecovery {
+  role: Role;
+  failedOwner: string;
+  failedFencingToken: number;
+  generation?: number;
+  processIdentity?: string;
+  processExited: boolean;
 }
 export type DispatchState = "prepared" | "sent" | "accepted" | "settled" | "result_accepted";
 export interface DispatchRecord {

@@ -14,6 +14,7 @@ export interface RunnerConfig {
   processLeaseMs?: number;
   allocationStepTimeoutMs?: number;
   allocationTimeoutMs?: number;
+  cleanupGraceMs?: number;
 }
 export type RegistrationValidator = (registration: SessionRegistration, signal?: AbortSignal) => Promise<void>;
 export type RoleInstructionReader = (canonicalPath: string, signal?: AbortSignal) => Promise<string>;
@@ -42,37 +43,40 @@ export class PiRunner {
     const processLeaseMs = positiveInteger(this.config.processLeaseMs ?? 30_000, "process lease");
     const stepTimeoutMs = positiveInteger(this.config.allocationStepTimeoutMs ?? Math.max(1, Math.floor(processLeaseMs / 2)), "allocation step timeout");
     const roleTimeoutSeconds = positiveInteger(this.config.roles[role]!.timeoutSeconds ?? 0, `role timeout for ${role}`);
-    const defaultAllocationMs = Math.max(roleTimeoutSeconds * 1_000, stepTimeoutMs * 10);
-    const allocationTimeoutMs = positiveInteger(this.config.allocationTimeoutMs ?? defaultAllocationMs, "allocation timeout");
+    const allocationTimeoutMs = positiveInteger(this.config.allocationTimeoutMs ?? Math.max(roleTimeoutSeconds * 1_000, stepTimeoutMs * 12), "allocation timeout");
     const startedAt = this.clock.now();
     const acquired = await this.store.acquireLease(runId, leaseKey, owner, startedAt, Math.min(processLeaseMs, allocationTimeoutMs));
     if (!acquired) throw new Error("role process lease is held");
     const lease: AllocationLease = { ...acquired, runId, deadlineAt: startedAt + allocationTimeoutMs, ttlMs: processLeaseMs, stepTimeoutMs };
+    let released = false;
     let claimed: SessionRegistration | undefined;
-    let firstAllocation = false;
+    let generation: number | undefined;
     let process: PiProcess | undefined;
     try {
+      await this.#step("stale allocation recovery", lease, () => this.#recoverReservedPredecessor(runId, role, lease));
       const existing = await this.#step("session lookup", lease, () => this.store.getSession(runId, role));
       if (existing) {
         await this.#step("session validation", lease, signal => this.validateRegistration(existing, signal));
-        claimed = await this.#step("generation claim", lease, () => this.#claimGeneration(existing, lease));
+        generation = existing.processGeneration + 1;
+        await this.#step("resumed allocation reservation", lease, () => this.#reserveAllocation(runId, role, generation!, lease, existing));
+        claimed = await this.#step("generation claim", lease, () => this.#claimGeneration(existing, generation!, lease), value => { claimed = value; });
       } else {
-        await this.#step("first-session allocation reservation", lease, () => this.#reserveFirstAllocation(runId, role, lease));
-        firstAllocation = true;
+        generation = 1;
+        await this.#step("first-session allocation reservation", lease, () => this.#reserveAllocation(runId, role, generation!, lease));
       }
       const runtime = await this.#step("runtime resolution", lease, signal => this.#getOrResolveRuntime(runId, lease, signal));
       const instructions = await this.#step("role instruction read", lease, signal => this.readRoleInstructions(this.config.roles[role].instructionsPath, signal));
       if (instructions.length === 0) throw new Error("role instructions are empty");
       const spec = buildPiCommand({ role, config: this.config.roles[role], instructions, piBinary: runtime.pi.executable, ...(this.config.workspace ? { workspace: this.config.workspace } : {}), ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}), ...(claimed ? { registration: claimed } : {}) });
       if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
-      if (firstAllocation) await this.#step("spawn intent", lease, () => this.#setFirstAllocation(runId, role, lease, "spawning"));
-      process = await this.#step("process spawn", lease, signal => this.factory.spawn(spec, signal));
-      if (firstAllocation) await this.#step("spawn ownership claim", lease, () => this.#setFirstAllocation(runId, role, lease, "spawned", process!.identity));
+      await this.#step("spawn intent", lease, () => this.#setAllocation(runId, role, lease, "spawning"));
+      const ownProcess = (value: PiProcess): void => { if (process && process !== value) throw new Error("process factory returned inconsistent process identity"); process = value; };
+      process = await this.#step("process spawn", lease, signal => this.factory.spawn(spec, signal, ownProcess), ownProcess);
+      await this.#step("spawn ownership claim", lease, () => this.#setAllocation(runId, role, lease, "spawned", process!.identity));
       const client = new PiRpcClient(process, { commandTimeoutMs: this.config.commandTimeoutMs ?? 5_000 });
-      const generation = claimed?.processGeneration ?? 1;
       this.live.set(key, { process, client, runId, role, generation });
-      client.on("protocol_error", () => { void this.#markProcess(runId, role, generation, process!.identity, "failed"); });
-      process.on("exit", () => { void this.#markProcess(runId, role, generation, process!.identity, "exited").finally(() => { if (this.live.get(key)?.process === process) this.live.delete(key); }); });
+      client.on("protocol_error", () => { void this.#markProcess(runId, role, generation!, process!.identity, "failed"); });
+      process.on("exit", () => { void this.#markProcess(runId, role, generation!, process!.identity, "exited").finally(() => { if (this.live.get(key)?.process === process) this.live.delete(key); }); });
       const state = await this.#step("Pi handshake", lease, () => client.getState());
       if (state.model?.provider !== this.config.roles[role].provider || state.model?.id !== this.config.roles[role].model) throw new Error("Pi handshake model mismatch");
       if (claimed && (state.sessionId !== claimed.sessionId || state.sessionFile !== claimed.sessionFile)) throw new Error("Pi resume handshake identity mismatch");
@@ -81,23 +85,28 @@ export class PiRunner {
         await this.#step("first-session validation", lease, signal => this.validateRegistration(registration, signal));
         await this.#step("first-session registration", lease, () => this.#registerFirstSession(registration, lease));
       } else {
-        await this.#step("live generation persistence", lease, () => this.#markProcessFenced(runId, role, generation, process!.identity, "live", lease));
+        await this.#step("live generation persistence", lease, () => this.#completeResumedGeneration(runId, role, generation!, process!.identity, lease));
       }
       return { process, client, state, runtime };
     } catch (error) {
-      if (process?.exitCode === null) process.kill("SIGTERM");
-      if (claimed) await this.#markProcessFenced(runId, role, claimed.processGeneration, process?.identity, "failed", lease).catch(() => undefined);
-      if (firstAllocation && !process) await this.#clearReservedAllocation(runId, role, lease).catch(() => undefined);
+      let cleanupError: unknown;
+      try {
+        if (process) await this.#terminate(process);
+        if (this.live.get(key)?.process === process) this.live.delete(key);
+      } catch (terminationError) { cleanupError = terminationError; }
+      await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken); released = true;
+      try { await this.#recoverFailedAllocation(runId, role, owner, lease.fencingToken, generation, process); }
+      catch (recoveryError) { cleanupError ??= recoveryError; }
+      if (cleanupError) throw new AggregateError([error, cleanupError], "process allocation failed and cleanup could not converge");
       throw error;
     } finally {
-      await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken);
+      if (!released) await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken);
     }
   }
 
   async #getOrResolveRuntime(runId: string, lease?: AllocationLease, signal?: AbortSignal): Promise<RuntimeResolution> {
     const existing = this.#resolved.get(runId); if (existing) return existing;
-    const resolution = this.#resolveAndRecord(runId, lease, signal);
-    this.#resolved.set(runId, resolution);
+    const resolution = this.#resolveAndRecord(runId, lease, signal); this.#resolved.set(runId, resolution);
     try { return await resolution; }
     catch (error) { if (this.#resolved.get(runId) === resolution) this.#resolved.delete(runId); throw error; }
   }
@@ -105,15 +114,12 @@ export class PiRunner {
   async #resolveAndRecord(runId: string, lease?: AllocationLease, signal?: AbortSignal): Promise<RuntimeResolution> {
     let snapshot = await this.store.read(runId); if (!snapshot) throw new Error("run not found");
     if (snapshot.runtimeResolution) return snapshot.runtimeResolution;
-    const observed = await this.resolver.resolve(runId, signal);
-    if (signal?.aborted) throw new Error("runtime resolution aborted");
+    const observed = await this.resolver.resolve(runId, signal); if (signal?.aborted) throw new Error("runtime resolution aborted");
     for (;;) {
       snapshot = await this.store.read(runId); if (!snapshot) throw new Error("run not found");
       if (snapshot.runtimeResolution) return snapshot.runtimeResolution;
       try {
-        const recorded = lease
-          ? await this.store.recordRuntimeFenced(runId, { version: snapshot.version }, this.#guard(lease), observed)
-          : await this.store.recordRuntime(runId, { version: snapshot.version }, observed);
+        const recorded = lease ? await this.store.recordRuntimeFenced(runId, { version: snapshot.version }, this.#guard(lease), observed) : await this.store.recordRuntime(runId, { version: snapshot.version }, observed);
         return recorded.runtimeResolution!;
       } catch (error) {
         if (!(error instanceof StoreConflictError)) throw error;
@@ -123,82 +129,82 @@ export class PiRunner {
     }
   }
 
-  async #reserveFirstAllocation(runId: string, role: Role, lease: AllocationLease): Promise<void> {
+  async #recoverReservedPredecessor(runId: string, role: Role, lease: AllocationLease): Promise<void> {
     for (;;) {
       const current = await this.store.read(runId); if (!current) throw new Error("run not found");
-      if (current.sessions[role]) throw new StoreConflictError("role session appeared during first allocation");
-      const prior = current.processAllocations?.[role];
-      if (prior && (prior.owner !== lease.owner || prior.fencingToken !== lease.fencingToken) && prior.state !== "reserved") throw new StoreConflictError("prior first-session spawn requires reconciliation");
-      const allocation: ProcessAllocation = { role, owner: lease.owner, fencingToken: lease.fencingToken, state: "reserved", allocatedAt: new Date(this.clock.now()).toISOString() };
-      try {
-        await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, processAllocations: { ...snapshot.processAllocations, [role]: allocation } }));
-        return;
-      } catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
-    }
-  }
-
-  async #setFirstAllocation(runId: string, role: Role, lease: AllocationLease, state: "spawning" | "spawned", processIdentity?: string): Promise<void> {
-    for (;;) {
-      const current = await this.store.read(runId); if (!current) throw new Error("run not found");
-      const allocation = current.processAllocations?.[role];
-      if (!allocation || allocation.owner !== lease.owner || allocation.fencingToken !== lease.fencingToken) throw new ProcessLeaseError("first-session allocation ownership was fenced");
-      if (state === "spawning" && allocation.state !== "reserved") throw new StoreConflictError("invalid first-session spawn intent");
-      if (state === "spawned" && allocation.state !== "spawning") throw new StoreConflictError("invalid first-session spawn claim");
-      const next = { ...allocation, state, ...(processIdentity ? { processIdentity } : {}) };
-      try {
-        await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, processAllocations: { ...snapshot.processAllocations, [role]: next } }));
-        return;
-      } catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
-    }
-  }
-
-  async #clearReservedAllocation(runId: string, role: Role, lease: AllocationLease): Promise<void> {
-    for (;;) {
-      const current = await this.store.read(runId); if (!current) return;
-      const allocation = current.processAllocations?.[role];
-      if (!allocation || allocation.owner !== lease.owner || allocation.fencingToken !== lease.fencingToken || allocation.state !== "reserved") return;
+      const allocation = current.processAllocations?.[role]; if (!allocation) return;
+      if (allocation.owner === lease.owner && allocation.fencingToken === lease.fencingToken) return;
+      if (allocation.state !== "reserved") throw new StoreConflictError("prior process spawn requires reconciliation");
+      const sessions = { ...current.sessions }; const session = sessions[role];
+      if (allocation.sessionId && session?.sessionId === allocation.sessionId && session.processGeneration === allocation.generation && session.processState === "launching") sessions[role] = { ...session, processState: "failed" };
       const processAllocations = { ...current.processAllocations }; delete processAllocations[role];
-      try { await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, processAllocations })); return; }
+      try { await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions, processAllocations })); return; }
       catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
     }
   }
 
-  async #claimGeneration(existing: SessionRegistration, lease: AllocationLease): Promise<SessionRegistration> {
+  async #reserveAllocation(runId: string, role: Role, generation: number, lease: AllocationLease, session?: SessionRegistration): Promise<void> {
+    for (;;) {
+      const current = await this.store.read(runId); if (!current) throw new Error("run not found");
+      if (current.processAllocations?.[role]) throw new StoreConflictError("role already has a process allocation");
+      const persisted = current.sessions[role];
+      if (session) {
+        if (!persisted || persisted.sessionId !== session.sessionId || persisted.sessionFile !== session.sessionFile || persisted.processGeneration + 1 !== generation || persisted.processState === "live" || persisted.processState === "launching") throw new StoreConflictError("registered session changed before allocation reservation");
+      } else if (persisted) throw new StoreConflictError("role session appeared during first allocation");
+      const allocation: ProcessAllocation = { role, owner: lease.owner, fencingToken: lease.fencingToken, generation, state: "reserved", allocatedAt: new Date(this.clock.now()).toISOString(), ...(session ? { sessionId: session.sessionId, sessionFile: session.sessionFile } : {}) };
+      try { await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, processAllocations: { ...snapshot.processAllocations, [role]: allocation } })); return; }
+      catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
+    }
+  }
+
+  async #setAllocation(runId: string, role: Role, lease: AllocationLease, state: "spawning" | "spawned", processIdentity?: string): Promise<void> {
+    for (;;) {
+      const current = await this.store.read(runId); if (!current) throw new Error("run not found");
+      const allocation = current.processAllocations?.[role];
+      if (!allocation || allocation.owner !== lease.owner || allocation.fencingToken !== lease.fencingToken) throw new ProcessLeaseError("process allocation ownership was fenced");
+      if (state === "spawning" && allocation.state !== "reserved") throw new StoreConflictError("invalid spawn intent");
+      if (state === "spawned" && allocation.state !== "spawning") throw new StoreConflictError("invalid spawn claim");
+      const next = { ...allocation, state, ...(processIdentity ? { processIdentity } : {}) };
+      try { await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, processAllocations: { ...snapshot.processAllocations, [role]: next } })); return; }
+      catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
+    }
+  }
+
+  async #claimGeneration(existing: SessionRegistration, generation: number, lease: AllocationLease): Promise<SessionRegistration> {
     for (;;) {
       const current = await this.store.read(existing.runId); if (!current) throw new Error("run not found");
-      const session = current.sessions[existing.role]; if (!session) throw new Error("registered session disappeared");
+      const session = current.sessions[existing.role]; const allocation = current.processAllocations?.[existing.role];
+      if (!session || session.sessionId !== existing.sessionId || session.sessionFile !== existing.sessionFile || session.processGeneration + 1 !== generation) throw new Error("registered session changed before generation claim");
       if (session.processState === "live" || session.processState === "launching") throw new Error("registered role still owns a live process generation");
+      if (!allocation || allocation.owner !== lease.owner || allocation.fencingToken !== lease.fencingToken || allocation.generation !== generation || allocation.state !== "reserved") throw new ProcessLeaseError("generation claim lacks current reserved allocation");
       const { processIdentity: _previousIdentity, ...sessionWithoutIdentity } = session;
-      const claimed = { ...sessionWithoutIdentity, processGeneration: session.processGeneration + 1, processState: "launching" as const };
-      try {
-        await this.store.compareAndSetFenced(existing.runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions: { ...snapshot.sessions, [existing.role]: claimed } }));
-        return claimed;
-      } catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
+      const claimed = { ...sessionWithoutIdentity, processGeneration: generation, processState: "launching" as const };
+      try { await this.store.compareAndSetFenced(existing.runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions: { ...snapshot.sessions, [existing.role]: claimed } })); return claimed; }
+      catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
+    }
+  }
+
+  async #completeResumedGeneration(runId: string, role: Role, generation: number, identity: string, lease: AllocationLease): Promise<void> {
+    for (;;) {
+      const current = await this.store.read(runId); if (!current) throw new Error("run not found");
+      const session = current.sessions[role]; const allocation = current.processAllocations?.[role];
+      if (!session || session.processGeneration !== generation || session.processState !== "launching") throw new StoreConflictError("claimed generation changed before live persistence");
+      if (!allocation || allocation.owner !== lease.owner || allocation.fencingToken !== lease.fencingToken || allocation.generation !== generation || allocation.state !== "spawned" || allocation.processIdentity !== identity) throw new ProcessLeaseError("live generation lacks current spawned allocation");
+      const processAllocations = { ...current.processAllocations }; delete processAllocations[role];
+      try { await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions: { ...snapshot.sessions, [role]: { ...session, processState: "live", processIdentity: identity } }, processAllocations })); return; }
+      catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
     }
   }
 
   async #markProcess(runId: string, role: Role, generation: number, identity: string | undefined, state: "live" | "exited" | "failed"): Promise<void> {
-    await this.#mutateProcess(runId, role, generation, identity, state);
-  }
-
-  async #markProcessFenced(runId: string, role: Role, generation: number, identity: string | undefined, state: "live" | "exited" | "failed", lease: AllocationLease): Promise<void> {
-    await this.#mutateProcess(runId, role, generation, identity, state, lease);
-  }
-
-  async #mutateProcess(runId: string, role: Role, generation: number, identity: string | undefined, state: "live" | "exited" | "failed", lease?: AllocationLease): Promise<void> {
     for (;;) {
       const current = await this.store.read(runId); if (!current) return;
-      const session = current.sessions[role];
-      if (!session || session.processGeneration !== generation) return;
+      const session = current.sessions[role]; if (!session || session.processGeneration !== generation) return;
       if (state === "exited" && session.processState === "failed") return;
       if (state === "exited" && identity && session.processIdentity && session.processIdentity !== identity) return;
       const next = { ...session, processState: state, ...(identity ? { processIdentity: identity } : {}) };
-      try {
-        const mutate = (snapshot: typeof current) => ({ ...snapshot, version: snapshot.version + 1, sessions: { ...snapshot.sessions, [role]: next } });
-        if (lease) await this.store.compareAndSetFenced(runId, { version: current.version }, this.#guard(lease), mutate);
-        else await this.store.compareAndSet(runId, { version: current.version }, mutate);
-        return;
-      } catch (error) { if (!(error instanceof StoreConflictError)) throw error; if (lease) await this.#renew(lease); }
+      try { await this.store.compareAndSet(runId, { version: current.version }, snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions: { ...snapshot.sessions, [role]: next } })); return; }
+      catch (error) { if (!(error instanceof StoreConflictError)) throw error; }
     }
   }
 
@@ -207,28 +213,46 @@ export class PiRunner {
       const current = await this.store.read(registration.runId); if (!current) throw new Error("run not found");
       const existing = current.sessions[registration.role];
       if (existing) { if (existing.sessionId !== registration.sessionId || existing.sessionFile !== registration.sessionFile) throw new Error("conflicting role session registration"); return; }
-      const conflictingIdentity = Object.values(current.sessions).find(session => session?.sessionId === registration.sessionId || session?.sessionFile === registration.sessionFile);
-      if (conflictingIdentity) throw new Error("conflicting session identity registration");
+      if (Object.values(current.sessions).some(session => session?.sessionId === registration.sessionId || session?.sessionFile === registration.sessionFile)) throw new Error("conflicting session identity registration");
       const allocation = current.processAllocations?.[registration.role];
-      if (!allocation || allocation.owner !== lease.owner || allocation.fencingToken !== lease.fencingToken || allocation.state !== "spawned" || allocation.processIdentity !== registration.processIdentity) throw new ProcessLeaseError("first-session registration lost spawned allocation ownership");
+      if (!allocation || allocation.owner !== lease.owner || allocation.fencingToken !== lease.fencingToken || allocation.generation !== registration.processGeneration || allocation.sessionId || allocation.state !== "spawned" || allocation.processIdentity !== registration.processIdentity) throw new ProcessLeaseError("first-session registration lost spawned allocation ownership");
       try { await this.store.registerSessionFenced(registration.runId, { version: current.version }, this.#guard(lease), registration); return; }
       catch (error) { if (!(error instanceof StoreConflictError)) throw error; await this.#renew(lease); }
     }
   }
 
-  async #step<T>(name: string, lease: AllocationLease, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async #recoverFailedAllocation(runId: string, role: Role, failedOwner: string, failedToken: number, generation: number | undefined, process: PiProcess | undefined): Promise<void> {
+    if (process?.exitCode === null) throw new Error("cannot recover allocation while spawned process remains live");
+    for (let attempts = 0; attempts < 16; attempts += 1) {
+      const current = await this.store.read(runId); if (!current) return;
+      try {
+        await this.store.recoverProcessAllocation(runId, { version: current.version }, { role, failedOwner, failedFencingToken: failedToken, ...(generation !== undefined ? { generation } : {}), ...(process ? { processIdentity: process.identity } : {}), processExited: process ? process.exitCode !== null : true });
+        return;
+      } catch (error) { if (!(error instanceof StoreConflictError)) throw error; }
+    }
+    throw new StoreConflictError("process allocation cleanup did not converge within retry bound");
+  }
+
+  async #terminate(process: PiProcess): Promise<void> {
+    if (process.exitCode !== null) return;
+    const graceMs = positiveInteger(this.config.cleanupGraceMs ?? this.config.commandTimeoutMs ?? 5_000, "cleanup grace");
+    process.kill("SIGTERM");
+    if (process.exitCode === null) {
+      try { await process.waitForExit(graceMs); }
+      catch { process.kill("SIGKILL"); await process.waitForExit(graceMs); }
+    }
+    if (process.exitCode === null) throw new Error("spawned process did not terminate during allocation cleanup");
+  }
+
+  async #step<T>(name: string, lease: AllocationLease, operation: (signal: AbortSignal) => Promise<T>, onSettled?: (value: T) => void): Promise<T> {
     await this.#renew(lease);
-    const remaining = lease.deadlineAt - this.clock.now();
-    if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
-    const timeoutMs = Math.min(lease.stepTimeoutMs, remaining);
+    const remaining = lease.deadlineAt - this.clock.now(); if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
     const controller = new AbortController();
-    const wait = this.clock.sleep(timeoutMs, controller.signal).catch(error => {
-      if (controller.signal.aborted) return new Promise<void>(() => undefined);
-      throw error;
-    });
+    const wait = this.clock.sleep(Math.min(lease.stepTimeoutMs, remaining), controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
     const timeout: Promise<T> = wait.then(() => { controller.abort(); throw new Error(`${name} exceeded bounded allocation step`); });
     try {
       const result = await Promise.race([operation(controller.signal), timeout]);
+      onSettled?.(result);
       controller.abort();
       await this.#renew(lease);
       return result;
@@ -240,11 +264,9 @@ export class PiRunner {
   }
 
   async #renew(lease: AllocationLease): Promise<void> {
-    const now = this.clock.now();
-    const remaining = lease.deadlineAt - now;
+    const now = this.clock.now(); const remaining = lease.deadlineAt - now;
     if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
-    const ttlMs = Math.min(remaining, Math.max(lease.ttlMs, lease.stepTimeoutMs + 1));
-    const renewed = await this.store.renewLease(lease.runId, lease.key, lease.owner, lease.fencingToken, now, ttlMs);
+    const renewed = await this.store.renewLease(lease.runId, lease.key, lease.owner, lease.fencingToken, now, Math.min(remaining, Math.max(lease.ttlMs, lease.stepTimeoutMs + 1)));
     if (!renewed) throw new ProcessLeaseError("process allocation lease was fenced or expired");
     lease.expiresAt = renewed.expiresAt;
   }

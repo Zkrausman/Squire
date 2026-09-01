@@ -1,5 +1,5 @@
 import { assertPrecondition, StoreConflictError, type WorkflowStore } from "../../src/control/workflow-store.js";
-import type { Lease, LeaseGuard, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
+import type { Lease, LeaseGuard, ProcessAllocationRecovery, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -38,7 +38,7 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   async registerSessionFenced(runId: string, expected: RunPrecondition, guard: LeaseGuard, registration: SessionRegistration): Promise<RunSnapshot> {
     return this.compareAndSetFenced(runId, expected, guard, current => {
       const allocation = current.processAllocations?.[registration.role];
-      if (!allocation || allocation.owner !== guard.owner || allocation.fencingToken !== guard.fencingToken || allocation.state !== "spawned" || allocation.processIdentity !== registration.processIdentity) throw new StoreConflictError("session registration lacks current spawned allocation");
+      if (!allocation || allocation.owner !== guard.owner || allocation.fencingToken !== guard.fencingToken || allocation.generation !== registration.processGeneration || allocation.sessionId || allocation.state !== "spawned" || allocation.processIdentity !== registration.processIdentity) throw new StoreConflictError("session registration lacks current first-session spawned allocation");
       const next = this.registrationMutation(current, registration); const processAllocations = { ...next.processAllocations }; delete processAllocations[registration.role];
       return { ...next, processAllocations };
     });
@@ -60,6 +60,29 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     if (current.runtimeResolution) throw new StoreConflictError("runtime already resolved for run");
     if (resolution.runId !== current.runId) throw new StoreConflictError("runtime resolution belongs to another run");
     return { ...current, version: current.version + 1, runtimeResolution: copy(resolution) };
+  }
+  async recoverProcessAllocation(runId: string, expected: RunPrecondition, recovery: ProcessAllocationRecovery): Promise<RunSnapshot> {
+    const current = this.runs.get(runId); if (!current) throw new StoreConflictError("run not found"); assertPrecondition(current, expected);
+    if (recovery.processIdentity && !recovery.processExited) throw new StoreConflictError("process cleanup requires observed exit");
+    const allocation = current.processAllocations?.[recovery.role];
+    const ownedByToken = allocation?.owner === recovery.failedOwner && allocation.fencingToken === recovery.failedFencingToken && (recovery.generation === undefined || allocation.generation === recovery.generation);
+    if (ownedByToken && allocation.processIdentity && (!recovery.processExited || allocation.processIdentity !== recovery.processIdentity)) throw new StoreConflictError("process cleanup identity or exit observation mismatch");
+    const owned = ownedByToken;
+    const sessions = { ...current.sessions }; const processAllocations = { ...current.processAllocations }; let changed = false;
+    if (owned) {
+      const session = sessions[recovery.role];
+      if (allocation.sessionId) {
+        if (session?.sessionId === allocation.sessionId && session.processGeneration === allocation.generation && (session.processState === "launching" || session.processState === "live")) sessions[recovery.role] = { ...session, processState: "failed", ...(recovery.processIdentity ? { processIdentity: recovery.processIdentity } : {}) };
+        delete processAllocations[recovery.role];
+      } else if (recovery.processIdentity) processAllocations[recovery.role] = { ...allocation, state: "failed", processIdentity: recovery.processIdentity };
+      else delete processAllocations[recovery.role];
+      changed = true;
+    } else if (!allocation && recovery.processIdentity && recovery.generation !== undefined) {
+      const session = sessions[recovery.role];
+      if (session?.processGeneration === recovery.generation && session.processIdentity === recovery.processIdentity && (session.processState === "launching" || session.processState === "live")) { sessions[recovery.role] = { ...session, processState: "failed" }; changed = true; }
+    }
+    if (!changed) return copy(current);
+    return this.compareAndSet(runId, expected, snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions, processAllocations }));
   }
   async acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined> {
     const full = `${runId}:${key}`; const current = this.leases.get(full);

@@ -11,7 +11,9 @@
     "sources/SRC-2026-09-01-007",
     "sources/SRC-2026-09-01-008",
     "sources/SRC-2026-09-01-009",
+    "sources/SRC-2026-09-01-010",
     "sources/fenced-first-session-allocation",
+    "sources/post-settlement-lease-loss-compensation",
     "sources/run-scoped-agent-runtime-resolution"
   ],
   "concepts/immutable-handoff-validation": [
@@ -43,9 +45,11 @@
     "sources/SRC-2026-09-01-006",
     "sources/SRC-2026-09-01-008",
     "sources/SRC-2026-09-01-009",
+    "sources/SRC-2026-09-01-010",
     "sources/fenced-first-session-allocation",
     "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
     "sources/persisted-acceptance-authority-chain",
+    "sources/post-settlement-lease-loss-compensation",
     "sources/run-scoped-agent-runtime-resolution",
     "sources/stable-history-trigger-resend-proof",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
@@ -54,7 +58,8 @@
     "concepts/trusted-controller-boundary",
     "sources/SRC-2026-09-01-001",
     "sources/SRC-2026-09-01-008",
-    "sources/SRC-2026-09-01-009"
+    "sources/SRC-2026-09-01-009",
+    "sources/SRC-2026-09-01-010"
   ],
   "sources/SRC-2026-09-01-001": [
     "concepts/five-session-pi-rpc-topology",
@@ -101,14 +106,25 @@
     "sources/fenced-first-session-allocation",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
+  "sources/SRC-2026-09-01-010": [
+    "concepts/five-session-pi-rpc-topology",
+    "concepts/trusted-controller-boundary",
+    "sources/fenced-first-session-allocation",
+    "sources/post-settlement-lease-loss-compensation",
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary"
+  ],
   "sources/fenced-first-session-allocation": [
-    "concepts/five-session-pi-rpc-topology"
+    "concepts/five-session-pi-rpc-topology",
+    "sources/post-settlement-lease-loss-compensation"
   ],
   "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": [
     "concepts/trusted-controller-boundary"
   ],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
+  ],
+  "sources/post-settlement-lease-loss-compensation": [
+    "sources/fenced-first-session-allocation"
   ],
   "sources/run-scoped-agent-runtime-resolution": [
     "concepts/five-session-pi-rpc-topology"
@@ -122,7 +138,9 @@
     "sources/SRC-2026-09-01-001",
     "sources/SRC-2026-09-01-002",
     "sources/SRC-2026-09-01-009",
+    "sources/SRC-2026-09-01-010",
     "sources/fenced-first-session-allocation",
+    "sources/post-settlement-lease-loss-compensation",
     "sources/stable-history-trigger-resend-proof"
   ]
 }

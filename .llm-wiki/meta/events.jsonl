@@ -22,3 +22,5 @@
 {"slug":"stable-history-trigger-resend-proof","title":"Stable-history trigger resend proof","category":"architecture","timestamp":"2026-09-01T21:32:08.948Z","kind":"retro"}
 {"source_id":"SRC-2026-09-01-009","format":"json","timestamp":"2026-09-01T22:22:51.365Z","kind":"capture"}
 {"slug":"fenced-first-session-allocation","title":"Fenced first-session allocation","category":"architecture","timestamp":"2026-09-01T22:31:44.357Z","kind":"retro"}
+{"source_id":"SRC-2026-09-01-010","format":"json","timestamp":"2026-09-01T23:39:11.586Z","kind":"capture"}
+{"slug":"post-settlement-lease-loss-compensation","title":"Post-settlement lease-loss compensation","category":"architecture","timestamp":"2026-09-01T23:43:23.693Z","kind":"retro"}

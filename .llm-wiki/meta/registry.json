@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-01T22:32:16.145Z",
+  "last_updated": "2026-09-01T23:43:55.614Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -118,6 +118,15 @@
       "format": "json",
       "captured": "2026-09-01"
     },
+    "sources/SRC-2026-09-01-010": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 4 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-010/extracted.md",
+      "source_id": "SRC-2026-09-01-010",
+      "format": "json",
+      "captured": "2026-09-01"
+    },
     "sources/fenced-first-session-allocation": {
       "type": "source",
       "title": "Fenced first-session allocation",
@@ -151,6 +160,15 @@
       "category": "architecture",
       "status": "insight",
       "slug": "persisted-acceptance-authority-chain",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "sources/post-settlement-lease-loss-compensation": {
+      "type": "source",
+      "title": "Post-settlement lease-loss compensation",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "post-settlement-lease-loss-compensation",
       "created": "2026-09-01",
       "updated": "2026-09-01"
     },
