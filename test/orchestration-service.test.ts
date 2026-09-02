@@ -1,0 +1,24 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { V1ArtifactValidator } from "../src/contracts/v1-artifact-validator.js";
+import { OrchestrationService } from "../src/control/orchestration-service.js";
+import { SafeArtifactReader } from "../src/control/safe-artifact-reader.js";
+import type { AcceptedPhaseResult, PhaseAttempt } from "../src/control/domain.js";
+import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
+import { headB, ref, run } from "./support/fixtures.js";
+const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const resultRef = ref("accepted-review");
+function accepted(): AcceptedPhaseResult { return { reference: resultRef, phase: "review", handoffId: "handoff_review", attempt: 1, sessionId: "review", status: "pass", inputHead: headB, outputHead: headB, completedAt: "2026-09-01T12:01:00Z", acceptedAt: "2026-09-01T12:02:00Z", implementGeneration: 1 }; }
+function attempt(withAccepted: boolean): PhaseAttempt { const value = accepted(); return { phase: "review", attempt: 1, handoffId: value.handoffId, targetSessionId: value.sessionId, inputHead: headB, input: { path: "artifacts/review/input.json", sha256: "2".repeat(64), schemaId: "urn:squire:contracts:v1:phase-input" }, feedback: [], ...(withAccepted ? { acceptedResult: value.reference, accepted: value } : {}), dispatch: { operationKey: "review", handoffId: value.handoffId, targetSessionId: value.sessionId, marker: "review", state: withAccepted ? "result_accepted" : "settled", generation: 1, cursor: null, recoveryPrompts: 0 } }; }
+async function request(root: string, extra = false, orchestratorSessionId = "orch") { const document = { schemaVersion: 1, requestId: "transition_review_test", runId: "run_example01", orchestratorSessionId, fromState: "reviewing", toState: "testing", trigger: "phase_pass", currentHead: headB, phaseResult: resultRef, requestedAt: "2026-09-01T12:03:00Z", ...(extra ? { attacker: true } : {}) }; const bytes = Buffer.from(`${JSON.stringify(document)}\n`); const target = path.join(root, "artifacts", "transition.json"); await writeFile(target, bytes); return { path: "artifacts/transition.json", sha256: hash(bytes), schemaId: "urn:squire:contracts:v1:transition-request" }; }
+async function service(withAccepted: boolean) { const root = await mkdtemp(path.join(os.tmpdir(), "transition-service-")); await mkdir(path.join(root, "artifacts")); await mkdir(path.join(root, "evidence")); const store = new InMemoryWorkflowStore(); await store.create(run({ state: "reviewing", currentHead: headB, implementGeneration: 1, implementCompletedAt: "2026-09-01T12:00:00Z", sessions: { orchestrator: { runId: "run_example01", role: "orchestrator", sessionId: "orch", sessionFile: "/ticket/sessions/orchestrator/2026_orch.jsonl", processGeneration: 1, registeredAt: "2026-09-01T11:00:00Z" } }, attempts: [attempt(withAccepted)], acceptedResultPaths: withAccepted ? [resultRef.path] : [] })); const validator = await V1ArtifactValidator.create(new SafeArtifactReader(root)); return { root, store, service: new OrchestrationService(store, { observeHead: async () => headB }, validator) }; }
+
+test("transition authority comes only from persisted accepted current-attempt result", async () => { const rejected = await service(false); await assert.rejects(rejected.service.transition(await request(rejected.root)), /persisted controller-accepted/); assert.equal((await rejected.store.read("run_example01"))?.state, "reviewing"); const valid = await service(true); const decision = await valid.service.transition(await request(valid.root)); assert.equal(decision.next.state, "testing"); assert.deepEqual(decision.next.committedRequestIds, ["transition_review_test"]); });
+
+test("only the persisted registered Orchestrator session can authorize a transition", async () => { const spoofed = await service(true); await assert.rejects(spoofed.service.transition(await request(spoofed.root, false, "fake-orch")), /registered Orchestrator/); assert.equal((await spoofed.store.read("run_example01"))?.state, "reviewing"); const missing = await service(true); await missing.store.compareAndSet("run_example01", { version: 0 }, snapshot => ({ ...snapshot, version: 1, sessions: {} })); await assert.rejects(missing.service.transition(await request(missing.root)), /no trusted registered Orchestrator/); });
+
+test("transition artifact is structurally validated before trusted semantics or mutation", async () => { const value = await service(true); await assert.rejects(value.service.transition(await request(value.root, true)), /structural validation/); assert.equal((await value.store.read("run_example01"))?.state, "reviewing"); });

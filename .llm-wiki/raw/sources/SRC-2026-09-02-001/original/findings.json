@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "runId": "run_AIDEV-216-manual-001",
+  "sessionId": "29aa904e-ab22-4f65-a1d6-dc94d49cfd6d",
+  "reviewedHead": "faf971871cbe084253db087271702d2ce1e3fbdd",
+  "status": "remediation_required",
+  "summary": "The frozen branch passes contracts and 76 tests, and normal-termination compensation closes all 22 tested post-side-effect lease-loss windows. R4-001 is not fully closed because a process that remains live after bounded SIGTERM/SIGKILL is dropped before client/live registration: launch rejects with neither an in-memory handle nor a persisted process identity capable of targeting it later.",
+  "findings": [
+    {
+      "id": "R5-001",
+      "severity": "critical",
+      "blocking": true,
+      "summary": "Failed termination drops a synchronously exposed pre-registration live process handle",
+      "details": "The synchronous onSpawn callback assigns the created process locally, but PiRunner does not place it in tracked runner state until after the fenced spawn claim and PiRpcClient creation. On lease loss immediately after spawn settlement, catch invokes bounded termination. In the independent probe, both SIGTERM and SIGKILL failed to produce observed exit: launch threw AggregateError, process.exitCode remained null, runner.live was empty, and the persisted allocation remained spawning without processIdentity. Because launch then returns no handle, neither PiRunner nor durable state can identify or retry termination of that still-live role process. The fail-closed allocation prevents a replacement, but it does not satisfy process ownership, cleanup, or maintainable reconciliation requirements.",
+      "path": "src/pi/pi-runner.ts",
+      "line": 91,
+      "recommendation": "Track every process synchronously at onSpawn in a dedicated allocating/live handle registry and retain that handle until exit is observed, even when launch rejects or bounded termination fails. Add an exact-owner/token, fail-closed persistence operation that may record the known processIdentity and termination-failed/uncertain state without claiming exit or clearing ownership; it must not clobber a newer owner. On a later observed exit, run the existing idempotent compensation. Add adversarial tests where SIGTERM, SIGKILL, and waitForExit fail or time out before and after spawn claim, asserting the live handle and identity remain targetable, no replacement launches, and eventual exit converges compensation."
+    }
+  ],
+  "completedAt": "2026-09-02T00:21:28Z"
+}

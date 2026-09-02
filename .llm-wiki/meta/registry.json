@@ -1,0 +1,237 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-09-02T01:50:03.498Z",
+  "pages": {
+    "analyses/epic-boundary-project-wiki-maintenance": {
+      "type": "analysis",
+      "title": "epic-boundary-project-wiki-maintenance",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "concepts/five-session-pi-rpc-topology": {
+      "type": "concept",
+      "title": "five-session-pi-rpc-topology",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-02"
+    },
+    "concepts/immutable-handoff-validation": {
+      "type": "concept",
+      "title": "immutable-handoff-validation",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "concepts/transition-remediation-and-fresh-gates": {
+      "type": "concept",
+      "title": "transition-remediation-and-fresh-gates",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "concepts/trusted-controller-boundary": {
+      "type": "concept",
+      "title": "trusted-controller-boundary",
+      "domain": "engineering",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-02"
+    },
+    "entities/squire": {
+      "type": "entity",
+      "title": "squire",
+      "category": "project",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "sources/SRC-2026-09-01-001": {
+      "type": "source",
+      "title": "Squire MVP Architecture",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-001/extracted.md",
+      "source_id": "SRC-2026-09-01-001",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-002": {
+      "type": "source",
+      "title": "AIDEV-214 Independent Architecture Review",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-002/extracted.md",
+      "source_id": "SRC-2026-09-01-002",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-004": {
+      "type": "source",
+      "title": "AIDEV-215 Workflow and Handoff Contracts",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-004/extracted.md",
+      "source_id": "SRC-2026-09-01-004",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-006": {
+      "type": "source",
+      "title": "Squire MVP Architecture — runtime policy revision",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-006/extracted.md",
+      "source_id": "SRC-2026-09-01-006",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-007": {
+      "type": "source",
+      "title": "AIDEV-215 Workflow Contracts — runtime policy revision",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-007/extracted.md",
+      "source_id": "SRC-2026-09-01-007",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-008": {
+      "type": "source",
+      "title": "Docker Sandboxes Viability Spike",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-008/extracted.md",
+      "source_id": "SRC-2026-09-01-008",
+      "format": "markdown",
+      "captured": "2026-09-01",
+      "confidence": "high"
+    },
+    "sources/SRC-2026-09-01-009": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 3 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-009/extracted.md",
+      "source_id": "SRC-2026-09-01-009",
+      "format": "json",
+      "captured": "2026-09-01"
+    },
+    "sources/SRC-2026-09-01-010": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 4 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-01-010/extracted.md",
+      "source_id": "SRC-2026-09-01-010",
+      "format": "json",
+      "captured": "2026-09-01"
+    },
+    "sources/SRC-2026-09-02-001": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 5 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-02-001/extracted.md",
+      "source_id": "SRC-2026-09-02-001",
+      "format": "json",
+      "captured": "2026-09-02"
+    },
+    "sources/SRC-2026-09-02-002": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 6 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-02-002/extracted.md",
+      "source_id": "SRC-2026-09-02-002",
+      "format": "json",
+      "captured": "2026-09-02"
+    },
+    "sources/durable-noncooperative-process-ownership": {
+      "type": "source",
+      "title": "Durable non-cooperative process ownership",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "durable-noncooperative-process-ownership",
+      "created": "2026-09-02",
+      "updated": "2026-09-02"
+    },
+    "sources/fenced-first-session-allocation": {
+      "type": "source",
+      "title": "Fenced first-session allocation",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "fenced-first-session-allocation",
+      "created": "2026-09-01",
+      "updated": "2026-09-02"
+    },
+    "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": {
+      "type": "source",
+      "title": "Observation: Fenced dispatch authority invariant",
+      "tags": [
+        "AIDEV-216",
+        "orchestration",
+        "fencing",
+        "RPC",
+        "recovery"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-01-fenced-dispatch-authority-invariant",
+      "relevance": "high",
+      "observed_at": "2026-09-01T21:25:31.077Z",
+      "source_context": "Implement remediation attempt 4",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "sources/persisted-acceptance-authority-chain": {
+      "type": "source",
+      "title": "Persisted acceptance authority chain",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "persisted-acceptance-authority-chain",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "sources/post-settlement-lease-loss-compensation": {
+      "type": "source",
+      "title": "Post-settlement lease-loss compensation",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "post-settlement-lease-loss-compensation",
+      "created": "2026-09-01",
+      "updated": "2026-09-02"
+    },
+    "sources/registered-session-process-recovery": {
+      "type": "source",
+      "title": "Registered-session process recovery",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "registered-session-process-recovery",
+      "created": "2026-09-02",
+      "updated": "2026-09-02"
+    },
+    "sources/run-scoped-agent-runtime-resolution": {
+      "type": "source",
+      "title": "Run-scoped agent runtime resolution",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "run-scoped-agent-runtime-resolution",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "sources/stable-history-trigger-resend-proof": {
+      "type": "source",
+      "title": "Stable-history trigger resend proof",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "stable-history-trigger-resend-proof",
+      "created": "2026-09-01",
+      "updated": "2026-09-01"
+    },
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary": {
+      "type": "synthesis",
+      "title": "aidev-216-and-aidev-224-ownership-boundary",
+      "confidence": "high",
+      "created": "2026-09-01",
+      "updated": "2026-09-02"
+    }
+  }
+}

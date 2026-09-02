@@ -23,7 +23,7 @@ const headB = "b".repeat(40);
 
 test("all schemas and positive/negative fixtures satisfy their expected outcome", async () => {
   const { stdout } = await execFileAsync(process.execPath, ["scripts/validate-contracts.mjs"], { cwd: root });
-  assert.match(stdout, /Validated 11 schemas/);
+  assert.match(stdout, /Validated 12 schemas/);
 });
 
 test("phase results fail closed on wrong identity, stale SHA, and contradictory pass", async () => {
@@ -107,6 +107,12 @@ test("pass requires complete current-head test and delivery evidence", async () 
 
   const ready = await fixture("valid/pull-request-delivery-state/ready.json");
   assert.match(validatePullRequestDeliveryState(ready, config).join(" "), /requires trusted runId context.*requires trusted pullRequestUrl context/);
+});
+
+test("workflow config does not require an exact Pi version pin", async () => {
+  const config = await fixture("valid/workflow-config/basic.json");
+  delete config.pi.version;
+  assert.deepEqual(validateWorkflowConfig(config), []);
 });
 
 test("sandbox configuration paths reject traversal structurally and semantically", async () => {

@@ -1,0 +1,11 @@
+{
+  "id": "SRC-2026-09-01-009",
+  "captured": "2026-09-01",
+  "packet_version": "1.0",
+  "title": "findings.json",
+  "file_path": "/ticket/artifacts/review/3/findings.json",
+  "format": "json",
+  "extractor": "jsonToMarkdown",
+  "extraction_status": "success",
+  "content_type": "application/json"
+}

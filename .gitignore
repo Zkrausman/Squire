@@ -1,1 +1,4 @@
 node_modules/
+dist/
+.llm-wiki/meta/log.md
+.llm-wiki/wiki/log.md

@@ -34,6 +34,7 @@ Schemas live under [`contracts/v1/`](../contracts/v1/) and use closed objects un
 | `test-evidence` | Per-command timestamps, exit status, timeout state, immutable stdout/stderr references, and failures |
 | `transition-request` | Orchestrator request bound to run, orchestrator session, current state, current head, and validated phase result when applicable |
 | `pull-request-delivery-state` | Current-head PR, checks, Reviewer approval, mergeability, and human-only merge state |
+| `runtime-resolution` | Exact observed Pi and pi-llm-wiki versions, Pi executable, and installation identities resolved once for one run |
 | `common` | IDs, SHAs, artifact references, evidence, findings, failures, phases, and states |
 
 `schemaVersion` is an integer discriminator and is `1` in every v1 top-level artifact. Schema IDs are stable `urn:squire:contracts:v1:<name>` values. Schema changes that alter accepted meaning require `v2`; additive prose clarification or stricter implementation tests may remain v1 only when existing valid artifacts retain the same meaning.
@@ -45,7 +46,7 @@ The v1 workflow configuration is repository-independent. Repository commands are
 - one Linear ticket UUID/identifier, repository owner/name/HTTPS clone URL, base branch, and Git object format;
 - Linear team UUID and accepted, in-progress, awaiting-human, completed, failed, and cancelled state UUIDs;
 - a digest-pinned sandbox template, CPU/memory/disk limits, explicit network mode, and success/failure sandbox retention;
-- all five Pi roles with pinned Pi version, provider, model, instructions beneath `/ticket`, and finite timeout;
+- all five Pi roles with provider, model, instructions beneath `/ticket`, and finite timeout; the optional legacy Pi version field is advisory, while the controller resolves the selected Pi and pi-llm-wiki installations once per run and records their exact observed versions and installation identities;
 - named validation commands with finite timeout and required/optional status;
 - finite review, test, and total remediation budgets;
 - trusted export, session, and evidence retention periods; and
