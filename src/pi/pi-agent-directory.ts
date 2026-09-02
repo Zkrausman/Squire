@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, lstat, lutimes, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, lutimes, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { normalizeWikiProfile, type PiModelProfile, type PiWikiProfileInput } from "./pi-configuration.js";
 import type { RuntimeModelCapability, RuntimeResolution } from "../control/domain.js";
@@ -25,6 +25,8 @@ const PREPARATION_LOCK_POLL_MS = 25;
 const PREPARATION_LOCK_RACE_RETRIES = 20;
 const PREPARATION_LOCK_RACE_DELAY_MS = 5;
 const PREPARATION_QUARANTINE_PREFIX = ".pi-agent-quarantine-";
+const PREPARATION_RETAINED_DIRECTORY = ".pi-agent-quarantine-retained";
+const PREPARATION_RETAINED_PREFIX = "capture-";
 // These two files are created by Pi itself inside PI_CODING_AGENT_DIR. They
 // are not trusted configuration: auth is accepted only in its empty default
 // form unless explicitly provisioned, while the model store is a private,
@@ -289,7 +291,7 @@ class PreparationLock {
         if (kind === "missing") return;
         if (kind !== "directory") throw new Error("Pi agent-directory preparation lock was replaced");
         await verifyPreparationLock(this.directory, this.owner, false, this.directoryIdentity);
-        await captureAndRemoveDirectory(
+        await captureAndRetainDirectory(
           this.directory,
           path.dirname(this.directory),
           this.directoryIdentity,
@@ -606,7 +608,7 @@ export class PiAgentDirectoryMaterializer {
       await verifyRunLayout(layout, true, true);
     } finally {
       if (stagingIdentity) {
-        await captureAndRemoveDirectory(
+        await captureAndRetainDirectory(
           staging,
           path.dirname(lock.directory),
           stagingIdentity,
@@ -883,8 +885,8 @@ async function tryCreatePreparationLock(
   };
   let lock: PreparationLock | undefined;
   try {
-    await writePrivateFileAtomically(path.join(directory, PREPARATION_LOCK_OWNER_FILE), serializePreparationOwner(owner), 0o600);
-    await writePrivateFileAtomically(path.join(directory, PREPARATION_LOCK_HEARTBEAT_FILE), Buffer.from("heartbeat\n", "utf8"), 0o600);
+    await writePrivateFileAtomically(path.join(directory, PREPARATION_LOCK_OWNER_FILE), serializePreparationOwner(owner), 0o600, path.dirname(directory));
+    await writePrivateFileAtomically(path.join(directory, PREPARATION_LOCK_HEARTBEAT_FILE), Buffer.from("heartbeat\n", "utf8"), 0o600, path.dirname(directory));
     lock = new PreparationLock(directory, owner, path.join(directory, PREPARATION_LOCK_HEARTBEAT_FILE), directoryIdentity!, staleMs, captureBarrier);
     await lock.assertHealthy();
     return lock;
@@ -1018,11 +1020,11 @@ async function reclaimStalePreparationLock(
       pid: process.pid,
       createdAt: Date.now(),
     };
-    await writePrivateFileAtomically(path.join(reclaimDirectory, PREPARATION_LOCK_RECLAIM_OWNER_FILE), serializeReclaimOwner(reclaimOwner), 0o600);
+    await writePrivateFileAtomically(path.join(reclaimDirectory, PREPARATION_LOCK_RECLAIM_OWNER_FILE), serializeReclaimOwner(reclaimOwner), 0o600, path.resolve(reclaimDirectory, "..", ".."));
     reclaimOwnerWritten = true;
   } catch (error) {
     if (claimed && reclaimIdentity) {
-      await captureAndRemoveDirectory(
+      await captureAndRetainDirectory(
         reclaimDirectory,
         path.resolve(reclaimDirectory, "..", ".."),
         reclaimIdentity,
@@ -1067,7 +1069,7 @@ async function reclaimStalePreparationLock(
     } else if (await pathKind(path.join(lockDirectory, PREPARATION_LOCK_OWNER_FILE)) !== "missing") {
       throw new PreparationLockRace("Pi agent-directory preparation lock owner appeared before reclaim");
     }
-    const captured = await captureAndRemoveDirectory(
+    const captured = await captureAndRetainDirectory(
       lockDirectory,
       layout.runRoot,
       latest.directoryIdentity,
@@ -1123,7 +1125,7 @@ async function reclaimStaleReclaimMarker(
   }
   if (ownerKind === "missing") {
     if (!isStale(mtimeMilliseconds(info), staleMs)) return;
-    await captureAndRemoveDirectory(
+    await captureAndRetainDirectory(
       directory,
       path.resolve(directory, "..", ".."),
       identity,
@@ -1139,7 +1141,7 @@ async function reclaimStaleReclaimMarker(
   const owner = await readReclaimOwner(ownerPath);
   await assertReclaimMarkerOwnership(directory, owner, identity);
   if (!isStale(mtimeMilliseconds(ownerInfo), staleMs) || isProcessAlive(owner.pid)) return;
-  await captureAndRemoveDirectory(
+  await captureAndRetainDirectory(
     directory,
     path.resolve(directory, "..", ".."),
     identity,
@@ -1185,7 +1187,7 @@ async function releaseReclaimMarker(
         throw new Error("Pi agent-directory lock reclaim marker was replaced");
       }
       await assertReclaimMarkerOwnership(directory, owner, identity);
-      const captured = await captureAndRemoveDirectory(
+      const captured = await captureAndRetainDirectory(
         directory,
         path.resolve(directory, "..", ".."),
         identity,
@@ -1208,6 +1210,20 @@ async function releaseReclaimMarker(
 
 type CapturedDirectoryVerifier = (directory: string) => Promise<void>;
 
+async function freshRetainedPath(runRoot: string, name: string): Promise<string> {
+  const runtimeRoot = path.dirname(runRoot);
+  await ensureSecureDirectory(runtimeRoot, "runtime root", false);
+  const retainedRoot = path.join(runtimeRoot, PREPARATION_RETAINED_DIRECTORY);
+  await ensurePrivateDirectory(retainedRoot, "Pi agent-directory retained quarantine root");
+  const retainedRun = path.join(retainedRoot, path.basename(runRoot));
+  await ensurePrivateDirectory(retainedRun, "Pi agent-directory retained quarantine run");
+  for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
+    const candidate = path.join(retainedRun, `${PREPARATION_RETAINED_PREFIX}${randomUUID()}`);
+    if (await pathKind(candidate) === "missing") return candidate;
+  }
+  throw new Error(`${name} retained quarantine name could not be allocated`);
+}
+
 async function freshQuarantinePath(runRoot: string, name: string): Promise<string> {
   await ensureSecureDirectory(runRoot, "run runtime directory", true);
   for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
@@ -1217,14 +1233,29 @@ async function freshQuarantinePath(runRoot: string, name: string): Promise<strin
   throw new Error(`${name} quarantine name could not be allocated`);
 }
 
+async function createQuarantineFence(runRoot: string, name: string): Promise<void> {
+  for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
+    const candidate = await freshQuarantinePath(runRoot, name);
+    try {
+      await mkdir(candidate, { recursive: false, mode: 0o700 });
+      await chmod(candidate, 0o700);
+      await ensureSecureDirectory(candidate, "Pi agent-directory quarantine fence", true);
+      return;
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+  }
+  throw new Error(`${name} quarantine fence could not be allocated`);
+}
+
 /**
- * Destructive cleanup is only allowed after the live pathname has been
- * atomically moved out of the lock namespace. The captured directory is
- * verified again (including its owner token) before only the private
- * quarantine copy is removed; a replacement at `source` can therefore never
- * be reached by the destructive operation.
+ * Cleanup never recursively removes a pathname that another same-UID actor
+ * can replace. The live directory is atomically captured, verified, and then
+ * handed to a private retained-quarantine namespace. Node has no recursive
+ * remove operation bound to a directory identity, so a verified capture is
+ * preserved for trusted later cleanup instead of risking replacement deletion.
  */
-async function captureAndRemoveDirectory(
+async function captureAndRetainDirectory(
   source: string,
   runRoot: string,
   expectedIdentity: DirectoryIdentity,
@@ -1254,10 +1285,41 @@ async function captureAndRemoveDirectory(
     }
     await verify(disposal);
     await captureBarrier?.({ source, quarantine: disposal, name });
-    await rm(disposal, { recursive: true, force: false });
+
+    // Revalidate after the synchronization boundary. If the quarantine was
+    // moved aside and replaced, leave both objects untouched at their current
+    // paths; in particular, never hand the replacement to recursive cleanup.
+    const afterBarrierInfo = await lstatRequired(disposal, `${name} captured directory after verification`);
+    assertPrivateDirectory(afterBarrierInfo, `${name} captured directory after verification`);
+    if (!sameDirectoryIdentity(directoryIdentityOf(afterBarrierInfo), expectedIdentity)) {
+      throw new PreparationLockRace(`${name} quarantine was replaced after verification`);
+    }
+    await verify(disposal);
+
+    const retained = await freshRetainedPath(runRoot, name);
+    const beforeHandoffInfo = await lstatRequired(disposal, `${name} captured directory before retention`);
+    assertPrivateDirectory(beforeHandoffInfo, `${name} captured directory before retention`);
+    if (!sameDirectoryIdentity(directoryIdentityOf(beforeHandoffInfo), expectedIdentity)) {
+      throw new PreparationLockRace(`${name} quarantine was replaced before retention`);
+    }
+    try { await rename(disposal, retained); }
+    catch (error) {
+      if (isNotFound(error)) throw new PreparationLockRace(`${name} captured directory disappeared before retention`, error);
+      throw error;
+    }
+    const retainedInfo = await lstatRequired(retained, `${name} retained directory`);
+    assertPrivateDirectory(retainedInfo, `${name} retained directory`);
+    if (!sameDirectoryIdentity(directoryIdentityOf(retainedInfo), expectedIdentity)) {
+      throw new PreparationLockRace(`${name} retained directory was replaced before verification`);
+    }
+    await verify(retained);
     return true;
   } catch (error) {
-    if (isNotFound(error)) throw new PreparationLockRace(`${name} captured directory disappeared before deletion`, error);
+    // If the captured pathname disappeared during the handoff, retain a
+    // visible fence in the run root. This blocks a new owner while trusted
+    // cleanup locates the retained capture, without deleting any replacement.
+    if (await pathKind(disposal) === "missing") await createQuarantineFence(runRoot, name);
+    if (isNotFound(error)) throw new PreparationLockRace(`${name} captured directory disappeared before retention`, error);
     throw error;
   }
 }
@@ -1478,7 +1540,7 @@ async function verifyRunRootChildren(
   }
 }
 
-async function writePrivateFileAtomically(target: string, bytes: Buffer, mode: number): Promise<void> {
+async function writePrivateFileAtomically(target: string, bytes: Buffer, mode: number, runRoot: string): Promise<void> {
   const temporary = `${target}.tmp-${randomUUID()}`;
   let temporaryIdentity: DirectoryIdentity | undefined;
   try {
@@ -1489,16 +1551,18 @@ async function writePrivateFileAtomically(target: string, bytes: Buffer, mode: n
     await chmod(temporary, mode);
     await rename(temporary, target);
   } finally {
-    if (temporaryIdentity) await captureAndRemovePrivateTemporaryFile(temporary, temporaryIdentity, bytes);
+    if (temporaryIdentity) await captureAndRetainPrivateTemporaryFile(temporary, temporaryIdentity, bytes, runRoot);
   }
 }
 
-async function captureAndRemovePrivateTemporaryFile(
+async function captureAndRetainPrivateTemporaryFile(
   source: string,
   expectedIdentity: DirectoryIdentity,
   expectedBytes: Buffer,
+  runRoot: string,
 ): Promise<void> {
   const quarantine = `${source}.cleanup-${randomUUID()}`;
+  const name = "Pi agent-directory private temporary file";
   try {
     await rename(source, quarantine);
   } catch (error) {
@@ -1506,16 +1570,38 @@ async function captureAndRemovePrivateTemporaryFile(
     throw error;
   }
   try {
-    const info = await lstatRequired(quarantine, "Pi agent-directory private temporary file quarantine");
-    assertPrivateFile(info, "Pi agent-directory private temporary file quarantine");
+    const info = await lstatRequired(quarantine, `${name} quarantine`);
+    assertPrivateFile(info, `${name} quarantine`);
     if (!sameDirectoryIdentity(directoryIdentityOf(info), expectedIdentity)) {
-      throw new PreparationLockRace("Pi agent-directory private temporary file was replaced");
+      throw new PreparationLockRace(`${name} was replaced`);
     }
-    const actualBytes = await readStableFile(quarantine, "Pi agent-directory private temporary file quarantine");
-    if (!actualBytes.equals(expectedBytes)) throw new PreparationLockRace("Pi agent-directory private temporary file contents changed");
-    await unlink(quarantine);
+    const actualBytes = await readStableFile(quarantine, `${name} quarantine`);
+    if (!actualBytes.equals(expectedBytes)) throw new PreparationLockRace(`${name} contents changed`);
+
+    const retained = await freshRetainedPath(runRoot, name);
+    const beforeHandoffInfo = await lstatRequired(quarantine, `${name} before retention`);
+    assertPrivateFile(beforeHandoffInfo, `${name} before retention`);
+    if (!sameDirectoryIdentity(directoryIdentityOf(beforeHandoffInfo), expectedIdentity)) {
+      throw new PreparationLockRace(`${name} was replaced before retention`);
+    }
+    try { await rename(quarantine, retained); }
+    catch (error) {
+      if (isNotFound(error)) throw new PreparationLockRace(`${name} disappeared before retention`, error);
+      throw error;
+    }
+    const retainedInfo = await lstatRequired(retained, `${name} retained file`);
+    assertPrivateFile(retainedInfo, `${name} retained file`);
+    if (!sameDirectoryIdentity(directoryIdentityOf(retainedInfo), expectedIdentity)) {
+      throw new PreparationLockRace(`${name} retained file was replaced before verification`);
+    }
+    const retainedBytes = await readStableFile(retained, `${name} retained file`);
+    if (!retainedBytes.equals(expectedBytes)) throw new PreparationLockRace(`${name} retained file contents changed`);
   } catch (error) {
-    if (isNotFound(error)) throw new PreparationLockRace("Pi agent-directory private temporary file quarantine disappeared", error);
+    // A missing cleanup pathname can mean that a replacement won the final
+    // atomic handoff. Keep the run fenced while trusted cleanup investigates;
+    // never unlink the path by name.
+    if (await pathKind(quarantine) === "missing") await createQuarantineFence(runRoot, name);
+    if (isNotFound(error)) throw new PreparationLockRace(`${name} disappeared before retention`, error);
     throw error;
   }
 }
@@ -1707,7 +1793,7 @@ async function removeNewPreparationLock(
   captureBarrier?: PreparationCaptureBarrier,
 ): Promise<void> {
   if (!expectedIdentity) return;
-  await captureAndRemoveDirectory(
+  await captureAndRetainDirectory(
     directory,
     path.dirname(directory),
     expectedIdentity,

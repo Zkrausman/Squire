@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -228,6 +228,24 @@ function replacementLockBarrier(expectedSource: string, runId: string, sentinelP
   return { barrier, calls: () => calls };
 }
 
+function quarantineReplacementBarrier(expectedSource: string, capturedPath: string): { barrier: PreparationCaptureBarrier; calls: () => number; replacementPath: () => string | undefined } {
+  let calls = 0;
+  let replacementPath: string | undefined;
+  const barrier: PreparationCaptureBarrier = async event => {
+    if (event.name !== "Pi agent-directory preparation lock") return;
+    calls += 1;
+    assert.equal(event.source, expectedSource);
+    await assert.rejects(lstat(event.source), { code: "ENOENT" });
+    replacementPath = event.quarantine;
+    await rename(event.quarantine, capturedPath);
+    await mkdir(event.quarantine, { recursive: false, mode: 0o700 });
+    await chmod(event.quarantine, 0o700);
+    await writeFile(path.join(event.quarantine, "replacement-sentinel"), "replacement-sentinel\n", { flag: "wx", mode: 0o600 });
+    await chmod(path.join(event.quarantine, "replacement-sentinel"), 0o600);
+  };
+  return { barrier, calls: () => calls, replacementPath: () => replacementPath };
+}
+
 test("atomic release capture preserves a synchronized replacement lock and sentinel", async () => {
   const { root, workspace, runtime } = await fixture();
   const runtimeRoot = path.join(root, "runtime");
@@ -239,6 +257,8 @@ test("atomic release capture preserves a synchronized replacement lock and senti
     const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
     await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, preparationCaptureBarrier: replacement.barrier }).materialize(request);
     assert.equal(replacement.calls(), 1);
+    const retained = await readdir(path.join(runtimeRoot, ".pi-agent-quarantine-retained", runtime.runId));
+    assert.ok(retained.some(name => name.startsWith("capture-")));
     assert.equal(await readFile(sentinelPath, "utf8"), "replacement-sentinel\n");
     assert.equal(await readFile(path.join(lockDirectory, "heartbeat"), "utf8"), "heartbeat\n");
     assert.deepEqual((await readdir(runRoot)).filter(name => name.startsWith(".pi-agent-quarantine-")), []);
@@ -247,6 +267,31 @@ test("atomic release capture preserves a synchronized replacement lock and senti
       /unexpected|partial|timed out|conflicting/iu,
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "replacement-sentinel\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("quarantine replacement survives when the captured directory is moved aside", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const runRoot = path.join(runtimeRoot, runtime.runId);
+  const lockDirectory = path.join(runRoot, ".pi-agent-lock");
+  const capturedPath = path.join(root, "captured-lock-directory");
+  const replacement = quarantineReplacementBarrier(lockDirectory, capturedPath);
+  try {
+    const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+    await assert.rejects(
+      new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, preparationCaptureBarrier: replacement.barrier }).materialize(request),
+      /quarantine was replaced|replacement/iu,
+    );
+    assert.equal(replacement.calls(), 1);
+    const exactReplacementPath = replacement.replacementPath();
+    assert.ok(exactReplacementPath);
+    assert.equal(await readFile(path.join(exactReplacementPath, "replacement-sentinel"), "utf8"), "replacement-sentinel\n");
+    assert.equal((await lstat(capturedPath)).isDirectory(), true);
+    assert.equal((await readdir(capturedPath)).includes("owner.json"), true);
+    assert.equal((await readdir(runRoot)).includes(".pi-agent-lock"), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
