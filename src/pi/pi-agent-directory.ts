@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, lstat, lutimes, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, lutimes, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { normalizeWikiProfile, type PiModelProfile, type PiWikiProfileInput } from "./pi-configuration.js";
 import type { RuntimeModelCapability, RuntimeResolution } from "../control/domain.js";
@@ -24,6 +24,7 @@ const PREPARATION_LOCK_STALE_MS = 5_000;
 const PREPARATION_LOCK_POLL_MS = 25;
 const PREPARATION_LOCK_RACE_RETRIES = 20;
 const PREPARATION_LOCK_RACE_DELAY_MS = 5;
+const PREPARATION_QUARANTINE_PREFIX = ".pi-agent-quarantine-";
 // These two files are created by Pi itself inside PI_CODING_AGENT_DIR. They
 // are not trusted configuration: auth is accepted only in its empty default
 // form unless explicitly provisioned, while the model store is a private,
@@ -41,6 +42,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA256 = /^[0-9a-f]{64}$/u;
 const PREPARATION_LOCK_OWNER_TEMP = /^owner\.json\.tmp-[0-9a-f-]{36}$/u;
 const PREPARATION_LOCK_HEARTBEAT_TEMP = /^heartbeat\.tmp-[0-9a-f-]{36}$/u;
+const PREPARATION_QUARANTINE = /^\.pi-agent-quarantine-[0-9a-f-]{36}$/u;
 const PREPARATION_RECLAIM_OWNER_TEMP = /^owner\.json\.tmp-[0-9a-f-]{36}$/u;
 
 export interface WikiInstallationInput {
@@ -99,6 +101,13 @@ export interface PiAgentDirectoryMaterializerPort {
 /** Exact capability evidence returned by the trusted runtime/model registry. */
 export type WikiModelCapability = RuntimeModelCapability;
 
+/** Internal synchronization seam used by deterministic filesystem-race tests. */
+export type PreparationCaptureBarrier = (event: {
+  source: string;
+  quarantine: string;
+  name: string;
+}) => void | Promise<void>;
+
 export type WikiModelCapabilityResolver = (
   profile: PiModelProfile,
   runtime: RuntimeResolution,
@@ -128,6 +137,8 @@ export interface PiAgentDirectoryMaterializerOptions {
   preparationLockTimeoutMs?: number;
   /** Age after which a dead controller's preparation lock may be reclaimed. */
   preparationLockStaleMs?: number;
+  /** Internal deterministic synchronization seam; omitted in production. */
+  preparationCaptureBarrier?: PreparationCaptureBarrier;
 }
 
 interface AgentManifest {
@@ -212,7 +223,7 @@ interface DirectoryIdentity {
 }
 
 interface PreparationLockObservation {
-  state: "missing" | "active" | "stale" | "conflict";
+  state: "missing" | "active" | "stale" | "conflict" | "capturing";
   owner?: PreparationLockOwner;
   directoryIdentity?: DirectoryIdentity;
 }
@@ -221,6 +232,13 @@ class PreparationLockRace extends Error {
   constructor(message: string, cause?: unknown) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "PreparationLockRace";
+  }
+}
+
+class PreparationCaptureInProgress extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PreparationCaptureInProgress";
   }
 }
 
@@ -235,6 +253,7 @@ class PreparationLock {
     readonly heartbeatPath: string,
     readonly directoryIdentity: DirectoryIdentity,
     staleMs: number,
+    readonly captureBarrier?: PreparationCaptureBarrier,
   ) {
     const interval = Math.max(25, Math.min(1_000, Math.floor(staleMs / 3)));
     this.#heartbeatTimer = setInterval(() => {
@@ -253,6 +272,9 @@ class PreparationLock {
 
   async assertHealthy(): Promise<void> {
     if (this.#heartbeatError) throw new Error(`Pi agent-directory preparation lock heartbeat failed: ${this.#heartbeatError.message}`);
+    if (await hasPreparationQuarantineRoot(path.dirname(this.directory))) {
+      throw new PreparationCaptureInProgress("Pi agent-directory preparation capture is in progress");
+    }
     await verifyPreparationLock(this.directory, this.owner, true, this.directoryIdentity);
   }
 
@@ -267,10 +289,17 @@ class PreparationLock {
         if (kind === "missing") return;
         if (kind !== "directory") throw new Error("Pi agent-directory preparation lock was replaced");
         await verifyPreparationLock(this.directory, this.owner, false, this.directoryIdentity);
-        await assertStableDirectoryIdentity(this.directory, this.directoryIdentity, "Pi agent-directory preparation lock");
-        await rm(this.directory, { recursive: true, force: false });
+        await captureAndRemoveDirectory(
+          this.directory,
+          path.dirname(this.directory),
+          this.directoryIdentity,
+          "Pi agent-directory preparation lock",
+          captured => verifyCapturedPreparationLock(captured, this.directoryIdentity, this.owner),
+          this.captureBarrier,
+        );
         return;
       } catch (error) {
+        if (error instanceof PreparationLockRace) throw error;
         if (!isTransientLockRace(error)) throw error;
         lastRace = error;
         if (await pathKind(this.directory) === "missing") return;
@@ -340,28 +369,43 @@ export class PiAgentDirectoryMaterializer {
   async #materialize(request: PiAgentDirectoryRequest, profile: PiModelProfile): Promise<MaterializedPiAgentDirectory> {
     const prepared = await this.#prepare(request, profile);
     const requestFingerprint = materializationFingerprint(prepared);
-    const lock = await acquirePreparationLock(
-      prepared.layout,
-      requestFingerprint,
-      this.#options,
-      request.signal,
-    );
-    if (!lock) {
-      await verifyCompletedMaterializationLock(prepared.layout, request.runId, requestFingerprint, this.#options, request.signal);
-      await verifyRunLayout(prepared.layout, true, "optional");
-      await verifyAgentDirectory(prepared.layout.agentDir, prepared.expected, prepared.entries.map(entry => entry.path));
-      return materializedResult(request.runId, prepared);
-    }
-    try {
-      await lock.assertHealthy();
-      await ensureRunLayout(prepared.layout, request.signal);
-      await lock.assertHealthy();
-      await this.#createOrVerify(prepared, lock, request.signal);
-      await lock.assertHealthy();
-      await verifyRunLayout(prepared.layout, true, true);
-      return materializedResult(request.runId, prepared);
-    } finally {
-      await lock.release();
+    for (;;) {
+      const lock = await acquirePreparationLock(
+        prepared.layout,
+        requestFingerprint,
+        this.#options,
+        request.signal,
+      );
+      if (!lock) {
+        try {
+          await verifyCompletedMaterializationLock(prepared.layout, request.runId, requestFingerprint, this.#options, request.signal);
+          await verifyRunLayout(prepared.layout, true, "optional");
+          await verifyAgentDirectory(prepared.layout.agentDir, prepared.expected, prepared.entries.map(entry => entry.path));
+          return materializedResult(request.runId, prepared);
+        } catch (error) {
+          if (!(error instanceof PreparationCaptureInProgress)) throw error;
+          await waitForDelay(PREPARATION_LOCK_RACE_DELAY_MS, request.signal);
+          continue;
+        }
+      }
+      let retry = false;
+      try {
+        await lock.assertHealthy();
+        await ensureRunLayout(prepared.layout, request.signal);
+        await lock.assertHealthy();
+        await this.#createOrVerify(prepared, lock, request.signal);
+        await lock.assertHealthy();
+        await verifyRunLayout(prepared.layout, true, true);
+        return materializedResult(request.runId, prepared);
+      } catch (error) {
+        if (!(error instanceof PreparationCaptureInProgress)) throw error;
+        retry = true;
+      } finally {
+        await lock.release();
+      }
+      if (retry) {
+        await waitForDelay(PREPARATION_LOCK_RACE_DELAY_MS, request.signal);
+      }
     }
   }
 
@@ -533,8 +577,12 @@ export class PiAgentDirectoryMaterializer {
     const stagingKind = await pathKind(staging);
     if (stagingKind !== "missing") throw new Error("Pi agent preparation staging directory contains partial content");
     await mkdir(staging, { recursive: false, mode: 0o700 });
-    await chmod(staging, 0o700);
+    let stagingIdentity: DirectoryIdentity | undefined;
     try {
+      const stagingInfo = await lstatRequired(staging, "Pi agent preparation staging directory");
+      assertPrivateDirectory(stagingInfo, "Pi agent preparation staging directory");
+      stagingIdentity = directoryIdentityOf(stagingInfo);
+      await chmod(staging, 0o700);
       for (const entry of entries) {
         throwIfAborted(signal);
         await lock.assertHealthy();
@@ -557,7 +605,16 @@ export class PiAgentDirectoryMaterializer {
       await verifyAgentDirectory(layout.agentDir, expected, entries.map(entry => entry.path));
       await verifyRunLayout(layout, true, true);
     } finally {
-      if (await pathKind(staging) !== "missing") await rm(staging, { recursive: true, force: true });
+      if (stagingIdentity) {
+        await captureAndRemoveDirectory(
+          staging,
+          path.dirname(lock.directory),
+          stagingIdentity,
+          "Pi agent preparation staging directory",
+          quarantine => verifyCapturedStagingDirectory(quarantine, stagingIdentity!, entries),
+          lock.captureBarrier,
+        );
+      }
     }
   }
 }
@@ -718,8 +775,14 @@ async function verifyCompletedMaterializationLock(
     throwIfAborted(signal);
     const observation = await inspectPreparationLock(layout, runId, requestFingerprint, staleMs);
     if (observation.state === "conflict") throw new Error("conflicting Pi agent-directory preparation request");
+    if (observation.state === "capturing") {
+      const remaining = timeoutMs - (monotonicMilliseconds() - startedAt);
+      if (remaining <= 0) throw new Error("completed Pi agent-directory materialization has a stale preparation lock");
+      await waitForDelay(Math.min(PREPARATION_LOCK_POLL_MS, remaining), signal);
+      continue;
+    }
     if (observation.state === "stale") {
-      if (await reclaimStalePreparationLock(layout, runId, requestFingerprint, observation, staleMs, signal)) continue;
+      if (await reclaimStalePreparationLock(layout, runId, requestFingerprint, observation, staleMs, options.preparationCaptureBarrier, signal)) continue;
     } else {
       return;
     }
@@ -744,8 +807,14 @@ async function acquirePreparationLock(
     if (monotonicMilliseconds() - startedAt >= timeoutMs) throw new Error("Pi agent-directory preparation lock acquisition timed out");
     const observation = await inspectPreparationLock(layout, path.basename(layout.runRoot), requestFingerprint, staleMs);
     if (observation.state === "conflict") throw new Error("conflicting Pi agent-directory preparation request");
+    if (observation.state === "capturing") {
+      const remaining = timeoutMs - (monotonicMilliseconds() - startedAt);
+      if (remaining <= 0) throw new Error("Pi agent-directory preparation lock acquisition timed out");
+      await waitForDelay(Math.min(PREPARATION_LOCK_POLL_MS, remaining), signal);
+      continue;
+    }
     if (observation.state === "stale") {
-      if (await reclaimStalePreparationLock(layout, path.basename(layout.runRoot), requestFingerprint, observation, staleMs, signal)) continue;
+      if (await reclaimStalePreparationLock(layout, path.basename(layout.runRoot), requestFingerprint, observation, staleMs, options.preparationCaptureBarrier, signal)) continue;
       const remaining = timeoutMs - (monotonicMilliseconds() - startedAt);
       if (remaining <= 0) throw new Error("Pi agent-directory preparation lock acquisition timed out");
       await waitForDelay(Math.min(PREPARATION_LOCK_POLL_MS, remaining), signal);
@@ -753,8 +822,9 @@ async function acquirePreparationLock(
     }
     if (await hasCompletedMaterialization(layout)) return undefined;
     let created: PreparationLock | undefined;
-    try { created = await tryCreatePreparationLock(layout, requestFingerprint, staleMs, signal); }
+    try { created = await tryCreatePreparationLock(layout, requestFingerprint, staleMs, options.preparationCaptureBarrier, signal); }
     catch (error) {
+      if (error instanceof PreparationLockRace) throw error;
       if (!isTransientLockRace(error)) throw error;
     }
     if (created) return created;
@@ -779,9 +849,11 @@ async function tryCreatePreparationLock(
   layout: MaterializationLayout,
   requestFingerprint: string,
   staleMs: number,
+  captureBarrier: PreparationCaptureBarrier | undefined,
   signal?: AbortSignal,
 ): Promise<PreparationLock | undefined> {
   throwIfAborted(signal);
+  if (await hasPreparationQuarantine(layout)) return undefined;
   const directory = path.join(layout.runRoot, PREPARATION_LOCK_DIRECTORY);
   try {
     await mkdir(directory, { recursive: false, mode: 0o700 });
@@ -796,7 +868,7 @@ async function tryCreatePreparationLock(
     directoryIdentity = directoryIdentityOf(directoryInfo);
     await chmod(directory, 0o700);
   } catch (error) {
-    await removeNewPreparationLock(directory, directoryIdentity).catch(() => undefined);
+    await removeNewPreparationLock(directory, directoryIdentity, undefined, captureBarrier);
     if (isTransientLockRace(error)) return undefined;
     throw error;
   }
@@ -813,15 +885,42 @@ async function tryCreatePreparationLock(
   try {
     await writePrivateFileAtomically(path.join(directory, PREPARATION_LOCK_OWNER_FILE), serializePreparationOwner(owner), 0o600);
     await writePrivateFileAtomically(path.join(directory, PREPARATION_LOCK_HEARTBEAT_FILE), Buffer.from("heartbeat\n", "utf8"), 0o600);
-    lock = new PreparationLock(directory, owner, path.join(directory, PREPARATION_LOCK_HEARTBEAT_FILE), directoryIdentity!, staleMs);
+    lock = new PreparationLock(directory, owner, path.join(directory, PREPARATION_LOCK_HEARTBEAT_FILE), directoryIdentity!, staleMs, captureBarrier);
     await lock.assertHealthy();
     return lock;
   } catch (error) {
-    if (lock) await lock.release().catch(() => undefined);
-    else await removeNewPreparationLock(directory, directoryIdentity).catch(() => undefined);
+    if (lock) await lock.release();
+    else await removeNewPreparationLock(directory, directoryIdentity, owner, captureBarrier);
     if (isTransientLockRace(error)) return undefined;
     throw error;
   }
+}
+
+async function hasPreparationQuarantineRoot(runRoot: string): Promise<boolean> {
+  const entries = await readdir(runRoot, { withFileTypes: true });
+  let found = false;
+  for (const entry of entries) {
+    if (!entry.name.startsWith(PREPARATION_QUARANTINE_PREFIX)) continue;
+    if (!PREPARATION_QUARANTINE.test(entry.name)) throw new Error("Pi agent-directory quarantine has an invalid name");
+    if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("Pi agent-directory quarantine is not a private directory");
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstatRequired(path.join(runRoot, entry.name), "Pi agent-directory quarantine");
+    } catch (error) {
+      if (isNotFound(error)) {
+        found = true;
+        continue;
+      }
+      throw error;
+    }
+    assertPrivateDirectory(info, "Pi agent-directory quarantine");
+    found = true;
+  }
+  return found;
+}
+
+async function hasPreparationQuarantine(layout: MaterializationLayout): Promise<boolean> {
+  return hasPreparationQuarantineRoot(layout.runRoot);
 }
 
 async function inspectPreparationLock(
@@ -846,6 +945,7 @@ async function inspectPreparationLockOnce(
   requestFingerprint: string,
   staleMs: number,
 ): Promise<PreparationLockObservation> {
+  if (await hasPreparationQuarantine(layout)) return { state: "capturing" };
   const directory = path.join(layout.runRoot, PREPARATION_LOCK_DIRECTORY);
   const kind = await pathKind(directory);
   if (kind === "missing") return { state: "missing" };
@@ -895,11 +995,13 @@ async function reclaimStalePreparationLock(
   requestFingerprint: string,
   candidate: PreparationLockObservation,
   staleMs: number,
+  captureBarrier: PreparationCaptureBarrier | undefined,
   signal?: AbortSignal,
 ): Promise<boolean> {
   const lockDirectory = path.join(layout.runRoot, PREPARATION_LOCK_DIRECTORY);
   const reclaimDirectory = path.join(lockDirectory, PREPARATION_LOCK_RECLAIM_DIRECTORY);
   let reclaimOwner: PreparationReclaimOwner | undefined;
+  let reclaimOwnerWritten = false;
   let reclaimIdentity: DirectoryIdentity | undefined;
   let claimed = false;
   try {
@@ -917,12 +1019,30 @@ async function reclaimStalePreparationLock(
       createdAt: Date.now(),
     };
     await writePrivateFileAtomically(path.join(reclaimDirectory, PREPARATION_LOCK_RECLAIM_OWNER_FILE), serializeReclaimOwner(reclaimOwner), 0o600);
+    reclaimOwnerWritten = true;
   } catch (error) {
-    if (claimed && reclaimIdentity) await removeDirectoryIfIdentity(reclaimDirectory, reclaimIdentity).catch(() => undefined);
+    if (claimed && reclaimIdentity) {
+      await captureAndRemoveDirectory(
+        reclaimDirectory,
+        path.resolve(reclaimDirectory, "..", ".."),
+        reclaimIdentity,
+        "Pi agent-directory lock reclaim marker",
+        quarantine => verifyCapturedReclaimMarker(
+          quarantine,
+          reclaimIdentity!,
+          reclaimOwnerWritten ? reclaimOwner : undefined,
+        ),
+        captureBarrier,
+      );
+    }
+    if (error instanceof PreparationLockRace) throw error;
     if (isTransientLockRace(error)) return false;
     if (claimed || !isAlreadyExists(error)) throw error;
-    try { await reclaimStaleReclaimMarker(reclaimDirectory, staleMs); }
-    catch (race) { if (!isTransientLockRace(race)) throw race; }
+    try { await reclaimStaleReclaimMarker(reclaimDirectory, staleMs, captureBarrier); }
+    catch (race) {
+      if (race instanceof PreparationLockRace) throw race;
+      if (!isTransientLockRace(race)) throw race;
+    }
     return false;
   }
   try {
@@ -947,24 +1067,42 @@ async function reclaimStalePreparationLock(
     } else if (await pathKind(path.join(lockDirectory, PREPARATION_LOCK_OWNER_FILE)) !== "missing") {
       throw new PreparationLockRace("Pi agent-directory preparation lock owner appeared before reclaim");
     }
-    await assertStableDirectoryIdentity(lockDirectory, latest.directoryIdentity, "Pi agent-directory preparation lock");
-    await rm(lockDirectory, { recursive: true, force: false });
-    return true;
+    const captured = await captureAndRemoveDirectory(
+      lockDirectory,
+      layout.runRoot,
+      latest.directoryIdentity,
+      "Pi agent-directory preparation lock",
+      quarantine => verifyCapturedPreparationLock(
+        quarantine,
+        latest.directoryIdentity!,
+        latest.owner,
+        reclaimOwner,
+        reclaimIdentity,
+      ),
+      captureBarrier,
+    );
+    return captured;
   } catch (error) {
+    if (error instanceof PreparationLockRace) throw error;
     if (isTransientLockRace(error)) return false;
     throw error;
   } finally {
     try {
       if (await pathKind(lockDirectory) === "directory") {
-        await releaseReclaimMarker(reclaimDirectory, reclaimOwner, reclaimIdentity);
+        await releaseReclaimMarker(reclaimDirectory, reclaimOwner, reclaimIdentity, captureBarrier);
       }
     } catch (error) {
+      if (error instanceof PreparationLockRace) throw error;
       if (!isTransientLockRace(error)) throw error;
     }
   }
 }
 
-async function reclaimStaleReclaimMarker(directory: string, staleMs: number): Promise<void> {
+async function reclaimStaleReclaimMarker(
+  directory: string,
+  staleMs: number,
+  captureBarrier?: PreparationCaptureBarrier,
+): Promise<void> {
   const kind = await pathKind(directory);
   if (kind === "missing") return;
   if (kind !== "directory") throw new Error("Pi agent-directory lock reclaim marker is not a private directory");
@@ -985,7 +1123,14 @@ async function reclaimStaleReclaimMarker(directory: string, staleMs: number): Pr
   }
   if (ownerKind === "missing") {
     if (!isStale(mtimeMilliseconds(info), staleMs)) return;
-    await removeDirectoryIfIdentity(directory, identity);
+    await captureAndRemoveDirectory(
+      directory,
+      path.resolve(directory, "..", ".."),
+      identity,
+      "Pi agent-directory lock reclaim marker",
+      quarantine => verifyCapturedReclaimMarker(quarantine, identity),
+      captureBarrier,
+    );
     return;
   }
   if (ownerKind !== "file") throw new Error("Pi agent-directory lock reclaim owner is not a regular file");
@@ -994,7 +1139,14 @@ async function reclaimStaleReclaimMarker(directory: string, staleMs: number): Pr
   const owner = await readReclaimOwner(ownerPath);
   await assertReclaimMarkerOwnership(directory, owner, identity);
   if (!isStale(mtimeMilliseconds(ownerInfo), staleMs) || isProcessAlive(owner.pid)) return;
-  await removeDirectoryIfIdentity(directory, identity);
+  await captureAndRemoveDirectory(
+    directory,
+    path.resolve(directory, "..", ".."),
+    identity,
+    "Pi agent-directory lock reclaim marker",
+    quarantine => verifyCapturedReclaimMarker(quarantine, identity, owner),
+    captureBarrier,
+  );
 }
 
 async function assertReclaimMarkerOwnership(
@@ -1017,6 +1169,7 @@ async function releaseReclaimMarker(
   directory: string,
   owner: PreparationReclaimOwner | undefined,
   expectedIdentity?: DirectoryIdentity,
+  captureBarrier?: PreparationCaptureBarrier,
 ): Promise<void> {
   if (!owner) return;
   let lastRace: unknown;
@@ -1032,10 +1185,18 @@ async function releaseReclaimMarker(
         throw new Error("Pi agent-directory lock reclaim marker was replaced");
       }
       await assertReclaimMarkerOwnership(directory, owner, identity);
-      await assertStableDirectoryIdentity(directory, identity, "Pi agent-directory lock reclaim marker");
-      await rm(directory, { recursive: true, force: false });
+      const captured = await captureAndRemoveDirectory(
+        directory,
+        path.resolve(directory, "..", ".."),
+        identity,
+        "Pi agent-directory lock reclaim marker",
+        quarantine => assertReclaimMarkerOwnership(quarantine, owner, identity),
+        captureBarrier,
+      );
+      if (captured) return;
       return;
     } catch (error) {
+      if (error instanceof PreparationLockRace) throw error;
       if (!isTransientLockRace(error)) throw error;
       lastRace = error;
       if (await pathKind(directory) === "missing") return;
@@ -1043,6 +1204,187 @@ async function releaseReclaimMarker(
     }
   }
   throw lastRace instanceof Error ? lastRace : new Error("Pi agent-directory lock reclaim release raced with replacement");
+}
+
+type CapturedDirectoryVerifier = (directory: string) => Promise<void>;
+
+async function freshQuarantinePath(runRoot: string, name: string): Promise<string> {
+  await ensureSecureDirectory(runRoot, "run runtime directory", true);
+  for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
+    const candidate = path.join(runRoot, `${PREPARATION_QUARANTINE_PREFIX}${randomUUID()}`);
+    if (await pathKind(candidate) === "missing") return candidate;
+  }
+  throw new Error(`${name} quarantine name could not be allocated`);
+}
+
+/**
+ * Destructive cleanup is only allowed after the live pathname has been
+ * atomically moved out of the lock namespace. The captured directory is
+ * verified again (including its owner token) before only the private
+ * quarantine copy is removed; a replacement at `source` can therefore never
+ * be reached by the destructive operation.
+ */
+async function captureAndRemoveDirectory(
+  source: string,
+  runRoot: string,
+  expectedIdentity: DirectoryIdentity,
+  name: string,
+  verify: CapturedDirectoryVerifier,
+  captureBarrier?: PreparationCaptureBarrier,
+): Promise<boolean> {
+  const quarantine = await freshQuarantinePath(runRoot, name);
+  try {
+    await rename(source, quarantine);
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    throw error;
+  }
+  const disposal = await freshQuarantinePath(runRoot, name);
+  try {
+    try { await rename(quarantine, disposal); }
+    catch (error) {
+      if (isNotFound(error)) throw new PreparationLockRace(`${name} quarantine disappeared before capture`, error);
+      throw error;
+    }
+    const capturedInfo = await lstatRequired(disposal, `${name} captured directory`);
+    assertPrivateDirectory(capturedInfo, `${name} captured directory`);
+    const capturedIdentity = directoryIdentityOf(capturedInfo);
+    if (!sameDirectoryIdentity(capturedIdentity, expectedIdentity)) {
+      throw new PreparationLockRace(`${name} replacement was captured instead of the expected directory`);
+    }
+    await verify(disposal);
+    await captureBarrier?.({ source, quarantine: disposal, name });
+    await rm(disposal, { recursive: true, force: false });
+    return true;
+  } catch (error) {
+    if (isNotFound(error)) throw new PreparationLockRace(`${name} captured directory disappeared before deletion`, error);
+    throw error;
+  }
+}
+
+async function verifyCapturedStagingDirectory(
+  directory: string,
+  expectedIdentity: DirectoryIdentity,
+  expectedEntries: readonly FileSystemEntry[],
+): Promise<void> {
+  const info = await lstatRequired(directory, "captured Pi agent preparation staging directory");
+  assertPrivateDirectory(info, "captured Pi agent preparation staging directory");
+  if (!sameDirectoryIdentity(directoryIdentityOf(info), expectedIdentity)) {
+    throw new PreparationLockRace("captured Pi agent preparation staging directory identity changed");
+  }
+  const expectedFiles = new Map(expectedEntries.map(entry => [entry.path, entry.bytes]));
+  const expectedDirectories = new Set<string>();
+  for (const file of expectedFiles.keys()) {
+    let parent = path.posix.dirname(file);
+    while (parent !== ".") {
+      expectedDirectories.add(parent);
+      parent = path.posix.dirname(parent);
+    }
+  }
+  const actual = await listRelativeEntries(directory);
+  if (actual.files.some(file => !expectedFiles.has(file)) || actual.directories.some(name => !expectedDirectories.has(name))) {
+    throw new Error("captured Pi agent preparation staging directory contains unexpected content");
+  }
+  for (const name of actual.directories) {
+    const directoryInfo = await lstatRequired(path.join(directory, name), `captured Pi agent preparation staging directory entry: ${name}`);
+    assertPrivateDirectory(directoryInfo, `captured Pi agent preparation staging directory entry: ${name}`);
+  }
+  for (const name of actual.files) {
+    const fileInfo = await lstatRequired(path.join(directory, name), `captured Pi agent preparation staging file: ${name}`);
+    assertPrivateFile(fileInfo, `captured Pi agent preparation staging file: ${name}`);
+    const bytes = await readStableFile(path.join(directory, name), `captured Pi agent preparation staging file: ${name}`);
+    if (!bytes.equals(expectedFiles.get(name)!)) throw new Error(`captured Pi agent preparation staging file changed: ${name}`);
+  }
+  await assertStableDirectoryIdentity(directory, expectedIdentity, "captured Pi agent preparation staging directory");
+}
+
+async function verifyCapturedPreparationLock(
+  directory: string,
+  expectedIdentity: DirectoryIdentity,
+  expectedOwner?: PreparationLockOwner,
+  expectedReclaimOwner?: PreparationReclaimOwner,
+  expectedReclaimIdentity?: DirectoryIdentity,
+  requireHeartbeatAbsent = false,
+): Promise<void> {
+  const info = await lstatRequired(directory, "captured Pi agent-directory preparation lock");
+  assertPrivateDirectory(info, "captured Pi agent-directory preparation lock");
+  if (!sameDirectoryIdentity(directoryIdentityOf(info), expectedIdentity)) {
+    throw new PreparationLockRace("captured Pi agent-directory preparation lock identity changed");
+  }
+  const ownerPath = path.join(directory, PREPARATION_LOCK_OWNER_FILE);
+  const ownerKind = await pathKind(ownerPath);
+  if (expectedOwner) {
+    if (ownerKind !== "file") throw new PreparationLockRace("captured Pi agent-directory preparation lock owner changed");
+    const owner = await readPreparationLockOwner(ownerPath);
+    if (!samePreparationLockOwner(owner, expectedOwner)) throw new PreparationLockRace("captured Pi agent-directory preparation lock owner changed");
+  } else if (ownerKind !== "missing") {
+    throw new PreparationLockRace("captured Pi agent-directory preparation lock unexpectedly has an owner");
+  }
+  await verifyPreparationLockEntries(directory, expectedOwner !== undefined, expectedIdentity);
+  if (requireHeartbeatAbsent || !expectedOwner) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    if (entries.some(entry => PREPARATION_LOCK_OWNER_TEMP.test(entry.name) || PREPARATION_LOCK_HEARTBEAT_TEMP.test(entry.name))) {
+      throw new PreparationLockRace("captured Pi agent-directory preparation lock has unexpected temporary metadata");
+    }
+  }
+  const heartbeatPath = path.join(directory, PREPARATION_LOCK_HEARTBEAT_FILE);
+  const heartbeatKind = await pathKind(heartbeatPath);
+  if (requireHeartbeatAbsent && heartbeatKind !== "missing") {
+    throw new PreparationLockRace("captured Pi agent-directory preparation lock has unexpected heartbeat state");
+  }
+  if (heartbeatKind !== "missing") {
+    if (heartbeatKind !== "file") throw new Error("captured Pi agent-directory preparation lock heartbeat is not a regular file");
+    const heartbeatInfo = await lstatRequired(heartbeatPath, "captured Pi agent-directory preparation lock heartbeat");
+    assertPrivateFile(heartbeatInfo, "captured Pi agent-directory preparation lock heartbeat");
+  }
+  const reclaimPath = path.join(directory, PREPARATION_LOCK_RECLAIM_DIRECTORY);
+  const reclaimKind = await pathKind(reclaimPath);
+  if (expectedReclaimOwner) {
+    if (reclaimKind !== "directory") throw new PreparationLockRace("captured Pi agent-directory reclaim marker changed");
+    const reclaimInfo = await lstatRequired(reclaimPath, "captured Pi agent-directory lock reclaim marker");
+    assertPrivateDirectory(reclaimInfo, "captured Pi agent-directory lock reclaim marker");
+    const reclaimIdentity = directoryIdentityOf(reclaimInfo);
+    if (expectedReclaimIdentity && !sameDirectoryIdentity(reclaimIdentity, expectedReclaimIdentity)) {
+      throw new PreparationLockRace("captured Pi agent-directory reclaim marker identity changed");
+    }
+    await assertReclaimMarkerOwnership(reclaimPath, expectedReclaimOwner, reclaimIdentity);
+  } else if (reclaimKind !== "missing") {
+    throw new PreparationLockRace("captured Pi agent-directory preparation lock has an unexpected reclaim marker");
+  }
+  const finalOwnerKind = await pathKind(ownerPath);
+  if (expectedOwner) {
+    if (finalOwnerKind !== "file") throw new PreparationLockRace("captured Pi agent-directory preparation lock owner changed");
+    const finalOwner = await readPreparationLockOwner(ownerPath);
+    if (!samePreparationLockOwner(finalOwner, expectedOwner)) throw new PreparationLockRace("captured Pi agent-directory preparation lock owner changed");
+  } else if (finalOwnerKind !== "missing") {
+    throw new PreparationLockRace("captured Pi agent-directory preparation lock unexpectedly has an owner");
+  }
+  await assertStableDirectoryIdentity(directory, expectedIdentity, "captured Pi agent-directory preparation lock");
+}
+
+async function verifyCapturedReclaimMarker(
+  directory: string,
+  expectedIdentity: DirectoryIdentity,
+  expectedOwner?: PreparationReclaimOwner,
+): Promise<void> {
+  if (expectedOwner) {
+    await assertReclaimMarkerOwnership(directory, expectedOwner, expectedIdentity);
+    return;
+  }
+  const info = await lstatRequired(directory, "captured Pi agent-directory lock reclaim marker");
+  assertPrivateDirectory(info, "captured Pi agent-directory lock reclaim marker");
+  if (!sameDirectoryIdentity(directoryIdentityOf(info), expectedIdentity)) {
+    throw new PreparationLockRace("captured Pi agent-directory lock reclaim marker identity changed");
+  }
+  await verifyReclaimMarkerEntries(directory, false, expectedIdentity);
+  const entries = await readdir(directory, { withFileTypes: true });
+  if (entries.some(entry => PREPARATION_RECLAIM_OWNER_TEMP.test(entry.name))) {
+    throw new PreparationLockRace("captured Pi agent-directory lock reclaim marker has unexpected temporary metadata");
+  }
+  if (await pathKind(path.join(directory, PREPARATION_LOCK_RECLAIM_OWNER_FILE)) !== "missing") {
+    throw new PreparationLockRace("captured Pi agent-directory lock reclaim owner unexpectedly exists");
+  }
+  await assertStableDirectoryIdentity(directory, expectedIdentity, "captured Pi agent-directory lock reclaim marker");
 }
 
 type PreparationLockRequirement = "required" | "optional" | "forbidden";
@@ -1057,6 +1399,9 @@ async function hasCompletedMaterialization(layout: MaterializationLayout): Promi
 }
 
 async function ensureRunLayout(layout: MaterializationLayout, signal?: AbortSignal): Promise<void> {
+  if (await hasPreparationQuarantine(layout)) {
+    throw new PreparationCaptureInProgress("Pi agent-directory preparation capture is in progress");
+  }
   await ensurePrivateDirectory(layout.homeDir, "run-scoped HOME");
   await ensurePrivateDirectory(layout.wikiHomeDir, "run-scoped WIKI_HOME");
   await verifyNoSymlinksBelow(layout.homeDir, "run-scoped HOME");
@@ -1075,6 +1420,9 @@ async function verifyRunLayout(
 ): Promise<void> {
   await ensureSecureDirectory(layout.runtimeRoot, "runtime root", false);
   await ensureSecureDirectory(layout.runRoot, "run runtime directory", true);
+  if (await hasPreparationQuarantine(layout)) {
+    throw new PreparationCaptureInProgress("Pi agent-directory preparation capture is in progress");
+  }
   await ensureSecureDirectory(layout.homeDir, "run-scoped HOME", true);
   await ensureSecureDirectory(layout.wikiHomeDir, "run-scoped WIKI_HOME", true);
   await verifyNoSymlinksBelow(layout.homeDir, "run-scoped HOME");
@@ -1096,6 +1444,20 @@ async function verifyRunRootChildren(
   if (lockRequirement !== "forbidden") allowed.add(PREPARATION_LOCK_DIRECTORY);
   const entries = await readdir(layout.runRoot, { withFileTypes: true });
   for (const entry of entries) {
+    if (entry.name.startsWith(PREPARATION_QUARANTINE_PREFIX)) {
+      if (!PREPARATION_QUARANTINE.test(entry.name) || entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new Error("Pi agent-directory quarantine is not a private directory");
+      }
+      let info: Awaited<ReturnType<typeof lstat>>;
+      try {
+        info = await lstatRequired(path.join(layout.runRoot, entry.name), "Pi agent-directory quarantine");
+      } catch (error) {
+        if (isNotFound(error)) throw new PreparationCaptureInProgress("Pi agent-directory preparation capture is in progress");
+        throw error;
+      }
+      assertPrivateDirectory(info, "Pi agent-directory quarantine");
+      throw new PreparationCaptureInProgress("Pi agent-directory preparation capture is in progress");
+    }
     if (entry.isSymbolicLink() || !entry.isDirectory() || !allowed.has(entry.name)) {
       throw new Error("Pi run directory contains unexpected or partial content");
     }
@@ -1118,12 +1480,43 @@ async function verifyRunRootChildren(
 
 async function writePrivateFileAtomically(target: string, bytes: Buffer, mode: number): Promise<void> {
   const temporary = `${target}.tmp-${randomUUID()}`;
+  let temporaryIdentity: DirectoryIdentity | undefined;
   try {
     await writeFile(temporary, bytes, { flag: "wx", mode });
+    const temporaryInfo = await lstatRequired(temporary, "Pi agent-directory private temporary file");
+    assertPrivateFile(temporaryInfo, "Pi agent-directory private temporary file");
+    temporaryIdentity = directoryIdentityOf(temporaryInfo);
     await chmod(temporary, mode);
     await rename(temporary, target);
   } finally {
-    if (await pathKind(temporary) !== "missing") await rm(temporary, { force: true });
+    if (temporaryIdentity) await captureAndRemovePrivateTemporaryFile(temporary, temporaryIdentity, bytes);
+  }
+}
+
+async function captureAndRemovePrivateTemporaryFile(
+  source: string,
+  expectedIdentity: DirectoryIdentity,
+  expectedBytes: Buffer,
+): Promise<void> {
+  const quarantine = `${source}.cleanup-${randomUUID()}`;
+  try {
+    await rename(source, quarantine);
+  } catch (error) {
+    if (isNotFound(error)) return;
+    throw error;
+  }
+  try {
+    const info = await lstatRequired(quarantine, "Pi agent-directory private temporary file quarantine");
+    assertPrivateFile(info, "Pi agent-directory private temporary file quarantine");
+    if (!sameDirectoryIdentity(directoryIdentityOf(info), expectedIdentity)) {
+      throw new PreparationLockRace("Pi agent-directory private temporary file was replaced");
+    }
+    const actualBytes = await readStableFile(quarantine, "Pi agent-directory private temporary file quarantine");
+    if (!actualBytes.equals(expectedBytes)) throw new PreparationLockRace("Pi agent-directory private temporary file contents changed");
+    await unlink(quarantine);
+  } catch (error) {
+    if (isNotFound(error)) throw new PreparationLockRace("Pi agent-directory private temporary file quarantine disappeared", error);
+    throw error;
   }
 }
 
@@ -1307,9 +1700,21 @@ function sameReclaimOwner(left: PreparationReclaimOwner, right: PreparationRecla
     && left.createdAt === right.createdAt;
 }
 
-async function removeNewPreparationLock(directory: string, expectedIdentity?: DirectoryIdentity): Promise<void> {
+async function removeNewPreparationLock(
+  directory: string,
+  expectedIdentity?: DirectoryIdentity,
+  expectedOwner?: PreparationLockOwner,
+  captureBarrier?: PreparationCaptureBarrier,
+): Promise<void> {
   if (!expectedIdentity) return;
-  await removeDirectoryIfIdentity(directory, expectedIdentity);
+  await captureAndRemoveDirectory(
+    directory,
+    path.dirname(directory),
+    expectedIdentity,
+    "Pi agent-directory preparation lock",
+    quarantine => verifyCapturedPreparationLock(quarantine, expectedIdentity, expectedOwner, undefined, undefined, true),
+    captureBarrier,
+  );
 }
 
 function directoryIdentityOf(info: Awaited<ReturnType<typeof lstat>>): DirectoryIdentity {
@@ -1326,18 +1731,6 @@ async function assertStableDirectoryIdentity(directory: string, expected: Direct
   if (!sameDirectoryIdentity(directoryIdentityOf(info), expected)) {
     throw new PreparationLockRace(`${name} was replaced during an operation`);
   }
-}
-
-async function removeDirectoryIfIdentity(directory: string, expected: DirectoryIdentity): Promise<void> {
-  const kind = await pathKind(directory);
-  if (kind === "missing") return;
-  if (kind !== "directory") throw new Error("Pi agent-directory lock directory was replaced");
-  const info = await lstatRequired(directory, "Pi agent-directory lock directory");
-  assertPrivateDirectory(info, "Pi agent-directory lock directory");
-  if (!sameDirectoryIdentity(directoryIdentityOf(info), expected)) {
-    throw new PreparationLockRace("Pi agent-directory lock directory was replaced");
-  }
-  await rm(directory, { recursive: true, force: false });
 }
 
 function monotonicMilliseconds(): number { return Number(process.hrtime.bigint()) / 1_000_000; }

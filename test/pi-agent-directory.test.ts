@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { RuntimeResolution } from "../src/control/domain.js";
-import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
+import { PiAgentDirectoryMaterializer, type PreparationCaptureBarrier } from "../src/pi/pi-agent-directory.js";
 
 async function fixture() {
   const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "squire-agent-dir-"));
@@ -188,6 +188,103 @@ test("independent materializers converge through a private lock and recover stal
   for (const result of recovered) assert.deepEqual(result, recovered[0]);
   assert.equal(recovered[0]!.agentDir, path.join(runRoot, "pi-agent"));
   assert.equal((await (await import("node:fs/promises")).readdir(runRoot)).includes(".pi-agent-lock"), false);
+});
+
+function replacementLockBarrier(expectedSource: string, runId: string, sentinelPath: string): { barrier: PreparationCaptureBarrier; calls: () => number } {
+  let calls = 0;
+  const barrier: PreparationCaptureBarrier = async event => {
+    if (event.name !== "Pi agent-directory preparation lock") return;
+    calls += 1;
+    assert.equal(event.source, expectedSource);
+    await assert.rejects(lstat(event.source), { code: "ENOENT" });
+    assert.match(path.basename(event.quarantine), /^\.pi-agent-quarantine-[0-9a-f-]{36}$/iu);
+    const capturedOwner = JSON.parse(await readFile(path.join(event.quarantine, "owner.json"), "utf8")) as { runId: string; requestFingerprint: string };
+    const childSource = `
+      import { chmod, mkdir, writeFile } from "node:fs/promises";
+      import path from "node:path";
+      const source = ${JSON.stringify(event.source)};
+      const sentinel = ${JSON.stringify(sentinelPath)};
+      await mkdir(source, { recursive: false, mode: 0o700 });
+      await chmod(source, 0o700);
+      const owner = {
+        schemaVersion: 1,
+        kind: "squire-pi-agent-preparation-lock",
+        runId: ${JSON.stringify(runId)},
+        token: "00000000-0000-4000-8000-000000000002",
+        pid: process.pid,
+        createdAt: Date.now(),
+        requestFingerprint: ${JSON.stringify(capturedOwner.requestFingerprint)},
+      };
+      await writeFile(path.join(source, "owner.json"), JSON.stringify(owner) + "\\n", { flag: "wx", mode: 0o600 });
+      await chmod(path.join(source, "owner.json"), 0o600);
+      await writeFile(path.join(source, "heartbeat"), "heartbeat\\n", { flag: "wx", mode: 0o600 });
+      await chmod(path.join(source, "heartbeat"), 0o600);
+      await writeFile(sentinel, "replacement-sentinel\\n", { flag: "wx", mode: 0o600 });
+      await chmod(sentinel, 0o600);
+    `;
+    const result = await execFile(process.execPath, ["--input-type=module", "-e", childSource], { cwd: path.dirname(expectedSource) });
+    assert.equal(result.stderr, "");
+  };
+  return { barrier, calls: () => calls };
+}
+
+test("atomic release capture preserves a synchronized replacement lock and sentinel", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const runRoot = path.join(runtimeRoot, runtime.runId);
+  const lockDirectory = path.join(runRoot, ".pi-agent-lock");
+  const sentinelPath = path.join(lockDirectory, "replacement-sentinel");
+  const replacement = replacementLockBarrier(lockDirectory, runtime.runId, sentinelPath);
+  try {
+    const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+    await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, preparationCaptureBarrier: replacement.barrier }).materialize(request);
+    assert.equal(replacement.calls(), 1);
+    assert.equal(await readFile(sentinelPath, "utf8"), "replacement-sentinel\n");
+    assert.equal(await readFile(path.join(lockDirectory, "heartbeat"), "utf8"), "heartbeat\n");
+    assert.deepEqual((await readdir(runRoot)).filter(name => name.startsWith(".pi-agent-quarantine-")), []);
+    await assert.rejects(
+      new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, preparationLockTimeoutMs: 250, preparationLockStaleMs: 5_000 }).materialize(request),
+      /unexpected|partial|timed out|conflicting/iu,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "replacement-sentinel\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("atomic stale reclaim capture preserves a synchronized replacement lock and blocks preparation", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const runRoot = path.join(runtimeRoot, runtime.runId);
+  const initial = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace }).materialize({ runId: runtime.runId, runtime, wikiProfile: profile, workspace });
+  const sentinelPath = path.join(runRoot, ".pi-agent-lock", "replacement-sentinel");
+  const replacement = replacementLockBarrier(path.join(runRoot, ".pi-agent-lock"), runtime.runId, sentinelPath);
+  try {
+    const manifestFingerprint = createHash("sha256").update(await readFile(initial.manifestPath)).digest("hex");
+    const fingerprint = createHash("sha256").update(`${manifestFingerprint}\\0${path.resolve(workspace)}`).digest("hex");
+    await rm(initial.agentDir, { recursive: true, force: false });
+    const lockDirectory = path.join(runRoot, ".pi-agent-lock");
+    await mkdir(lockDirectory, { recursive: false, mode: 0o700 });
+    await chmod(lockDirectory, 0o700);
+    const old = new Date(Date.now() - 10_000);
+    await writeFile(path.join(lockDirectory, "owner.json"), JSON.stringify({ schemaVersion: 1, kind: "squire-pi-agent-preparation-lock", runId: runtime.runId, token: "00000000-0000-4000-8000-000000000001", pid: 99999999, createdAt: old.getTime(), requestFingerprint: fingerprint }) + "\n", { mode: 0o600 });
+    await writeFile(path.join(lockDirectory, "heartbeat"), "heartbeat\n", { mode: 0o600 });
+    await utimes(lockDirectory, old, old);
+    await utimes(path.join(lockDirectory, "owner.json"), old, old);
+    await utimes(path.join(lockDirectory, "heartbeat"), old, old);
+
+    const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+    await assert.rejects(
+      new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, preparationLockStaleMs: 50, preparationLockTimeoutMs: 500, preparationCaptureBarrier: replacement.barrier }).materialize(request),
+      /unexpected|partial|timed out|conflicting/iu,
+    );
+    assert.equal(replacement.calls(), 1);
+    assert.equal(await readFile(sentinelPath, "utf8"), "replacement-sentinel\n");
+    await assert.rejects(lstat(initial.agentDir), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(lockDirectory, "heartbeat"), "utf8"), "heartbeat\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("separate controller processes converge on the same verified materialization", async () => {
