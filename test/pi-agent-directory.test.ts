@@ -76,6 +76,126 @@ test("materializer writes deterministic run-scoped settings, manifest, and trust
   assert.deepEqual(await restarted.materialize({ runId: runtime.runId, runtime, wikiProfile: profile, workspace }), first);
 });
 
+test("retained captures have authenticated bounds and quiescent teardown", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let quiescent = false;
+  const options = {
+    runtimeRoot,
+    workspace,
+    maxRetainedCapturesPerRun: 2,
+    maxRetainedCapturesGlobal: 2,
+    assertTeardownQuiescent: async () => {
+      if (!quiescent) throw new Error("role processes/controllers are not quiescent");
+    },
+  };
+  const materializer = new PiAgentDirectoryMaterializer(options);
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    const first = await materializer.materialize(request);
+    const retainedRun = path.join(runtimeRoot, ".pi-agent-quarantine-retained", runtime.runId);
+    const firstRecords = (await readdir(retainedRun)).filter(name => name.endsWith(".json"));
+    assert.equal(firstRecords.length, 1);
+    const firstRecord = JSON.parse(await readFile(path.join(retainedRun, firstRecords[0]!), "utf8")) as Record<string, any>;
+    assert.equal(firstRecord["kind"], "squire-pi-agent-retained-capture");
+    assert.equal(firstRecord["runId"], runtime.runId);
+    assert.equal(typeof firstRecord["auth"], "string");
+    assert.deepEqual(Object.keys(firstRecord["identity"]).sort(), ["dev", "ino"]);
+    assert.match(firstRecord["source"], new RegExp(runtime.runId));
+
+    await rm(first.agentDir, { recursive: true, force: false });
+    await materializer.materialize(request);
+    assert.equal((await readdir(retainedRun)).filter(name => name.endsWith(".json")).length, 2);
+
+    await rm(first.agentDir, { recursive: true, force: false });
+    await assert.rejects(materializer.materialize(request), /bound|teardown/iu);
+    await assert.rejects(materializer.teardown(runtime.runId), /not quiescent/iu);
+
+    quiescent = true;
+    const teardown = await materializer.teardown(runtime.runId);
+    assert.ok(teardown.capturesRemoved >= 2);
+    assert.equal(teardown.fencesRemoved, 0);
+    await assert.rejects(lstat(retainedRun), { code: "ENOENT" });
+    assert.equal((await readdir(path.join(runtimeRoot, runtime.runId))).includes(".pi-agent-lock"), false);
+
+    // Teardown is the explicit lifecycle handoff; it unwedges a later
+    // legitimate preparation without allowing active contenders to delete
+    // one another's captures.
+    await materializer.materialize(request);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("global retained-capture bound stays closed under concurrent run allocations", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const secondRunId = "run_example02";
+  const secondRuntime = { ...runtime };
+  const materializer = new PiAgentDirectoryMaterializer({
+    runtimeRoot,
+    workspace,
+    maxRetainedCapturesPerRun: 32,
+    maxRetainedCapturesGlobal: 1,
+    assertTeardownQuiescent: async () => undefined,
+  });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  const secondRequest = { runId: secondRunId, runtime: secondRuntime, wikiProfile: profile, workspace };
+  try {
+    const results = await Promise.allSettled([materializer.materialize(request), materializer.materialize(secondRequest)]);
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+    const retainedRoot = path.join(runtimeRoot, ".pi-agent-quarantine-retained");
+    let records = 0;
+    for (const runId of [runtime.runId, secondRunId]) {
+      const retainedRun = path.join(retainedRoot, runId);
+      try { records += (await readdir(retainedRun)).filter(name => name.endsWith(".json") && name.startsWith("capture-")).length; }
+      catch (error) { assert.equal((error as NodeJS.ErrnoException).code, "ENOENT"); }
+    }
+    assert.equal(records, 1);
+    await materializer.teardown(runtime.runId);
+    await materializer.teardown(secondRunId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("metadata-bearing quarantine fences reconcile through trusted teardown", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const runRoot = path.join(runtimeRoot, runtime.runId);
+  let moved: string | undefined;
+  const barrier: PreparationCaptureBarrier = async event => {
+    if (event.name !== "Pi agent-directory preparation lock") return;
+    moved = path.join(root, "moved-capture");
+    await rename(event.quarantine, moved);
+  };
+  const materializer = new PiAgentDirectoryMaterializer({
+    runtimeRoot,
+    workspace,
+    preparationCaptureBarrier: barrier,
+    assertTeardownQuiescent: async () => undefined,
+  });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    await assert.rejects(materializer.materialize(request), /quarantine|replacement|missing|disappeared/iu);
+    const fences = (await readdir(runRoot)).filter(name => name.startsWith(".pi-agent-quarantine-"));
+    assert.equal(fences.length, 1);
+    const fence = path.join(runRoot, fences[0]!);
+    const metadata = JSON.parse(await readFile(path.join(fence, "capture.json"), "utf8")) as Record<string, any>;
+    assert.equal(metadata["kind"], "squire-pi-agent-retained-capture");
+    assert.equal(metadata["state"], "fence");
+    assert.equal(metadata["runId"], runtime.runId);
+    assert.equal(metadata["type"], "quarantine-fence");
+    const teardown = await materializer.teardown(runtime.runId);
+    assert.equal(teardown.fencesRemoved, 1);
+    assert.equal((await readdir(runRoot)).filter(name => name.startsWith(".pi-agent-quarantine-")).length, 0);
+    assert.ok(moved);
+    assert.equal((await lstat(moved!)).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("materializer rejects tampering, partial state, conflicting project settings, and non-reasoning models", async () => {
   const { root, workspace, runtime } = await fixture();
   const options = { runtimeRoot: path.join(root, "runtime"), workspace };

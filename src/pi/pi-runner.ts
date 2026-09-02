@@ -4,7 +4,7 @@ import type { WorkflowStore } from "../control/workflow-store.js";
 import { StoreConflictError } from "../control/workflow-store.js";
 import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
 import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
-import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest } from "./pi-agent-directory.js";
+import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest, type PiAgentDirectoryTeardownGuard, type PiAgentDirectoryTeardownResult } from "./pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
 import { PiRpcClient, type PiState } from "./pi-rpc-client.js";
 
@@ -16,6 +16,8 @@ export interface RunnerConfig {
   wikiProfile?: PiWikiProfileInput;
   /** Trusted run-scoped filesystem preparation port. */
   materializer?: PiAgentDirectoryMaterializerPort;
+  /** Cross-controller quiescence authority used by the default materializer teardown. */
+  assertPiAgentDirectoryTeardownQuiescent?: PiAgentDirectoryTeardownGuard;
   workspace?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
@@ -44,7 +46,7 @@ export class PiRunner {
   readonly #defaultMaterializer: PiAgentDirectoryMaterializerPort;
   #ownerSequence = 0;
   constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {
-    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace);
+    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace, config.assertPiAgentDirectoryTeardownQuiescent);
   }
 
   resolveRuntime(runId: string): Promise<RuntimeResolution> { return this.#getOrResolveRuntime(runId); }
@@ -474,6 +476,24 @@ export class PiRunner {
     const owned = this.live.get(key);
     if (owned?.process.exitCode === null) throw new Error("cannot release ownership of a live process");
     this.live.delete(key);
+  }
+
+  /**
+   * Run-teardown integration for the retained preparation lifecycle. The
+   * materializer's own quiescence guard additionally covers other controller
+   * processes; this check prevents this runner from tearing down while it
+   * still owns a live or unresolved role process.
+   */
+  async teardownRunAgentDirectory(runId: string, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult> {
+    for (const handle of this.allocating.values()) {
+      if (handle.runId === runId) throw new Error("cannot tear down Pi agent directory while a role allocation is unresolved");
+    }
+    for (const handle of this.live.values()) {
+      if (handle.runId === runId && handle.process.exitCode === null) throw new Error("cannot tear down Pi agent directory while a role process is live");
+    }
+    const materializer = this.config.materializer ?? this.#defaultMaterializer;
+    if (!materializer.teardown) throw new Error("Pi agent-directory materializer does not provide trusted teardown");
+    return materializer.teardown(runId, signal);
   }
 }
 

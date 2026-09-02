@@ -28,6 +28,7 @@ const roleConfig = Object.fromEntries(ROLES.map(role => [role, {
 class RecordingMaterializer implements PiAgentDirectoryMaterializerPort {
   calls = 0;
   verifyCalls = 0;
+  teardownCalls = 0;
   readonly requests: PiAgentDirectoryRequest[] = [];
   async materialize(request: PiAgentDirectoryRequest): Promise<MaterializedPiAgentDirectory> {
     this.calls += 1;
@@ -51,6 +52,10 @@ class RecordingMaterializer implements PiAgentDirectoryMaterializerPort {
   }
   async verify(_request: PiAgentDirectoryRequest, _materialized: MaterializedPiAgentDirectory): Promise<void> {
     this.verifyCalls += 1;
+  }
+  async teardown(runId: string): Promise<{ runId: string; capturesRemoved: number; fencesRemoved: number }> {
+    this.teardownCalls += 1;
+    return { runId, capturesRemoved: 2, fencesRemoved: 1 };
   }
 }
 
@@ -122,6 +127,24 @@ test("runner selects each independent profile and shares one run materialization
   assert.equal(materializer.requests[0]!.wikiProfile.model, "gpt-5.6-luna");
   assert.equal(materializer.requests[0]!.wikiProfile.thinking, "high");
   assert.equal(runner.live.size, 5);
+});
+
+test("runner teardown delegates only after its owned role processes are quiescent", async () => {
+  const store = new InMemoryWorkflowStore();
+  await store.create(run());
+  const materializer = new RecordingMaterializer();
+  const runner = new PiRunner(
+    new FakePiProcessFactory(),
+    { resolve: async () => structuredClone(runtime) },
+    store,
+    { roles: roleConfig, materializer },
+    async () => undefined,
+    async () => "trusted role",
+    clock,
+  );
+  const result = await runner.teardownRunAgentDirectory("run_example01");
+  assert.deepEqual(result, { runId: "run_example01", capturesRemoved: 2, fencesRemoved: 1 });
+  assert.equal(materializer.teardownCalls, 1);
 });
 
 class OneProcessFactory implements PiProcessFactory {

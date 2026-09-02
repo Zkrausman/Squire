@@ -5,11 +5,9 @@ import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { DEFAULT_PI_ROLE_PROFILES, type PiRoleConfig } from "../src/pi/pi-configuration.js";
 import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
-import { type ExtensionContextLike, type FooterComponentLike, type FooterDataLike, type FooterThemeLike, ROUTINE_WIKI_STATUS_BLOCK } from "../src/pi/wiki-footer.js";
 import type { PiProcess, PiProcessFactory, ProcessLaunch } from "../src/pi/pi-process.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
@@ -19,10 +17,6 @@ const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dis
 const WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
 const WIKI_EXTENSION = `${WIKI_ROOT}/extensions/llm-wiki/index.ts`;
 const WIKI_MODEL = "openai-codex/gpt-5.6-luna";
-const footerTheme: FooterThemeLike = { fg: (_color, text) => text };
-
-type ExtensionHandler = (event: unknown, context?: ExtensionContextLike) => unknown;
-type FooterFactory = Parameters<NonNullable<ExtensionContextLike["ui"]["setFooter"]>>[0];
 
 class ChildPiProcess extends EventEmitter implements PiProcess {
   readonly identity = `child-${randomUUID()}`;
@@ -92,6 +86,76 @@ class ChildPiProcessFactory implements PiProcessFactory {
   }
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function runRealTuiFooterProbe(options: {
+  workspace: string;
+  agentDir: string;
+  homeDir: string;
+  wikiHomeDir: string;
+  footerPath: string;
+  probePath: string;
+}): Promise<{ output: string; stderr: string }> {
+  const command = [
+    process.execPath,
+    PI_CLI,
+    "--provider", "openai-codex",
+    "--model", "gpt-5.6-luna",
+    "--thinking", "high",
+    "--no-session",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-context-files",
+    "--no-approve",
+    "--extension", WIKI_EXTENSION,
+    "--extension", options.footerPath,
+    "--extension", options.probePath,
+  ].map(shellQuote).join(" ");
+  const child = spawnChild("script", ["-qefc", command, "/dev/null"], {
+    cwd: options.workspace,
+    env: {
+      ...globalThis.process.env,
+      HOME: options.homeDir,
+      WIKI_HOME: options.wikiHomeDir,
+      PI_CODING_AGENT_DIR: options.agentDir,
+      TERM: "xterm-256color",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  let stderr = "";
+  let sentExit = false;
+  const ready = new Promise<{ output: string; stderr: string }>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("real Pi TUI footer probe timed out"));
+    }, 10_000);
+    child.stdout?.on("data", chunk => {
+      output += chunk.toString();
+      if (!sentExit && output.includes("SQUIRE_FOOTER_PROBE_OK") && output.includes("🧠 - · openai-codex/gpt-5.6-luna")) {
+        sentExit = true;
+        child.stdin?.write("\u0004");
+      }
+    });
+    child.stderr?.on("data", chunk => { stderr += chunk.toString(); });
+    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("exit", code => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(`real Pi TUI footer probe exited with ${code ?? "unknown"}`));
+      else resolve({ output, stderr });
+    });
+  });
+  try { return await ready; }
+  catch (error) {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    throw error;
+  }
+}
+
 test("fresh Squire implement launch loads /ticket llm-wiki before the trusted footer with run-local resources", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-launch-e2e-"));
   const workspace = path.join(root, "workspace");
@@ -145,6 +209,15 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     }) },
   );
 
+  const probePath = path.join(root, "trusted-footer-probe.mjs");
+  await writeFile(probePath, `export default function (pi) {
+  pi.on("session_start", (_event, context) => {
+    context.ui.setStatus("llm-wiki", "🧠 LLM Wiki (16 tools, trajectory + observe + recall active)");
+    context.ui.notify("SQUIRE_FOOTER_PROBE_OK", "info");
+  });
+}
+`, { mode: 0o600 });
+
   let process: ChildPiProcess | undefined;
   try {
     const materialized = await materializer.materialize({
@@ -186,30 +259,29 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     await assert.rejects(lstat(path.join(workspace, ".pi")), { code: "ENOENT" });
     await assert.rejects(lstat(path.join(workspace, ".llm-wiki")), { code: "ENOENT" });
 
-    const footerModule = await import(pathToFileURL(materialized.footerExtensionPath).href);
-    const callbacks = new Map<string, ExtensionHandler>();
-    footerModule.default({ on(event: string, handler: ExtensionHandler): void { callbacks.set(event, handler); } });
-    const before = await callbacks.get("before_agent_start")!({ systemPrompt: ROUTINE_WIKI_STATUS_BLOCK });
-    assert.deepEqual(before, { systemPrompt: "<wiki_status>🧠 - · openai-codex/gpt-5.6-luna</wiki_status>" });
+    // The RPC child is checked for loader diagnostics rather than merely
+    // assuming that a successful get_state means its extensions loaded.
+    const rpcOutput = process?.output.join("") ?? "";
+    assert.doesNotMatch(rpcOutput, /"type":"extension_error"/u);
+    assert.equal(process?.errors.join(""), "");
 
-    let footerFactory: FooterFactory | undefined;
-    const footerContext: ExtensionContextLike = {
-      cwd: workspace,
-      model: { provider: "openai-codex", id: "gpt-5.6-luna", reasoning: true, contextWindow: 272_000 },
-      thinkingLevel: "max",
-      sessionManager: { getEntries: () => [], getCwd: () => workspace, getSessionName: () => "Squire implement" },
-      getContextUsage: () => ({ percent: 0, contextWindow: 272_000 }),
-      ui: { setFooter: next => { footerFactory = next; } },
-    };
-    await callbacks.get("session_start")!({}, footerContext);
-    assert.ok(footerFactory);
-    const statuses = new Map<string, string>([
-      ["llm-wiki", "🧠 LLM Wiki (16 tools, trajectory + observe + recall active)"],
-      ["llm-wiki-model", `🧠 wiki model: ${WIKI_MODEL}`],
-    ]);
-    const data: FooterDataLike = { getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1 };
-    const component: FooterComponentLike = footerFactory!({ requestRender() {} }, footerTheme, data);
-    assert.equal(component.render(160)[2], "🧠 - · openai-codex/gpt-5.6-luna");
+    // A real TUI, allocated by `script`, installs the same generated footer
+    // through Pi's actual ExtensionAPI. The probe only supplies a healthy
+    // wiki status; the compact line can therefore appear only if the trusted
+    // footer loaded, registered setFooter, and rendered the status map.
+    const tui = await runRealTuiFooterProbe({
+      workspace,
+      agentDir: materialized.agentDir,
+      homeDir: materialized.homeDir,
+      wikiHomeDir: materialized.wikiHomeDir,
+      footerPath: materialized.footerExtensionPath,
+      probePath,
+    });
+    const visibleTui = tui.output.replace(/\x1B\[[0-?]*[\x20-\x2F]*[@-~]/gu, "").replace(/\r/gu, "");
+    assert.match(visibleTui, /SQUIRE_FOOTER_PROBE_OK/u);
+    assert.match(visibleTui, /🧠 - · openai-codex\/gpt-5\.6-luna/u);
+    assert.equal(tui.stderr, "");
+    assert.doesNotMatch(`${visibleTui}\n${tui.stderr}`, /extension_error|failed to load extension|cannot find module|syntaxerror/iu);
   } finally {
     process ??= factory.processes[0];
     if (process && process.exitCode === null) process.kill("SIGTERM");
