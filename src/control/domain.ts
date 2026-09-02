@@ -22,8 +22,8 @@ export interface SessionRegistration {
   processIdentity?: string;
   registeredAt: string;
 }
-export type ProcessAllocationState = "reserved" | "spawning" | "spawned" | "failed";
-/** Fenced first-session ownership. A spawning/spawned record is fail-closed until reconciliation. */
+export type ProcessAllocationState = "reserved" | "spawning" | "spawned" | "termination_failed" | "failed";
+/** Fenced process ownership. Any state after reserved is fail-closed until exact recovery. */
 export interface ProcessAllocation {
   role: Role;
   owner: string;
@@ -34,6 +34,14 @@ export interface ProcessAllocation {
   sessionId?: string;
   sessionFile?: string;
   processIdentity?: string;
+}
+/** Exact-token durable retention when a known process could not be observed terminated. */
+export interface ProcessAllocationRetention {
+  role: Role;
+  failedOwner: string;
+  failedFencingToken: number;
+  generation: number;
+  processIdentity: string;
 }
 /** Exact-token compensating cleanup after the owner's asynchronous side effect settled. */
 export interface ProcessAllocationRecovery {

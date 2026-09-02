@@ -1,4 +1,4 @@
-import type { Lease, LeaseGuard, ProcessAllocationRecovery, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "./domain.js";
+import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "./domain.js";
 
 export class StoreConflictError extends Error {
   constructor(message: string) { super(message); this.name = "StoreConflictError"; }
@@ -16,6 +16,8 @@ export interface WorkflowStore {
   getSession(runId: string, role: Role): Promise<SessionRegistration | undefined>;
   recordRuntime(runId: string, precondition: RunPrecondition, resolution: RuntimeResolution): Promise<RunSnapshot>;
   recordRuntimeFenced(runId: string, precondition: RunPrecondition, lease: LeaseGuard, resolution: RuntimeResolution): Promise<RunSnapshot>;
+  /** Idempotently persists a known live identity without clearing exact allocation ownership. */
+  retainProcessAllocation(runId: string, precondition: RunPrecondition, retention: ProcessAllocationRetention): Promise<RunSnapshot>;
   /** Idempotent exact-owner/token compensation; valid only after any returned process is observed exited. */
   recoverProcessAllocation(runId: string, precondition: RunPrecondition, recovery: ProcessAllocationRecovery): Promise<RunSnapshot>;
   acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined>;

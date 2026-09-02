@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { ROLES, type Clock, type LeaseGuard, type Role, type RunPrecondition, type RunSnapshot, type RuntimeResolution, type SessionRegistration } from "../src/control/domain.js";
-import type { PiProcess, ProcessLaunch, PiProcessFactory, RuntimeResolver } from "../src/pi/pi-process.js";
+import type { PiProcess, ProcessIdentityResolver, ProcessLaunch, PiProcessFactory, RuntimeResolver } from "../src/pi/pi-process.js";
 import { validateSessionRegistration } from "../src/pi/session-registry.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
@@ -77,7 +77,7 @@ class RaceFactory implements PiProcessFactory {
   constructor(readonly stall: Stall, readonly gate: Gate) {}
   async spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (process: PiProcess) => void): Promise<FakePiProcess> { if (this.stall === "spawn" && this.calls++ === 0) await this.gate.wait(signal); if (signal?.aborted) throw new Error("stale owner cannot spawn"); this.launches.push(spec); const process = new FakePiProcess(`race-process-${this.processes.length + 1}`); this.processes.push(process); onSpawn?.(process); return process; }
 }
-async function waitUntil(predicate: () => boolean): Promise<void> { for (let tries = 0; tries < 2_000; tries += 1) { if (predicate()) return; await new Promise(resolve => setImmediate(resolve)); } throw new Error("race did not reach expected stall"); }
+async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> { for (let tries = 0; tries < 2_000; tries += 1) { if (await predicate()) return; await new Promise(resolve => setImmediate(resolve)); } throw new Error("race did not reach expected stall"); }
 
 for (const stall of ["lookup", "reservation", "runtime", "runtime-record", "instructions", "spawn-intent", "spawn", "spawn-claim", "handshake", "validation", "registration"] as const) test(`first-session ${stall} stall is bounded and fenced`, async () => {
   const gate = new Gate(); const raceClock = new ManualClock(); const store = new RaceStore(stall, gate); await store.create(run(["runtime", "runtime-record"].includes(stall) ? {} : { runtimeResolution: runtime }));
@@ -171,4 +171,52 @@ for (const stage of ["session-validation", "reservation", "generation", "instruc
   if (["handshake", "live"].includes(stage)) { await waitUntil(() => factory.processes[0]?.writes.length === 1); factory.processes[0]!.respondToLast("get_state", true, { model: { provider: "provider", id: "model" }, sessionId: registration.sessionId, sessionFile: registration.sessionFile }); if (stage === "handshake") post.fire(); }
   await waitUntil(() => post.fired); await rejected; await new Promise(resolve => setImmediate(resolve)); const failed = (await store.read("run_example01"))!; assert.equal(firstRunner.live.size, 0); assert.ok(factory.processes.every(process => process.exitCode !== null)); assert.equal(failed.processAllocations?.implement, undefined); assert.ok(!["launching", "live"].includes(failed.sessions.implement?.processState ?? ""));
   const retryRunner = new PiRunner(factory, resolver, store, postConfig, async () => undefined, async () => "trusted role", raceClock); const index = factory.processes.length; const retry = retryRunner.launch("run_example01", "implement"); await waitUntil(() => factory.processes[index]?.writes.length === 1); factory.processes[index]!.respondToLast("get_state", true, { model: { provider: "provider", id: "model" }, sessionId: registration.sessionId, sessionFile: registration.sessionFile }); await retry; assert.equal((await store.read("run_example01"))?.sessions.implement?.processState, "live");
+});
+
+class StubbornProcess extends FakePiProcess {
+  readonly signals: Array<"SIGTERM" | "SIGKILL"> = []; cooperative = false;
+  override kill(signal: "SIGTERM" | "SIGKILL"): boolean { this.signals.push(signal); return this.cooperative ? super.kill(signal) : false; }
+  override async waitForExit(_timeoutMs: number): Promise<void> { if (this.exitCode === null) throw new Error("observed exit timeout"); }
+  observeExit(): void { if (this.exitCode === null) { this.exitCode = 137; this.emit("exit", 137, "SIGKILL"); } }
+}
+class StubbornFactory implements PiProcessFactory {
+  readonly launches: ProcessLaunch[] = []; readonly processes: StubbornProcess[] = [];
+  constructor(readonly stage: "spawn" | "spawn-claim" | "handshake" | "validation", readonly post: PostExpiry) {}
+  async spawn(spec: ProcessLaunch, _signal?: AbortSignal, onSpawn?: (process: PiProcess) => void): Promise<StubbornProcess> { this.launches.push(spec); const process = new StubbornProcess(`stubborn-${this.processes.length + 1}`); this.processes.push(process); onSpawn?.(process); if (this.stage === "spawn") this.post.fire(); return process; }
+}
+class ExactIdentityResolver implements ProcessIdentityResolver {
+  constructor(readonly processes: readonly StubbornProcess[]) {}
+  async resolve(identity: string): Promise<PiProcess | undefined> { return this.processes.find(process => process.identity === identity); }
+}
+class PendingStubbornFactory implements PiProcessFactory {
+  readonly launches: ProcessLaunch[] = []; readonly processes: StubbornProcess[] = [];
+  async spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (process: PiProcess) => void): Promise<StubbornProcess> { this.launches.push(spec); const process = new StubbornProcess("pending-stubborn"); this.processes.push(process); onSpawn?.(process); await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new Error("spawn aborted after creation")), { once: true })); return process; }
+}
+
+for (const stage of ["spawn", "spawn-claim", "handshake", "validation"] as const) test(`termination failure after ${stage} retains an actionable first-session process`, async () => {
+  const raceClock = new ManualClock(); const post = new PostExpiry(raceClock); const store = new PostStore(stage, post); await store.create(run({ runtimeResolution: runtime })); const factory = new StubbornFactory(stage, post); const validator = async () => { if (stage === "validation") post.fire(); };
+  const runner = new PiRunner(factory, new PostResolver(stage, post), store, postConfig, validator, async () => "trusted role", raceClock); const pending = runner.launch("run_example01", "implement");
+  if (stage === "handshake" || stage === "validation") { await waitUntil(() => factory.processes[0]?.writes.length === 1); factory.processes[0]!.respondToLast("get_state", true, { model: { provider: "provider", id: "model" }, sessionId: "first", sessionFile: "/ticket/sessions/implement/first.jsonl" }); if (stage === "handshake") post.fire(); }
+  await assert.rejects(pending, error => error instanceof AggregateError && /cleanup could not converge/.test(error.message));
+  const process = factory.processes[0]!; const retained = (await store.read("run_example01"))!.processAllocations?.implement; const tracked = runner.allocating.get("run_example01:implement")?.process ?? runner.live.get("run_example01:implement")?.process;
+  assert.deepEqual(process.signals, ["SIGTERM", "SIGKILL"]); assert.equal(process.exitCode, null); assert.equal(tracked, process); assert.equal(retained?.state, "termination_failed"); assert.equal(retained?.processIdentity, process.identity); assert.throws(() => runner.release("run_example01", "implement"), /allocating process|live process/);
+  await assert.rejects(runner.launch("run_example01", "implement"), /unresolved allocating process|live process/); const restarted = new PiRunner(factory, new PostResolver(stage, post), store, postConfig, async () => undefined, async () => "trusted role", raceClock, new ExactIdentityResolver(factory.processes)); await assert.rejects(restarted.launch("run_example01", "implement"), /reconciliation/); assert.equal(factory.processes.length, 1);
+  process.observeExit(); await waitUntil(async () => (await store.read("run_example01"))!.processAllocations?.implement?.state === "failed"); await waitUntil(() => runner.allocating.size === 0 && runner.live.size === 0); assert.equal((await store.read("run_example01"))!.sessions.implement, undefined);
+});
+
+test("termination failure retains a process exposed before its spawn promise settles", async () => {
+  const raceClock = new ManualClock(); const store = new InMemoryWorkflowStore(); await store.create(run({ runtimeResolution: runtime })); const factory = new PendingStubbornFactory(); const runner = new PiRunner(factory, new FakeRuntimeResolver(runtime), store, postConfig, async () => undefined, async () => "trusted role", raceClock); const pending = runner.launch("run_example01", "implement");
+  await waitUntil(() => factory.processes.length === 1); raceClock.advance(6); await assert.rejects(pending, AggregateError); const process = factory.processes[0]!; const allocation = (await store.read("run_example01"))!.processAllocations?.implement;
+  assert.equal(runner.allocating.get("run_example01:implement")?.process, process); assert.equal(process.exitCode, null); assert.deepEqual(process.signals, ["SIGTERM", "SIGKILL"]); assert.equal(allocation?.state, "termination_failed"); assert.equal(allocation?.processIdentity, process.identity); await assert.rejects(runner.launch("run_example01", "implement"), /unresolved/);
+  process.observeExit(); await waitUntil(async () => (await store.read("run_example01"))!.processAllocations?.implement?.state === "failed"); await waitUntil(() => runner.allocating.size === 0);
+});
+
+test("a restarted runner reaps durable termination failure and unwedges a resumed generation", async () => {
+  const raceClock = new ManualClock(); const post = new PostExpiry(raceClock); const store = new PostStore("spawn", post); const registration: SessionRegistration = { runId: "run_example01", role: "implement", sessionId: "registered", sessionFile: "/ticket/sessions/implement/registered.jsonl", processGeneration: 1, processState: "exited", registeredAt: runtime.resolvedAt }; await store.create(run({ runtimeResolution: runtime, sessions: { implement: registration } })); const factory = new StubbornFactory("spawn", post);
+  const failedRunner = new PiRunner(factory, new PostResolver("spawn", post), store, postConfig, async () => undefined, async () => "trusted role", raceClock); await assert.rejects(failedRunner.launch("run_example01", "implement"), AggregateError); const process = factory.processes[0]!; process.removeAllListeners("exit");
+  const blindRestart = new PiRunner(factory, new PostResolver("spawn", post), store, postConfig, async () => undefined, async () => "trusted role", raceClock); await assert.rejects(blindRestart.reconcileProcessAllocation("run_example01", "implement"), /could not be resolved/); assert.equal((await store.read("run_example01"))!.processAllocations?.implement?.state, "termination_failed");
+  const restarted = new PiRunner(factory, new PostResolver("spawn", post), store, postConfig, async () => undefined, async () => "trusted role", raceClock, new ExactIdentityResolver(factory.processes)); await assert.rejects(restarted.launch("run_example01", "implement"), /reconciliation/); assert.equal(factory.processes.length, 1);
+  await assert.rejects(restarted.reconcileProcessAllocation("run_example01", "implement"), /observed exit timeout/); assert.equal(restarted.allocating.get("run_example01:implement")?.process, process); assert.equal((await store.read("run_example01"))!.processAllocations?.implement?.state, "termination_failed");
+  process.cooperative = true; await restarted.reconcileProcessAllocation("run_example01", "implement"); const recovered = (await store.read("run_example01"))!; assert.equal(restarted.allocating.size, 0); assert.equal(recovered.processAllocations?.implement, undefined); assert.equal(recovered.sessions.implement?.processState, "failed");
+  const index = factory.processes.length; const retry = restarted.launch("run_example01", "implement"); await waitUntil(() => factory.processes[index]?.writes.length === 1); factory.processes[index]!.respondToLast("get_state", true, { model: { provider: "provider", id: "model" }, sessionId: registration.sessionId, sessionFile: registration.sessionFile }); await retry; assert.equal((await store.read("run_example01"))!.sessions.implement?.processState, "live");
 });

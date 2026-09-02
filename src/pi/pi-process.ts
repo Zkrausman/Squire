@@ -17,5 +17,7 @@ export interface PiProcessFactory {
   /** Calls onSpawn exactly once synchronously on creation, returns that same process, and creates nothing after abort. */
   spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (process: PiProcess) => void): Promise<PiProcess>;
 }
+/** Resolves a supervisor-owned process handle from its durable exact identity; undefined means unknown, not exited. */
+export interface ProcessIdentityResolver { resolve(processIdentity: string, signal?: AbortSignal): Promise<PiProcess | undefined> }
 /** Resolves the selected installations once; no repository-wide exact version pin is required. */
 export interface RuntimeResolver { resolve(runId: string, signal?: AbortSignal): Promise<RuntimeResolution> }

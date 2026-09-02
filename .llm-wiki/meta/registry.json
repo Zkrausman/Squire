@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-01T23:43:55.614Z",
+  "last_updated": "2026-09-02T00:59:06.899Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -15,7 +15,7 @@
       "domain": "engineering",
       "confidence": "high",
       "created": "2026-09-01",
-      "updated": "2026-09-01"
+      "updated": "2026-09-02"
     },
     "concepts/immutable-handoff-validation": {
       "type": "concept",
@@ -39,7 +39,7 @@
       "domain": "engineering",
       "confidence": "high",
       "created": "2026-09-01",
-      "updated": "2026-09-01"
+      "updated": "2026-09-02"
     },
     "entities/squire": {
       "type": "entity",
@@ -127,6 +127,24 @@
       "format": "json",
       "captured": "2026-09-01"
     },
+    "sources/SRC-2026-09-02-001": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 5 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-02-001/extracted.md",
+      "source_id": "SRC-2026-09-02-001",
+      "format": "json",
+      "captured": "2026-09-02"
+    },
+    "sources/durable-noncooperative-process-ownership": {
+      "type": "source",
+      "title": "Durable non-cooperative process ownership",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "durable-noncooperative-process-ownership",
+      "created": "2026-09-02",
+      "updated": "2026-09-02"
+    },
     "sources/fenced-first-session-allocation": {
       "type": "source",
       "title": "Fenced first-session allocation",
@@ -134,7 +152,7 @@
       "status": "insight",
       "slug": "fenced-first-session-allocation",
       "created": "2026-09-01",
-      "updated": "2026-09-01"
+      "updated": "2026-09-02"
     },
     "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": {
       "type": "source",
@@ -170,7 +188,7 @@
       "status": "insight",
       "slug": "post-settlement-lease-loss-compensation",
       "created": "2026-09-01",
-      "updated": "2026-09-01"
+      "updated": "2026-09-02"
     },
     "sources/run-scoped-agent-runtime-resolution": {
       "type": "source",
@@ -195,7 +213,7 @@
       "title": "aidev-216-and-aidev-224-ownership-boundary",
       "confidence": "high",
       "created": "2026-09-01",
-      "updated": "2026-09-01"
+      "updated": "2026-09-02"
     }
   }
 }

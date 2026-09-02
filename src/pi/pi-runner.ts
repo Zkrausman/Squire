@@ -3,7 +3,7 @@ import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResoluti
 import type { WorkflowStore } from "../control/workflow-store.js";
 import { StoreConflictError } from "../control/workflow-store.js";
 import { buildPiCommand, assertSafeResumeArgs, type PiRoleConfig } from "./pi-command.js";
-import type { PiProcess, PiProcessFactory, RuntimeResolver } from "./pi-process.js";
+import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
 import { PiRpcClient, type PiState } from "./pi-rpc-client.js";
 
 export interface RunnerConfig {
@@ -19,6 +19,7 @@ export interface RunnerConfig {
 export type RegistrationValidator = (registration: SessionRegistration, signal?: AbortSignal) => Promise<void>;
 export type RoleInstructionReader = (canonicalPath: string, signal?: AbortSignal) => Promise<string>;
 interface LiveHandle { process: PiProcess; client: PiRpcClient; runId: string; role: Role; generation: number }
+interface AllocatingHandle { process: PiProcess; runId: string; role: Role; generation: number; owner: string; fencingToken: number }
 interface AllocationLease extends Lease { runId: string; deadlineAt: number; ttlMs: number; stepTimeoutMs: number }
 
 export class ProcessLeaseError extends Error {
@@ -27,14 +28,40 @@ export class ProcessLeaseError extends Error {
 
 export class PiRunner {
   readonly live = new Map<string, LiveHandle>();
+  readonly allocating = new Map<string, AllocatingHandle>();
   readonly #resolved = new Map<string, Promise<RuntimeResolution>>();
+  readonly #trackedProcesses = new WeakSet<PiProcess>();
   #ownerSequence = 0;
-  constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock) {}
+  constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {}
 
   resolveRuntime(runId: string): Promise<RuntimeResolution> { return this.#getOrResolveRuntime(runId); }
 
+  /** Explicit cleanup seam for retry/restart; callers must not treat an unknown identity as exited. */
+  async reconcileProcessAllocation(runId: string, role: Role): Promise<void> {
+    const key = `${runId}:${role}`;
+    const snapshot = await this.store.read(runId); if (!snapshot) throw new Error("run not found");
+    const allocation = snapshot.processAllocations?.[role];
+    if (!allocation) return;
+    if (allocation.state !== "termination_failed" || !allocation.processIdentity) throw new StoreConflictError("process allocation is not actionable for termination recovery");
+    let process = this.allocating.get(key)?.process ?? this.live.get(key)?.process;
+    if (!process) process = await this.#resolveProcessIdentity(allocation.processIdentity);
+    if (!process) throw new Error("durable process identity could not be resolved; allocation remains blocked");
+    if (process.identity !== allocation.processIdentity) throw new Error("process identity resolver returned a mismatched handle");
+    this.#trackAllocating(key, { process, runId, role, generation: allocation.generation, owner: allocation.owner, fencingToken: allocation.fencingToken });
+    try { await this.#terminate(process); }
+    catch (error) {
+      if (process.exitCode === null) await this.#retainUnresolvedAllocation(runId, role, allocation.owner, allocation.fencingToken, allocation.generation, process.identity);
+      throw error;
+    }
+    await this.#recoverFailedAllocation(runId, role, allocation.owner, allocation.fencingToken, allocation.generation, process);
+    if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
+    if (this.live.get(key)?.process === process) this.live.delete(key);
+  }
+
   async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution }> {
     const key = `${runId}:${role}`;
+    const pending = this.allocating.get(key);
+    if (pending) throw new Error("role already has an unresolved allocating process");
     const owned = this.live.get(key);
     if (owned?.process.exitCode === null) throw new Error("role already has a live process");
     if (owned) this.live.delete(key);
@@ -70,13 +97,17 @@ export class PiRunner {
       const spec = buildPiCommand({ role, config: this.config.roles[role], instructions, piBinary: runtime.pi.executable, ...(this.config.workspace ? { workspace: this.config.workspace } : {}), ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}), ...(claimed ? { registration: claimed } : {}) });
       if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
       await this.#step("spawn intent", lease, () => this.#setAllocation(runId, role, lease, "spawning"));
-      const ownProcess = (value: PiProcess): void => { if (process && process !== value) throw new Error("process factory returned inconsistent process identity"); process = value; };
+      const ownProcess = (value: PiProcess): void => {
+        if (process && process !== value) throw new Error("process factory returned inconsistent process identity");
+        process = value;
+        this.#trackAllocating(key, { process: value, runId, role, generation: generation!, owner, fencingToken: lease.fencingToken });
+      };
       process = await this.#step("process spawn", lease, signal => this.factory.spawn(spec, signal, ownProcess), ownProcess);
       await this.#step("spawn ownership claim", lease, () => this.#setAllocation(runId, role, lease, "spawned", process!.identity));
       const client = new PiRpcClient(process, { commandTimeoutMs: this.config.commandTimeoutMs ?? 5_000 });
       this.live.set(key, { process, client, runId, role, generation });
+      if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
       client.on("protocol_error", () => { void this.#markProcess(runId, role, generation!, process!.identity, "failed"); });
-      process.on("exit", () => { void this.#markProcess(runId, role, generation!, process!.identity, "exited").finally(() => { if (this.live.get(key)?.process === process) this.live.delete(key); }); });
       const state = await this.#step("Pi handshake", lease, () => client.getState());
       if (state.model?.provider !== this.config.roles[role].provider || state.model?.id !== this.config.roles[role].model) throw new Error("Pi handshake model mismatch");
       if (claimed && (state.sessionId !== claimed.sessionId || state.sessionFile !== claimed.sessionFile)) throw new Error("Pi resume handshake identity mismatch");
@@ -89,15 +120,21 @@ export class PiRunner {
       }
       return { process, client, state, runtime };
     } catch (error) {
-      let cleanupError: unknown;
-      try {
-        if (process) await this.#terminate(process);
-        if (this.live.get(key)?.process === process) this.live.delete(key);
-      } catch (terminationError) { cleanupError = terminationError; }
+      const cleanupErrors: unknown[] = [];
+      try { if (process) await this.#terminate(process); }
+      catch (terminationError) { if (process?.exitCode === null) cleanupErrors.push(terminationError); }
       await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken); released = true;
-      try { await this.#recoverFailedAllocation(runId, role, owner, lease.fencingToken, generation, process); }
-      catch (recoveryError) { cleanupError ??= recoveryError; }
-      if (cleanupError) throw new AggregateError([error, cleanupError], "process allocation failed and cleanup could not converge");
+      if (process?.exitCode === null) {
+        try { await this.#retainUnresolvedAllocation(runId, role, owner, lease.fencingToken, generation!, process.identity); }
+        catch (retentionError) { cleanupErrors.push(retentionError); }
+      } else {
+        try {
+          await this.#recoverFailedAllocation(runId, role, owner, lease.fencingToken, generation, process);
+          if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
+          if (this.live.get(key)?.process === process) this.live.delete(key);
+        } catch (recoveryError) { cleanupErrors.push(recoveryError); }
+      }
+      if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], "process allocation failed and cleanup could not converge");
       throw error;
     } finally {
       if (!released) await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken);
@@ -221,6 +258,42 @@ export class PiRunner {
     }
   }
 
+  #trackAllocating(key: string, handle: AllocatingHandle): void {
+    const live = this.live.get(key);
+    if (!live || live.process !== handle.process) this.allocating.set(key, handle);
+    if (this.#trackedProcesses.has(handle.process)) return;
+    this.#trackedProcesses.add(handle.process);
+    handle.process.on("exit", () => { void this.#settleTrackedExit(key, handle); });
+  }
+
+  async #settleTrackedExit(key: string, handle: AllocatingHandle): Promise<void> {
+    try {
+      const current = await this.store.read(handle.runId);
+      const allocation = current?.processAllocations?.[handle.role];
+      const exactAllocation = allocation?.owner === handle.owner && allocation.fencingToken === handle.fencingToken && allocation.generation === handle.generation;
+      if (exactAllocation) await this.#recoverFailedAllocation(handle.runId, handle.role, handle.owner, handle.fencingToken, handle.generation, handle.process);
+      else await this.#markProcess(handle.runId, handle.role, handle.generation, handle.process.identity, "exited");
+      if (this.allocating.get(key)?.process === handle.process) this.allocating.delete(key);
+      if (this.live.get(key)?.process === handle.process) this.live.delete(key);
+    } catch { /* Preserve the exited handle so explicit reconciliation can retry persistence. */ }
+  }
+
+  async #retainUnresolvedAllocation(runId: string, role: Role, failedOwner: string, failedToken: number, generation: number, processIdentity: string): Promise<void> {
+    for (let attempts = 0; attempts < 16; attempts += 1) {
+      const current = await this.store.read(runId); if (!current) throw new Error("run not found");
+      try {
+        const retained = await this.store.retainProcessAllocation(runId, { version: current.version }, { role, failedOwner, failedFencingToken: failedToken, generation, processIdentity });
+        const allocation = retained.processAllocations?.[role];
+        const durableAllocation = allocation?.owner === failedOwner && allocation.fencingToken === failedToken && allocation.generation === generation && allocation.state === "termination_failed" && allocation.processIdentity === processIdentity;
+        const session = retained.sessions[role];
+        const durableSession = session?.processGeneration === generation && session.processIdentity === processIdentity && (session.processState === "launching" || session.processState === "live" || session.processState === "failed" || session.processState === "exited");
+        if (durableAllocation || durableSession) return;
+        throw new StoreConflictError("unresolved process identity was not retained by its exact owner");
+      } catch (error) { if (!(error instanceof StoreConflictError)) throw error; }
+    }
+    throw new StoreConflictError("unresolved process retention did not converge within retry bound");
+  }
+
   async #recoverFailedAllocation(runId: string, role: Role, failedOwner: string, failedToken: number, generation: number | undefined, process: PiProcess | undefined): Promise<void> {
     if (process?.exitCode === null) throw new Error("cannot recover allocation while spawned process remains live");
     for (let attempts = 0; attempts < 16; attempts += 1) {
@@ -231,6 +304,15 @@ export class PiRunner {
       } catch (error) { if (!(error instanceof StoreConflictError)) throw error; }
     }
     throw new StoreConflictError("process allocation cleanup did not converge within retry bound");
+  }
+
+  async #resolveProcessIdentity(identity: string): Promise<PiProcess | undefined> {
+    if (!this.processIdentities) return undefined;
+    const timeoutMs = positiveInteger(this.config.cleanupGraceMs ?? this.config.commandTimeoutMs ?? 5_000, "cleanup grace");
+    const controller = new AbortController();
+    const wait = this.clock.sleep(timeoutMs, controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
+    try { return await Promise.race([this.processIdentities.resolve(identity, controller.signal), wait.then(() => { controller.abort(); throw new Error("process identity resolution timed out"); })]); }
+    finally { controller.abort(); }
   }
 
   async #terminate(process: PiProcess): Promise<void> {
@@ -274,7 +356,9 @@ export class PiRunner {
   #guard(lease: AllocationLease): LeaseGuard { return { key: lease.key, owner: lease.owner, fencingToken: lease.fencingToken, now: this.clock.now() }; }
 
   release(runId: string, role: Role): void {
-    const key = `${runId}:${role}`; const owned = this.live.get(key);
+    const key = `${runId}:${role}`;
+    if (this.allocating.has(key)) throw new Error("cannot release ownership of an unresolved allocating process");
+    const owned = this.live.get(key);
     if (owned?.process.exitCode === null) throw new Error("cannot release ownership of a live process");
     this.live.delete(key);
   }

@@ -19,6 +19,7 @@
 
 ## Sources
 
+- [[sources/durable-noncooperative-process-ownership]] — Durable non-cooperative process ownership *(created: 2026-09-02)*
 - [[sources/fenced-first-session-allocation]] — Fenced first-session allocation *(created: 2026-09-01)*
 - [[sources/obs-2026-09-01-fenced-dispatch-authority-invariant]] — Observation: Fenced dispatch authority invariant *(created: 2026-09-01)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
@@ -32,6 +33,7 @@
 - [[sources/SRC-2026-09-01-008]] — Docker Sandboxes Viability Spike *(created: unknown)*
 - [[sources/SRC-2026-09-01-009]] — AIDEV-216 Review Attempt 3 Findings *(created: unknown)*
 - [[sources/SRC-2026-09-01-010]] — AIDEV-216 Review Attempt 4 Findings *(created: unknown)*
+- [[sources/SRC-2026-09-02-001]] — AIDEV-216 Review Attempt 5 Findings *(created: unknown)*
 - [[sources/stable-history-trigger-resend-proof]] — Stable-history trigger resend proof *(created: 2026-09-01)*
 
 ## Synthesiss
@@ -39,4 +41,4 @@
 - [[syntheses/aidev-216-and-aidev-224-ownership-boundary]] — aidev-216-and-aidev-224-ownership-boundary *(created: 2026-09-01)*
 
 ---
-*Last updated: 2026-09-01T23:43:55.614Z* | *Total pages: 21*
+*Last updated: 2026-09-02T00:59:06.899Z* | *Total pages: 23*

@@ -1,5 +1,5 @@
 import { assertPrecondition, StoreConflictError, type WorkflowStore } from "../../src/control/workflow-store.js";
-import type { Lease, LeaseGuard, ProcessAllocationRecovery, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
+import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -60,6 +60,16 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     if (current.runtimeResolution) throw new StoreConflictError("runtime already resolved for run");
     if (resolution.runId !== current.runId) throw new StoreConflictError("runtime resolution belongs to another run");
     return { ...current, version: current.version + 1, runtimeResolution: copy(resolution) };
+  }
+  async retainProcessAllocation(runId: string, expected: RunPrecondition, retention: ProcessAllocationRetention): Promise<RunSnapshot> {
+    const current = this.runs.get(runId); if (!current) throw new StoreConflictError("run not found"); assertPrecondition(current, expected);
+    const allocation = current.processAllocations?.[retention.role];
+    const owned = allocation?.owner === retention.failedOwner && allocation.fencingToken === retention.failedFencingToken && allocation.generation === retention.generation;
+    if (!owned) return copy(current);
+    if (allocation.state === "reserved" || allocation.state === "failed") throw new StoreConflictError("allocation has no retainable process intent");
+    if (allocation.processIdentity && allocation.processIdentity !== retention.processIdentity) throw new StoreConflictError("process retention identity mismatch");
+    if (allocation.state === "termination_failed" && allocation.processIdentity === retention.processIdentity) return copy(current);
+    return this.compareAndSet(runId, expected, snapshot => ({ ...snapshot, version: snapshot.version + 1, processAllocations: { ...snapshot.processAllocations, [retention.role]: { ...allocation, state: "termination_failed", processIdentity: retention.processIdentity } } }));
   }
   async recoverProcessAllocation(runId: string, expected: RunPrecondition, recovery: ProcessAllocationRecovery): Promise<RunSnapshot> {
     const current = this.runs.get(runId); if (!current) throw new StoreConflictError("run not found"); assertPrecondition(current, expected);

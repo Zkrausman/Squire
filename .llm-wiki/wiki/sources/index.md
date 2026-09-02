@@ -10,6 +10,8 @@
 - [Docker Sandboxes Viability Spike](SRC-2026-09-01-008.md)
 - [AIDEV-216 Review Attempt 3 Findings](SRC-2026-09-01-009.md)
 - [AIDEV-216 Review Attempt 4 Findings](SRC-2026-09-01-010.md)
+- [AIDEV-216 Review Attempt 5 Findings](SRC-2026-09-02-001.md)
+- [Durable non-cooperative process ownership](durable-noncooperative-process-ownership.md)
 - [Fenced first-session allocation](fenced-first-session-allocation.md)
 - [Observation: Fenced dispatch authority invariant](obs-2026-09-01-fenced-dispatch-authority-invariant.md)
 - [Persisted acceptance authority chain](persisted-acceptance-authority-chain.md)
