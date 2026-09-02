@@ -136,15 +136,12 @@ test("materializer binds package bytes, secure modes, and exact runtime capabili
 });
 
 test("independent materializers converge through a private lock and recover stale preparation", async () => {
-  for (let iteration = 0; iteration < 20; iteration += 1) {
+  for (let iteration = 0; iteration < 25; iteration += 1) {
     const { root, workspace, runtime } = await fixture();
     const options = { runtimeRoot: path.join(root, "runtime"), workspace };
     const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
-    const [left, right] = await Promise.all([
-      new PiAgentDirectoryMaterializer(options).materialize(request),
-      new PiAgentDirectoryMaterializer(options).materialize(request),
-    ]);
-    assert.deepEqual(left, right);
+    const results = await Promise.all(Array.from({ length: 12 }, () => new PiAgentDirectoryMaterializer(options).materialize(request)));
+    for (const result of results) assert.deepEqual(result, results[0]);
     assert.deepEqual((await (await import("node:fs/promises")).readdir(path.join(options.runtimeRoot, runtime.runId))).sort(), ["home", "pi-agent", "wiki-home"]);
   }
 
@@ -186,8 +183,11 @@ test("independent materializers converge through a private lock and recover stal
   await utimes(lockDirectory, old, old);
   await utimes(path.join(lockDirectory, "owner.json"), old, old);
   await utimes(path.join(lockDirectory, "heartbeat"), old, old);
-  const recovered = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace: stale.workspace }).materialize({ runId: stale.runtime.runId, runtime: stale.runtime, wikiProfile: profile, workspace: stale.workspace });
-  assert.equal(recovered.agentDir, path.join(runRoot, "pi-agent"));
+  const staleOptions = { runtimeRoot, workspace: stale.workspace, preparationLockStaleMs: 50, preparationLockTimeoutMs: 5_000 };
+  const recovered = await Promise.all(Array.from({ length: 12 }, () => new PiAgentDirectoryMaterializer(staleOptions).materialize({ runId: stale.runtime.runId, runtime: stale.runtime, wikiProfile: profile, workspace: stale.workspace })));
+  for (const result of recovered) assert.deepEqual(result, recovered[0]);
+  assert.equal(recovered[0]!.agentDir, path.join(runRoot, "pi-agent"));
+  assert.equal((await (await import("node:fs/promises")).readdir(runRoot)).includes(".pi-agent-lock"), false);
 });
 
 test("separate controller processes converge on the same verified materialization", async () => {
@@ -213,10 +213,10 @@ test("separate controller processes converge on the same verified materializatio
       ["--input-type=module", "-e", childSource],
       { cwd: workspace, env: { ...process.env, HOME: path.join(root, "host-home"), WIKI_HOME: path.join(root, "unused-host-wiki-home") } },
     );
-    const [left, right] = await Promise.all([launch(), launch()]);
-    assert.deepEqual(JSON.parse(left.stdout), JSON.parse(right.stdout));
-    assert.equal(left.stderr, "");
-    assert.equal(right.stderr, "");
+    const results = await Promise.all(Array.from({ length: 12 }, launch));
+    const parsed = results.map(result => JSON.parse(result.stdout));
+    for (const result of parsed) assert.deepEqual(result, parsed[0]);
+    for (const result of results) assert.equal(result.stderr, "");
     assert.equal((await (await import("node:fs/promises")).readdir(path.join(runtimeRoot, runtime.runId))).includes(".pi-agent-lock"), false);
   }
 });
