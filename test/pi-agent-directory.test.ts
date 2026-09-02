@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { chmod, lstat, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { RuntimeResolution } from "../src/control/domain.js";
 import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
@@ -27,6 +30,7 @@ async function fixture() {
 }
 
 const profile = { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" as const };
+const execFile = promisify(execFileCallback);
 
 test("materializer writes deterministic run-scoped settings, manifest, and trusted footer", async () => {
   const { root, workspace, runtime } = await fixture();
@@ -125,10 +129,117 @@ test("materializer binds package bytes, secure modes, and exact runtime capabili
   await assert.rejects(new PiAgentDirectoryMaterializer(authOptions).materialize({ runId: authFixture.runtime.runId, runtime: authFixture.runtime, wikiProfile: profile, workspace: authFixture.workspace }), /auth digest/);
 
   const capabilityFixture = await fixture();
-  const unknownRuntime = { ...capabilityFixture.runtime, modelCapabilities: [{ ...capabilityFixture.runtime.modelCapabilities[0]!, model: "gpt-5.6-luna-spoof" }] };
+  const unknownRuntime = { ...capabilityFixture.runtime, modelCapabilities: [{ ...capabilityFixture.runtime.modelCapabilities![0]!, model: "gpt-5.6-luna-spoof" }] };
   await assert.rejects(new PiAgentDirectoryMaterializer({ runtimeRoot: path.join(capabilityFixture.root, "runtime"), workspace: capabilityFixture.workspace }).materialize({ runId: unknownRuntime.runId, runtime: unknownRuntime, wikiProfile: profile, workspace: capabilityFixture.workspace }), /capability|proven/);
   const spoofRuntime = { ...capabilityFixture.runtime, runId: "run_capability_spoof" };
   await assert.rejects(new PiAgentDirectoryMaterializer({ runtimeRoot: path.join(capabilityFixture.root, "runtime-2"), workspace: capabilityFixture.workspace, resolveModelCapability: () => ({ provider: profile.provider, model: "gpt-5.6-luna-spoof", reasoningCapable: true, piInstallationId: capabilityFixture.runtime.pi.installationId, wikiInstallationId: capabilityFixture.runtime.llmWiki.installationId }) }).materialize({ runId: spoofRuntime.runId, runtime: spoofRuntime, wikiProfile: profile, workspace: capabilityFixture.workspace }), /capability|proven/);
+});
+
+test("independent materializers converge through a private lock and recover stale preparation", async () => {
+  for (let iteration = 0; iteration < 20; iteration += 1) {
+    const { root, workspace, runtime } = await fixture();
+    const options = { runtimeRoot: path.join(root, "runtime"), workspace };
+    const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+    const [left, right] = await Promise.all([
+      new PiAgentDirectoryMaterializer(options).materialize(request),
+      new PiAgentDirectoryMaterializer(options).materialize(request),
+    ]);
+    assert.deepEqual(left, right);
+    assert.deepEqual((await (await import("node:fs/promises")).readdir(path.join(options.runtimeRoot, runtime.runId))).sort(), ["home", "pi-agent", "wiki-home"]);
+  }
+
+  const conflicting = await fixture();
+  const alternateProfile = { provider: "openai-codex", model: "gpt-5.6-luna-alt", thinking: "high" as const };
+  const conflictingRuntime = {
+    ...conflicting.runtime,
+    modelCapabilities: [...conflicting.runtime.modelCapabilities!, {
+      provider: alternateProfile.provider,
+      model: alternateProfile.model,
+      reasoningCapable: true,
+      piInstallationId: conflicting.runtime.pi.installationId,
+      wikiInstallationId: conflicting.runtime.llmWiki.installationId,
+    }],
+  };
+  const conflictingOptions = { runtimeRoot: path.join(conflicting.root, "runtime"), workspace: conflicting.workspace };
+  const conflictingRequests = await Promise.allSettled([
+    new PiAgentDirectoryMaterializer(conflictingOptions).materialize({ runId: conflicting.runtime.runId, runtime: conflictingRuntime, wikiProfile: profile, workspace: conflicting.workspace }),
+    new PiAgentDirectoryMaterializer(conflictingOptions).materialize({ runId: conflicting.runtime.runId, runtime: conflictingRuntime, wikiProfile: alternateProfile, workspace: conflicting.workspace }),
+  ]);
+  assert.equal(conflictingRequests.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal(conflictingRequests.filter(result => result.status === "rejected").length, 1);
+  const conflictReason = conflictingRequests.find(result => result.status === "rejected") as PromiseRejectedResult;
+  assert.match(String(conflictReason.reason), /conflicting|manifest/iu);
+
+  const stale = await fixture();
+  const runtimeRoot = path.join(stale.root, "runtime");
+  const runRoot = path.join(runtimeRoot, stale.runtime.runId);
+  const initial = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace: stale.workspace }).materialize({ runId: stale.runtime.runId, runtime: stale.runtime, wikiProfile: profile, workspace: stale.workspace });
+  const manifestFingerprint = createHash("sha256").update(await readFile(initial.manifestPath)).digest("hex");
+  const fingerprint = createHash("sha256").update(`${manifestFingerprint}\\0${path.resolve(stale.workspace)}`).digest("hex");
+  await rm(initial.agentDir, { recursive: true, force: false });
+  const lockDirectory = path.join(runRoot, ".pi-agent-lock");
+  await mkdir(lockDirectory, { recursive: false, mode: 0o700 });
+  await chmod(lockDirectory, 0o700);
+  const old = new Date(Date.now() - 10_000);
+  await writeFile(path.join(lockDirectory, "owner.json"), JSON.stringify({ schemaVersion: 1, kind: "squire-pi-agent-preparation-lock", runId: stale.runtime.runId, token: "00000000-0000-4000-8000-000000000001", pid: 99999999, createdAt: old.getTime(), requestFingerprint: fingerprint }) + "\n", { mode: 0o600 });
+  await writeFile(path.join(lockDirectory, "heartbeat"), "heartbeat\n", { mode: 0o600 });
+  await utimes(lockDirectory, old, old);
+  await utimes(path.join(lockDirectory, "owner.json"), old, old);
+  await utimes(path.join(lockDirectory, "heartbeat"), old, old);
+  const recovered = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace: stale.workspace }).materialize({ runId: stale.runtime.runId, runtime: stale.runtime, wikiProfile: profile, workspace: stale.workspace });
+  assert.equal(recovered.agentDir, path.join(runRoot, "pi-agent"));
+});
+
+test("separate controller processes converge on the same verified materialization", async () => {
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    const { root, workspace, runtime } = await fixture();
+    const runtimeRoot = path.join(root, "runtime");
+    const moduleUrl = pathToFileURL(path.resolve("dist/src/pi/pi-agent-directory.js")).href;
+    const childSource = `
+      import { PiAgentDirectoryMaterializer } from ${JSON.stringify(moduleUrl)};
+      const runtime = ${JSON.stringify(runtime)};
+      const workspace = ${JSON.stringify(workspace)};
+      const runtimeRoot = ${JSON.stringify(runtimeRoot)};
+      const result = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace }).materialize({
+        runId: runtime.runId,
+        runtime,
+        wikiProfile: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" },
+        workspace,
+      });
+      process.stdout.write(JSON.stringify(result));
+    `;
+    const launch = (): Promise<{ stdout: string; stderr: string }> => execFile(
+      process.execPath,
+      ["--input-type=module", "-e", childSource],
+      { cwd: workspace, env: { ...process.env, HOME: path.join(root, "host-home"), WIKI_HOME: path.join(root, "unused-host-wiki-home") } },
+    );
+    const [left, right] = await Promise.all([launch(), launch()]);
+    assert.deepEqual(JSON.parse(left.stdout), JSON.parse(right.stdout));
+    assert.equal(left.stderr, "");
+    assert.equal(right.stderr, "");
+    assert.equal((await (await import("node:fs/promises")).readdir(path.join(runtimeRoot, runtime.runId))).includes(".pi-agent-lock"), false);
+  }
+});
+
+test("legacy v1 runtime observations remain readable but require exact capability evidence to materialize", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const { modelCapabilities: _omitted, ...legacyRuntime } = runtime;
+  await assert.rejects(
+    new PiAgentDirectoryMaterializer({ runtimeRoot: path.join(root, "runtime"), workspace }).materialize({ runId: runtime.runId, runtime: legacyRuntime, wikiProfile: profile, workspace }),
+    /capability|proven/iu,
+  );
+  const materialized = await new PiAgentDirectoryMaterializer({
+    runtimeRoot: path.join(root, "runtime-with-registry"),
+    workspace,
+    resolveModelCapability: () => ({
+      provider: profile.provider,
+      model: profile.model,
+      reasoningCapable: true,
+      piInstallationId: runtime.pi.installationId,
+      wikiInstallationId: runtime.llmWiki.installationId,
+    }),
+  }).materialize({ runId: runtime.runId, runtime: legacyRuntime, wikiProfile: profile, workspace });
+  assert.equal(materialized.runId, runtime.runId);
 });
 
 test("materializer rejects symlinked output and does not copy ambient auth", async () => {

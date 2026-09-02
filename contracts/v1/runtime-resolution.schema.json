@@ -4,7 +4,7 @@
   "title": "Resolved run runtime observation v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "runId", "pi", "llmWiki", "modelCapabilities", "resolvedAt"],
+  "required": ["schemaVersion", "runId", "pi", "llmWiki", "resolvedAt"],
   "properties": {
     "schemaVersion": { "const": 1 },
     "runId": { "$ref": "urn:squire:contracts:v1:common#/$defs/runId" },

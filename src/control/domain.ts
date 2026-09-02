@@ -117,8 +117,8 @@ export interface RuntimeResolution {
   runId: string;
   pi: ResolvedPiInstallation;
   llmWiki: ResolvedInstallation;
-  /** Exact capability records are persisted with the runtime observation. */
-  modelCapabilities: readonly RuntimeModelCapability[];
+  /** Optional in published v1 observations; materialization requires exact evidence at its boundary. */
+  modelCapabilities?: readonly RuntimeModelCapability[];
   resolvedAt: string;
 }
 

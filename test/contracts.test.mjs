@@ -26,6 +26,20 @@ test("all schemas and positive/negative fixtures satisfy their expected outcome"
   assert.match(stdout, /Validated 12 schemas/);
 });
 
+test("published v1 runtime-resolution accepts the exact legacy shape without capability evidence", async () => {
+  const legacy = await fixture("valid/runtime-resolution/legacy-v1.json");
+  assert.deepEqual(legacy, {
+    schemaVersion: 1,
+    runId: "run_example01",
+    pi: { version: "0.84.4", executable: "/usr/local/bin/pi", installationId: "sha256:" + "a".repeat(64) },
+    llmWiki: { version: "0.9.0", installationId: "sha256:" + "b".repeat(64) },
+    resolvedAt: "2026-09-01T12:00:00Z"
+  });
+  assert.equal(Object.hasOwn(legacy, "modelCapabilities"), false);
+  const { stdout } = await execFileAsync(process.execPath, ["scripts/validate-contracts.mjs"], { cwd: root });
+  assert.match(stdout, /13 valid fixtures/);
+});
+
 test("phase results fail closed on wrong identity, stale SHA, and contradictory pass", async () => {
   const inputArtifact = {
     path: "artifacts/handoffs/implement-1.json",
