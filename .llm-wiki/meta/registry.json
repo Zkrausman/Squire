@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-02T00:59:06.899Z",
+  "last_updated": "2026-09-02T01:50:03.498Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -136,6 +136,15 @@
       "format": "json",
       "captured": "2026-09-02"
     },
+    "sources/SRC-2026-09-02-002": {
+      "type": "source",
+      "title": "AIDEV-216 Review Attempt 6 Findings",
+      "status": "synthesized",
+      "raw_path": "raw/sources/SRC-2026-09-02-002/extracted.md",
+      "source_id": "SRC-2026-09-02-002",
+      "format": "json",
+      "captured": "2026-09-02"
+    },
     "sources/durable-noncooperative-process-ownership": {
       "type": "source",
       "title": "Durable non-cooperative process ownership",
@@ -188,6 +197,15 @@
       "status": "insight",
       "slug": "post-settlement-lease-loss-compensation",
       "created": "2026-09-01",
+      "updated": "2026-09-02"
+    },
+    "sources/registered-session-process-recovery": {
+      "type": "source",
+      "title": "Registered-session process recovery",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "registered-session-process-recovery",
+      "created": "2026-09-02",
       "updated": "2026-09-02"
     },
     "sources/run-scoped-agent-runtime-resolution": {

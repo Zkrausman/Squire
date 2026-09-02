@@ -24,6 +24,7 @@
 - [[sources/obs-2026-09-01-fenced-dispatch-authority-invariant]] — Observation: Fenced dispatch authority invariant *(created: 2026-09-01)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/post-settlement-lease-loss-compensation]] — Post-settlement lease-loss compensation *(created: 2026-09-01)*
+- [[sources/registered-session-process-recovery]] — Registered-session process recovery *(created: 2026-09-02)*
 - [[sources/run-scoped-agent-runtime-resolution]] — Run-scoped agent runtime resolution *(created: 2026-09-01)*
 - [[sources/SRC-2026-09-01-001]] — Squire MVP Architecture *(created: unknown)*
 - [[sources/SRC-2026-09-01-002]] — AIDEV-214 Independent Architecture Review *(created: unknown)*
@@ -34,6 +35,7 @@
 - [[sources/SRC-2026-09-01-009]] — AIDEV-216 Review Attempt 3 Findings *(created: unknown)*
 - [[sources/SRC-2026-09-01-010]] — AIDEV-216 Review Attempt 4 Findings *(created: unknown)*
 - [[sources/SRC-2026-09-02-001]] — AIDEV-216 Review Attempt 5 Findings *(created: unknown)*
+- [[sources/SRC-2026-09-02-002]] — AIDEV-216 Review Attempt 6 Findings *(created: unknown)*
 - [[sources/stable-history-trigger-resend-proof]] — Stable-history trigger resend proof *(created: 2026-09-01)*
 
 ## Synthesiss
@@ -41,4 +43,4 @@
 - [[syntheses/aidev-216-and-aidev-224-ownership-boundary]] — aidev-216-and-aidev-224-ownership-boundary *(created: 2026-09-01)*
 
 ---
-*Last updated: 2026-09-02T00:59:06.899Z* | *Total pages: 23*
+*Last updated: 2026-09-02T01:50:03.498Z* | *Total pages: 25*

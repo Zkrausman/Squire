@@ -40,22 +40,31 @@ export class PiRunner {
   async reconcileProcessAllocation(runId: string, role: Role): Promise<void> {
     const key = `${runId}:${role}`;
     const snapshot = await this.store.read(runId); if (!snapshot) throw new Error("run not found");
-    const allocation = snapshot.processAllocations?.[role];
-    if (!allocation) return;
-    if (allocation.state !== "termination_failed" || !allocation.processIdentity) throw new StoreConflictError("process allocation is not actionable for termination recovery");
+    const allocation = snapshot.processAllocations?.[role]; const session = snapshot.sessions[role];
+    if (allocation && (allocation.state !== "termination_failed" || !allocation.processIdentity)) throw new StoreConflictError("process allocation is not actionable for termination recovery");
+    const registered = !allocation && session && (session.processState === "live" || session.processState === "launching") ? session : undefined;
+    if (!allocation && !registered) return;
+    const processIdentity = allocation?.processIdentity ?? registered?.processIdentity;
+    if (!processIdentity) throw new StoreConflictError("registered live process has no actionable durable identity");
+    const generation = allocation?.generation ?? registered!.processGeneration;
     let process = this.allocating.get(key)?.process ?? this.live.get(key)?.process;
-    if (!process) process = await this.#resolveProcessIdentity(allocation.processIdentity);
-    if (!process) throw new Error("durable process identity could not be resolved; allocation remains blocked");
-    if (process.identity !== allocation.processIdentity) throw new Error("process identity resolver returned a mismatched handle");
-    this.#trackAllocating(key, { process, runId, role, generation: allocation.generation, owner: allocation.owner, fencingToken: allocation.fencingToken });
+    if (!process) process = await this.#resolveProcessIdentity(processIdentity);
+    if (!process) throw new Error("durable process identity could not be resolved; process ownership remains blocked");
+    if (process.identity !== processIdentity) throw new Error("process identity resolver returned a mismatched handle");
+    this.#trackAllocating(key, { process, runId, role, generation, owner: allocation?.owner ?? `registered:${registered!.sessionId}`, fencingToken: allocation?.fencingToken ?? -1 });
     try { await this.#terminate(process); }
     catch (error) {
-      if (process.exitCode === null) await this.#retainUnresolvedAllocation(runId, role, allocation.owner, allocation.fencingToken, allocation.generation, process.identity);
+      if (process.exitCode === null) {
+        if (allocation) await this.#retainUnresolvedAllocation(runId, role, allocation.owner, allocation.fencingToken, generation, process.identity);
+        else await this.#verifyRegisteredProcessOwnership(runId, role, generation, process.identity);
+      }
       throw error;
     }
-    await this.#recoverFailedAllocation(runId, role, allocation.owner, allocation.fencingToken, allocation.generation, process);
+    if (allocation) await this.#recoverFailedAllocation(runId, role, allocation.owner, allocation.fencingToken, generation, process);
+    else await this.#markProcess(runId, role, generation, process.identity, "failed");
     if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
     if (this.live.get(key)?.process === process) this.live.delete(key);
+    if (!allocation) await this.#verifyRegisteredProcessCleaned(runId, role, generation, process.identity);
   }
 
   async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution }> {
@@ -238,7 +247,7 @@ export class PiRunner {
       const current = await this.store.read(runId); if (!current) return;
       const session = current.sessions[role]; if (!session || session.processGeneration !== generation) return;
       if (state === "exited" && session.processState === "failed") return;
-      if (state === "exited" && identity && session.processIdentity && session.processIdentity !== identity) return;
+      if (identity && session.processIdentity && session.processIdentity !== identity) return;
       const next = { ...session, processState: state, ...(identity ? { processIdentity: identity } : {}) };
       try { await this.store.compareAndSet(runId, { version: current.version }, snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions: { ...snapshot.sessions, [role]: next } })); return; }
       catch (error) { if (!(error instanceof StoreConflictError)) throw error; }
@@ -286,12 +295,25 @@ export class PiRunner {
         const allocation = retained.processAllocations?.[role];
         const durableAllocation = allocation?.owner === failedOwner && allocation.fencingToken === failedToken && allocation.generation === generation && allocation.state === "termination_failed" && allocation.processIdentity === processIdentity;
         const session = retained.sessions[role];
-        const durableSession = session?.processGeneration === generation && session.processIdentity === processIdentity && (session.processState === "launching" || session.processState === "live" || session.processState === "failed" || session.processState === "exited");
+        const durableSession = session?.processGeneration === generation && session.processIdentity === processIdentity && (session.processState === "launching" || session.processState === "live");
         if (durableAllocation || durableSession) return;
         throw new StoreConflictError("unresolved process identity was not retained by its exact owner");
       } catch (error) { if (!(error instanceof StoreConflictError)) throw error; }
     }
     throw new StoreConflictError("unresolved process retention did not converge within retry bound");
+  }
+
+  async #verifyRegisteredProcessOwnership(runId: string, role: Role, generation: number, processIdentity: string): Promise<void> {
+    const current = await this.store.read(runId); if (!current) throw new Error("run not found");
+    const session = current.sessions[role];
+    if (!session || session.processGeneration !== generation || session.processIdentity !== processIdentity || (session.processState !== "live" && session.processState !== "launching")) throw new StoreConflictError("registered process ownership changed during termination recovery");
+  }
+
+  async #verifyRegisteredProcessCleaned(runId: string, role: Role, generation: number, processIdentity: string): Promise<void> {
+    const current = await this.store.read(runId); if (!current) throw new Error("run not found");
+    const session = current.sessions[role];
+    if (session?.processGeneration === generation && session.processIdentity === processIdentity && (session.processState === "failed" || session.processState === "exited")) return;
+    throw new StoreConflictError("registered process generation changed before cleanup could be persisted");
   }
 
   async #recoverFailedAllocation(runId: string, role: Role, failedOwner: string, failedToken: number, generation: number | undefined, process: PiProcess | undefined): Promise<void> {
