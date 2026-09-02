@@ -15,6 +15,10 @@ export interface PiCommandOptions {
   registration?: SessionRegistration;
   /** Run-scoped agent directory produced by the trusted materializer. */
   agentDir?: string;
+  /** Run-scoped HOME containing no host/personal state. */
+  homeDir?: string;
+  /** Run-scoped WIKI_HOME containing no host/personal state. */
+  wikiHomeDir?: string;
   /** Ordered [wiki extension, Squire footer extension] trusted paths. */
   trustedExtensionPaths?: readonly string[];
 }
@@ -34,6 +38,13 @@ export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
   if (options.registration) args.push("--session", options.registration.sessionFile);
   else args.push("--session-dir", roleDir);
 
+  if (options.agentDir !== undefined && (!options.homeDir || !options.wikiHomeDir)) {
+    throw new Error("trusted Pi launch requires run-scoped HOME and WIKI_HOME");
+  }
+  if ((options.homeDir === undefined) !== (options.wikiHomeDir === undefined)) {
+    throw new Error("Pi HOME and WIKI_HOME must be supplied together");
+  }
+
   if (options.trustedExtensionPaths?.length) {
     // Explicit extensions are additive even with --no-extensions. Disable every
     // discovered project resource so a repository cannot replace the trusted
@@ -43,6 +54,10 @@ export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
   }
   const env: Record<string, string> = { PI_SKIP_VERSION_CHECK: "1" };
   if (options.agentDir !== undefined) env["PI_CODING_AGENT_DIR"] = options.agentDir;
+  if (options.homeDir !== undefined && options.wikiHomeDir !== undefined) {
+    env["HOME"] = options.homeDir;
+    env["WIKI_HOME"] = options.wikiHomeDir;
+  }
   return { command: options.piBinary, args, cwd: workspace, env };
 }
 

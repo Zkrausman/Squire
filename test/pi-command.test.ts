@@ -9,12 +9,16 @@ test("trusted Pi command passes the run agent directory and ordered extensions w
     workspace: "/ticket/workspace",
     sessionRoot: "/ticket/sessions",
     agentDir: "/ticket/runtime/run_test/pi-agent",
+    homeDir: "/ticket/runtime/run_test/home",
+    wikiHomeDir: "/ticket/runtime/run_test/wiki-home",
     trustedExtensionPaths: ["/ticket/runtime/wiki/index.ts", "/ticket/runtime/run_test/pi-agent/footer.mjs"],
     config: { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "medium", instructionsPath: "/ticket/config/review.md" },
   });
   assert.equal(command.cwd, "/ticket/workspace");
   assert.equal(command.args[command.args.indexOf("--session-dir") + 1], "/ticket/sessions/review");
   assert.equal(command.env["PI_CODING_AGENT_DIR"], "/ticket/runtime/run_test/pi-agent");
+  assert.equal(command.env["HOME"], "/ticket/runtime/run_test/home");
+  assert.equal(command.env["WIKI_HOME"], "/ticket/runtime/run_test/wiki-home");
   assert.ok(command.args.includes("--no-extensions"));
   const first = command.args.indexOf("--extension");
   assert.equal(command.args[first + 1], "/ticket/runtime/wiki/index.ts");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -27,6 +27,7 @@ const roleConfig = Object.fromEntries(ROLES.map(role => [role, {
 
 class RecordingMaterializer implements PiAgentDirectoryMaterializerPort {
   calls = 0;
+  verifyCalls = 0;
   readonly requests: PiAgentDirectoryRequest[] = [];
   async materialize(request: PiAgentDirectoryRequest): Promise<MaterializedPiAgentDirectory> {
     this.calls += 1;
@@ -37,12 +38,35 @@ class RecordingMaterializer implements PiAgentDirectoryMaterializerPort {
       settingsPath: `/ticket/runtime/${request.runId}/pi-agent/settings.json`,
       manifestPath: `/ticket/runtime/${request.runId}/pi-agent/squire-agent-manifest.json`,
       footerExtensionPath: `/ticket/runtime/${request.runId}/pi-agent/extensions/footer.mjs`,
+      homeDir: `/ticket/runtime/${request.runId}/home`,
+      wikiHomeDir: `/ticket/runtime/${request.runId}/wiki-home`,
       trustedExtensionPaths: [
         "/ticket/runtime/wiki/extensions/llm-wiki/index.ts",
         `/ticket/runtime/${request.runId}/pi-agent/extensions/footer.mjs`,
       ],
+      wikiExtensionDigest: "b".repeat(64),
       extensionDigest: "a".repeat(64),
+      packageDigest: "c".repeat(64),
     };
+  }
+  async verify(_request: PiAgentDirectoryRequest, _materialized: MaterializedPiAgentDirectory): Promise<void> {
+    this.verifyCalls += 1;
+  }
+}
+
+class ProjectCheckingMaterializer extends RecordingMaterializer {
+  override async verify(request: PiAgentDirectoryRequest, materialized: MaterializedPiAgentDirectory): Promise<void> {
+    await super.verify(request, materialized);
+    if (!request.workspace) return;
+    try {
+      const parsed = JSON.parse(await readFile(path.join(request.workspace, ".pi", "settings.json"), "utf8")) as Record<string, any>;
+      const task = parsed["llm-wiki"]?.taskModel;
+      if (task && (task.provider !== request.wikiProfile.provider || task.id !== request.wikiProfile.model)) throw new Error("project settings conflict with the controller-selected wiki model");
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("project settings conflict")) throw error;
+      if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ENOENT") return;
+      throw error;
+    }
   }
 }
 
@@ -85,12 +109,15 @@ test("runner selects each independent profile and shares one run materialization
     assert.equal(launch.args[launch.args.indexOf("--model") + 1], profile.model);
     assert.equal(launch.args[launch.args.indexOf("--thinking") + 1], profile.thinking);
     assert.equal(launch.env["PI_CODING_AGENT_DIR"], "/ticket/runtime/run_example01/pi-agent");
+    assert.equal(launch.env["HOME"], "/ticket/runtime/run_example01/home");
+    assert.equal(launch.env["WIKI_HOME"], "/ticket/runtime/run_example01/wiki-home");
     assert.ok(launch.args.includes("--no-extensions"));
     const wikiAt = launch.args.indexOf("--extension");
     assert.equal(launch.args[wikiAt + 1], "/ticket/runtime/wiki/extensions/llm-wiki/index.ts");
     assert.equal(launch.args[wikiAt + 2], "--extension");
   }
-  assert.equal(materializer.calls, 1);
+  assert.equal(materializer.calls, 5);
+  assert.equal(materializer.verifyCalls, 5);
   assert.equal(materializer.requests[0]!.wikiProfile.provider, "openai-codex");
   assert.equal(materializer.requests[0]!.wikiProfile.model, "gpt-5.6-luna");
   assert.equal(materializer.requests[0]!.wikiProfile.thinking, "high");
@@ -106,6 +133,34 @@ class OneProcessFactory implements PiProcessFactory {
     return this.process;
   }
 }
+
+test("runner rechecks project overrides on each role launch instead of trusting a settled preparation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-project-override-runner-"));
+  for (const role of ROLES) await mkdir(path.join(root, role), { recursive: true });
+  const store = new InMemoryWorkflowStore();
+  await store.create(run());
+  const factory = new FakePiProcessFactory();
+  const materializer = new ProjectCheckingMaterializer();
+  const runner = new PiRunner(
+    factory,
+    { resolve: async () => structuredClone(runtime) },
+    store,
+    { roles: roleConfig, sessionRoot: root, workspace: root, materializer },
+    async () => undefined,
+    async () => "trusted role",
+    clock,
+  );
+  const first = runner.launch("run_example01", "orchestrator");
+  const process = await waitForStateRequest(factory, 0);
+  process.respondToLast("get_state", true, { model: { provider: profiles.orchestrator.provider, id: profiles.orchestrator.model }, thinkingLevel: profiles.orchestrator.thinking, sessionId: "orchestrator", sessionFile: "/ticket/sessions/orchestrator/session.jsonl" });
+  await first;
+  await mkdir(path.join(root, ".pi"), { recursive: true });
+  await writeFile(path.join(root, ".pi", "settings.json"), JSON.stringify({ "llm-wiki": { taskModel: { provider: "spoof-provider", id: "spoof-model" } } }));
+  await assert.rejects(runner.launch("run_example01", "plan"), /project settings conflict/);
+  assert.equal(factory.processes.length, 1);
+  assert.equal(materializer.calls, 2);
+  assert.equal(materializer.verifyCalls, 2);
+});
 
 test("thinking-level handshake mismatch fails closed before registration", async () => {
   const store = new InMemoryWorkflowStore();

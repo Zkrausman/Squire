@@ -100,7 +100,27 @@ export interface ResolvedInstallation {
   root?: string;
 }
 export interface ResolvedPiInstallation extends ResolvedInstallation { executable: string }
-export interface RuntimeResolution { schemaVersion: 1; runId: string; pi: ResolvedPiInstallation; llmWiki: ResolvedInstallation; resolvedAt: string }
+/**
+ * An authoritative model-registry result. Both installation identities bind the
+ * capability to the exact Pi/wiki runtime observation that was persisted for a
+ * run; a model name by itself is never sufficient evidence.
+ */
+export interface RuntimeModelCapability {
+  provider: string;
+  model: string;
+  reasoningCapable: boolean;
+  piInstallationId: string;
+  wikiInstallationId: string;
+}
+export interface RuntimeResolution {
+  schemaVersion: 1;
+  runId: string;
+  pi: ResolvedPiInstallation;
+  llmWiki: ResolvedInstallation;
+  /** Exact capability records are persisted with the runtime observation. */
+  modelCapabilities: readonly RuntimeModelCapability[];
+  resolvedAt: string;
+}
 
 export interface RunSnapshot {
   runId: string;

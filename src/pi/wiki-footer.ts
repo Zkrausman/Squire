@@ -14,8 +14,9 @@ const ROUTINE_BLOCK = new RegExp(
   "u",
 );
 
-const HEALTHY_WIKI_STATUS = /^🧠 LLM Wiki \(\d+ tools?, .+ active\)$/u;
-const HEALTHY_WIKI_STATUS_LEGACY = /^🧠 LLM Wiki active(?: \(\d+ tools?\))?$/u;
+// Exact visible statuses emitted by @zosmaai/pi-llm-wiki 0.11.8. Do not
+// broaden this grammar: evolved or diagnostic text must stay actionable.
+const HEALTHY_WIKI_STATUS = /^🧠 LLM Wiki \((?:13 tools, observe \+ recall active|16 tools, trajectory \+ observe \+ recall active)\)$/u;
 const RECALL_STATUS = /^🧠 LLM Wiki — recalled (\d+) page(?:s)? for this task$/u;
 const HEALTHY_MODEL_STATUS_PREFIX = "🧠 wiki model: ";
 const ANSI_ESCAPE = /\u001B\[[0-?]*[ -\/]*[@-~]/gu;
@@ -26,7 +27,13 @@ function escapeRegExp(value: string): string {
 
 function compactRoutineBlock(block: string, model: string): string | undefined {
   const compact = COMPACT_BLOCK.exec(block);
-  if (compact) return compact[2] === model ? block : `<wiki_status>🧠 ${compact[1]} · ${model}</wiki_status>`;
+  if (compact) {
+    // A compact-looking block may come from a newer extension or an
+    // untrusted resource. Only our exact model/count form is routine; never
+    // rewrite a diagnostic-bearing or model-mismatched block.
+    if (compact[2] !== model || DIAGNOSTIC_WORDS.test(block)) return undefined;
+    return block;
+  }
   const match = ROUTINE_BLOCK.exec(block);
   if (!match || DIAGNOSTIC_WORDS.test(block)) return undefined;
   const count = match[1] ?? "-";
@@ -209,7 +216,7 @@ function statusLines(text: string): string[] {
 function healthyWikiStatus(status: string): { count: string } | undefined {
   const recall = RECALL_STATUS.exec(status);
   if (recall) return { count: recall[1] ?? "-" };
-  if (HEALTHY_WIKI_STATUS.test(status) || HEALTHY_WIKI_STATUS_LEGACY.test(status)) return { count: "-" };
+  if (HEALTHY_WIKI_STATUS.test(status)) return { count: "-" };
   return undefined;
 }
 
@@ -379,14 +386,18 @@ const ROUTINE_SUFFIX = " — use wiki_recall for deeper search, wiki_observe to 
 const DIAGNOSTIC_WORDS = /(?:warning|warn|error|failed|failure|blocked|diagnostic|unavailable|conflict|denied|exception)/iu;
 const COMPACT_BLOCK = /^<wiki_status>🧠 (\d+|-) · ([^<>\r\n]+)<\/wiki_status>$/u;
 const ROUTINE_BLOCK = new RegExp("^<wiki_status>LLM Wiki active(?: \\((\\d+) tools?\\))?" + ROUTINE_SUFFIX.replace(/[.*+?^$\\{}()|[\\]\\]/g, "\\$&") + "<\\/wiki_status>$", "u");
-const HEALTHY_WIKI_STATUS = /^🧠 LLM Wiki \(\d+ tools?, .+ active\)$/u;
-const HEALTHY_WIKI_STATUS_LEGACY = /^🧠 LLM Wiki active(?: \(\d+ tools?\))?$/u;
+const HEALTHY_WIKI_STATUS = /^🧠 LLM Wiki \((?:13 tools, observe \+ recall active|16 tools, trajectory \+ observe \+ recall active)\)$/u;
 const RECALL_STATUS = /^🧠 LLM Wiki — recalled (\d+) page(?:s)? for this task$/u;
 const HEALTHY_MODEL_STATUS_PREFIX = "🧠 wiki model: ";
 const ANSI_ESCAPE = /\u001B\[[0-?]*[ -\/]*[@-~]/gu;
 function compactBlock(block) {
   const compact = COMPACT_BLOCK.exec(block);
-  if (compact) return compact[2] === WIKI_MODEL ? block : "<wiki_status>🧠 " + compact[1] + " · " + WIKI_MODEL + "</wiki_status>";
+  if (compact) {
+    // Preserve compact-looking output from an evolved or diagnostic source;
+    // only the exact trusted model form is already routine.
+    if (compact[2] !== WIKI_MODEL || DIAGNOSTIC_WORDS.test(block)) return block;
+    return block;
+  }
   const match = ROUTINE_BLOCK.exec(block);
   if (!match || DIAGNOSTIC_WORDS.test(block)) return block;
   return "<wiki_status>🧠 " + (match[1] ?? "-") + " · " + WIKI_MODEL + "</wiki_status>";
@@ -442,7 +453,7 @@ function statusLines(text) { return text.split(/\r?\n/u); }
 function healthyWikiStatus(status) {
   const recall = RECALL_STATUS.exec(status);
   if (recall) return recall[1];
-  if (HEALTHY_WIKI_STATUS.test(status) || HEALTHY_WIKI_STATUS_LEGACY.test(status)) return "-";
+  if (HEALTHY_WIKI_STATUS.test(status)) return "-";
   return undefined;
 }
 function healthyModelStatus(status) { return status === HEALTHY_MODEL_STATUS_PREFIX + WIKI_MODEL; }

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { normalizeWikiProfile, type PiModelProfile, type PiWikiProfileInput } from "./pi-configuration.js";
-import type { RuntimeResolution } from "../control/domain.js";
+import type { RuntimeModelCapability, RuntimeResolution } from "../control/domain.js";
 import { buildTrustedWikiFooterExtensionSource } from "./wiki-footer.js";
 
 const AGENT_DIRECTORY_KIND = "squire-pi-agent-directory";
@@ -11,6 +11,14 @@ const WIKI_PACKAGE_NAME = "@zosmaai/pi-llm-wiki";
 const FOOTER_FILE = "extensions/squire-trusted-wiki-footer.mjs";
 const SETTINGS_FILE = "settings.json";
 const MANIFEST_FILE = "squire-agent-manifest.json";
+// These two files are created by Pi itself inside PI_CODING_AGENT_DIR. They
+// are not trusted configuration: auth is accepted only in its empty default
+// form unless explicitly provisioned, while the model store is a private,
+// parseable Pi cache. Keeping them on the allow-list lets a real Pi restart
+// without allowing arbitrary files into the trusted directory.
+const PI_AUTH_FILE = "auth.json";
+const PI_MODELS_STORE_FILE = "models-store.json";
+const EMPTY_AUTH_BYTES = Buffer.from("{}", "utf8");
 const DEFAULT_RUNTIME_ROOT = "/ticket/runtime";
 const DEFAULT_WORKSPACE = "/ticket/workspace";
 const DEFAULT_MATERIALIZERS = new Map<string, PiAgentDirectoryMaterializer>();
@@ -26,10 +34,6 @@ export interface WikiInstallationInput {
   version?: string;
   /** Explicit entrypoint is useful for installations with a nonstandard manifest. */
   extensionPath?: string;
-  /** An authoritative local capability result for the selected task model. */
-  reasoningCapableModels?: readonly string[];
-  /** Optional explicit result from the trusted runtime resolver. */
-  reasoningCapable?: boolean;
 }
 
 export interface TrustedAuthInput {
@@ -55,22 +59,31 @@ export interface MaterializedPiAgentDirectory {
   settingsPath: string;
   manifestPath: string;
   footerExtensionPath: string;
+  /** Run-scoped HOME and WIKI_HOME; neither can resolve host state. */
+  homeDir: string;
+  wikiHomeDir: string;
   /** Ordered paths: wiki first, controller footer second. */
   trustedExtensionPaths: readonly [string, string];
+  /** Digests of the exact loaded wiki entrypoint and generated footer. */
+  wikiExtensionDigest: string;
   extensionDigest: string;
+  /** Digest of every regular file in the resolved wiki package. */
+  packageDigest: string;
 }
 
 /** Injectable preparation port used by PiRunner; implementations may be fakes in tests. */
 export interface PiAgentDirectoryMaterializerPort {
   materialize(request: PiAgentDirectoryRequest): Promise<MaterializedPiAgentDirectory>;
+  /** Verify an already materialized directory without creating or repairing it. */
+  verify?(request: PiAgentDirectoryRequest, materialized: MaterializedPiAgentDirectory): Promise<void>;
 }
 
-export interface WikiModelCapability {
-  reasoningCapable: boolean;
-}
+/** Exact capability evidence returned by the trusted runtime/model registry. */
+export type WikiModelCapability = RuntimeModelCapability;
 
 export type WikiModelCapabilityResolver = (
   profile: PiModelProfile,
+  runtime: RuntimeResolution,
   installation: WikiInstallationInput,
   signal?: AbortSignal,
 ) => WikiModelCapability | Promise<WikiModelCapability>;
@@ -89,9 +102,9 @@ export interface PiAgentDirectoryMaterializerOptions {
   ) => WikiInstallationInput | Promise<WikiInstallationInput>;
   /** Explicitly provisioned auth; absent means no auth is copied. */
   trustedAuth?: TrustedAuthInput;
-  /** Defaults to a conservative local model capability check. */
+  /** Resolve exact provider/model capability evidence from the trusted registry. */
   resolveModelCapability?: WikiModelCapabilityResolver;
-  /** HOME is injectable for tests; it is never read for configuration or auth. */
+  /** Host HOME is injectable only for safety assertions; it is never used as launch HOME. */
   homeDirectory?: string;
 }
 
@@ -104,12 +117,46 @@ interface AgentManifest {
     llmWiki: RuntimeResolution["llmWiki"] & { root: string };
   };
   wikiProfile: PiModelProfile;
+  isolation: {
+    home: "home";
+    wikiHome: "wiki-home";
+  };
   files: {
     settings: { path: typeof SETTINGS_FILE; sha256: string };
     footerExtension: { path: typeof FOOTER_FILE; sha256: string };
     auth?: { path: string; sha256: string };
   };
+  piRuntimeFiles: {
+    auth: { path: typeof PI_AUTH_FILE; emptySha256: string };
+    modelsStore: { path: typeof PI_MODELS_STORE_FILE };
+  };
+  trustedPackage: {
+    root: string;
+    packageJson: { path: string; sha256: string };
+    entrypoint: { path: string; sha256: string };
+    treeSha256: string;
+  };
   trustedExtensions: readonly [string, string];
+  trustedExtensionDigests: readonly [string, string];
+}
+
+interface MaterializationLayout {
+  runtimeRoot: string;
+  workspace: string;
+  runRoot: string;
+  agentDir: string;
+  homeDir: string;
+  wikiHomeDir: string;
+}
+
+interface PreparedMaterialization {
+  layout: MaterializationLayout;
+  wikiExtension: string;
+  wikiExtensionDigest: string;
+  packageDigest: string;
+  footerDigest: string;
+  expected: AgentManifest;
+  entries: FileSystemEntry[];
 }
 
 interface FileSystemEntry {
@@ -162,46 +209,60 @@ export class PiAgentDirectoryMaterializer {
   }
 
   async #materialize(request: PiAgentDirectoryRequest, profile: PiModelProfile): Promise<MaterializedPiAgentDirectory> {
+    const prepared = await this.#prepare(request, profile);
+    await ensureRunLayout(prepared.layout);
+    await this.#createOrVerify(prepared, request.signal);
+    return materializedResult(request.runId, prepared);
+  }
+
+  /**
+   * Re-check an existing result without creating or repairing anything. The
+   * runner invokes this as the last fenced pre-spawn integrity step, so a
+   * changed package, project override, mode, or generated byte aborts the
+   * launch instead of silently refreshing trust.
+   */
+  async verify(request: PiAgentDirectoryRequest, materialized: MaterializedPiAgentDirectory): Promise<void> {
+    assertRunId(request.runId);
+    const profile = normalizeWikiProfile(request.wikiProfile);
+    const prepared = await this.#prepare(request, profile);
+    const expected = materializedResult(request.runId, prepared);
+    if (!sameMaterializedResult(materialized, expected)) throw new Error("materialized Pi agent-directory result changed during verification");
+    await verifyRunLayout(prepared.layout);
+    await verifyAgentDirectory(prepared.layout.agentDir, prepared.expected, prepared.entries.map(entry => entry.path));
+  }
+
+  async #prepare(request: PiAgentDirectoryRequest, profile: PiModelProfile): Promise<PreparedMaterialization> {
     throwIfAborted(request.signal);
     if (request.runtime.runId !== request.runId) throw new Error("runtime resolution belongs to a different run");
-    const runtimeRoot = absoluteDirectory(this.#options.runtimeRoot ?? DEFAULT_RUNTIME_ROOT, "runtime root");
-    const workspace = absoluteDirectory(request.workspace ?? this.#options.workspace ?? DEFAULT_WORKSPACE, "workspace");
-    const runRoot = path.resolve(runtimeRoot, request.runId);
-    const agentDir = path.resolve(runRoot, "pi-agent");
-    assertSafeOutput(agentDir, runtimeRoot, workspace, this.#options.homeDirectory ?? process.env["HOME"]);
-    await rejectSymlinkedAncestors(runtimeRoot, "runtime root");
-    await rejectSymlinkedAncestors(workspace, "workspace");
-    const runRootKind = await pathKind(runRoot);
-    if (runRootKind === "symlink") throw new Error("run runtime directory may not be symlinked");
-    if (runRootKind !== "missing" && runRootKind !== "directory") throw new Error("run runtime path is not a directory");
-    await ensureProjectWikiOverrideIsNotConflicting(workspace, profile, request.signal);
+    const layout = await resolveMaterializationLayout(request, this.#options);
+    await ensureProjectWikiOverrideIsNotConflicting(layout.workspace, profile, request.signal);
 
     const installation = await this.#resolveInstallation(request.runtime, request.signal);
     validateInstallationInput(installation, request.runtime);
     const wikiRoot = await canonicalRegularDirectory(installation.root, "resolved pi-llm-wiki installation");
     await rejectSymlinkedAncestors(wikiRoot, "resolved pi-llm-wiki installation");
-    if (isWithin(workspace, wikiRoot) || isWithin(wikiRoot, workspace)) throw new Error("resolved pi-llm-wiki installation may not be in the target workspace");
+    if (isWithin(layout.workspace, wikiRoot) || isWithin(wikiRoot, layout.workspace)) throw new Error("resolved pi-llm-wiki installation may not be in the target workspace");
     const home = this.#options.homeDirectory ?? process.env["HOME"];
     if (home && (isWithin(home, wikiRoot) || isWithin(wikiRoot, home))) throw new Error("resolved pi-llm-wiki installation may not be in the host home directory");
     const wikiExtension = await resolveWikiExtension(wikiRoot, installation.extensionPath);
     await rejectSymlinkComponents(wikiRoot, wikiExtension, "resolved pi-llm-wiki extension");
-    const packageMetadata = await readPackageMetadata(wikiRoot);
-    if (packageMetadata.name !== WIKI_PACKAGE_NAME) throw new Error(`resolved wiki installation is not ${WIKI_PACKAGE_NAME}`);
-    if (packageMetadata.version !== request.runtime.llmWiki.version) throw new Error("resolved pi-llm-wiki version does not match persisted runtime resolution");
+    const packageSnapshot = await snapshotTrustedPackage(wikiRoot, wikiExtension);
+    if (packageSnapshot.name !== WIKI_PACKAGE_NAME) throw new Error(`resolved wiki installation is not ${WIKI_PACKAGE_NAME}`);
+    if (packageSnapshot.version !== request.runtime.llmWiki.version) throw new Error("resolved pi-llm-wiki version does not match persisted runtime resolution");
     if (installation.version !== undefined && installation.version !== request.runtime.llmWiki.version) {
       throw new Error("wiki installation seam version does not match persisted runtime resolution");
     }
     if (installation.installationId !== undefined && installation.installationId !== request.runtime.llmWiki.installationId) {
       throw new Error("wiki installation seam identity does not match persisted runtime resolution");
     }
-    await assertReasoningCapable(profile, installation, this.#options.resolveModelCapability, request.signal);
+    await assertReasoningCapable(profile, request.runtime, installation, this.#options.resolveModelCapability, request.signal);
     throwIfAborted(request.signal);
 
     const footerSource = Buffer.from(buildTrustedWikiFooterExtensionSource(profile), "utf8");
     const footerDigest = sha256(footerSource);
     const settings = buildSettings(wikiRoot, profile);
     const settingsBytes = Buffer.from(`${JSON.stringify(settings, null, 2)}\n`, "utf8");
-    const authEntry = await this.#readTrustedAuth(agentDir, request.signal);
+    const authEntry = await this.#readTrustedAuth(layout.agentDir, layout.workspace, request.signal);
     const manifest: AgentManifest = {
       schemaVersion: AGENT_DIRECTORY_SCHEMA_VERSION,
       kind: AGENT_DIRECTORY_KIND,
@@ -210,31 +271,42 @@ export class PiAgentDirectoryMaterializer {
         pi: { ...request.runtime.pi },
         llmWiki: { ...request.runtime.llmWiki, root: wikiRoot },
       },
+      isolation: { home: "home", wikiHome: "wiki-home" },
       wikiProfile: { ...profile },
       files: {
         settings: { path: SETTINGS_FILE, sha256: sha256(settingsBytes) },
         footerExtension: { path: FOOTER_FILE, sha256: footerDigest },
         ...(authEntry ? { auth: { path: authEntry.relativePath, sha256: authEntry.digest } } : {}),
       },
-      trustedExtensions: [wikiExtension, footerPath(agentDir)],
+      piRuntimeFiles: {
+        auth: { path: PI_AUTH_FILE, emptySha256: sha256(EMPTY_AUTH_BYTES) },
+        modelsStore: { path: PI_MODELS_STORE_FILE },
+      },
+      trustedPackage: {
+        root: wikiRoot,
+        packageJson: { path: packageSnapshot.packageJsonPath, sha256: packageSnapshot.packageJsonDigest },
+        entrypoint: { path: wikiExtension, sha256: packageSnapshot.entrypointDigest },
+        treeSha256: packageSnapshot.treeDigest,
+      },
+      trustedExtensions: [wikiExtension, footerPath(layout.agentDir)],
+      trustedExtensionDigests: [packageSnapshot.entrypointDigest, footerDigest],
     };
     const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    const authFile = authEntry ? { path: path.resolve(agentDir, authEntry.relativePath), bytes: authEntry.bytes, mode: 0o600 } : undefined;
+    const authFile = authEntry ? { path: path.resolve(layout.agentDir, authEntry.relativePath), bytes: authEntry.bytes, mode: 0o600 } : undefined;
     const entries: FileSystemEntry[] = [
       { path: SETTINGS_FILE, bytes: settingsBytes, mode: 0o600 },
       { path: FOOTER_FILE, bytes: footerSource, mode: 0o600 },
       { path: MANIFEST_FILE, bytes: manifestBytes, mode: 0o600 },
       ...(authFile ? [{ path: authEntry!.relativePath, bytes: authFile.bytes, mode: authFile.mode }] : []),
     ];
-    await this.#createOrVerify(agentDir, runRoot, entries, manifest, request.signal);
     return {
-      runId: request.runId,
-      agentDir,
-      settingsPath: path.join(agentDir, SETTINGS_FILE),
-      manifestPath: path.join(agentDir, MANIFEST_FILE),
-      footerExtensionPath: footerPath(agentDir),
-      trustedExtensionPaths: [wikiExtension, footerPath(agentDir)],
-      extensionDigest: footerDigest,
+      layout,
+      wikiExtension,
+      wikiExtensionDigest: packageSnapshot.entrypointDigest,
+      packageDigest: packageSnapshot.treeDigest,
+      footerDigest,
+      expected: manifest,
+      entries,
     };
   }
 
@@ -247,7 +319,7 @@ export class PiAgentDirectoryMaterializer {
     throw new Error("no trusted local path for the persisted pi-llm-wiki installation");
   }
 
-  async #readTrustedAuth(agentDir: string, signal?: AbortSignal): Promise<{ relativePath: string; bytes: Buffer; digest: string } | undefined> {
+  async #readTrustedAuth(agentDir: string, workspace: string, signal?: AbortSignal): Promise<{ relativePath: string; bytes: Buffer; digest: string } | undefined> {
     const input = this.#options.trustedAuth;
     if (!input) return undefined;
     throwIfAborted(signal);
@@ -255,10 +327,18 @@ export class PiAgentDirectoryMaterializer {
     if (!SAFE_RELATIVE_FILE.test(relativePath) || relativePath.split("/").some(part => part === "." || part === "..")) {
       throw new Error("trusted auth destination must be a safe relative file");
     }
+    if ([SETTINGS_FILE, FOOTER_FILE, MANIFEST_FILE, PI_MODELS_STORE_FILE].includes(relativePath)) {
+      throw new Error("trusted auth destination conflicts with a generated Pi file");
+    }
     const source = path.resolve(input.sourcePath);
-    const sourceStat = await lstat(source);
+    const hostHome = this.#options.homeDirectory ?? process.env["HOME"];
+    if (isWithin(workspace, source) || isWithin(source, workspace)) throw new Error("trusted auth source may not be in the target workspace");
+    if (hostHome && (isWithin(hostHome, source) || isWithin(source, hostHome))) throw new Error("trusted auth source may not be in the host home directory");
+    await rejectSymlinkedAncestors(source, "trusted auth source");
+    const sourceStat = await lstatRequired(source, "trusted auth source");
     if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw new Error("trusted auth source must be a regular non-symlink file");
-    const bytes = await readFile(source);
+    assertPrivateFile(sourceStat, "trusted auth source");
+    const bytes = await readStableFile(source, "trusted auth source");
     const digest = sha256(bytes);
     if (input.sha256 !== undefined && input.sha256 !== digest) throw new Error("trusted auth digest mismatch");
     const destination = path.resolve(agentDir, relativePath);
@@ -266,17 +346,17 @@ export class PiAgentDirectoryMaterializer {
     return { relativePath, bytes, digest };
   }
 
-  async #createOrVerify(agentDir: string, runRoot: string, entries: readonly FileSystemEntry[], expected: AgentManifest, signal?: AbortSignal): Promise<void> {
+  async #createOrVerify(prepared: PreparedMaterialization, signal?: AbortSignal): Promise<void> {
+    const { layout, entries, expected } = prepared;
     throwIfAborted(signal);
-    const existing = await pathKind(agentDir);
+    const existing = await pathKind(layout.agentDir);
     if (existing !== "missing") {
       if (existing !== "directory") throw new Error("Pi agent directory is not a regular directory");
-      await verifyAgentDirectory(agentDir, expected, entries.map(entry => entry.path));
+      await verifyAgentDirectory(layout.agentDir, expected, entries.map(entry => entry.path));
+      await verifyRunLayout(layout);
       return;
     }
-    await mkdir(runRoot, { recursive: true, mode: 0o700 });
-    await chmod(runRoot, 0o700);
-    const staging = await mkdtemp(path.join(runRoot, ".pi-agent-staging-"));
+    const staging = await mkdtemp(path.join(layout.runRoot, ".pi-agent-staging-"));
     try {
       await chmod(staging, 0o700);
       for (const entry of entries) {
@@ -289,15 +369,16 @@ export class PiAgentDirectoryMaterializer {
       }
       await verifyAgentDirectory(staging, expected, entries.map(entry => entry.path));
       try {
-        await rename(staging, agentDir);
+        await rename(staging, layout.agentDir);
       } catch (error) {
-        if (await pathKind(agentDir) === "directory") {
-          await verifyAgentDirectory(agentDir, expected, entries.map(entry => entry.path));
+        if (await pathKind(layout.agentDir) === "directory") {
+          await verifyAgentDirectory(layout.agentDir, expected, entries.map(entry => entry.path));
           return;
         }
         throw error;
       }
-      await verifyAgentDirectory(agentDir, expected, entries.map(entry => entry.path));
+      await verifyAgentDirectory(layout.agentDir, expected, entries.map(entry => entry.path));
+      await verifyRunLayout(layout);
     } finally {
       if (await pathKind(staging) !== "missing") await rm(staging, { recursive: true, force: true });
     }
@@ -347,17 +428,26 @@ function buildSettings(wikiRoot: string, profile: PiModelProfile): Record<string
   };
 }
 
-async function verifyAgentDirectory(agentDir: string, expected: AgentManifest, expectedFiles: readonly string[]): Promise<void> {
-  if ((await pathKind(agentDir)) !== "directory") throw new Error("Pi agent directory is not a regular directory");
+async function verifyAgentDirectory(
+  agentDir: string,
+  expected: AgentManifest,
+  expectedFiles: readonly string[],
+): Promise<void> {
+  const agentInfo = await lstatRequired(agentDir, "Pi agent directory");
+  assertPrivateDirectory(agentInfo, "Pi agent directory");
   const manifestPath = path.join(agentDir, MANIFEST_FILE);
-  const manifestStat = await lstat(manifestPath);
-  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error("Pi agent manifest is missing or symlinked");
+  const manifestStat = await lstatRequired(manifestPath, "Pi agent manifest");
+  assertPrivateFile(manifestStat, "Pi agent manifest");
+  const manifestBytes = await readStableFile(manifestPath, "Pi agent manifest");
   let actual: unknown;
-  try { actual = JSON.parse(await readFile(manifestPath, "utf8")); } catch { throw new Error("Pi agent manifest is not valid JSON"); }
+  try { actual = JSON.parse(manifestBytes.toString("utf8")); } catch { throw new Error("Pi agent manifest is not valid JSON"); }
   if (!deepEqual(actual, expected)) throw new Error("Pi agent manifest conflicts with the requested run configuration");
-  const expectedSet = new Set([...expectedFiles, MANIFEST_FILE]);
+  if (sha256(manifestBytes) !== sha256(serializeManifest(expected))) throw new Error("Pi agent manifest digest mismatch");
+  const requiredSet = new Set([...expectedFiles, MANIFEST_FILE]);
+  const optionalPiFiles = new Set([PI_AUTH_FILE, PI_MODELS_STORE_FILE].filter(file => !requiredSet.has(file)));
+  const allowedFiles = new Set([...requiredSet, ...optionalPiFiles]);
   const expectedDirectories = new Set<string>();
-  for (const file of expectedSet) {
+  for (const file of requiredSet) {
     let parent = path.posix.dirname(file);
     while (parent !== ".") {
       expectedDirectories.add(parent);
@@ -365,23 +455,177 @@ async function verifyAgentDirectory(agentDir: string, expected: AgentManifest, e
     }
   }
   const entries = await listRelativeEntries(agentDir);
-  if (entries.files.some(name => !expectedSet.has(name)) || entries.files.length !== expectedSet.size || entries.directories.some(name => !expectedDirectories.has(name))) {
+  if (entries.files.some(name => !allowedFiles.has(name))
+    || entries.files.length < requiredSet.size
+    || [...requiredSet].some(name => !entries.files.includes(name))
+    || entries.directories.some(name => !expectedDirectories.has(name))) {
     throw new Error("Pi agent directory contains unexpected or partial content");
+  }
+  for (const directory of entries.directories) {
+    const directoryStat = await lstatRequired(path.join(agentDir, directory), `Pi agent directory entry: ${directory}`);
+    assertPrivateDirectory(directoryStat, `Pi agent directory entry: ${directory}`);
   }
   for (const file of [MANIFEST_FILE, ...expectedFiles]) {
     const target = path.join(agentDir, file);
-    const fileStat = await lstat(target);
-    if (!fileStat.isFile() || fileStat.isSymbolicLink()) throw new Error(`Pi agent file is missing or symlinked: ${file}`);
-    if ((fileStat.mode & 0o777) !== 0o600) throw new Error(`Pi agent file has unsafe permissions: ${file}`);
+    const fileStat = await lstatRequired(target, `Pi agent file: ${file}`);
+    assertPrivateFile(fileStat, `Pi agent file: ${file}`);
   }
-  const settingsBytes = await readFile(path.join(agentDir, SETTINGS_FILE));
-  const footerBytes = await readFile(path.join(agentDir, FOOTER_FILE));
+  const settingsBytes = await readStableFile(path.join(agentDir, SETTINGS_FILE), "Pi settings");
+  const footerBytes = await readStableFile(path.join(agentDir, FOOTER_FILE), "trusted footer");
   if (sha256(settingsBytes) !== expected.files.settings.sha256) throw new Error("Pi settings digest mismatch");
   if (sha256(footerBytes) !== expected.files.footerExtension.sha256) throw new Error("trusted footer digest mismatch");
   if (expected.files.auth) {
-    const authBytes = await readFile(path.join(agentDir, expected.files.auth.path));
+    const authBytes = await readStableFile(path.join(agentDir, expected.files.auth.path), "trusted auth");
     if (sha256(authBytes) !== expected.files.auth.sha256) throw new Error("trusted auth digest mismatch");
   }
+  for (const file of optionalPiFiles) {
+    const target = path.join(agentDir, file);
+    const fileKind = await pathKind(target);
+    if (fileKind === "missing") continue;
+    if (fileKind !== "file") throw new Error(`Pi runtime file is not a regular file: ${file}`);
+    const fileStat = await lstatRequired(target, `Pi runtime file: ${file}`);
+    assertPrivateFile(fileStat, `Pi runtime file: ${file}`);
+    const bytes = await readStableFile(target, `Pi runtime file: ${file}`);
+    if (file === PI_AUTH_FILE && !bytes.equals(EMPTY_AUTH_BYTES)) {
+      throw new Error("Pi auth.json is not the empty unprovisioned credential store");
+    }
+    if (file === PI_MODELS_STORE_FILE) assertJsonObject(bytes, "Pi models-store.json");
+  }
+  await verifyTrustedPackage(expected.trustedPackage);
+}
+
+async function verifyTrustedPackage(expected: AgentManifest["trustedPackage"]): Promise<void> {
+  const snapshot = await snapshotTrustedPackage(expected.root, expected.entrypoint.path);
+  if (snapshot.packageJsonPath !== expected.packageJson.path || snapshot.packageJsonDigest !== expected.packageJson.sha256) {
+    throw new Error("resolved pi-llm-wiki package metadata digest mismatch");
+  }
+  if (snapshot.entrypointPath !== expected.entrypoint.path || snapshot.entrypointDigest !== expected.entrypoint.sha256) {
+    throw new Error("resolved pi-llm-wiki entrypoint digest mismatch");
+  }
+  if (snapshot.treeDigest !== expected.treeSha256) throw new Error("resolved pi-llm-wiki package digest mismatch");
+}
+
+async function resolveMaterializationLayout(
+  request: PiAgentDirectoryRequest,
+  options: PiAgentDirectoryMaterializerOptions,
+): Promise<MaterializationLayout> {
+  const runtimeRoot = absoluteDirectory(options.runtimeRoot ?? DEFAULT_RUNTIME_ROOT, "runtime root");
+  const workspace = absoluteDirectory(request.workspace ?? options.workspace ?? DEFAULT_WORKSPACE, "workspace");
+  const runRoot = path.resolve(runtimeRoot, request.runId);
+  const agentDir = path.resolve(runRoot, "pi-agent");
+  const homeDir = path.resolve(runRoot, "home");
+  const wikiHomeDir = path.resolve(runRoot, "wiki-home");
+  const hostHome = options.homeDirectory ?? process.env["HOME"];
+  assertSafeOutput(agentDir, runtimeRoot, workspace, hostHome);
+  assertSafeRunChild(homeDir, runRoot, runtimeRoot, workspace, hostHome, "run-scoped HOME");
+  assertSafeRunChild(wikiHomeDir, runRoot, runtimeRoot, workspace, hostHome, "run-scoped WIKI_HOME");
+  await rejectSymlinkedAncestors(runtimeRoot, "runtime root");
+  await rejectSymlinkedAncestors(workspace, "workspace");
+  const runRootKind = await pathKind(runRoot);
+  if (runRootKind === "symlink") throw new Error("run runtime directory may not be symlinked");
+  if (runRootKind !== "missing" && runRootKind !== "directory") throw new Error("run runtime path is not a directory");
+  return { runtimeRoot, workspace, runRoot, agentDir, homeDir, wikiHomeDir };
+}
+
+async function ensureRunLayout(layout: MaterializationLayout): Promise<void> {
+  await mkdir(layout.runtimeRoot, { recursive: true, mode: 0o755 });
+  await ensureSecureDirectory(layout.runtimeRoot, "runtime root", false);
+  await mkdir(layout.runRoot, { recursive: true, mode: 0o700 });
+  await ensureSecureDirectory(layout.runRoot, "run runtime directory", true);
+  await ensurePrivateDirectory(layout.homeDir, "run-scoped HOME");
+  await ensurePrivateDirectory(layout.wikiHomeDir, "run-scoped WIKI_HOME");
+  await verifyNoSymlinksBelow(layout.homeDir, "run-scoped HOME");
+  await verifyNoSymlinksBelow(layout.wikiHomeDir, "run-scoped WIKI_HOME");
+  const agentKind = await pathKind(layout.agentDir);
+  if (agentKind === "symlink") throw new Error("Pi agent directory may not be symlinked");
+  if (agentKind !== "missing" && agentKind !== "directory") throw new Error("Pi agent directory is not a regular directory");
+  await verifyRunRootChildren(layout, agentKind === "directory");
+}
+
+async function verifyRunLayout(layout: MaterializationLayout, agentMustExist = true): Promise<void> {
+  await ensureSecureDirectory(layout.runtimeRoot, "runtime root", false);
+  await ensureSecureDirectory(layout.runRoot, "run runtime directory", true);
+  await ensureSecureDirectory(layout.homeDir, "run-scoped HOME", true);
+  await ensureSecureDirectory(layout.wikiHomeDir, "run-scoped WIKI_HOME", true);
+  await verifyNoSymlinksBelow(layout.homeDir, "run-scoped HOME");
+  await verifyNoSymlinksBelow(layout.wikiHomeDir, "run-scoped WIKI_HOME");
+  await verifyRunRootChildren(layout, agentMustExist);
+  if (agentMustExist) await ensureSecureDirectory(layout.agentDir, "Pi agent directory", true);
+}
+
+async function verifyRunRootChildren(layout: MaterializationLayout, agentMustExist: boolean): Promise<void> {
+  const expected = new Set(["home", "wiki-home", ...(agentMustExist ? ["pi-agent"] : [])]);
+  const entries = await readdir(layout.runRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || !entry.isDirectory() || !expected.has(entry.name)) {
+      throw new Error("Pi run directory contains unexpected or partial content");
+    }
+  }
+  for (const required of expected) {
+    if (!entries.some(entry => entry.name === required)) throw new Error("Pi run directory contains unexpected or partial content");
+  }
+}
+
+async function verifyNoSymlinksBelow(root: string, name: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const target = path.join(root, entry.name);
+    if (entry.isSymbolicLink()) throw new Error(`${name} contains a symlink: ${entry.name}`);
+    const info = await lstatRequired(target, `${name} entry: ${entry.name}`);
+    if (entry.isDirectory()) {
+      assertOwned(info, `${name} entry: ${entry.name}`);
+      await verifyNoSymlinksBelow(target, `${name} entry: ${entry.name}`);
+    } else if (entry.isFile()) {
+      assertOwned(info, `${name} entry: ${entry.name}`);
+    } else {
+      throw new Error(`${name} contains a non-regular entry: ${entry.name}`);
+    }
+  }
+}
+
+async function ensurePrivateDirectory(value: string, name: string): Promise<void> {
+  const kind = await pathKind(value);
+  if (kind === "symlink") throw new Error(`${name} may not be symlinked`);
+  if (kind === "missing") {
+    await mkdir(value, { recursive: false, mode: 0o700 });
+    await chmod(value, 0o700);
+  }
+  await ensureSecureDirectory(value, name, true);
+}
+
+async function ensureSecureDirectory(value: string, name: string, privateMode: boolean): Promise<void> {
+  const info = await lstatRequired(value, name);
+  if (privateMode) assertPrivateDirectory(info, name);
+  else assertSecureInstallationMode(info, name);
+}
+
+function assertSafeRunChild(value: string, runRoot: string, runtimeRoot: string, workspace: string, hostHome: string | undefined, name: string): void {
+  const relative = path.relative(runRoot, value).split(path.sep).filter(Boolean);
+  if (relative.length !== 1 || (relative[0] !== "home" && relative[0] !== "wiki-home")) throw new Error(`${name} must be directly beneath the run runtime directory`);
+  if (isWithin(workspace, value) || isWithin(value, workspace)) throw new Error(`${name} may not be inside the target workspace`);
+  if (isWithin(runtimeRoot, value) === false) throw new Error(`${name} must be beneath the runtime root`);
+  if (hostHome && (isWithin(hostHome, value) || isWithin(value, hostHome))) throw new Error(`${name} may not be inside the host home directory`);
+}
+
+function materializedResult(runId: string, prepared: PreparedMaterialization): MaterializedPiAgentDirectory {
+  const { layout } = prepared;
+  return {
+    runId,
+    agentDir: layout.agentDir,
+    settingsPath: path.join(layout.agentDir, SETTINGS_FILE),
+    manifestPath: path.join(layout.agentDir, MANIFEST_FILE),
+    footerExtensionPath: footerPath(layout.agentDir),
+    homeDir: layout.homeDir,
+    wikiHomeDir: layout.wikiHomeDir,
+    trustedExtensionPaths: [prepared.wikiExtension, footerPath(layout.agentDir)],
+    wikiExtensionDigest: prepared.wikiExtensionDigest,
+    extensionDigest: prepared.footerDigest,
+    packageDigest: prepared.packageDigest,
+  };
+}
+
+function sameMaterializedResult(left: MaterializedPiAgentDirectory, right: MaterializedPiAgentDirectory): boolean {
+  return deepEqual(left, right);
 }
 
 async function listRelativeEntries(root: string): Promise<{ files: string[]; directories: string[] }> {
@@ -455,33 +699,129 @@ function validateInstallationInput(installation: WikiInstallationInput, runtime:
   if (!runtime.pi.installationId || !runtime.llmWiki.installationId) throw new Error("runtime installation identities are required");
 }
 
-async function readPackageMetadata(root: string): Promise<{ name: string; version: string }> {
+interface PackageMetadataSnapshot {
+  name: string;
+  version: string;
+  packageJsonPath: string;
+  packageJsonDigest: string;
+}
+
+interface TrustedPackageSnapshot extends PackageMetadataSnapshot {
+  entrypointPath: string;
+  entrypointDigest: string;
+  treeDigest: string;
+}
+
+async function readPackageMetadata(root: string): Promise<PackageMetadataSnapshot> {
   const packagePath = path.join(root, "package.json");
-  try {
-    const info = await lstat(packagePath);
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error("resolved pi-llm-wiki package metadata must be a regular file");
-    const parsed = JSON.parse(await readFile(packagePath, "utf8")) as Record<string, unknown>;
-    if (typeof parsed["name"] !== "string" || typeof parsed["version"] !== "string") throw new Error("resolved pi-llm-wiki package metadata is incomplete");
-    return { name: parsed["name"], version: parsed["version"] };
-  } catch (error) {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try { info = await lstat(packagePath); }
+  catch { throw new Error("resolved pi-llm-wiki package metadata is unreadable"); }
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("resolved pi-llm-wiki package metadata must be a regular file");
+  assertSecureInstallationFile(info, "resolved pi-llm-wiki package metadata");
+  let bytes: Buffer;
+  try { bytes = await readStableFile(packagePath, "resolved pi-llm-wiki package metadata"); }
+  catch (error) {
     if (error instanceof Error && error.message.startsWith("resolved pi-llm-wiki")) throw error;
     throw new Error("resolved pi-llm-wiki package metadata is unreadable");
   }
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>; }
+  catch { throw new Error("resolved pi-llm-wiki package metadata is unreadable"); }
+  if (typeof parsed["name"] !== "string" || typeof parsed["version"] !== "string") throw new Error("resolved pi-llm-wiki package metadata is incomplete");
+  return { name: parsed["name"], version: parsed["version"], packageJsonPath: packagePath, packageJsonDigest: sha256(bytes) };
 }
 
-async function assertReasoningCapable(profile: PiModelProfile, installation: WikiInstallationInput, resolver: WikiModelCapabilityResolver | undefined, signal?: AbortSignal): Promise<void> {
-  throwIfAborted(signal);
-  let capability: WikiModelCapability;
-  if (resolver) capability = await resolver(profile, installation, signal);
-  else {
-    const ref = `${profile.provider}/${profile.model}`;
-    const known = installation.reasoningCapableModels?.includes(ref) || installation.reasoningCapableModels?.includes(profile.model);
-    const conservativeKnown = profile.provider === "openai-codex" && /^gpt-5(?:[.-]|$)/iu.test(profile.model) && !/(?:non[-_ ]?reason|no[-_ ]?reason)/iu.test(profile.model);
-    if (installation.reasoningCapable === false) throw new Error(`wiki model ${ref} is not reasoning-capable`);
-    if (!installation.reasoningCapable && !known && !conservativeKnown) throw new Error(`reasoning capability is not proven for wiki model ${ref}`);
-    capability = { reasoningCapable: installation.reasoningCapable ?? true };
+async function snapshotTrustedPackage(root: string, entrypoint: string): Promise<TrustedPackageSnapshot> {
+  const metadata = await readPackageMetadata(root);
+  const entrypointInfo = await lstatRequired(entrypoint, "resolved pi-llm-wiki extension");
+  if (!entrypointInfo.isFile() || entrypointInfo.isSymbolicLink()) throw new Error("resolved pi-llm-wiki extension must be a regular file");
+  assertSecureInstallationFile(entrypointInfo, "resolved pi-llm-wiki extension");
+  const entrypointBytes = await readStableFile(entrypoint, "resolved pi-llm-wiki extension");
+  const treeDigest = await digestTrustedPackage(root);
+  return {
+    ...metadata,
+    entrypointPath: path.resolve(entrypoint),
+    entrypointDigest: sha256(entrypointBytes),
+    treeDigest,
+  };
+}
+
+async function digestTrustedPackage(root: string): Promise<string> {
+  const digest = createHash("sha256");
+  async function visit(current: string, relativeRoot: string): Promise<void> {
+    const info = await lstatRequired(current, "resolved pi-llm-wiki package entry");
+    if (info.isSymbolicLink()) throw new Error("resolved pi-llm-wiki package contains a symlink");
+    if (info.isDirectory()) {
+      assertSecureInstallationDirectory(info, `resolved pi-llm-wiki package directory: ${relativeRoot || "."}`);
+      digest.update(`directory\\0${relativeRoot}\\0`, "utf8");
+      const children = (await readdir(current, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name));
+      for (const child of children) {
+        const childRelative = relativeRoot ? `${relativeRoot}/${child.name}` : child.name;
+        await visit(path.join(current, child.name), childRelative);
+      }
+      return;
+    }
+    if (!info.isFile()) throw new Error(`resolved pi-llm-wiki package contains a non-regular entry: ${relativeRoot}`);
+    assertSecureInstallationFile(info, `resolved pi-llm-wiki package file: ${relativeRoot}`);
+    const bytes = await readStableFile(current, `resolved pi-llm-wiki package file: ${relativeRoot}`);
+    digest.update(`file\\0${relativeRoot}\\0${bytes.byteLength}\\0`, "utf8").update(bytes);
   }
-  if (!capability.reasoningCapable) throw new Error(`wiki model ${profile.provider}/${profile.model} is not reasoning-capable`);
+  await visit(root, "");
+  return digest.digest("hex");
+}
+
+async function assertReasoningCapable(
+  profile: PiModelProfile,
+  runtime: RuntimeResolution,
+  installation: WikiInstallationInput,
+  resolver: WikiModelCapabilityResolver | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
+  const ref = `${profile.provider}/${profile.model}`;
+  const capability = resolver
+    ? await resolver(profile, runtime, installation, signal)
+    : findRuntimeCapability(runtime, profile);
+  assertExactCapability(capability, profile, runtime, ref);
+  if (!capability.reasoningCapable) throw new Error(`wiki model ${ref} is not reasoning-capable`);
+}
+
+function findRuntimeCapability(runtime: RuntimeResolution, profile: PiModelProfile): WikiModelCapability {
+  const matches = (runtime.modelCapabilities ?? []).filter(capability => isExactCapabilityShape(capability)
+    && capability.provider === profile.provider
+    && capability.model === profile.model
+    && capability.piInstallationId === runtime.pi.installationId
+    && capability.wikiInstallationId === runtime.llmWiki.installationId);
+  if (matches.length !== 1) throw new Error(`reasoning capability is not proven for wiki model ${profile.provider}/${profile.model}`);
+  return matches[0]!;
+}
+
+function assertExactCapability(
+  capability: WikiModelCapability,
+  profile: PiModelProfile,
+  runtime: RuntimeResolution,
+  ref: string,
+): void {
+  if (!isExactCapabilityShape(capability)
+    || capability.provider !== profile.provider
+    || capability.model !== profile.model
+    || capability.piInstallationId !== runtime.pi.installationId
+    || capability.wikiInstallationId !== runtime.llmWiki.installationId) {
+    throw new Error(`reasoning capability is not proven for wiki model ${ref}`);
+  }
+}
+
+function isExactCapabilityShape(value: unknown): value is WikiModelCapability {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 5 || keys.join("\\0") !== ["model", "piInstallationId", "provider", "reasoningCapable", "wikiInstallationId"].join("\\0")) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate["provider"] === "string"
+    && typeof candidate["model"] === "string"
+    && typeof candidate["reasoningCapable"] === "boolean"
+    && typeof candidate["piInstallationId"] === "string"
+    && typeof candidate["wikiInstallationId"] === "string";
 }
 
 async function ensureProjectWikiOverrideIsNotConflicting(workspace: string, profile: PiModelProfile, signal?: AbortSignal): Promise<void> {
@@ -530,6 +870,7 @@ function parseTaskModelOverride(text: string, filename: string): { provider: str
 }
 
 function footerPath(agentDir: string): string { return path.join(agentDir, FOOTER_FILE); }
+function serializeManifest(manifest: AgentManifest): Buffer { return Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8"); }
 function sha256(bytes: Uint8Array): string { return createHash("sha256").update(bytes).digest("hex"); }
 function deepEqual(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
 function assertRunId(runId: string): void { if (!RUN_ID.test(runId)) throw new Error("invalid run ID for Pi agent directory"); }
@@ -541,9 +882,83 @@ function assertSafeOutput(agentDir: string, runtimeRoot: string, workspace: stri
   if (isWithin(workspace, agentDir) || isWithin(agentDir, workspace)) throw new Error("Pi agent directory may not be inside the target workspace");
   if (home && (isWithin(home, agentDir) || isWithin(agentDir, home))) throw new Error("Pi agent directory may not be inside the host home directory");
 }
+
+async function lstatRequired(value: string, name: string): Promise<Awaited<ReturnType<typeof lstat>>> {
+  try { return await lstat(value); }
+  catch (error) {
+    if (isNotFound(error)) throw new Error(`${name} is missing`);
+    throw error;
+  }
+}
+
+function assertOwned(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid) throw new Error(`${name} has unexpected ownership`);
+}
+
+function assertPrivateDirectory(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`${name} is not a regular directory`);
+  assertOwned(info, name);
+  if ((modeBits(info) & 0o777) !== 0o700) throw new Error(`${name} has unsafe permissions; expected 0700`);
+}
+
+function assertPrivateFile(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${name} is not a regular file`);
+  assertOwned(info, name);
+  if ((modeBits(info) & 0o777) !== 0o600) throw new Error(`${name} has unsafe permissions; expected 0600`);
+}
+
+function assertSecureInstallationDirectory(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`${name} is not a regular directory`);
+  assertOwned(info, name);
+  if ((modeBits(info) & 0o022) !== 0) throw new Error(`${name} has unsafe permissions`);
+}
+
+function assertSecureInstallationFile(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${name} is not a regular file`);
+  assertOwned(info, name);
+  if ((modeBits(info) & 0o022) !== 0) throw new Error(`${name} has unsafe permissions`);
+}
+
+function assertSecureInstallationMode(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`${name} is not a regular directory`);
+  assertOwned(info, name);
+  if ((modeBits(info) & 0o022) !== 0) throw new Error(`${name} has unsafe permissions`);
+}
+
+async function readStableFile(value: string, name: string): Promise<Buffer> {
+  const before = await lstatRequired(value, name);
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error(`${name} is not a regular file`);
+  const bytes = await readFile(value);
+  const after = await lstatRequired(value, name);
+  if (!sameFileStat(before, after)) throw new Error(`${name} changed while it was being read`);
+  return bytes;
+}
+
+function assertJsonObject(bytes: Buffer, name: string): void {
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString("utf8")); }
+  catch { throw new Error(`${name} is not valid JSON`); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${name} must contain a JSON object`);
+}
+
+function modeBits(info: Awaited<ReturnType<typeof lstat>>): number {
+  return typeof info.mode === "bigint" ? Number(info.mode) : info.mode;
+}
+
+function sameFileStat(left: Awaited<ReturnType<typeof lstat>>, right: Awaited<ReturnType<typeof lstat>>): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && modeBits(left) === modeBits(right)
+    && left.uid === right.uid
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
 async function canonicalRegularDirectory(value: string, name: string): Promise<string> {
-  const info = await lstat(value);
+  const info = await lstatRequired(value, name);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`${name} must be a regular non-symlink directory`);
+  assertSecureInstallationDirectory(info, name);
   return path.resolve(value);
 }
 async function rejectSymlinkComponents(root: string, target: string, name: string): Promise<void> {

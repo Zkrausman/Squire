@@ -38,7 +38,8 @@ export class PiRunner {
   readonly live = new Map<string, LiveHandle>();
   readonly allocating = new Map<string, AllocatingHandle>();
   readonly #resolved = new Map<string, Promise<RuntimeResolution>>();
-  readonly #materialized = new Map<string, { fingerprint: string; promise: Promise<MaterializedPiAgentDirectory> }>();
+  /** In-flight preparation sharing only; settled results are never trusted from this map. */
+  readonly #materializing = new Map<string, { fingerprint: string; promise: Promise<MaterializedPiAgentDirectory> }>();
   readonly #trackedProcesses = new WeakSet<PiProcess>();
   readonly #defaultMaterializer: PiAgentDirectoryMaterializerPort;
   #ownerSequence = 0;
@@ -48,11 +49,11 @@ export class PiRunner {
 
   resolveRuntime(runId: string): Promise<RuntimeResolution> { return this.#getOrResolveRuntime(runId); }
 
-  async #getOrMaterialize(runId: string, runtime: RuntimeResolution, wikiProfile: PiWikiProfileInput, signal?: AbortSignal): Promise<MaterializedPiAgentDirectory | undefined> {
+  async #getOrMaterialize(runId: string, runtime: RuntimeResolution, wikiProfile: PiWikiProfileInput, signal?: AbortSignal): Promise<MaterializedPiAgentDirectory> {
     const materializer = this.config.materializer ?? (runtime.llmWiki.root ? this.#defaultMaterializer : undefined);
     if (!materializer) throw new Error("Pi agent-directory materializer is required when runtime resolution has no local wiki root");
     const fingerprint = JSON.stringify({ runtime, wikiProfile, workspace: this.config.workspace });
-    const previous = this.#materialized.get(runId);
+    const previous = this.#materializing.get(runId);
     if (previous) {
       if (previous.fingerprint !== fingerprint) throw new Error("conflicting Pi agent-directory materialization request");
       return previous.promise;
@@ -65,12 +66,36 @@ export class PiRunner {
       ...(signal ? { signal } : {}),
     };
     const promise = materializer.materialize(request);
-    this.#materialized.set(runId, { fingerprint, promise });
-    try { return await promise; }
-    catch (error) {
-      if (this.#materialized.get(runId)?.promise === promise) this.#materialized.delete(runId);
-      throw error;
+    this.#materializing.set(runId, { fingerprint, promise });
+    const clear = (): void => {
+      if (this.#materializing.get(runId)?.promise === promise) this.#materializing.delete(runId);
+    };
+    void promise.then(clear, clear);
+    return await promise;
+  }
+
+  async #verifyMaterialization(
+    runId: string,
+    runtime: RuntimeResolution,
+    wikiProfile: PiWikiProfileInput,
+    materialized: MaterializedPiAgentDirectory,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const materializer = this.config.materializer ?? (runtime.llmWiki.root ? this.#defaultMaterializer : undefined);
+    if (!materializer) throw new Error("Pi agent-directory materializer is required when runtime resolution has no local wiki root");
+    const request: PiAgentDirectoryRequest = {
+      runId,
+      runtime,
+      wikiProfile,
+      ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
+      ...(signal ? { signal } : {}),
+    };
+    if (materializer.verify) {
+      await materializer.verify(request, materialized);
+      return;
     }
+    const refreshed = await this.#getOrMaterialize(runId, runtime, wikiProfile, signal);
+    if (JSON.stringify(refreshed) !== JSON.stringify(materialized)) throw new Error("Pi agent-directory changed during pre-spawn verification");
   }
 
   /** Explicit cleanup seam for retry/restart; callers must not treat an unknown identity as exited. */
@@ -143,6 +168,12 @@ export class PiRunner {
       const materialized = await this.#step("Pi agent-directory materialization", lease, signal => this.#getOrMaterialize(runId, runtime, wikiProfile, signal));
       const instructions = await this.#step("role instruction read", lease, signal => this.readRoleInstructions(roleConfig.instructionsPath, signal));
       if (instructions.length === 0) throw new Error("role instructions are empty");
+      await this.#step("spawn intent", lease, () => this.#setAllocation(runId, role, lease, "spawning"));
+      const verifiedMaterialized = await this.#step(
+        "Pi agent-directory integrity verification",
+        lease,
+        signal => this.#verifyMaterialization(runId, runtime, wikiProfile, materialized, signal),
+      ).then(() => materialized);
       const spec = buildPiCommand({
         role,
         config: roleConfig,
@@ -151,10 +182,12 @@ export class PiRunner {
         ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
         ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}),
         ...(claimed ? { registration: claimed } : {}),
-        ...(materialized ? { agentDir: materialized.agentDir, trustedExtensionPaths: materialized.trustedExtensionPaths } : {}),
+        agentDir: verifiedMaterialized.agentDir,
+        homeDir: verifiedMaterialized.homeDir,
+        wikiHomeDir: verifiedMaterialized.wikiHomeDir,
+        trustedExtensionPaths: verifiedMaterialized.trustedExtensionPaths,
       });
       if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
-      await this.#step("spawn intent", lease, () => this.#setAllocation(runId, role, lease, "spawning"));
       const ownProcess = (value: PiProcess): void => {
         if (process && process !== value) throw new Error("process factory returned inconsistent process identity");
         process = value;
@@ -177,7 +210,7 @@ export class PiRunner {
       } else {
         await this.#step("live generation persistence", lease, () => this.#completeResumedGeneration(runId, role, generation!, process!.identity, lease));
       }
-      return { process, client, state, runtime, ...(materialized ? { agentDir: materialized.agentDir } : {}) };
+      return { process, client, state, runtime, agentDir: materialized.agentDir };
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try { if (process) await this.#terminate(process); }

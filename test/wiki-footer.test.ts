@@ -64,6 +64,10 @@ test("unknown and diagnostic hidden wiki blocks remain lossless", () => {
   const evolved = "<wiki_status>LLM Wiki active; new status grammar (blocked)</wiki_status>";
   const prompt = `before ${warning} middle ${evolved} after`;
   assert.equal(compactWikiStatusFooter(prompt, model), prompt);
+  const compactDiagnostic = `<wiki_status>🧠 13 · ${model} — warning: indexing error</wiki_status>`;
+  assert.equal(compactWikiStatusFooter(compactDiagnostic, model), compactDiagnostic);
+  const compactFromAnotherModel = "<wiki_status>🧠 13 · other-provider/other-model</wiki_status>";
+  assert.equal(compactWikiStatusFooter(compactFromAnotherModel, model), compactFromAnotherModel);
   assert.equal(compactWikiStatusFooter("no wiki footer here", model), "no wiki footer here");
 });
 
@@ -82,6 +86,7 @@ test("visible footer compacts the llm-wiki status map and uses the configured wi
 test("visible footer preserves full setup, migration, error, and unknown status text", () => {
   const setup = "🧠 Wiki setup blocked:\npermission denied; run the migration command";
   const migration = "🧠 Personal wiki layout fixed: flattened 2 entries\nsee CHANGELOG";
+  const evolvedDiagnostic = "🧠 LLM Wiki (13 tools, observe + recall active, warning: indexing error)";
   const statuses = new Map<string, string>([
     ["llm-wiki", setup],
     ["llm-wiki-model", `🧠 wiki model: ${model}`],
@@ -92,6 +97,8 @@ test("visible footer preserves full setup, migration, error, and unknown status 
     ...migration.split("\n"),
   ]);
 
+  statuses.set("llm-wiki", evolvedDiagnostic);
+  assert.deepEqual(compactVisibleWikiStatuses(statuses, model), [...evolvedDiagnostic.split("\n"), ...migration.split("\n")]);
   statuses.set("llm-wiki-model", "🧠 wiki model: warning: configured model unavailable\nchoose a model");
   const lines = compactVisibleWikiStatuses(statuses, model);
   assert.ok(lines.includes("🧠 wiki model: warning: configured model unavailable"));
@@ -168,12 +175,14 @@ test("generated self-contained extension has the same status-map footer behavior
   const typedLines = renderCompactWikiFooter(160, footerContext(), footerData(statuses), model, theme);
   assert.deepEqual(generatedLines, typedLines);
   const actionableStatuses = new Map([
-    ["llm-wiki", "🧠 Wiki setup blocked:\npermission denied; migrate first"],
+    ["llm-wiki", "🧠 LLM Wiki (13 tools, observe + recall active, warning: indexing error)"],
     ["llm-wiki-model", `🧠 wiki model: ${model}`],
   ]);
   const generatedActionable = factory!({ requestRender() {} }, theme, footerData(actionableStatuses)).render(160);
-  assert.ok(generatedActionable.includes("permission denied; migrate first"));
+  assert.ok(generatedActionable.some(line => line.includes("warning: indexing error")));
 
   const before = await callbacks.get("before_agent_start")!({ systemPrompt: ROUTINE_WIKI_STATUS_BLOCK });
   assert.deepEqual(before, { systemPrompt: `<wiki_status>🧠 - · ${model}</wiki_status>` });
+  const compactDiagnostic = `<wiki_status>🧠 13 · ${model} — warning: indexing error</wiki_status>`;
+  assert.equal(await callbacks.get("before_agent_start")!({ systemPrompt: compactDiagnostic }), undefined);
 });
