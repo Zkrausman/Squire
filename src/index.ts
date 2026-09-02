@@ -15,5 +15,8 @@ export * from "./pi/pi-rpc-client.js";
 export * from "./pi/pi-runner.js";
 export * from "./pi/attempt-runtime.js";
 export * from "./pi/pi-command.js";
+export * from "./pi/pi-configuration.js";
+export * from "./pi/pi-agent-directory.js";
+export * from "./pi/wiki-footer.js";
 export * from "./pi/session-registry.js";
 export * from "./pi/lf-jsonl-decoder.js";

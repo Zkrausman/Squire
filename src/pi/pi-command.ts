@@ -1,17 +1,49 @@
 import path from "node:path";
 import type { Role, SessionRegistration } from "../control/domain.js";
 import type { ProcessLaunch } from "./pi-process.js";
+import { normalizeRoleConfig, type PiRoleConfig } from "./pi-configuration.js";
 
-export interface PiRoleConfig { provider: string; model: string; instructionsPath: string; timeoutSeconds?: number }
-export interface PiCommandOptions { piBinary: string; instructions: string; workspace?: string; sessionRoot?: string; role: Role; config: PiRoleConfig; registration?: SessionRegistration }
+export type { PiRoleConfig } from "./pi-configuration.js";
+
+export interface PiCommandOptions {
+  piBinary: string;
+  instructions: string;
+  workspace?: string;
+  sessionRoot?: string;
+  role: Role;
+  config: PiRoleConfig;
+  registration?: SessionRegistration;
+  /** Run-scoped agent directory produced by the trusted materializer. */
+  agentDir?: string;
+  /** Ordered [wiki extension, Squire footer extension] trusted paths. */
+  trustedExtensionPaths?: readonly string[];
+}
 
 export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
   const workspace = options.workspace ?? "/ticket/workspace";
   const roleDir = path.posix.join(options.sessionRoot ?? "/ticket/sessions", options.role);
-  const args = ["--mode", "rpc", "--provider", options.config.provider, "--model", options.config.model, "--append-system-prompt", options.instructions, "--name", `Squire ${options.role}`];
+  const config = normalizeRoleConfig(options.role, options.config);
+  const args = [
+    "--mode", "rpc",
+    "--provider", config.provider,
+    "--model", config.model,
+    "--thinking", config.thinking,
+    "--append-system-prompt", options.instructions,
+    "--name", `Squire ${options.role}`,
+  ];
   if (options.registration) args.push("--session", options.registration.sessionFile);
   else args.push("--session-dir", roleDir);
-  return { command: options.piBinary, args, cwd: workspace, env: { PI_SKIP_VERSION_CHECK: "1" } };
+
+  if (options.trustedExtensionPaths?.length) {
+    // Explicit extensions are additive even with --no-extensions. Disable every
+    // discovered project resource so a repository cannot replace the trusted
+    // footer or inject a different wiki model through local Pi resources.
+    args.push("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve");
+    for (const extension of options.trustedExtensionPaths) args.push("--extension", extension);
+  }
+  const env: Record<string, string> = { PI_SKIP_VERSION_CHECK: "1" };
+  if (options.agentDir !== undefined) env["PI_CODING_AGENT_DIR"] = options.agentDir;
+  return { command: options.piBinary, args, cwd: workspace, env };
 }
 
 export function assertSafeResumeArgs(args: readonly string[], expectedFile: string): void {

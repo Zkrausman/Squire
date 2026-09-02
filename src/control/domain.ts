@@ -93,7 +93,12 @@ export interface AcceptedPhaseResult {
 export interface GateRecord { phase: "review" | "test"; head: string; result: ContractReference; acceptedAt: string; completedAt: string; implementGeneration: number; attempt: number }
 export interface RemediationCounters { review: number; test: number; total: number }
 export interface TerminalError { code: string; message: string; at: string; evidence: readonly ArtifactReference[] }
-export interface ResolvedInstallation { version: string; installationId: string }
+export interface ResolvedInstallation {
+  version: string;
+  installationId: string;
+  /** Trusted absolute installation root retained so restart preparation never resolves latest. */
+  root?: string;
+}
 export interface ResolvedPiInstallation extends ResolvedInstallation { executable: string }
 export interface RuntimeResolution { schemaVersion: 1; runId: string; pi: ResolvedPiInstallation; llmWiki: ResolvedInstallation; resolvedAt: string }
 

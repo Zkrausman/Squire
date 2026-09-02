@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-02T01:50:03.498Z",
+  "last_updated": "2026-09-02T13:16:38.187Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -24,6 +24,16 @@
       "confidence": "high",
       "created": "2026-09-01",
       "updated": "2026-09-01"
+    },
+    "concepts/run-scoped-pi-profiles-and-trusted-footer": {
+      "type": "concept",
+      "title": "Run-scoped Pi profiles and trusted wiki footer",
+      "category": "architecture",
+      "domain": "engineering",
+      "status": "active",
+      "confidence": "high",
+      "created": "2026-09-02",
+      "updated": "2026-09-02"
     },
     "concepts/transition-remediation-and-fresh-gates": {
       "type": "concept",

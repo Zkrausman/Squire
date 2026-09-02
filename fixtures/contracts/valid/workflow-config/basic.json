@@ -22,12 +22,13 @@
   "pi": {
     "version": "0.84.4",
     "roles": {
-      "orchestrator": { "provider": "openai", "model": "gpt-5", "timeoutSeconds": 1800, "instructionsPath": "/ticket/config/orchestrator.md" },
-      "plan": { "provider": "openai", "model": "gpt-5", "timeoutSeconds": 1800, "instructionsPath": "/ticket/config/plan.md" },
-      "implement": { "provider": "anthropic", "model": "claude-sonnet", "timeoutSeconds": 7200, "instructionsPath": "/ticket/config/implement.md" },
-      "review": { "provider": "openai", "model": "gpt-5", "timeoutSeconds": 1800, "instructionsPath": "/ticket/config/review.md" },
-      "test": { "provider": "openai", "model": "gpt-5", "timeoutSeconds": 3600, "instructionsPath": "/ticket/config/test.md" }
-    }
+      "orchestrator": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high", "timeoutSeconds": 1800, "instructionsPath": "/ticket/config/orchestrator.md" },
+      "plan": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high", "timeoutSeconds": 1800, "instructionsPath": "/ticket/config/plan.md" },
+      "implement": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max", "timeoutSeconds": 7200, "instructionsPath": "/ticket/config/implement.md" },
+      "review": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "medium", "timeoutSeconds": 1800, "instructionsPath": "/ticket/config/review.md" },
+      "test": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high", "timeoutSeconds": 3600, "instructionsPath": "/ticket/config/test.md" }
+    },
+    "wiki": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "high" }
   },
   "validation": {
     "commands": [

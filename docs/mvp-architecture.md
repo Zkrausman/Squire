@@ -13,7 +13,8 @@ The MVP uses:
 - one trusted host controller with a durable SQLite workflow ledger;
 - one persistent Docker Sandboxes microVM per ticket run;
 - one ticket-private Git repository and linked worktree inside that microVM;
-- five independent top-level Pi sessions: Orchestrator, Plan, Implement, Review, and Test;
+- five independent top-level Pi sessions: Orchestrator, Plan, Implement, Review, and Test, each with an explicit provider/model/thinking profile;
+- one run-scoped Pi agent directory beneath `/ticket/runtime/<runId>/pi-agent`, shared by those processes but never by the target repository or host home;
 - one Herdr workspace per ticket with one tab and exactly one root pane per Pi session;
 - Pi RPC plus persisted Pi JSONL and explicit result envelopes as the authoritative session seam;
 - a controller-mediated Git bundle export for trusted branch publication;
@@ -101,7 +102,15 @@ The Orchestrator is an independent top-level Pi process. It:
 
 The controller transports and validates information. The Orchestrator owns workflow reasoning.
 
-### 4.3 Phase sessions
+### 4.3 Pi profiles and run-scoped agent configuration
+
+The workflow configuration keeps five independently overridable profiles plus a separate `pi.wiki` background profile. Defaults are Orchestrator/Plan `openai-codex` + `gpt-5.6-sol` + `high`, Implement `openai-codex` + `gpt-5.6-luna` + `max`, Review `openai-codex` + `gpt-5.6-sol` + `medium`, Test `openai-codex` + `gpt-5.6-terra` + `high`, and wiki background `openai-codex` + `gpt-5.6-luna` + `high`. The closed Pi thinking enum is `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; every launch passes `--provider`, `--model`, and `--thinking`, and the RPC `get_state` handshake must echo all three effective values.
+
+Runtime selection resolves the Pi executable and pi-llm-wiki once, persists their exact identities (and trusted local roots), and never performs an in-run install/update/latest lookup. Preparation consumes that persisted observation and the normalized wiki profile to atomically materialize `/ticket/runtime/<runId>/pi-agent/settings.json`, a binding manifest, and the controller-owned footer extension. The settings point to the exact local wiki root, set `llm-wiki.taskModel` to Luna/high, and record `modelThinkingLevels`; an explicitly supplied ticket-scoped auth file is the only credential that may be copied. Restart preparation is idempotent only for matching digests; partial, symlinked, cross-run, or tampered directories fail closed.
+
+Every role launch exports `PI_CODING_AGENT_DIR` and `PI_SKIP_VERSION_CHECK=1`, keeps `/ticket/workspace` as cwd, disables repository resource discovery, and explicitly loads pi-llm-wiki followed by the same trusted footer bytes. In sandboxed Herdr TUI tabs, that trusted extension installs `ctx.ui.setFooter` and reads `footerData.getExtensionStatuses()`; routine `llm-wiki`/`llm-wiki-model` entries render as `🧠 <count-or-dash> · <provider>/<model>` without replacing the normal model/thinking/state/token/context/cost layout. The footer replaces only the pinned healthy `<wiki_status>` block with the same compact marker. Evolved or warning/error/blocked/diagnostic blocks are retained in full, and extension warnings, RPC `extension_error`/warning/error records, stderr, and protocol failures are not intercepted or abbreviated. A conflicting target-repository wiki model setting is rejected rather than written over.
+
+### 4.4 Phase sessions
 
 Plan, Implement, Review, and Test are separate Pi processes with separate JSONL histories and result artifacts.
 
@@ -112,7 +121,7 @@ Plan, Implement, Review, and Test are separate Pi processes with separate JSONL 
 
 A phase may use subagents internally. A subagent never represents a lifecycle phase.
 
-### 4.4 Squire runner and Herdr
+### 4.5 Squire runner and Herdr
 
 Each Herdr tab contains exactly one unavoidable root pane and one `squire-runner`. No pane splits or multi-pane layouts are created.
 
@@ -134,7 +143,7 @@ MSYS_NO_PATHCONV=1
 MSYS2_ARG_CONV_EXCL=*
 ```
 
-### 4.5 Docker Sandbox
+### 4.6 Docker Sandbox
 
 The isolation unit is one Docker Sandboxes microVM per ticket, not one microVM per phase. All five sessions intentionally share the active ticket workspace and ticket-local artifacts.
 

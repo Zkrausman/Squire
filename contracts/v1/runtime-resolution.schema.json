@@ -17,7 +17,8 @@
       "type": "object", "additionalProperties": false, "required": ["version", "installationId"],
       "properties": {
         "version": { "type": "string", "minLength": 1, "maxLength": 200 },
-        "installationId": { "type": "string", "minLength": 1, "maxLength": 512 }
+        "installationId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "root": { "type": "string", "pattern": "^/(?:[^/\\u0000]+/)*[^/\\u0000]+$", "maxLength": 1024 }
       }
     },
     "piInstallation": {
@@ -25,7 +26,8 @@
       "properties": {
         "version": { "type": "string", "minLength": 1, "maxLength": 200 },
         "executable": { "type": "string", "pattern": "^/(?:[^/\\u0000]+/)*[^/\\u0000]+$", "maxLength": 1024 },
-        "installationId": { "type": "string", "minLength": 1, "maxLength": 512 }
+        "installationId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "root": { "type": "string", "pattern": "^/(?:[^/\\u0000]+/)*[^/\\u0000]+$", "maxLength": 1024 }
       }
     }
   }

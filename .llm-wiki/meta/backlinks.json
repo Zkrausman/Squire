@@ -5,6 +5,7 @@
   ],
   "concepts/five-session-pi-rpc-topology": [
     "concepts/immutable-handoff-validation",
+    "concepts/run-scoped-pi-profiles-and-trusted-footer",
     "entities/squire",
     "sources/SRC-2026-09-01-001",
     "sources/SRC-2026-09-01-006",
@@ -30,6 +31,9 @@
     "sources/persisted-acceptance-authority-chain",
     "sources/stable-history-trigger-resend-proof"
   ],
+  "concepts/run-scoped-pi-profiles-and-trusted-footer": [
+    "sources/run-scoped-agent-runtime-resolution"
+  ],
   "concepts/transition-remediation-and-fresh-gates": [
     "analyses/epic-boundary-project-wiki-maintenance",
     "concepts/immutable-handoff-validation",
@@ -42,6 +46,7 @@
   "concepts/trusted-controller-boundary": [
     "analyses/epic-boundary-project-wiki-maintenance",
     "concepts/five-session-pi-rpc-topology",
+    "concepts/run-scoped-pi-profiles-and-trusted-footer",
     "concepts/transition-remediation-and-fresh-gates",
     "entities/squire",
     "sources/SRC-2026-09-01-001",
@@ -103,6 +108,7 @@
   "sources/SRC-2026-09-01-007": [
     "analyses/epic-boundary-project-wiki-maintenance",
     "concepts/five-session-pi-rpc-topology",
+    "concepts/run-scoped-pi-profiles-and-trusted-footer",
     "sources/SRC-2026-09-01-004",
     "sources/run-scoped-agent-runtime-resolution"
   ],
@@ -162,7 +168,8 @@
     "sources/durable-noncooperative-process-ownership"
   ],
   "sources/run-scoped-agent-runtime-resolution": [
-    "concepts/five-session-pi-rpc-topology"
+    "concepts/five-session-pi-rpc-topology",
+    "concepts/run-scoped-pi-profiles-and-trusted-footer"
   ],
   "sources/stable-history-trigger-resend-proof": [
     "concepts/immutable-handoff-validation"

@@ -2,12 +2,20 @@ import { randomUUID } from "node:crypto";
 import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
 import type { WorkflowStore } from "../control/workflow-store.js";
 import { StoreConflictError } from "../control/workflow-store.js";
-import { buildPiCommand, assertSafeResumeArgs, type PiRoleConfig } from "./pi-command.js";
+import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
+import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
+import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest } from "./pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
 import { PiRpcClient, type PiState } from "./pi-rpc-client.js";
 
 export interface RunnerConfig {
   roles: Record<Role, PiRoleConfig>;
+  /** Top-level project-wiki background profile; normalized to Luna/high by default. */
+  wiki?: PiWikiProfileInput;
+  /** Descriptive alias accepted by integrations that call it a profile. */
+  wikiProfile?: PiWikiProfileInput;
+  /** Trusted run-scoped filesystem preparation port. */
+  materializer?: PiAgentDirectoryMaterializerPort;
   workspace?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
@@ -30,11 +38,40 @@ export class PiRunner {
   readonly live = new Map<string, LiveHandle>();
   readonly allocating = new Map<string, AllocatingHandle>();
   readonly #resolved = new Map<string, Promise<RuntimeResolution>>();
+  readonly #materialized = new Map<string, { fingerprint: string; promise: Promise<MaterializedPiAgentDirectory> }>();
   readonly #trackedProcesses = new WeakSet<PiProcess>();
+  readonly #defaultMaterializer: PiAgentDirectoryMaterializerPort;
   #ownerSequence = 0;
-  constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {}
+  constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {
+    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace);
+  }
 
   resolveRuntime(runId: string): Promise<RuntimeResolution> { return this.#getOrResolveRuntime(runId); }
+
+  async #getOrMaterialize(runId: string, runtime: RuntimeResolution, wikiProfile: PiWikiProfileInput, signal?: AbortSignal): Promise<MaterializedPiAgentDirectory | undefined> {
+    const materializer = this.config.materializer ?? (runtime.llmWiki.root ? this.#defaultMaterializer : undefined);
+    if (!materializer) throw new Error("Pi agent-directory materializer is required when runtime resolution has no local wiki root");
+    const fingerprint = JSON.stringify({ runtime, wikiProfile, workspace: this.config.workspace });
+    const previous = this.#materialized.get(runId);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) throw new Error("conflicting Pi agent-directory materialization request");
+      return previous.promise;
+    }
+    const request: PiAgentDirectoryRequest = {
+      runId,
+      runtime,
+      wikiProfile,
+      ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
+      ...(signal ? { signal } : {}),
+    };
+    const promise = materializer.materialize(request);
+    this.#materialized.set(runId, { fingerprint, promise });
+    try { return await promise; }
+    catch (error) {
+      if (this.#materialized.get(runId)?.promise === promise) this.#materialized.delete(runId);
+      throw error;
+    }
+  }
 
   /** Explicit cleanup seam for retry/restart; callers must not treat an unknown identity as exited. */
   async reconcileProcessAllocation(runId: string, role: Role): Promise<void> {
@@ -67,7 +104,7 @@ export class PiRunner {
     if (!allocation) await this.#verifyRegisteredProcessCleaned(runId, role, generation, process.identity);
   }
 
-  async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution }> {
+  async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
     const key = `${runId}:${role}`;
     const pending = this.allocating.get(key);
     if (pending) throw new Error("role already has an unresolved allocating process");
@@ -78,7 +115,8 @@ export class PiRunner {
     const leaseKey = `process:${role}`;
     const processLeaseMs = positiveInteger(this.config.processLeaseMs ?? 30_000, "process lease");
     const stepTimeoutMs = positiveInteger(this.config.allocationStepTimeoutMs ?? Math.max(1, Math.floor(processLeaseMs / 2)), "allocation step timeout");
-    const roleTimeoutSeconds = positiveInteger(this.config.roles[role]!.timeoutSeconds ?? 0, `role timeout for ${role}`);
+    const roleConfig = normalizeRoleConfig(role, this.config.roles[role]!);
+    const roleTimeoutSeconds = positiveInteger(roleConfig.timeoutSeconds ?? 0, `role timeout for ${role}`);
     const allocationTimeoutMs = positiveInteger(this.config.allocationTimeoutMs ?? Math.max(roleTimeoutSeconds * 1_000, stepTimeoutMs * 12), "allocation timeout");
     const startedAt = this.clock.now();
     const acquired = await this.store.acquireLease(runId, leaseKey, owner, startedAt, Math.min(processLeaseMs, allocationTimeoutMs));
@@ -101,9 +139,20 @@ export class PiRunner {
         await this.#step("first-session allocation reservation", lease, () => this.#reserveAllocation(runId, role, generation!, lease));
       }
       const runtime = await this.#step("runtime resolution", lease, signal => this.#getOrResolveRuntime(runId, lease, signal));
-      const instructions = await this.#step("role instruction read", lease, signal => this.readRoleInstructions(this.config.roles[role].instructionsPath, signal));
+      const wikiProfile = normalizeWikiProfile(this.config.wikiProfile ?? this.config.wiki);
+      const materialized = await this.#step("Pi agent-directory materialization", lease, signal => this.#getOrMaterialize(runId, runtime, wikiProfile, signal));
+      const instructions = await this.#step("role instruction read", lease, signal => this.readRoleInstructions(roleConfig.instructionsPath, signal));
       if (instructions.length === 0) throw new Error("role instructions are empty");
-      const spec = buildPiCommand({ role, config: this.config.roles[role], instructions, piBinary: runtime.pi.executable, ...(this.config.workspace ? { workspace: this.config.workspace } : {}), ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}), ...(claimed ? { registration: claimed } : {}) });
+      const spec = buildPiCommand({
+        role,
+        config: roleConfig,
+        instructions,
+        piBinary: runtime.pi.executable,
+        ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
+        ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}),
+        ...(claimed ? { registration: claimed } : {}),
+        ...(materialized ? { agentDir: materialized.agentDir, trustedExtensionPaths: materialized.trustedExtensionPaths } : {}),
+      });
       if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
       await this.#step("spawn intent", lease, () => this.#setAllocation(runId, role, lease, "spawning"));
       const ownProcess = (value: PiProcess): void => {
@@ -118,7 +167,8 @@ export class PiRunner {
       if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
       client.on("protocol_error", () => { void this.#markProcess(runId, role, generation!, process!.identity, "failed"); });
       const state = await this.#step("Pi handshake", lease, () => client.getState());
-      if (state.model?.provider !== this.config.roles[role].provider || state.model?.id !== this.config.roles[role].model) throw new Error("Pi handshake model mismatch");
+      if (state.model?.provider !== roleConfig.provider || state.model?.id !== roleConfig.model) throw new Error("Pi handshake model mismatch");
+      if (state.thinkingLevel !== roleConfig.thinking) throw new Error("Pi handshake thinking level mismatch");
       if (claimed && (state.sessionId !== claimed.sessionId || state.sessionFile !== claimed.sessionFile)) throw new Error("Pi resume handshake identity mismatch");
       if (!claimed) {
         const registration = registrationFromState(runId, role, state, generation, runtime.resolvedAt, process.identity, "live");
@@ -127,7 +177,7 @@ export class PiRunner {
       } else {
         await this.#step("live generation persistence", lease, () => this.#completeResumedGeneration(runId, role, generation!, process!.identity, lease));
       }
-      return { process, client, state, runtime };
+      return { process, client, state, runtime, ...(materialized ? { agentDir: materialized.agentDir } : {}) };
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try { if (process) await this.#terminate(process); }
@@ -350,12 +400,20 @@ export class PiRunner {
 
   async #step<T>(name: string, lease: AllocationLease, operation: (signal: AbortSignal) => Promise<T>, onSettled?: (value: T) => void): Promise<T> {
     await this.#renew(lease);
-    const remaining = lease.deadlineAt - this.clock.now(); if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
+    const startedAt = this.clock.now();
+    const remaining = lease.deadlineAt - startedAt; if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
+    const duration = Math.min(lease.stepTimeoutMs, remaining);
+    const deadline = startedAt + duration;
     const controller = new AbortController();
-    const wait = this.clock.sleep(Math.min(lease.stepTimeoutMs, remaining), controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
+    const wait = this.clock.sleep(duration, controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
     const timeout: Promise<T> = wait.then(() => { controller.abort(); throw new Error(`${name} exceeded bounded allocation step`); });
     try {
       const result = await Promise.race([operation(controller.signal), timeout]);
+      // A clock can advance inside an operation (for example, a durable store
+      // callback may settle just as the lease timer fires). Treat that result
+      // as late even if Promise.race observed it first; otherwise settlement
+      // would be scheduler-dependent and a stale owner could continue.
+      if (this.clock.now() >= deadline) throw new Error(`${name} exceeded bounded allocation step`);
       onSettled?.(result);
       controller.abort();
       await this.#renew(lease);

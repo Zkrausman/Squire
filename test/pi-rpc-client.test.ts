@@ -17,3 +17,22 @@ test("correlated responses require closed shape, matching command, boolean succe
 test("protocol corruption latches fail-stop state and terminates the generation", async () => { const process = new FakePiProcess("fail-stop"); const client = new PiRpcClient(process, { commandTimeoutMs: 100 }); const failed = new Promise<Error>(resolve => client.once("protocol_error", resolve)); process.stdout.push("{bad}\n"); const error = await failed; assert.match(error.message, /malformed JSON/); assert.notEqual(process.exitCode, null); await assert.rejects(client.getState(), /malformed JSON/); await assert.rejects(client.waitForSettled(), /malformed JSON/); assert.equal(process.writes.length, 0); });
 
 test("malformed stdout, uncorrelated responses, stderr overflow, and premature exits fail", async () => { for (const action of ["bad", "uncorrelated", "stderr", "exit"] as const) { const process = new FakePiProcess(action); const client = new PiRpcClient(process, { commandTimeoutMs: 100, maxStderrBytes: 3 }); const error = new Promise<Error>(resolve => client.once("protocol_error", resolve)); if (action === "bad") process.stdout.push("{bad}\n"); if (action === "uncorrelated") process.send({ id: "wrong", type: "response", command: "x", success: true }); if (action === "stderr") process.stderr.push("1234"); if (action === "exit") process.kill("SIGTERM"); assert.ok(await error); } });
+
+test("diagnostic RPC records and stderr remain observable without controller rewriting", () => {
+  const process = new FakePiProcess("diagnostics");
+  const client = new PiRpcClient(process);
+  const events: unknown[] = [];
+  const stderr: string[] = [];
+  client.on("event", event => events.push(event));
+  client.on("stderr", value => stderr.push(value));
+  const warning = { type: "warning", message: "warning: multiline\\nkeep this" };
+  const error = { type: "error", message: "error: action required\\nline two" };
+  const extensionError = { type: "extension_error", extensionPath: "/trusted/footer.mjs", error: "full failure" };
+  process.send(warning);
+  process.send(error);
+  process.send(extensionError);
+  process.stderr.push("stderr line 1\\nstderr line 2\\n");
+  assert.deepEqual(events, [warning, error, extensionError]);
+  assert.deepEqual(stderr, ["stderr line 1\\nstderr line 2\\n"]);
+  assert.equal(client.stderr, "stderr line 1\\nstderr line 2\\n");
+});

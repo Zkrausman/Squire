@@ -79,7 +79,7 @@
       }
     },
     "pi": {
-      "type": "object", "additionalProperties": false, "required": ["roles"],
+      "type": "object", "additionalProperties": false, "required": ["roles", "wiki"],
       "properties": {
         "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "description": "Legacy advisory field retained for v1 compatibility; controllers resolve and record the active runtime once per run rather than requiring this version." },
         "roles": {
@@ -91,7 +91,8 @@
             "review": { "$ref": "#/$defs/piRole" },
             "test": { "$ref": "#/$defs/piRole" }
           }
-        }
+        },
+        "wiki": { "$ref": "#/$defs/piModelProfile" }
       }
     },
     "validation": {
@@ -140,13 +141,25 @@
   },
   "$defs": {
     "piRole": {
-      "type": "object", "additionalProperties": false, "required": ["provider", "model", "timeoutSeconds", "instructionsPath"],
+      "type": "object", "additionalProperties": false, "required": ["provider", "model", "thinking", "timeoutSeconds", "instructionsPath"],
       "properties": {
         "provider": { "type": "string", "minLength": 1 },
         "model": { "type": "string", "minLength": 1 },
+        "thinking": { "$ref": "#/$defs/piThinkingLevel" },
         "timeoutSeconds": { "type": "integer", "minimum": 1 },
         "instructionsPath": { "$ref": "urn:squire:contracts:v1:common#/$defs/sandboxPath" }
       }
+    },
+    "piModelProfile": {
+      "type": "object", "additionalProperties": false, "required": ["provider", "model", "thinking"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "thinking": { "$ref": "#/$defs/piThinkingLevel" }
+      }
+    },
+    "piThinkingLevel": {
+      "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
     },
     "validationCommand": {
       "type": "object", "additionalProperties": false, "required": ["id", "command", "cwd", "timeoutSeconds", "required"],
