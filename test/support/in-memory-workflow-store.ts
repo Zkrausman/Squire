@@ -1,5 +1,5 @@
 import { assertPrecondition, StoreConflictError, type WorkflowStore } from "../../src/control/workflow-store.js";
-import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
+import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPreparationLease, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -18,6 +18,23 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     if (!current) throw new StoreConflictError("run not found");
     if (current.terminalFence) throw new StoreConflictError(current.terminalFence.state === "removed" ? "run has been removed" : "run has a permanent terminal fence");
   }
+  async acquireRunPreparationLease(runId: string, owner: string, now = Date.now()): Promise<RunPreparationLease> {
+    const current = this.runs.get(runId);
+    if (!current) throw new StoreConflictError("run not found");
+    if (current.terminalFence) throw new StoreConflictError("run has a permanent terminal fence");
+    const lease: RunPreparationLease = { runId, owner, fencingToken: current.version + 1, acquiredAt: new Date(now).toISOString(), state: "held" };
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, preparationLeases: [...(current.preparationLeases ?? []), lease] }));
+    return copy(lease);
+  }
+  async releaseRunPreparationLease(runId: string, lease: RunPreparationLease, _now = Date.now()): Promise<void> {
+    const current = this.runs.get(runId);
+    if (!current) throw new StoreConflictError("run not found");
+    const leases = current.preparationLeases ?? [];
+    const owned = leases.find(candidate => candidate.owner === lease.owner && candidate.fencingToken === lease.fencingToken);
+    if (!owned) return;
+    if (owned.runId !== runId || lease.runId !== runId || owned.state !== "held") throw new StoreConflictError("preparation lease identity changed");
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, preparationLeases: leases.filter(candidate => candidate !== owned) }));
+  }
   async acquireRunTerminalFence(runId: string, owner: string, now = Date.now()): Promise<RunTerminalFence> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
@@ -28,13 +45,20 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: fence }));
     return copy(fence);
   }
+  async assertRunTeardownQuiescent(runId: string, fence: RunTerminalFence, now = Date.now()): Promise<void> {
+    const current = this.runs.get(runId);
+    if (!current) throw new StoreConflictError("run not found");
+    const persisted = current.terminalFence;
+    if (fence.state !== "held" || !persisted || persisted.state !== "held" || persisted.runId !== fence.runId || persisted.owner !== fence.owner || persisted.fencingToken !== fence.fencingToken) throw new StoreConflictError("terminal fence ownership changed");
+    this.assertDurablyQuiescent(runId, now, current);
+  }
   async completeRunTeardown(runId: string, fence: RunTerminalFence, now = Date.now()): Promise<void> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
     const persisted = current.terminalFence;
     if (!persisted || persisted.runId !== fence.runId || persisted.owner !== fence.owner || persisted.fencingToken !== fence.fencingToken) throw new StoreConflictError("terminal fence ownership changed");
     if (persisted.state === "removed") return;
-    this.assertDurablyQuiescent(runId, now, current);
+    await this.assertRunTeardownQuiescent(runId, fence, now);
     const removed: RunTerminalFence = { ...persisted, state: "removed" };
     this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: removed }));
   }
@@ -42,6 +66,7 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     if (Object.values(current.processAllocations ?? {}).some(Boolean)) throw new StoreConflictError("workflow is not durably quiescent: process allocation remains");
     if (Object.values(current.sessions).some(session => session?.processState === "live" || session?.processState === "launching")) throw new StoreConflictError("workflow is not durably quiescent: role process remains");
     if ([...this.leases.entries()].some(([key, lease]) => key.startsWith(`${runId}:`) && lease.expiresAt > now)) throw new StoreConflictError("workflow is not durably quiescent: lease remains");
+    if ((current.preparationLeases ?? []).some(lease => lease.state === "held")) throw new StoreConflictError("workflow is not durably quiescent: preparation lease remains");
   }
   async compareAndSet(runId: string, expected: RunPrecondition, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot> {
     const current = this.runs.get(runId);

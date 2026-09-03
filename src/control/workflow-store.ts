@@ -1,4 +1,4 @@
-import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "./domain.js";
+import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPreparationLease, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "./domain.js";
 
 export class StoreConflictError extends Error {
   constructor(message: string) { super(message); this.name = "StoreConflictError"; }
@@ -8,8 +8,22 @@ export class StoreConflictError extends Error {
 export interface RunQuiescenceAuthority {
   /** Atomically rejects new run work once the durable terminal fence is held. */
   assertRunStartAllowed(runId: string, now?: number): Promise<void>;
+  /**
+   * Acquire durable preparation ownership before any run filesystem
+   * observation. The store must perform this atomically with its terminal-fence
+   * check, and must reject a run whose permanent fence is already held.
+   */
+  acquireRunPreparationLease(runId: string, owner: string, now?: number): Promise<RunPreparationLease>;
+  /** Release only the exact preparation lease that this operation acquired. */
+  releaseRunPreparationLease(runId: string, lease: RunPreparationLease, now?: number): Promise<void>;
   /** Acquire or resume the permanent terminal fence after durable quiescence. */
   acquireRunTerminalFence(runId: string, owner: string, now?: number): Promise<RunTerminalFence>;
+  /**
+   * Re-prove the persisted teardown invariant immediately before destructive
+   * disposal: this exact workflow fence is held and no allocation, live role,
+   * termination-failed role, or preparation lease remains.
+   */
+  assertRunTeardownQuiescent(runId: string, fence: RunTerminalFence, now?: number): Promise<void>;
   /** Mark the durable run removed; the terminal fence is never released. */
   completeRunTeardown(runId: string, fence: RunTerminalFence, now?: number): Promise<void>;
 }

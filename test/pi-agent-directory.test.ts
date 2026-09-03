@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import type { RunTerminalFence, RuntimeResolution } from "../src/control/domain.js";
+import type { RunPreparationLease, RunTerminalFence, RuntimeResolution } from "../src/control/domain.js";
 import type { RunQuiescenceAuthority } from "../src/control/workflow-store.js";
-import { PiAgentDirectoryMaterializer, type PreparationCaptureBarrier, type RetentionPublicationBarrier } from "../src/pi/pi-agent-directory.js";
+import { PiAgentDirectoryMaterializer as PiAgentDirectoryMaterializerImplementation, type PreparationCaptureBarrier, type PreparationFenceBarrier, type PiAgentDirectoryMaterializerOptions, type RetentionPublicationBarrier } from "../src/pi/pi-agent-directory.js";
+import { FileLifecycleAuthority } from "./support/file-lifecycle-authority.js";
 
 async function fixture() {
   const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "squire-agent-dir-"));
@@ -36,26 +37,56 @@ const execFile = promisify(execFileCallback);
 function lifecycleAuthority(
   quiescent: () => boolean = () => true,
   afterAcquire?: () => void | Promise<void>,
+  onTeardownAssertion?: (runId: string) => void | Promise<void>,
 ): RunQuiescenceAuthority {
   const fences = new Map<string, RunTerminalFence>();
+  const preparationLeases = new Map<string, RunPreparationLease[]>();
   return {
     async assertRunStartAllowed(runId) {
       if (fences.has(runId)) throw new Error("run has a permanent terminal fence");
     },
+    async acquireRunPreparationLease(runId, owner, now = Date.now()) {
+      if (fences.has(runId)) throw new Error("run has a permanent terminal fence");
+      const leases = preparationLeases.get(runId) ?? [];
+      const lease: RunPreparationLease = { runId, owner, fencingToken: leases.length + 1, acquiredAt: new Date(now).toISOString(), state: "held" };
+      preparationLeases.set(runId, [...leases, lease]);
+      return lease;
+    },
+    async releaseRunPreparationLease(runId, lease) {
+      const leases = preparationLeases.get(runId) ?? [];
+      preparationLeases.set(runId, leases.filter(candidate => candidate.owner !== lease.owner || candidate.fencingToken !== lease.fencingToken));
+    },
     async acquireRunTerminalFence(runId, owner, now = Date.now()) {
       const existing = fences.get(runId);
       if (existing) return existing;
+      if ((preparationLeases.get(runId) ?? []).length > 0) throw new Error("preparation lease remains");
       if (!quiescent()) throw new Error("role processes/controllers are not quiescent");
       const fence: RunTerminalFence = { runId, owner, fencingToken: 1, acquiredAt: new Date(now).toISOString(), state: "held" };
       fences.set(runId, fence);
       await afterAcquire?.();
       return fence;
     },
+    async assertRunTeardownQuiescent(runId, fence) {
+      const existing = fences.get(runId);
+      if (!existing || existing.state !== "held" || fence.state !== "held" || existing.owner !== fence.owner || existing.fencingToken !== fence.fencingToken) throw new Error("terminal fence ownership changed");
+      if ((preparationLeases.get(runId) ?? []).length > 0) throw new Error("preparation lease remains");
+      if (!quiescent()) throw new Error("role processes/controllers are not quiescent");
+      await onTeardownAssertion?.(runId);
+    },
     async completeRunTeardown(runId, fence) {
       const existing = fences.get(runId);
       if (!existing || existing.owner !== fence.owner || existing.fencingToken !== fence.fencingToken) throw new Error("terminal fence ownership changed");
+      if ((preparationLeases.get(runId) ?? []).length > 0) throw new Error("preparation lease remains");
     },
   };
+}
+
+/** Unit tests use a fresh authority unless they explicitly share one. */
+type TestMaterializerOptions = Omit<PiAgentDirectoryMaterializerOptions, "runLifecycleAuthority"> & { runLifecycleAuthority?: RunQuiescenceAuthority };
+class PiAgentDirectoryMaterializer extends PiAgentDirectoryMaterializerImplementation {
+  constructor(options: TestMaterializerOptions = {}) {
+    super({ ...options, runLifecycleAuthority: options.runLifecycleAuthority ?? lifecycleAuthority() });
+  }
 }
 
 test("materializer writes deterministic run-scoped settings, manifest, and trusted footer", async () => {
@@ -176,6 +207,161 @@ test("durable teardown fencing excludes an independent materializer", async () =
     await assert.rejects(second.materialize(request), /terminal fence/iu);
   } finally {
     releaseAcquire?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("durable preparation lease closes the final no-fence observation race", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let observedResolve!: () => void;
+  const observed = new Promise<void>(resolve => { observedResolve = resolve; });
+  let releaseResolve!: () => void;
+  const release = new Promise<void>(resolve => { releaseResolve = resolve; });
+  const preparationFenceBarrier: PreparationFenceBarrier = async event => {
+    assert.equal(event.runId, runtime.runId);
+    assert.equal(event.operation, "materialize");
+    observedResolve();
+    await release;
+  };
+  const authority = lifecycleAuthority();
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, runLifecycleAuthority: authority, preparationFenceBarrier });
+  const contender = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, runLifecycleAuthority: authority });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    const preparation = materializer.materialize(request);
+    await observed;
+    await assert.rejects(authority.acquireRunTerminalFence(runtime.runId, "teardown-contender"), /preparation lease/iu);
+    await assert.rejects(contender.teardown(runtime.runId), /live preparation controller/iu);
+    assert.equal((await lstat(path.join(runtimeRoot, runtime.runId))).isDirectory(), true);
+    releaseResolve();
+    await preparation;
+    await materializer.teardown(runtime.runId);
+    await assert.rejects(contender.materialize(request), /terminal fence/iu);
+  } finally {
+    releaseResolve?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a separate controller lease blocks teardown after the final no-fence observation", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const authorityRoot = path.join(root, "authority");
+  const authority = await FileLifecycleAuthority.open(authorityRoot, runtime.runId);
+  const moduleUrl = pathToFileURL(path.resolve("dist/src/pi/pi-agent-directory.js")).href;
+  const authorityUrl = pathToFileURL(path.resolve("dist/test/support/file-lifecycle-authority.js")).href;
+  const childSource = `
+    import { PiAgentDirectoryMaterializer } from ${JSON.stringify(moduleUrl)};
+    import { FileLifecycleAuthority } from ${JSON.stringify(authorityUrl)};
+    const runtime = ${JSON.stringify(runtime)};
+    const workspace = ${JSON.stringify(workspace)};
+    const runtimeRoot = ${JSON.stringify(runtimeRoot)};
+    const authority = await FileLifecycleAuthority.open(${JSON.stringify(authorityRoot)}, runtime.runId);
+    const preparationFenceBarrier = async event => {
+      process.stdout.write(JSON.stringify({ kind: "after-no-fence-observation", operation: event.operation }) + "\\n");
+      await new Promise(resolve => process.stdin.once("data", resolve));
+    };
+    const result = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, runLifecycleAuthority: authority, preparationFenceBarrier }).materialize({
+      runId: runtime.runId,
+      runtime,
+      wikiProfile: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" },
+      workspace,
+    });
+    process.stdout.write(JSON.stringify({ kind: "complete", result }) + "\\n");
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", childSource], {
+    cwd: workspace,
+    env: { ...process.env, HOME: path.join(root, "host-home"), WIKI_HOME: path.join(root, "host-wiki-home") },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  let stderr = "";
+  let buffer = "";
+  let complete: { kind: string; result?: unknown } | undefined;
+  let observedResolve!: () => void;
+  let observedReject!: (error: Error) => void;
+  const observed = new Promise<void>((resolve, reject) => { observedResolve = resolve; observedReject = reject; });
+  child.stdout.on("data", chunk => {
+    buffer += chunk.toString();
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      output += line;
+      try {
+        const event = JSON.parse(line) as { kind: string; result?: unknown };
+        if (event.kind === "after-no-fence-observation") observedResolve();
+        if (event.kind === "complete") complete = event;
+      } catch { /* child diagnostics are reported through stderr */ }
+    }
+  });
+  child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+  const exited = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", code => {
+      if (code !== 0 && child.exitCode !== null) observedReject(new Error(`preparation controller exited before its fence barrier: ${code}; stderr=${stderr}`));
+      resolve(code);
+    });
+  });
+  try {
+    await observed;
+    await assert.rejects(authority.acquireRunTerminalFence(runtime.runId, "teardown-contender"), /preparation lease/iu);
+    const parentMaterializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, runLifecycleAuthority: authority });
+    await assert.rejects(parentMaterializer.teardown(runtime.runId), /preparation lease/iu);
+    child.stdin.end("release\n");
+    assert.equal(await exited, 0);
+    assert.equal(stderr, "");
+    assert.equal(complete?.kind, "complete");
+    await parentMaterializer.teardown(runtime.runId);
+    await assert.rejects(parentMaterializer.materialize({ runId: runtime.runId, runtime, wikiProfile: profile, workspace }), /terminal fence/iu);
+    assert.match(output, /after-no-fence-observation/iu);
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("materialization and verification release their durable preparation leases", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const events: string[] = [];
+  const authority = lifecycleAuthority();
+  const materializer = new PiAgentDirectoryMaterializer({
+    runtimeRoot: path.join(root, "runtime"),
+    workspace,
+    runLifecycleAuthority: authority,
+    preparationFenceBarrier: async event => { events.push(event.operation); },
+  });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    const result = await materializer.materialize(request);
+    await materializer.verify(request, result);
+    assert.deepEqual(events, ["materialize", "verify"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("teardown gates every destructive boundary against a governed contender", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let checks = 0;
+  let authority!: RunQuiescenceAuthority;
+  authority = lifecycleAuthority(() => true, undefined, async runId => {
+    checks += 1;
+    await assert.rejects(authority.acquireRunPreparationLease(runId, `governed-contender-${checks}`), /permanent terminal fence/iu);
+    await assert.rejects(authority.assertRunStartAllowed(runId), /permanent terminal fence/iu);
+  });
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, runLifecycleAuthority: authority });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    const first = await materializer.materialize(request);
+    await rm(first.agentDir, { recursive: true, force: false });
+    await materializer.materialize(request);
+    await materializer.teardown(runtime.runId);
+    assert.ok(checks >= 10, `expected every disposal boundary to be governed, observed ${checks}`);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -641,7 +827,21 @@ test("separate controller processes converge on the same verified materializatio
       const runtime = ${JSON.stringify(runtime)};
       const workspace = ${JSON.stringify(workspace)};
       const runtimeRoot = ${JSON.stringify(runtimeRoot)};
-      const result = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace }).materialize({
+      const preparationLeases = new Set();
+      const authority = {
+        async assertRunStartAllowed() {},
+        async acquireRunPreparationLease(runId, owner, now = Date.now()) {
+          if (preparationLeases.has(owner)) throw new Error("duplicate preparation lease");
+          const lease = { runId, owner, fencingToken: preparationLeases.size + 1, acquiredAt: new Date(now).toISOString(), state: "held" };
+          preparationLeases.add(owner);
+          return lease;
+        },
+        async releaseRunPreparationLease(_runId, lease) { preparationLeases.delete(lease.owner); },
+        async acquireRunTerminalFence() { throw new Error("test child does not tear down"); },
+        async assertRunTeardownQuiescent() {},
+        async completeRunTeardown() {},
+      };
+      const result = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, runLifecycleAuthority: authority }).materialize({
         runId: runtime.runId,
         runtime,
         wikiProfile: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" },

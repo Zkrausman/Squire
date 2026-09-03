@@ -129,6 +129,14 @@ export interface RunTerminalFence {
   acquiredAt: string;
   state: "held" | "removed";
 }
+/** Durable controller preparation ownership held for the complete filesystem operation. */
+export interface RunPreparationLease {
+  runId: string;
+  owner: string;
+  fencingToken: number;
+  acquiredAt: string;
+  state: "held";
+}
 
 export interface RunSnapshot {
   runId: string;
@@ -149,6 +157,8 @@ export interface RunSnapshot {
   runtimeResolution?: RuntimeResolution;
   /** Durable terminal lifecycle fence; held until sandbox/run removal. */
   terminalFence?: RunTerminalFence;
+  /** Every materialize/verify operation must release its exact lease before teardown. */
+  preparationLeases?: readonly RunPreparationLease[];
 }
 export interface RunPrecondition { version: number; state?: WorkflowState; currentHead?: string }
 export interface Lease { key: string; owner: string; fencingToken: number; expiresAt: number }

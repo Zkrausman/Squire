@@ -186,18 +186,19 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     pi: { ...runtime.pi, executable: PI_CLI },
     llmWiki: { ...runtime.llmWiki, root: WIKI_ROOT },
   });
+  const store = new InMemoryWorkflowStore();
+  await store.create(run());
   const materializer = new PiAgentDirectoryMaterializer({
     runtimeRoot,
     workspace,
     homeDirectory: hostHome,
     wikiInstallation: { root: WIKI_ROOT, installationId: resolvedRuntime.llmWiki.installationId, version: resolvedRuntime.llmWiki.version },
+    runLifecycleAuthority: store,
   });
   const roles = Object.fromEntries(Object.entries(DEFAULT_PI_ROLE_PROFILES).map(([role, profile]) => [
     role,
     { ...profile, instructionsPath: `/ticket/control/roles/${role}.md`, timeoutSeconds: 30 },
   ])) as Record<keyof typeof DEFAULT_PI_ROLE_PROFILES, PiRoleConfig>;
-  const store = new InMemoryWorkflowStore();
-  await store.create(run());
   const factory = new ChildPiProcessFactory();
   const runner = new PiRunner(
     factory,
