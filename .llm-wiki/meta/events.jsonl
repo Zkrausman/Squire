@@ -34,3 +34,5 @@
 {"orphans":3,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:53:18.376Z","kind":"lint"}
 {"orphans":1,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:54:40.357Z","kind":"lint"}
 {"orphans":0,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:55:04.780Z","kind":"lint"}
+{"slug":"aidev-222-hardened-git-workspace-remediation","title":"AIDEV-222 hardened Git workspace remediation","category":"architecture","timestamp":"2026-09-03T23:03:42.785Z","kind":"retro"}
+{"slug":"obs-2026-09-03-aidev-222-remediation-commit-verified","title":"AIDEV-222 remediation commit verified","relevance":"high","timestamp":"2026-09-03T23:04:20.324Z","kind":"observe"}

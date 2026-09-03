@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-03T22:37:53.852Z",
+  "last_updated": "2026-09-03T23:04:47.880Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -155,6 +155,15 @@
       "format": "json",
       "captured": "2026-09-02"
     },
+    "sources/aidev-222-hardened-git-workspace-remediation": {
+      "type": "source",
+      "title": "AIDEV-222 hardened Git workspace remediation",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "aidev-222-hardened-git-workspace-remediation",
+      "created": "2026-09-03",
+      "updated": "2026-09-03"
+    },
     "sources/aidev-222-isolated-git-workspace": {
       "type": "source",
       "title": "AIDEV-222 isolated Git workspace",
@@ -214,6 +223,24 @@
       "slug": "obs-2026-09-03-aidev-222-git-workspace-implementation-completed",
       "relevance": "high",
       "observed_at": "2026-09-03T19:52:20.150Z",
+      "source_context": "Implementing isolated Git workspace for AIDEV-222",
+      "created": "2026-09-03",
+      "updated": "2026-09-03"
+    },
+    "sources/obs-2026-09-03-aidev-222-remediation-commit-verified": {
+      "type": "source",
+      "title": "Observation: AIDEV-222 remediation commit verified",
+      "tags": [
+        "aidev-222",
+        "git",
+        "workspace",
+        "security",
+        "lifecycle"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-03-aidev-222-remediation-commit-verified",
+      "relevance": "high",
+      "observed_at": "2026-09-03T23:04:20.322Z",
       "source_context": "Implementing isolated Git workspace for AIDEV-222",
       "created": "2026-09-03",
       "updated": "2026-09-03"

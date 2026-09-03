@@ -145,7 +145,11 @@
     "sources/registered-session-process-recovery",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
+  "sources/aidev-222-hardened-git-workspace-remediation": [
+    "sources/aidev-222-isolated-git-workspace"
+  ],
   "sources/aidev-222-isolated-git-workspace": [
+    "sources/aidev-222-hardened-git-workspace-remediation",
     "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/durable-noncooperative-process-ownership": [
@@ -164,6 +168,9 @@
   ],
   "sources/obs-2026-09-03-aidev-222-git-workspace-implementation-completed": [
     "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/obs-2026-09-03-aidev-222-remediation-commit-verified": [
+    "sources/aidev-222-isolated-git-workspace"
   ],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
