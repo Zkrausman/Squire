@@ -23,7 +23,6 @@ export interface GitWorkspaceFilesystemPaths {
   readonly manifestPath: string;
   readonly bundleRoot: string;
   readonly controlRoot: string;
-  readonly operationPath: string;
   readonly hooksPath: string;
   readonly templatePath: string;
   readonly disposalRoot: string;
@@ -191,7 +190,6 @@ export function createGitWorkspaceFilesystemPaths(runId: string, ticketRoot = LO
     manifestPath: path.join(artifactRoot, "workspace-manifest.json"),
     bundleRoot: artifactRoot,
     controlRoot,
-    operationPath: path.join(controlRoot, "operation.json"),
     hooksPath: path.join(controlRoot, "hooks"),
     templatePath: path.join(controlRoot, "template"),
     disposalRoot: path.join(root, "control", "git-workspace-disposal"),

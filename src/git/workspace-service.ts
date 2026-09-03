@@ -1358,7 +1358,9 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
         const command = current.operation?.command;
         const unresolved = command && ["spawning", "spawned", "unknown"].includes(command.state);
         const nextBase = unresolved ? current : (() => { const { operation: _operation, ...withoutOperation } = current; return withoutOperation; })();
-        return { ...snapshot, gitWorkspace: { ...nextBase, stage: "blocked", ...(unresolved && current.operation ? { operation: current.operation } : {}), error: { code, message: redact(message).replaceAll(this.#ticketRoot, "/ticket"), at: new Date(this.#clock.now()).toISOString() }, evidence: [`control/git/${runId}/operation.json`] } as GitWorkspaceRecord };
+        // This is a logical locator for authoritative WorkflowStore state,
+        // not a pathname that could be mistaken for an unpersisted file.
+        return { ...snapshot, gitWorkspace: { ...nextBase, stage: "blocked", ...(unresolved && current.operation ? { operation: current.operation } : {}), error: { code, message: redact(message).replaceAll(this.#ticketRoot, "/ticket"), at: new Date(this.#clock.now()).toISOString() }, evidence: unresolved ? ["workflow-state:gitWorkspace.operation"] : ["workflow-state:gitWorkspace"] } as GitWorkspaceRecord };
       });
     } catch { /* A terminal fence or lost generic lease must remain fail-closed. */ }
   }
