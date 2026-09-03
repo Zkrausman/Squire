@@ -146,7 +146,7 @@ async function runRealTuiFooterProbe(options: {
     }, 10_000);
     child.stdout?.on("data", chunk => {
       output += chunk.toString();
-      if (!sentExit && output.includes("🧠 - · openai-codex/gpt-5.6-luna")) {
+      if (!sentExit && output.includes("🧠 — · openai-codex/gpt-5.6-luna")) {
         sentExit = true;
         child.stdin?.write("\u0004");
       }
@@ -317,7 +317,7 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     const visibleTui = tui.output.replace(/\x1B\[[0-?]*[\x20-\x2F]*[@-~]/gu, "").replace(/\r/gu, "");
     // This compact line is only rendered when the trusted footer sees the
     // healthy status emitted by the real wiki extension.
-    assert.match(visibleTui, /🧠 - · openai-codex\/gpt-5\.6-luna/u);
+    assert.match(visibleTui, /🧠 — · openai-codex\/gpt-5\.6-luna/u);
     assert.equal(tui.stderr, "");
     assert.doesNotMatch(`${visibleTui}\n${tui.stderr}`, /extension_error|failed to load extension|cannot find module|syntaxerror/iu);
   } finally {

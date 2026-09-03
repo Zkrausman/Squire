@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-02T16:40:37.000Z",
+  "last_updated": "2026-09-03T05:44:04.916Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -33,7 +33,7 @@
       "status": "active",
       "confidence": "high",
       "created": "2026-09-02",
-      "updated": "2026-09-02"
+      "updated": "2026-09-03"
     },
     "concepts/transition-remediation-and-fresh-gates": {
       "type": "concept",
@@ -225,7 +225,7 @@
       "status": "insight",
       "slug": "run-scoped-agent-runtime-resolution",
       "created": "2026-09-01",
-      "updated": "2026-09-02"
+      "updated": "2026-09-03"
     },
     "sources/stable-history-trigger-resend-proof": {
       "type": "source",

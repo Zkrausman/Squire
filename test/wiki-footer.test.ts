@@ -4,6 +4,7 @@ import {
   ROUTINE_WIKI_STATUS_BLOCK,
   buildTrustedWikiFooterExtensionSource,
   compactVisibleWikiStatuses,
+  compactWikiStatus,
   compactWikiStatusFooter,
   installCompactWikiFooterExtension,
   renderCompactWikiFooter,
@@ -49,6 +50,13 @@ function footerContext(): CompactFooterContextLike {
   };
 }
 
+function normalStatuses(): Map<string, string> {
+  return new Map([
+    ["llm-wiki", "🧠 LLM Wiki (16 tools, trajectory + observe + recall active)"],
+    ["llm-wiki-model", `🧠 wiki model: ${model}`],
+  ]);
+}
+
 test("trusted footer compacts only the known healthy hidden wiki status and preserves prompt bytes", () => {
   const prompt = `prefix\n\n${ROUTINE_WIKI_STATUS_BLOCK}\n\nunrelated instructions\n\nmultiline`;
   const compact = compactWikiStatusFooter(prompt, model);
@@ -71,16 +79,14 @@ test("unknown and diagnostic hidden wiki blocks remain lossless", () => {
   assert.equal(compactWikiStatusFooter("no wiki footer here", model), "no wiki footer here");
 });
 
-test("visible footer compacts the llm-wiki status map and uses the configured wiki model", () => {
-  const statuses = new Map<string, string>([
-    ["llm-wiki", "🧠 LLM Wiki (16 tools, trajectory + observe + recall active)"],
-    ["llm-wiki-model", `🧠 wiki model: ${model}`],
-  ]);
-  assert.deepEqual(compactVisibleWikiStatuses(statuses, model), ["🧠 - · openai-codex/gpt-5.6-luna"]);
+test("visible footer uses the personal complementary one-line status grammar", () => {
+  const statuses = normalStatuses();
+  assert.equal(compactWikiStatus(statuses, model), "🧠 — · openai-codex/gpt-5.6-luna");
+  assert.deepEqual(compactVisibleWikiStatuses(statuses, model), ["🧠 — · openai-codex/gpt-5.6-luna"]);
 
   statuses.set("llm-wiki", "🧠 LLM Wiki — recalled 7 pages for this task");
+  assert.equal(compactWikiStatus(statuses, model), "🧠 7 · openai-codex/gpt-5.6-luna");
   assert.deepEqual(compactVisibleWikiStatuses(statuses, model), ["🧠 7 · openai-codex/gpt-5.6-luna"]);
-  assert.deepEqual(renderCompactWikiFooter(160, footerContext(), footerData(statuses), model, theme).slice(2), ["🧠 7 · openai-codex/gpt-5.6-luna"]);
 });
 
 test("visible footer preserves full setup, migration, error, and unknown status text", () => {
@@ -103,19 +109,47 @@ test("visible footer preserves full setup, migration, error, and unknown status 
   const lines = compactVisibleWikiStatuses(statuses, model);
   assert.ok(lines.includes("🧠 wiki model: warning: configured model unavailable"));
   assert.ok(lines.includes("choose a model"));
+
+  const rendered = renderCompactWikiFooter(160, footerContext(), footerData(statuses), model, theme);
+  assert.ok(rendered.some(line => line.includes("warning: indexing error")));
+  assert.ok(rendered.some(line => line.includes("configured model unavailable")));
 });
 
-test("visible footer retains Pi model/thinking, token, context, cost, and status layout", () => {
-  const statuses = new Map<string, string>([
-    ["llm-wiki", "🧠 LLM Wiki (13 tools, observe + recall active)"],
-    ["llm-wiki-model", `🧠 wiki model: ${model}`],
-  ]);
-  const lines = renderCompactWikiFooter(160, footerContext(), footerData(statuses), model, theme);
-  assert.equal(lines[0], "/ticket/workspace (feature/aidev-228) • aidev-228");
-  assert.match(lines[1]!, /↑1\.2k ↓345 R100 W20 CH7\.6% \$0\.012 18\.8%\/128k \(auto\)/);
-  assert.match(lines[1]!, /gpt-5\.6-sol • high/);
-  assert.equal(lines[2], "🧠 - · openai-codex/gpt-5.6-luna");
+test("visible footer retains the complementary model, thinking, context, cost, and idle layout", () => {
+  const lines = renderCompactWikiFooter(160, footerContext(), footerData(normalStatuses()), model, theme);
+  assert.deepEqual(lines, ["gpt-5.6-sol · high · 🧠 — · openai-codex/gpt-5.6-luna · Ready · Full Access · Context 24k/128k · Session est. $0.012"]);
+
+  let idle = false;
+  const workingContext = { ...footerContext(), isIdle: () => idle };
+  assert.match(renderCompactWikiFooter(160, workingContext, footerData(normalStatuses()), model, theme)[0]!, / · Working · /);
+  idle = true;
+  assert.match(renderCompactWikiFooter(160, workingContext, footerData(normalStatuses()), model, theme)[0]!, / · Ready · /);
+
+  const noUsageContext = { ...footerContext(), getContextUsage: () => ({ tokens: null }) };
+  assert.match(renderCompactWikiFooter(160, noUsageContext, footerData(normalStatuses()), model, theme)[0]!, /Context —\/128k/);
 });
+
+test("ANSI-aware truncation keeps colored output within the requested width", () => {
+  const ansiTheme: FooterThemeLike = { fg: (_color, text) => `\u001b[36m${text}\u001b[39m` };
+  const line = renderCompactWikiFooter(32, footerContext(), footerData(normalStatuses()), model, ansiTheme)[0]!;
+  assert.ok(line.includes("\u001b[0m"));
+  assert.ok(line.endsWith("\u001b[39m\u001b[0m"));
+  assert.ok(stripAnsi(line).length <= 32);
+
+  const diagnostic = "🧠 Wiki setup blocked: permission denied; retry with the full migration diagnostics";
+  const diagnosticLines = renderCompactWikiFooter(
+    32,
+    footerContext(),
+    footerData(new Map([["llm-wiki", diagnostic], ["llm-wiki-model", `🧠 wiki model: ${model}`]])),
+    model,
+    ansiTheme,
+  );
+  assert.ok(diagnosticLines.some(lineValue => stripAnsi(lineValue).includes(diagnostic)));
+});
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001B(?:\[[0-?]*[ -\/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)|_[^\u0007]*(?:\u0007|\u001B\\))/gu, "");
+}
 
 test("ExtensionAPI installs both the hidden prompt transform and visible setFooter renderer", async () => {
   const callbacks = new Map<string, (event: unknown, context?: ExtensionContextLike) => unknown>();
@@ -130,20 +164,19 @@ test("ExtensionAPI installs both the hidden prompt transform and visible setFoot
   assert.deepEqual(before, { systemPrompt: "<wiki_status>🧠 - · openai-codex/gpt-5.6-luna</wiki_status>" });
 
   let factory: Parameters<ExtensionContextLike["ui"]["setFooter"]>[0] | undefined;
+  let renderRequests = 0;
   const context = {
     ...footerContext(),
     ui: { setFooter: (next: Parameters<ExtensionContextLike["ui"]["setFooter"]>[0]) => { factory = next; } },
   } satisfies ExtensionContextLike;
   await callbacks.get("session_start")!({}, context);
   assert.ok(factory);
-  const component = factory!({ requestRender() {} }, theme, footerData(new Map([
-    ["llm-wiki", "🧠 LLM Wiki (16 tools, trajectory + observe + recall active)"],
-    ["llm-wiki-model", `🧠 wiki model: ${model}`],
-  ])));
-  assert.equal(component.render(160)[2], "🧠 - · openai-codex/gpt-5.6-luna");
+  const component = factory!({ requestRender() { renderRequests += 1; } }, theme, footerData(normalStatuses()));
+  assert.equal(component.render(160)[0], "gpt-5.6-sol · high · 🧠 — · openai-codex/gpt-5.6-luna · Ready · Full Access · Context 24k/128k · Session est. $0.012");
   await callbacks.get("model_select")!({ model: { provider: "openai-codex", id: "gpt-5.6-terra", reasoning: true } }, context);
   await callbacks.get("thinking_level_select")!({ level: "max" }, context);
-  assert.match(component.render(160)[1]!, /gpt-5\.6-terra • max/);
+  assert.ok(renderRequests >= 2);
+  assert.match(component.render(160)[0]!, /gpt-5\.6-terra · max/);
 });
 
 test("generated self-contained extension has the same status-map footer behavior", async () => {
@@ -174,6 +207,8 @@ test("generated self-contained extension has the same status-map footer behavior
   const generatedLines = factory!({ requestRender() {} }, theme, footerData(statuses)).render(160);
   const typedLines = renderCompactWikiFooter(160, footerContext(), footerData(statuses), model, theme);
   assert.deepEqual(generatedLines, typedLines);
+  assert.deepEqual(generatedLines, ["gpt-5.6-sol · high · 🧠 4 · openai-codex/gpt-5.6-luna · Ready · Full Access · Context 24k/128k · Session est. $0.012"]);
+
   const actionableStatuses = new Map([
     ["llm-wiki", "🧠 LLM Wiki (13 tools, observe + recall active, warning: indexing error)"],
     ["llm-wiki-model", `🧠 wiki model: ${model}`],
