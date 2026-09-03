@@ -2,7 +2,8 @@ import { constants, type Stats } from "node:fs";
 import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import { GitPathSecurityError, assertPathWithin, assertSafeAncestors, fsyncDirectory, openNoFollow, sameStat } from "./paths.js";
+import { GitPathSecurityError, assertPathWithin, assertSafeAncestors, fsyncDirectory, openNoFollow, removeTreeNoFollow, resourceIdentity, sameStat } from "./paths.js";
+import type { ResourceIdentity } from "./domain.js";
 import type { GitCommandOptions, GitCommandResult, GitCommandRunner } from "./git-command.js";
 
 export interface DescriptorDigest {
@@ -36,7 +37,7 @@ export const DESCRIPTOR_ARGUMENT = "__SQUIRE_DESCRIPTOR_FD__";
 export async function openImmutableFile(filePath: string, maxBytes = DEFAULT_MAX_BUNDLE_BYTES, root?: string): Promise<OpenedImmutableFile> {
   const absolute = root ? assertPathWithin(root, filePath) : path.resolve(filePath);
   if (root) await assertSafeAncestors(path.dirname(absolute), root, false);
-  const handle = await openNoFollow(absolute);
+  const handle = root ? await openNoFollow(absolute, constants.O_RDONLY, root) : await openNoFollow(absolute);
   try {
     const info = await handle.stat();
     assertRegularSingleLink(info, maxBytes);
@@ -79,8 +80,12 @@ export async function copyDescriptorToExclusive(
   await assertSafeAncestors(parent, root, false);
   const target = assertPathWithin(root, destination);
   if (constants.O_NOFOLLOW === undefined) throw new GitPathSecurityError("secure no-follow bundle publication is unsupported on this platform");
-  const output = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600).catch(error => { throw new GitPathSecurityError(`bundle destination is not an exclusive file: ${target}`, { cause: error }); });
+  const output = await openNoFollow(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, root, 0o600).catch(error => { throw new GitPathSecurityError(`bundle destination is not an exclusive file: ${target}`, { cause: error }); });
+  let outputResource: ResourceIdentity | undefined;
   try {
+    const opened = await output.stat();
+    if (!opened.isFile() || opened.nlink !== 1) throw new GitPathSecurityError("bundle destination is not a private regular file");
+    outputResource = resourceIdentity(target, "file", opened);
     const chunk = Buffer.allocUnsafe(1024 * 1024);
     let offset = 0;
     while (offset < expected.byteLength) {
@@ -91,15 +96,18 @@ export async function copyDescriptorToExclusive(
       await output.write(chunk, 0, read.bytesRead);
       offset += read.bytesRead;
     }
+    // Published evidence is immutable at the pathname level as well as by
+    // digest. The descriptor remains open while permissions are changed.
+    await output.chmod(0o400);
+    outputResource = resourceIdentity(target, "file", await output.stat());
     await output.sync();
-    await output.chmod(0o600);
   } catch (error) {
     await output.close();
-    await import("node:fs/promises").then(module => module.unlink(target)).catch(() => undefined);
+    if (outputResource) await removeTreeNoFollow(target, outputResource, root).catch(() => undefined);
     throw error;
   }
   await output.close();
-  await fsyncDirectory(parent);
+  await fsyncDirectory(parent, root);
   const copied = await openImmutableFile(target, expected.byteLength, root);
   try {
     const digest = await digestDescriptor(copied.handle, expected.byteLength, signal);

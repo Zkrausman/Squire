@@ -75,6 +75,11 @@ export interface GitOperationState {
   readonly owner: string;
   readonly generation: number;
   readonly step: GitOperationStep;
+  /** A controller-side intent is persisted before a side-effecting Git call. */
+  readonly intent?: {
+    readonly kind: "offline-commit";
+    readonly messageSha256: string;
+  };
   readonly command?: GitCommandAllocation;
   readonly startedAt: string;
 }
@@ -154,6 +159,8 @@ export interface GitBundleRecord {
   readonly featureBranch: string;
   readonly baseSha: string;
   readonly headSha: string;
+  /** Physical identity captured at create-once publication; it is not contract authority but prevents same-byte inode substitution during retained cleanup. */
+  readonly resource: ResourceIdentity;
   readonly exportGeneration: number;
 }
 
@@ -233,8 +240,11 @@ export interface ReadyGitWorkspace {
 }
 
 export interface GitDisposalAuthorization {
-  /** An observed controller clock, as epoch milliseconds or an ISO timestamp. */
-  readonly now: number | string;
+  /**
+   * An advisory scheduler observation. It is deliberately not trusted for
+   * deadline evaluation; disposal always uses the service's injected Clock.
+   */
+  readonly now?: number | string;
   readonly workspaceRetainUntil?: string;
   readonly bundleRetainUntil?: string;
   readonly disposeWorkspace?: boolean;

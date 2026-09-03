@@ -15,14 +15,17 @@ export interface GitChildProcess {
   readonly stdout: GitReadable;
   readonly stderr: GitReadable;
   readonly exitCode: number | null;
+  /** The observed OS signal, when the supervisor received one. */
+  readonly exitSignal?: string | null;
   on(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
   kill(signal: "SIGTERM" | "SIGKILL"): boolean;
   waitForExit(timeoutMs: number): Promise<void>;
 }
 
 export interface GitProcessFactory {
-  /** onSpawn is invoked synchronously after the child identity exists. */
-  spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (process: GitChildProcess) => void, passFileDescriptors?: readonly number[]): Promise<GitChildProcess>;
+  /** The callback is awaited before spawn settlement, making durable process
+   * ownership a required supervisor handshake rather than fire-and-forget. */
+  spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (process: GitChildProcess) => void | Promise<void>, passFileDescriptors?: readonly number[]): Promise<GitChildProcess>;
 }
 
 export interface GitProcessIdentityResolver {
@@ -40,7 +43,7 @@ export interface GitCommandOptions {
   readonly extraEnv?: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
   readonly passFileDescriptors?: readonly number[];
-  readonly onSpawn?: (process: GitChildProcess) => void;
+  readonly onSpawn?: (process: GitChildProcess) => void | Promise<void>;
   readonly onObservedExit?: (process: GitChildProcess, result: GitCommandResult) => void | Promise<void>;
 }
 
@@ -89,6 +92,7 @@ class ChildGitProcess extends EventEmitter implements GitChildProcess {
   readonly stdout: GitReadable;
   readonly stderr: GitReadable;
   exitCode: number | null = null;
+  exitSignal: string | null = null;
 
   constructor(readonly child: ChildProcess) {
     super();
@@ -97,6 +101,7 @@ class ChildGitProcess extends EventEmitter implements GitChildProcess {
     this.stdout = child.stdout;
     this.stderr = child.stderr;
     child.once("exit", (code, signal) => {
+      this.exitSignal = signal;
       this.exitCode = code ?? (signal === "SIGTERM" ? 143 : 1);
       this.emit("exit", code, signal);
     });
@@ -123,7 +128,7 @@ class ChildGitProcess extends EventEmitter implements GitChildProcess {
 }
 
 class DefaultGitProcessFactory implements GitProcessFactory {
-  async spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (process: GitChildProcess) => void, passFileDescriptors: readonly number[] = []): Promise<GitChildProcess> {
+  async spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (process: GitChildProcess) => void | Promise<void>, passFileDescriptors: readonly number[] = []): Promise<GitChildProcess> {
     if (signal?.aborted) throw new GitCommandAbortedError("Git command was aborted before spawn");
     const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "pipe", "pipe", ...passFileDescriptors];
     const child = spawnChild(spec.command, [...spec.args], {
@@ -133,11 +138,22 @@ class DefaultGitProcessFactory implements GitProcessFactory {
       stdio,
     });
     const process = new ChildGitProcess(child);
-    onSpawn?.(process);
+    try { await onSpawn?.(process); }
+    catch (error) {
+      // A child whose durable identity could not be acknowledged is never
+      // returned as a clean failure. Try to terminate it, but let the caller
+      // retain an unresolved allocation if the exit cannot be observed.
+      if (process.exitCode === null) process.kill("SIGKILL");
+      try { await process.waitForExit(2_000); } catch { /* unresolved ownership remains authoritative */ }
+      throw error;
+    }
     if (signal) {
       const abort = (): void => { if (process.exitCode === null) process.kill("SIGTERM"); };
-      signal.addEventListener("abort", abort, { once: true });
-      process.on("exit", () => signal.removeEventListener("abort", abort));
+      if (signal.aborted) abort();
+      else {
+        signal.addEventListener("abort", abort, { once: true });
+        process.on("exit", () => signal.removeEventListener("abort", abort));
+      }
     }
     return process;
   }
@@ -195,15 +211,15 @@ export class GitCommandRunner {
     };
     const started = Date.now();
     try {
-      child = await this.#factory.spawn(launch, options.signal, process => {
+      child = await this.#factory.spawn(launch, options.signal, async process => {
         callbackChild = process;
         child = process;
-        options.onSpawn?.(process);
+        await options.onSpawn?.(process);
       }, options.passFileDescriptors);
-      // The synchronous callback is the durable ownership boundary. Refuse a
+      // The awaited callback is the durable ownership boundary. Refuse a
       // factory that omits it or returns a different process identity; accepting
       // either would make recovery unable to prove which child was spawned.
-      if (!child || !callbackChild || child.identity !== callbackChild.identity) throw new GitCommandUncertainError("Git child identity was not established exactly");
+      if (!child || !callbackChild || !validProcessIdentity(child.identity) || !validProcessIdentity(callbackChild.identity) || child.identity !== callbackChild.identity) throw new GitCommandUncertainError("Git child identity was not established exactly");
       child.stdout.on("data", collect("stdout"));
       child.stderr.on("data", collect("stderr"));
       const observed = await observeExit(child, timeoutMs, options.signal, () => {
@@ -306,24 +322,45 @@ async function observeExit(
   signal: AbortSignal | undefined,
   terminate: () => void,
 ): Promise<{ exitCode: number | null; signal: string | null }> {
-  if (child.exitCode !== null) return { exitCode: child.exitCode, signal: null };
+  const currentExit = (): { exitCode: number; signal: string | null } | undefined => child.exitCode === null ? undefined : { exitCode: child.exitCode, signal: child.exitSignal ?? null };
+  const alreadyExited = currentExit();
+  if (alreadyExited) return alreadyExited;
   let exit: { exitCode: number | null; signal: string | null } | undefined;
-  const exited = new Promise<void>(resolve => {
-    child.on("exit", (code, signalName) => { exit = { exitCode: code, signal: signalName }; resolve(); });
-  });
+  let resolveExit!: () => void;
+  const exited = new Promise<void>(resolve => { resolveExit = resolve; });
+  const onExit = (code: number | null, signalName: string | null): void => {
+    if (!exit) exit = { exitCode: code, signal: signalName };
+    resolveExit();
+  };
+  child.on("exit", onExit);
+  // The process can exit between the initial check and listener registration.
+  // Re-checking the durable child state closes that immediate-exit window.
+  const racedExit = currentExit();
+  if (racedExit) exit = racedExit;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let aborted = false;
   const onAbort = (): void => { aborted = true; terminate(); };
-  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) { aborted = true; terminate(); }
+  else signal?.addEventListener("abort", onAbort, { once: true });
   const timeout = new Promise<void>(resolve => {
     timer = setTimeout(() => { terminate(); resolve(); }, timeoutMs);
     timer.unref?.();
   });
   try {
-    await Promise.race([exited, timeout]);
+    if (!exit) await Promise.race([exited, timeout]);
     if (!exit) {
-      try { await child.waitForExit(Math.min(timeoutMs, 2_000)); }
-      catch { throw new GitCommandUncertainError("Git child did not provide an observed exit"); }
+      try { await child.waitForExit(Math.min(timeoutMs, 2_000)); } catch { /* escalate below */ }
+      const afterGrace = currentExit();
+      if (afterGrace) exit = afterGrace;
+      if (!exit) {
+        // Timeout and cancellation both escalate to SIGKILL. If this also
+        // cannot be observed, recovery must retain an unresolved child.
+        child.kill("SIGKILL");
+        try { await child.waitForExit(Math.min(timeoutMs, 2_000)); }
+        catch { throw new GitCommandUncertainError("Git child did not provide an observed exit"); }
+        const afterKill = currentExit();
+        if (afterKill) exit = afterKill;
+      }
     }
     if (aborted) throw new GitCommandAbortedError("Git command was aborted");
     if (!exit) throw new GitCommandUncertainError("Git child termination was not observed");
@@ -350,6 +387,10 @@ function diagnosticArgv(command: string, args: readonly string[]): string {
 
 function redactDiagnostic(value: string): string {
   return value.replace(/(?:https?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "https://<redacted>@").slice(0, 2_000);
+}
+
+function validProcessIdentity(value: string): boolean {
+  return typeof value === "string" && value.length > 0 && value.length <= 300 && !/[\u0000-\u001f\u007f\r\n]/u.test(value);
 }
 
 function positiveInteger(value: number, label: string): number {

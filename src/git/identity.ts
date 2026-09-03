@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type { GitObjectFormat } from "./domain.js";
 
 export const RUN_ID_PATTERN = /^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
@@ -114,11 +115,66 @@ export function assertCredentialFreeHttpsCloneUrl(cloneUrl: string, owner: strin
   if (parsed.protocol !== "https:") throw new GitIdentityError("repository clone URL must use HTTPS");
   if (parsed.username || parsed.password || parsed.hash || parsed.search) throw new GitIdentityError("repository clone URL contains credentials or mutable URL components");
   if (parsed.port && parsed.port !== "443") throw new GitIdentityError("repository clone URL uses an unexpected port");
+  if (isUnsafeNetworkAddress(parsed.hostname)) throw new GitIdentityError("repository clone URL resolves to a private or local address");
   const decodedPath = decodePath(parsed.pathname);
   const expected = `/${owner}/${name}`;
   const expectedGit = `${expected}.git`;
   if (decodedPath !== expected && decodedPath !== expectedGit) throw new GitIdentityError("repository clone URL does not identify the recorded repository");
   return { url: parsed, owner, name };
+}
+
+/** Rejects literal destinations that can never be approved as a production
+ * source. Hostname DNS policy is intentionally separate because it is async. */
+export function isUnsafeNetworkAddress(value: string): boolean {
+  const hostname = value.replace(/^\[|\]$/gu, "").toLowerCase();
+  const version = isIP(hostname);
+  if (version === 4) return unsafeIpv4(hostname);
+  if (version === 6) {
+    const words = parseIpv6Words(hostname);
+    if (!words) return true;
+    const mapped = words.slice(0, 5).every(word => word === 0) && words[5] === 0xffff;
+    if (mapped) return unsafeIpv4(`${words[6]! >> 8}.${words[6]! & 0xff}.${words[7]! >> 8}.${words[7]! & 0xff}`);
+    const first = words[0]!;
+    return words.every(word => word === 0) || (words.slice(0, 7).every(word => word === 0) && words[7] === 1) || (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00;
+  }
+  // A hostname is checked again after DNS resolution by the production source
+  // authorizer. Non-IP strings are not address literals and are therefore not
+  // rejected here solely by their spelling (for example, github.com).
+  return false;
+}
+
+function unsafeIpv4(value: string): boolean {
+  const octets = value.split(".").map(Number);
+  if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) return true;
+  const [a, b, c] = octets;
+  if (a === undefined || b === undefined || c === undefined) return true;
+  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168)) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && b >= 18 && b <= 19) || (a === 203 && b === 0 && c >= 113) || (a === 198 && b === 51 && c >= 100);
+}
+
+function parseIpv6Words(value: string): number[] | undefined {
+  if (value.includes("%")) return undefined;
+  const halves = value.split("::");
+  if (halves.length > 2) return undefined;
+  const parse = (part: string): number[] | undefined => {
+    if (!part) return [];
+    const pieces = part.split(":");
+    const words: number[] = [];
+    for (const piece of pieces) {
+      if (piece.includes(".")) {
+        const octets = piece.split(".").map(Number);
+        if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) return undefined;
+        words.push((octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!);
+      } else if (/^[0-9a-f]{1,4}$/u.test(piece)) words.push(Number.parseInt(piece, 16));
+      else return undefined;
+    }
+    return words;
+  };
+  const left = parse(halves[0]!);
+  const right = parse(halves[1] ?? "");
+  if (!left || !right) return undefined;
+  if (halves.length === 1) return left.length === 8 ? left : undefined;
+  if (left.length + right.length >= 8) return undefined;
+  return [...left, ...Array.from({ length: 8 - left.length - right.length }, () => 0), ...right];
 }
 
 function decodePath(value: string): string {

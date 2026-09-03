@@ -17,6 +17,7 @@ export * from "./git/git-command.js";
 export * from "./git/contracts.js";
 export * from "./git/bundle-reader.js";
 export * from "./git/workspace-service.js";
+export * from "./git/source-authorizer.js";
 export * from "./pi/pi-process.js";
 export * from "./pi/pi-rpc-client.js";
 export * from "./pi/pi-runner.js";

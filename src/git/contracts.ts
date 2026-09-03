@@ -127,19 +127,30 @@ export class GitWorkspaceContractValidator {
     return document as T;
   }
 
+  /** Validates canonical bytes that have already been opened by a trusted
+   * descriptor. This is used when a crash has moved an artifact root out of
+   * its original logical pathname. */
+  validateBytes<T extends GitWorkspaceDocument>(schemaId: GitWorkspaceSchemaId, bytes: Uint8Array): T {
+    let parsed: unknown;
+    try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch (error) { throw new GitWorkspaceContractError("Git workspace contract is not valid JSON", { cause: error }); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new GitWorkspaceContractError("Git workspace contract must be a JSON object");
+    const buffer = Buffer.from(bytes);
+    if (!buffer.equals(serializeCanonical(parsed))) throw new GitWorkspaceContractError("Git workspace contract is not deterministically serialized");
+    const document = this.validateDocument<T>(schemaId, parsed);
+    if (schemaId === "urn:squire:git-workspace:v1:workspace-spec") assertSpecSemantics(document as GitWorkspaceSpecDocument);
+    else if (schemaId === "urn:squire:git-workspace:v1:workspace-manifest") assertManifestSemantics(document as GitWorkspaceManifestDocument);
+    else assertBundleSemantics(document as GitBundleManifestDocument);
+    return document;
+  }
+
   async #validate<T extends GitWorkspaceDocument>(reference: ContractReference, schemaId: GitWorkspaceSchemaId): Promise<ValidatedGitDocument<T>> {
     if (reference.schemaId !== schemaId || !GIT_WORKSPACE_SCHEMA_IDS.has(reference.schemaId)) throw new GitWorkspaceContractError("unsupported Git workspace schema identity");
     assertContractPath(reference.path);
     const bytes = await this.#reader.readExact(reference);
-    let parsed: unknown;
-    try { parsed = JSON.parse(bytes.toString("utf8")); } catch (error) { throw new GitWorkspaceContractError("Git workspace contract is not valid JSON", { cause: error }); }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new GitWorkspaceContractError("Git workspace contract must be a JSON object");
     // Exact bytes are checked by the reader first; canonical reserialization is
     // then required so semantically equal but differently encoded documents do
     // not create multiple identities.
-    const canonical = serializeCanonical(parsed);
-    if (!bytes.equals(canonical)) throw new GitWorkspaceContractError("Git workspace contract is not deterministically serialized");
-    const document = this.validateDocument<T>(schemaId, parsed);
+    const document = this.validateBytes<T>(schemaId, bytes);
     return { document, bytes, reference };
   }
 }

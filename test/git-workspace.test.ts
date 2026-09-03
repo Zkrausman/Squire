@@ -63,6 +63,8 @@ test("status and commit remain offline and advance only the feature branch", asy
   const clean = await fixture.service.status(fixture.input.runId);
   assert.equal(clean.porcelain, "");
   assert.equal((await fixture.service.verify(fixture.input.runId, committed.headSha)).headSha, committed.headSha);
+  assert.equal((await fixture.store.read(fixture.input.runId))?.gitWorkspace?.operation, undefined);
+  assert.equal((await fixture.store.read(fixture.input.runId))?.preparationLeases?.length, 0);
 });
 
 test("source hooks, attributes, and submodules remain untrusted data", async t => {

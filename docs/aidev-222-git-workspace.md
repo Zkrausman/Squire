@@ -16,17 +16,22 @@ are persisted in `RunSnapshot.gitWorkspace`; a command with an unknown child
 identity blocks recovery rather than being replaced. Every filesystem boundary
 is rechecked against the merged preparation/terminal authority.
 
-The service validates the immutable spec, imports only the literal base
-`refs/heads/<base-branch>`, rejects shallow/partial/alternate/graft/replace
-state, and verifies object closure, config, paths, hooks, worktree metadata,
-and a clean initial status. It never force-adopts a repository, uses a shared
-alternate, invokes a shell string, or inherits Git configuration or credentials.
+The service validates the immutable spec, requires an injected closed
+repository-source authorizer, rejects private/DNS-resolved destinations and
+unapproved redirects, and imports only the literal base
+`refs/heads/<base-branch>`. Fetch explicitly disables redirects. It rejects
+shallow/partial/alternate/graft/replace state, and verifies object closure,
+config, paths, hooks, worktree metadata, and a clean initial status. It never
+force-adopts a repository, uses a shared alternate, invokes a shell string, or
+inherits Git configuration or credentials.
 
 After readiness, `status` and `commit` are offline operations. Commits use the
 local Squire identity, disable verification hooks/signing, and advance only the
 recorded feature ref. Repository content remains untrusted: tracked symlinks,
 attributes, submodules, and repository files are not followed as controller
-paths.
+paths. `PiRunner` requires the service's readiness port before any role child
+can spawn; AIDEV-228's run-local agent directory and trusted footer remain
+separate from the Git paths.
 
 ## Contracts and bundle handoff
 
@@ -47,7 +52,10 @@ head, and a ready workspace. It passes exactly the full feature ref to
 verifies the advertised ref, base ancestry, object format, offline fetch, and
 strict object closure from the held bytes. The destination and bundle manifest
 are exclusive publications; an existing or substituted digest is never
-repaired. Host transfer and GitHub publication belong to AIDEV-225.
+repaired. Published bundles are owner-non-writable and are reverified from
+held descriptors before persistence and again during retained disposal;
+artifact children are journaled with exact identity and digest. Host transfer
+and GitHub publication belong to AIDEV-225.
 
 ## Retention and disposal
 
@@ -57,7 +65,8 @@ acquires or completes that fence. It proves quiescence around every rename and
 delete, moves only identity-matched Git roots into a private fence-token
 namespace, removes them without following symlinks or crossing filesystems,
 and leaves Pi runtime/session/footer state and other runs untouched. A private
-disposal identity and per-target completion marker preserve the validated
-resource proof after the artifact manifest itself is removed. Repeating the same
-disposal under the same held fence is safe. Sandbox setup, scheduling,
+disposal identity contains authenticated snapshots of the exact contract bytes
+and per-target completion markers, preserving the validated resource proof
+after the artifact manifest itself is removed; recovery never trusts a mutable
+journal alone. Repeating the same disposal under the same held fence is safe. Sandbox setup, scheduling,
 publication, and merge remain owned by AIDEV-223 through AIDEV-226.

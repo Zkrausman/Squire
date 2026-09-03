@@ -18,8 +18,8 @@ export interface RunnerConfig {
   materializer?: PiAgentDirectoryMaterializerPort;
   /** Durable workflow authority that gates every role start and teardown. */
   runLifecycleAuthority?: RunQuiescenceAuthority;
-  /** Production composition supplies AIDEV-222 readiness before any Pi spawn. */
-  workspaceReadiness?: GitWorkspaceReadiness;
+  /** Every production and test composition must supply AIDEV-222 readiness. */
+  workspaceReadiness: GitWorkspaceReadiness;
   workspace?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
@@ -49,6 +49,7 @@ export class PiRunner {
   readonly #runLifecycleAuthority: RunQuiescenceAuthority;
   #ownerSequence = 0;
   constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {
+    if (!config.workspaceReadiness) throw new Error("PiRunner requires Git workspace readiness");
     this.#runLifecycleAuthority = config.runLifecycleAuthority ?? store;
     this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace, this.#runLifecycleAuthority);
   }
@@ -137,7 +138,7 @@ export class PiRunner {
 
   async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
     await this.#runLifecycleAuthority.assertRunStartAllowed(runId, this.clock.now());
-    if (this.config.workspaceReadiness) await this.config.workspaceReadiness.verify(runId);
+    await this.config.workspaceReadiness.verify(runId);
     const key = `${runId}:${role}`;
     const pending = this.allocating.get(key);
     if (pending) throw new Error("role already has an unresolved allocating process");
@@ -201,7 +202,13 @@ export class PiRunner {
         process = value;
         this.#trackAllocating(key, { process: value, runId, role, generation: generation!, owner, fencingToken: lease.fencingToken });
       };
-      process = await this.#step("process spawn", lease, signal => this.factory.spawn(spec, signal, ownProcess), ownProcess);
+      process = await this.#step("process spawn", lease, async signal => {
+        // Recheck inside the final bounded spawn step, after all potentially
+        // mutable materialization/instruction work and immediately before the
+        // child factory is allowed to create a process.
+        await this.config.workspaceReadiness.verify(runId);
+        return this.factory.spawn(spec, signal, ownProcess);
+      }, ownProcess);
       await this.#step("spawn ownership claim", lease, () => this.#setAllocation(runId, role, lease, "spawned", process!.identity));
       const client = new PiRpcClient(process, { commandTimeoutMs: this.config.commandTimeoutMs ?? 5_000 });
       this.live.set(key, { process, client, runId, role, generation });
