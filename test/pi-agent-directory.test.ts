@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { RunPreparationLease, RunTerminalFence, RuntimeResolution } from "../src/control/domain.js";
 import type { RunQuiescenceAuthority } from "../src/control/workflow-store.js";
-import { PiAgentDirectoryMaterializer as PiAgentDirectoryMaterializerImplementation, type PreparationCaptureBarrier, type PreparationFenceBarrier, type PiAgentDirectoryMaterializerOptions, type RetentionPublicationBarrier } from "../src/pi/pi-agent-directory.js";
+import { PiAgentDirectoryMaterializer as PiAgentDirectoryMaterializerImplementation, type PreparationCaptureBarrier, type PreparationFenceBarrier, type PiAgentDirectoryMaterializerOptions, type RetentionAuthCleanupBarrier, type RetentionPublicationBarrier } from "../src/pi/pi-agent-directory.js";
 import { FileLifecycleAuthority } from "./support/file-lifecycle-authority.js";
 
 async function fixture() {
@@ -505,6 +505,38 @@ test("trusted teardown discards a partial authentication-key publication", async
     await assert.rejects(lstat(path.join(runtimeRoot, runtime.runId)), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auth-key temporary disappearance after observer scan is a verified handoff", async () => {
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const { root, workspace, runtime } = await fixture();
+    const runtimeRoot = path.join(root, "runtime");
+    const retainedRoot = path.join(runtimeRoot, ".pi-agent-quarantine-retained");
+    const firstTemporary = path.join(retainedRoot, `.capture-auth-key.tmp-${randomUUID()}`);
+    const secondTemporary = path.join(retainedRoot, `.capture-auth-key.tmp-${randomUUID()}`);
+    await mkdir(retainedRoot, { recursive: true, mode: 0o700 });
+    await chmod(retainedRoot, 0o700);
+    const key = Buffer.alloc(32, iteration + 1);
+    await writeFile(firstTemporary, key, { flag: "wx", mode: 0o600 });
+    let barrierCalls = 0;
+    const authCleanupBarrier: RetentionAuthCleanupBarrier = async event => {
+      barrierCalls += 1;
+      assert.equal(event.finalPath, path.join(retainedRoot, ".capture-auth-key"));
+      await rm(event.temporaryPath, { recursive: false, force: false });
+      if (barrierCalls === 1) await writeFile(secondTemporary, key, { flag: "wx", mode: 0o600 });
+    };
+    const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, retentionAuthCleanupBarrier: authCleanupBarrier });
+    const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+    try {
+      const result = await materializer.materialize(request);
+      assert.equal(barrierCalls, 2);
+      assert.deepEqual((await readdir(retainedRoot)).filter(name => name.startsWith(".capture-auth-key.tmp-")), []);
+      assert.equal((await readFile(path.join(retainedRoot, ".capture-auth-key"))).equals(key), true);
+      assert.equal(result.agentDir, path.join(runtimeRoot, runtime.runId, "pi-agent"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 

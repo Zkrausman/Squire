@@ -20,7 +20,6 @@ const HEALTHY_WIKI_STATUS = /^🧠 LLM Wiki \((?:13 tools, observe \+ recall act
 const RECALL_STATUS = /^🧠 LLM Wiki — recalled (\d+) page(?:s)? for this task$/u;
 const HEALTHY_MODEL_STATUS_PREFIX = "🧠 wiki model: ";
 const EMPTY_COUNT = "—";
-const ANSI_ESCAPE = /\u001B(?:\[[0-?]*[ -\/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)|_[^\u0007]*(?:\u0007|\u001B\\))/gu;
 const ANSI_RESET = "\u001b[0m";
 
 function escapeRegExp(value: string): string {
@@ -188,30 +187,165 @@ function getEstimatedCost(entries: readonly unknown[]): number {
   return total;
 }
 
-function ansiAt(text: string, index: number): string | undefined {
-  ANSI_ESCAPE.lastIndex = index;
-  const match = ANSI_ESCAPE.exec(text);
-  ANSI_ESCAPE.lastIndex = 0;
-  return match?.index === index ? match[0] : undefined;
+// These are the pinned pi-tui/get-east-asian-width tables used by the
+// terminal-column implementation. Keeping the tables here makes the typed
+// renderer and its import-free generated companion safe to run without
+// resolving dependencies through the target repository.
+const EAST_ASIAN_FULLWIDTH_RANGES: readonly number[] = [
+  12288, 12288, 65281, 65376, 65504, 65510,
+];
+const EAST_ASIAN_WIDE_RANGES: readonly number[] = [
+  4352, 4447, 8986, 8987, 9001, 9002, 9193, 9196, 9200, 9200, 9203, 9203,
+  9725, 9726, 9748, 9749, 9776, 9783, 9800, 9811, 9855, 9855, 9866, 9871,
+  9875, 9875, 9889, 9889, 9898, 9899, 9917, 9918, 9924, 9925, 9934, 9934,
+  9940, 9940, 9962, 9962, 9970, 9971, 9973, 9973, 9978, 9978, 9981, 9981,
+  9989, 9989, 9994, 9995, 10024, 10024, 10060, 10060, 10062, 10062,
+  10067, 10069, 10071, 10071, 10133, 10135, 10160, 10160, 10175, 10175,
+  11035, 11036, 11088, 11088, 11093, 11093, 11904, 11929, 11931, 12019,
+  12032, 12245, 12272, 12287, 12289, 12350, 12353, 12438, 12441, 12543,
+  12549, 12591, 12593, 12686, 12688, 12773, 12783, 12830, 12832, 12871,
+  12880, 42124, 42128, 42182, 43360, 43388, 44032, 55203, 63744, 64255,
+  65040, 65049, 65072, 65106, 65108, 65126, 65128, 65131, 94176, 94180,
+  94192, 94198, 94208, 101589, 101631, 101662, 101760, 101874, 110576,
+  110579, 110581, 110587, 110589, 110590, 110592, 110882, 110898, 110898,
+  110928, 110930, 110933, 110933, 110948, 110951, 110960, 111355, 119552,
+  119638, 119648, 119670, 126980, 126980, 127183, 127183, 127374, 127374,
+  127377, 127386, 127488, 127490, 127504, 127547, 127552, 127560, 127568,
+  127569, 127584, 127589, 127744, 127776, 127789, 127797, 127799, 127868,
+  127870, 127891, 127904, 127946, 127951, 127955, 127968, 127984, 127988,
+  127988, 127992, 128062, 128064, 128064, 128066, 128252, 128255, 128317,
+  128331, 128334, 128336, 128359, 128378, 128378, 128405, 128406, 128420,
+  128420, 128507, 128591, 128640, 128709, 128716, 128716, 128720, 128722,
+  128725, 128728, 128732, 128735, 128747, 128748, 128756, 128764, 128992,
+  129003, 129008, 129008, 129292, 129338, 129340, 129349, 129351, 129535,
+  129648, 129660, 129664, 129674, 129678, 129734, 129736, 129736, 129741,
+  129756, 129759, 129770, 129775, 129784, 131072, 196605, 196608, 262141,
+];
+
+function isInEastAsianRange(ranges: readonly number[], codePoint: number): boolean {
+  let low = 0;
+  let high = Math.floor(ranges.length / 2) - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const index = middle * 2;
+    const start = ranges[index]!;
+    const end = ranges[index + 1]!;
+    if (codePoint < start) high = middle - 1;
+    else if (codePoint > end) low = middle + 1;
+    else return true;
+  }
+  return false;
 }
 
-function nextAnsiIndex(text: string, index: number): number {
-  ANSI_ESCAPE.lastIndex = index;
-  const match = ANSI_ESCAPE.exec(text);
-  ANSI_ESCAPE.lastIndex = 0;
-  return match?.index ?? -1;
+function eastAsianWidth(codePoint: number): 1 | 2 {
+  return isInEastAsianRange(EAST_ASIAN_FULLWIDTH_RANGES, codePoint)
+    || isInEastAsianRange(EAST_ASIAN_WIDE_RANGES, codePoint) ? 2 : 1;
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, "");
+const DEFAULT_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
+const CONTROL = /^\p{Control}$/u;
+const FORMAT = /^\p{Format}$/u;
+const MARK = /^\p{Mark}$/u;
+const SPACING_MARK = /^\p{Spacing_Mark}$/u;
+const EXTENDED_PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u;
+const RGI_EMOJI = createUnicodePropertyRegex("^\\p{RGI_Emoji}$", "v");
+
+function createUnicodePropertyRegex(source: string, flags: string): RegExp | undefined {
+  try { return new RegExp(source, flags); }
+  catch { return undefined; }
+}
+
+function isSurrogate(character: string): boolean {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return codePoint >= 0xd800 && codePoint <= 0xdfff;
+}
+
+function isZeroWidthCharacter(character: string): boolean {
+  return DEFAULT_IGNORABLE.test(character) || CONTROL.test(character) || MARK.test(character) || isSurrogate(character);
+}
+
+function isNonPrintingCharacter(character: string): boolean {
+  return DEFAULT_IGNORABLE.test(character) || CONTROL.test(character) || FORMAT.test(character) || MARK.test(character) || isSurrogate(character);
+}
+
+function isTerminalSpacingMarkCharacter(character: string): boolean {
+  const codePoint = character.codePointAt(0) ?? 0;
+  const excluded = codePoint === 0x1734 || codePoint === 0x302e || codePoint === 0x302f;
+  const legacy = codePoint === 0x065f || codePoint === 0x0f7f || codePoint === 0x102b || codePoint === 0x102c
+    || codePoint === 0x1031 || (codePoint >= 0x1033 && codePoint <= 0x1035) || codePoint === 0x1038
+    || (codePoint >= 0x103a && codePoint <= 0x103e);
+  return (!excluded && SPACING_MARK.test(character)) || legacy;
+}
+
+function isTerminalSpacingMark(segment: string): boolean {
+  const characters = [...segment];
+  return characters.length > 0 && characters.every(isTerminalSpacingMarkCharacter);
+}
+
+function isMarkCharacter(character: string): boolean {
+  return MARK.test(character);
+}
+
+function couldBeEmoji(segment: string): boolean {
+  const codePoint = segment.codePointAt(0);
+  return (codePoint !== undefined && codePoint >= 0x1f000 && codePoint <= 0x1fbff)
+    || (codePoint !== undefined && codePoint >= 0x2300 && codePoint <= 0x23ff)
+    || (codePoint !== undefined && codePoint >= 0x2600 && codePoint <= 0x27bf)
+    || (codePoint !== undefined && codePoint >= 0x2b50 && codePoint <= 0x2b55)
+    || segment.includes("\uFE0F")
+    || segment.length > 2;
+}
+
+function isRgiEmoji(segment: string): boolean {
+  if (RGI_EMOJI?.test(segment)) return true;
+  // Node versions without Unicode set properties still get conservative
+  // emoji handling for the sequences used by terminal footers.
+  const characters = [...segment];
+  const first = characters[0]?.codePointAt(0) ?? 0;
+  const second = characters[1]?.codePointAt(0) ?? 0;
+  const regional = (codePoint: number): boolean => codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff;
+  if (characters.length === 2 && regional(first) && regional(second)) return true;
+  if (segment.endsWith("\u20E3") && (segment.includes("\uFE0F") || /^[#*0-9]/u.test(segment))) return true;
+  return segment.includes("\uFE0F") && characters.some(character => EXTENDED_PICTOGRAPHIC.test(character));
 }
 
 function graphemeWidth(grapheme: string): number {
   if (grapheme === "\t") return 3;
-  const codePoints = [...grapheme].map(character => character.codePointAt(0) ?? 0);
-  if (codePoints.length > 0 && codePoints.every(code => code < 0x20 || code === 0x7f)) return 0;
-  if (/^\p{Mark}+$/u.test(grapheme)) return 0;
-  return codePoints.some(code => code > 0xffff) ? 2 : 1;
+  if (isTerminalSpacingMark(grapheme)) return [...grapheme].length;
+  if ([...grapheme].length > 0 && [...grapheme].every(isZeroWidthCharacter)) return 0;
+  if (couldBeEmoji(grapheme) && isRgiEmoji(grapheme)) return 2;
+
+  let base = "";
+  let baseStart = 0;
+  for (const character of grapheme) {
+    if (!isNonPrintingCharacter(character)) break;
+    baseStart += character.length;
+  }
+  base = grapheme.slice(baseStart);
+  const codePoint = base.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff) return 2;
+
+  let width = eastAsianWidth(codePoint);
+  let followsMark = false;
+  const characters = [...base];
+  for (const character of characters.slice(1)) {
+    if (isTerminalSpacingMarkCharacter(character)) {
+      width += 1;
+      followsMark = false;
+    } else if (isMarkCharacter(character)) {
+      followsMark = true;
+    } else if (!isNonPrintingCharacter(character)) {
+      const trailingCodePoint = character.codePointAt(0) ?? 0;
+      if (followsMark || (trailingCodePoint >= 0xff00 && trailingCodePoint <= 0xffef)) {
+        width += eastAsianWidth(trailingCodePoint);
+      } else if (trailingCodePoint === 0x0e33 || trailingCodePoint === 0x0eb3) {
+        width += 1;
+      }
+      followsMark = false;
+    }
+  }
+  return width;
 }
 
 function graphemeSegments(text: string): string[] {
@@ -222,26 +356,82 @@ function graphemeSegments(text: string): string[] {
   return [...text];
 }
 
+interface AnsiCode {
+  code: string;
+  length: number;
+}
+
+/** Match the same CSI/OSC/APC sequences that pi-tui consumes while clipping. */
+function extractAnsiCode(text: string, position: number): AnsiCode | undefined {
+  if (position >= text.length || text[position] !== "\u001b") return undefined;
+  const next = text[position + 1];
+  if (next === "[") {
+    let end = position + 2;
+    while (end < text.length && !/[mGKHJ]/u.test(text[end]!)) end += 1;
+    if (end < text.length) return { code: text.substring(position, end + 1), length: end + 1 - position };
+    return undefined;
+  }
+  if (next === "]" || next === "_") {
+    let end = position + 2;
+    while (end < text.length) {
+      if (text[end] === "\u0007") return { code: text.substring(position, end + 1), length: end + 1 - position };
+      if (text[end] === "\u001b" && text[end + 1] === "\\") return { code: text.substring(position, end + 2), length: end + 2 - position };
+      end += 1;
+    }
+  }
+  return undefined;
+}
+
+function stripAnsi(text: string): string {
+  if (!text.includes("\u001b")) return text;
+  let result = "";
+  let index = 0;
+  while (index < text.length) {
+    const ansi = extractAnsiCode(text, index);
+    if (ansi) {
+      index += ansi.length;
+      continue;
+    }
+    result += text[index];
+    index += 1;
+  }
+  return result;
+}
+
 function visibleWidth(text: string): number {
-  const clean = stripAnsi(text).replaceAll("\t", "   ");
+  const clean = stripAnsi(text.replaceAll("\t", "   "));
   return graphemeSegments(clean).reduce((width, segment) => width + graphemeWidth(segment), 0);
 }
 
 function takeVisiblePrefix(text: string, maxWidth: number): string {
-  if (maxWidth <= 0) return "";
+  if (maxWidth <= 0 || text.length === 0) return "";
   let result = "";
   let width = 0;
   let index = 0;
   let pendingAnsi = "";
   while (index < text.length) {
-    const ansi = ansiAt(text, index);
-    if (ansi !== undefined) {
-      pendingAnsi += ansi;
+    const ansi = extractAnsiCode(text, index);
+    if (ansi) {
+      pendingAnsi += ansi.code;
       index += ansi.length;
       continue;
     }
-    const next = nextAnsiIndex(text, index);
-    const end = next < 0 ? text.length : next;
+    if (text[index] === "\t") {
+      if (width + 3 > maxWidth) break;
+      if (pendingAnsi) {
+        result += pendingAnsi;
+        pendingAnsi = "";
+      }
+      result += "\t";
+      width += 3;
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < text.length && text[end] !== "\t") {
+      if (extractAnsiCode(text, end)) break;
+      end += 1;
+    }
     for (const segment of graphemeSegments(text.slice(index, end))) {
       const segmentWidth = graphemeWidth(segment);
       if (width + segmentWidth > maxWidth) return result;
@@ -486,8 +676,223 @@ const CLOSE_TAG = "</wiki_status>";
 const HEALTHY_WIKI_STATUS = /^🧠 LLM Wiki \((?:13 tools, observe \+ recall active|16 tools, trajectory \+ observe \+ recall active)\)$/u;
 const RECALL_STATUS = /^🧠 LLM Wiki — recalled (\d+) page(?:s)? for this task$/u;
 const HEALTHY_MODEL_STATUS_PREFIX = "🧠 wiki model: ";
-const ANSI_ESCAPE = /\u001B(?:\[[0-?]*[ -\/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)|_[^\u0007]*(?:\u0007|\u001B\\))/gu;
 const ANSI_RESET = "\u001b[0m";
+const EAST_ASIAN_FULLWIDTH_RANGES = [12288, 12288, 65281, 65376, 65504, 65510];
+const EAST_ASIAN_WIDE_RANGES = [
+  4352, 4447, 8986, 8987, 9001, 9002, 9193, 9196, 9200, 9200, 9203, 9203,
+  9725, 9726, 9748, 9749, 9776, 9783, 9800, 9811, 9855, 9855, 9866, 9871,
+  9875, 9875, 9889, 9889, 9898, 9899, 9917, 9918, 9924, 9925, 9934, 9934,
+  9940, 9940, 9962, 9962, 9970, 9971, 9973, 9973, 9978, 9978, 9981, 9981,
+  9989, 9989, 9994, 9995, 10024, 10024, 10060, 10060, 10062, 10062,
+  10067, 10069, 10071, 10071, 10133, 10135, 10160, 10160, 10175, 10175,
+  11035, 11036, 11088, 11088, 11093, 11093, 11904, 11929, 11931, 12019,
+  12032, 12245, 12272, 12287, 12289, 12350, 12353, 12438, 12441, 12543,
+  12549, 12591, 12593, 12686, 12688, 12773, 12783, 12830, 12832, 12871,
+  12880, 42124, 42128, 42182, 43360, 43388, 44032, 55203, 63744, 64255,
+  65040, 65049, 65072, 65106, 65108, 65126, 65128, 65131, 94176, 94180,
+  94192, 94198, 94208, 101589, 101631, 101662, 101760, 101874, 110576,
+  110579, 110581, 110587, 110589, 110590, 110592, 110882, 110898, 110898,
+  110928, 110930, 110933, 110933, 110948, 110951, 110960, 111355, 119552,
+  119638, 119648, 119670, 126980, 126980, 127183, 127183, 127374, 127374,
+  127377, 127386, 127488, 127490, 127504, 127547, 127552, 127560, 127568,
+  127569, 127584, 127589, 127744, 127776, 127789, 127797, 127799, 127868,
+  127870, 127891, 127904, 127946, 127951, 127955, 127968, 127984, 127988,
+  127988, 127992, 128062, 128064, 128064, 128066, 128252, 128255, 128317,
+  128331, 128334, 128336, 128359, 128378, 128378, 128405, 128406, 128420,
+  128420, 128507, 128591, 128640, 128709, 128716, 128716, 128720, 128722,
+  128725, 128728, 128732, 128735, 128747, 128748, 128756, 128764, 128992,
+  129003, 129008, 129008, 129292, 129338, 129340, 129349, 129351, 129535,
+  129648, 129660, 129664, 129674, 129678, 129734, 129736, 129736, 129741,
+  129756, 129759, 129770, 129775, 129784, 131072, 196605, 196608, 262141,
+];
+function isInEastAsianRange(ranges, codePoint) {
+  let low = 0;
+  let high = Math.floor(ranges.length / 2) - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const index = middle * 2;
+    const start = ranges[index];
+    const end = ranges[index + 1];
+    if (codePoint < start) high = middle - 1;
+    else if (codePoint > end) low = middle + 1;
+    else return true;
+  }
+  return false;
+}
+function eastAsianWidth(codePoint) {
+  return isInEastAsianRange(EAST_ASIAN_FULLWIDTH_RANGES, codePoint) || isInEastAsianRange(EAST_ASIAN_WIDE_RANGES, codePoint) ? 2 : 1;
+}
+const DEFAULT_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
+const CONTROL = /^\p{Control}$/u;
+const FORMAT = /^\p{Format}$/u;
+const MARK = /^\p{Mark}$/u;
+const SPACING_MARK = /^\p{Spacing_Mark}$/u;
+const EXTENDED_PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u;
+const RGI_EMOJI = createUnicodePropertyRegex("^\\p{RGI_Emoji}$", "v");
+function createUnicodePropertyRegex(source, flags) {
+  try { return new RegExp(source, flags); } catch { return undefined; }
+}
+function isSurrogate(character) {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return codePoint >= 0xd800 && codePoint <= 0xdfff;
+}
+function isZeroWidthCharacter(character) {
+  return DEFAULT_IGNORABLE.test(character) || CONTROL.test(character) || MARK.test(character) || isSurrogate(character);
+}
+function isNonPrintingCharacter(character) {
+  return DEFAULT_IGNORABLE.test(character) || CONTROL.test(character) || FORMAT.test(character) || MARK.test(character) || isSurrogate(character);
+}
+function isTerminalSpacingMarkCharacter(character) {
+  const codePoint = character.codePointAt(0) ?? 0;
+  const excluded = codePoint === 0x1734 || codePoint === 0x302e || codePoint === 0x302f;
+  const legacy = codePoint === 0x065f || codePoint === 0x0f7f || codePoint === 0x102b || codePoint === 0x102c
+    || codePoint === 0x1031 || (codePoint >= 0x1033 && codePoint <= 0x1035) || codePoint === 0x1038
+    || (codePoint >= 0x103a && codePoint <= 0x103e);
+  return (!excluded && SPACING_MARK.test(character)) || legacy;
+}
+function isTerminalSpacingMark(segment) {
+  const characters = [...segment];
+  return characters.length > 0 && characters.every(isTerminalSpacingMarkCharacter);
+}
+function couldBeEmoji(segment) {
+  const codePoint = segment.codePointAt(0);
+  return (codePoint !== undefined && codePoint >= 0x1f000 && codePoint <= 0x1fbff)
+    || (codePoint !== undefined && codePoint >= 0x2300 && codePoint <= 0x23ff)
+    || (codePoint !== undefined && codePoint >= 0x2600 && codePoint <= 0x27bf)
+    || (codePoint !== undefined && codePoint >= 0x2b50 && codePoint <= 0x2b55)
+    || segment.includes("\uFE0F")
+    || segment.length > 2;
+}
+function isRgiEmoji(segment) {
+  if (RGI_EMOJI?.test(segment)) return true;
+  const characters = [...segment];
+  const first = characters[0]?.codePointAt(0) ?? 0;
+  const second = characters[1]?.codePointAt(0) ?? 0;
+  const regional = codePoint => codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff;
+  if (characters.length === 2 && regional(first) && regional(second)) return true;
+  if (segment.endsWith("\u20E3") && (segment.includes("\uFE0F") || /^[#*0-9]/u.test(segment))) return true;
+  return segment.includes("\uFE0F") && characters.some(character => EXTENDED_PICTOGRAPHIC.test(character));
+}
+function graphemeWidth(grapheme) {
+  if (grapheme === "\t") return 3;
+  if (isTerminalSpacingMark(grapheme)) return [...grapheme].length;
+  if ([...grapheme].length > 0 && [...grapheme].every(isZeroWidthCharacter)) return 0;
+  if (couldBeEmoji(grapheme) && isRgiEmoji(grapheme)) return 2;
+  let baseStart = 0;
+  for (const character of grapheme) {
+    if (!isNonPrintingCharacter(character)) break;
+    baseStart += character.length;
+  }
+  const base = grapheme.slice(baseStart);
+  const codePoint = base.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff) return 2;
+  let width = eastAsianWidth(codePoint);
+  let followsMark = false;
+  const characters = [...base];
+  for (const character of characters.slice(1)) {
+    if (isTerminalSpacingMarkCharacter(character)) {
+      width += 1;
+      followsMark = false;
+    } else if (/^\p{Mark}$/u.test(character)) {
+      followsMark = true;
+    } else if (!isNonPrintingCharacter(character)) {
+      const trailingCodePoint = character.codePointAt(0) ?? 0;
+      if (followsMark || (trailingCodePoint >= 0xff00 && trailingCodePoint <= 0xffef)) width += eastAsianWidth(trailingCodePoint);
+      else if (trailingCodePoint === 0x0e33 || trailingCodePoint === 0x0eb3) width += 1;
+      followsMark = false;
+    }
+  }
+  return width;
+}
+function graphemeSegments(text) {
+  if (typeof Intl.Segmenter === "function") {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    return [...segmenter.segment(text)].map(part => part.segment);
+  }
+  return [...text];
+}
+function extractAnsiCode(text, position) {
+  if (position >= text.length || text[position] !== "\u001b") return undefined;
+  const next = text[position + 1];
+  if (next === "[") {
+    let end = position + 2;
+    while (end < text.length && !/[mGKHJ]/u.test(text[end])) end += 1;
+    if (end < text.length) return { code: text.substring(position, end + 1), length: end + 1 - position };
+    return undefined;
+  }
+  if (next === "]" || next === "_") {
+    let end = position + 2;
+    while (end < text.length) {
+      if (text[end] === "\u0007") return { code: text.substring(position, end + 1), length: end + 1 - position };
+      if (text[end] === "\u001b" && text[end + 1] === "\\") return { code: text.substring(position, end + 2), length: end + 2 - position };
+      end += 1;
+    }
+  }
+  return undefined;
+}
+function stripAnsi(text) {
+  if (!text.includes("\u001b")) return text;
+  let result = "";
+  let index = 0;
+  while (index < text.length) {
+    const ansi = extractAnsiCode(text, index);
+    if (ansi) { index += ansi.length; continue; }
+    result += text[index];
+    index += 1;
+  }
+  return result;
+}
+function visibleWidth(text) {
+  const clean = stripAnsi(text.replaceAll("\t", "   "));
+  return graphemeSegments(clean).reduce((width, segment) => width + graphemeWidth(segment), 0);
+}
+function takeVisiblePrefix(text, maxWidth) {
+  if (maxWidth <= 0 || text.length === 0) return "";
+  let result = "";
+  let width = 0;
+  let index = 0;
+  let pendingAnsi = "";
+  while (index < text.length) {
+    const ansi = extractAnsiCode(text, index);
+    if (ansi) { pendingAnsi += ansi.code; index += ansi.length; continue; }
+    if (text[index] === "\t") {
+      if (width + 3 > maxWidth) break;
+      if (pendingAnsi) { result += pendingAnsi; pendingAnsi = ""; }
+      result += "\t";
+      width += 3;
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < text.length && text[end] !== "\t") {
+      if (extractAnsiCode(text, end)) break;
+      end += 1;
+    }
+    for (const segment of graphemeSegments(text.slice(index, end))) {
+      const segmentWidth = graphemeWidth(segment);
+      if (width + segmentWidth > maxWidth) return result;
+      if (pendingAnsi) { result += pendingAnsi; pendingAnsi = ""; }
+      result += segment;
+      width += segmentWidth;
+    }
+    index = end;
+  }
+  return result;
+}
+function finishTruncated(prefix, ellipsis) {
+  const prefixReset = prefix.includes("\u001b") ? ANSI_RESET : "";
+  const ellipsisReset = ellipsis.includes("\u001b") ? ANSI_RESET : "";
+  return prefix + prefixReset + ellipsis + ellipsisReset;
+}
+function truncateToWidth(text, maxWidth, ellipsis) {
+  ellipsis = ellipsis ?? "...";
+  if (maxWidth <= 0) return "";
+  if (visibleWidth(text) <= maxWidth) return text;
+  const ellipsisWidth = visibleWidth(ellipsis);
+  if (ellipsisWidth >= maxWidth) return finishTruncated("", takeVisiblePrefix(ellipsis, maxWidth));
+  return finishTruncated(takeVisiblePrefix(text, maxWidth - ellipsisWidth), ellipsis);
+}
 function hasDiagnostic(text) {
   const lower = text.toLowerCase();
   return DIAGNOSTIC_WORDS.some(word => lower.includes(word));
@@ -535,72 +940,6 @@ function compactPrompt(prompt) {
     cursor = blockEnd;
   }
   return output;
-}
-function ansiAt(text, index) {
-  ANSI_ESCAPE.lastIndex = index;
-  const match = ANSI_ESCAPE.exec(text);
-  ANSI_ESCAPE.lastIndex = 0;
-  return match?.index === index ? match[0] : undefined;
-}
-function nextAnsiIndex(text, index) {
-  ANSI_ESCAPE.lastIndex = index;
-  const match = ANSI_ESCAPE.exec(text);
-  ANSI_ESCAPE.lastIndex = 0;
-  return match?.index ?? -1;
-}
-function stripAnsi(text) { return text.replace(ANSI_ESCAPE, ""); }
-function graphemeWidth(grapheme) {
-  if (grapheme === "\t") return 3;
-  const codePoints = [...grapheme].map(character => character.codePointAt(0) ?? 0);
-  if (codePoints.length > 0 && codePoints.every(code => code < 32 || code === 127)) return 0;
-  if (/^\p{Mark}+$/u.test(grapheme)) return 0;
-  return codePoints.some(code => code > 65535) ? 2 : 1;
-}
-function graphemeSegments(text) {
-  if (typeof Intl.Segmenter === "function") {
-    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-    return [...segmenter.segment(text)].map(part => part.segment);
-  }
-  return [...text];
-}
-function visibleWidth(text) {
-  const clean = stripAnsi(text).replaceAll("\t", "   ");
-  return graphemeSegments(clean).reduce((width, segment) => width + graphemeWidth(segment), 0);
-}
-function takeVisiblePrefix(text, maxWidth) {
-  if (maxWidth <= 0) return "";
-  let result = "";
-  let width = 0;
-  let index = 0;
-  let pendingAnsi = "";
-  while (index < text.length) {
-    const ansi = ansiAt(text, index);
-    if (ansi !== undefined) { pendingAnsi += ansi; index += ansi.length; continue; }
-    const next = nextAnsiIndex(text, index);
-    const end = next < 0 ? text.length : next;
-    for (const segment of graphemeSegments(text.slice(index, end))) {
-      const segmentWidth = graphemeWidth(segment);
-      if (width + segmentWidth > maxWidth) return result;
-      if (pendingAnsi) { result += pendingAnsi; pendingAnsi = ""; }
-      result += segment;
-      width += segmentWidth;
-    }
-    index = end;
-  }
-  return result;
-}
-function finishTruncated(prefix, ellipsis) {
-  const prefixReset = prefix.includes("\u001b") ? ANSI_RESET : "";
-  const ellipsisReset = ellipsis.includes("\u001b") ? ANSI_RESET : "";
-  return prefix + prefixReset + ellipsis + ellipsisReset;
-}
-function truncateToWidth(text, maxWidth, ellipsis) {
-  ellipsis = ellipsis ?? "...";
-  if (maxWidth <= 0) return "";
-  if (visibleWidth(text) <= maxWidth) return text;
-  const ellipsisWidth = visibleWidth(ellipsis);
-  if (ellipsisWidth >= maxWidth) return finishTruncated("", takeVisiblePrefix(ellipsis, maxWidth));
-  return finishTruncated(takeVisiblePrefix(text, maxWidth - ellipsisWidth), ellipsis);
 }
 function asRecord(value) { return typeof value === "object" && value !== null ? value : undefined; }
 function numberOrZero(value) { return typeof value === "number" && Number.isFinite(value) ? value : 0; }

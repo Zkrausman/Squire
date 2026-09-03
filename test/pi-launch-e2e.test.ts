@@ -17,6 +17,7 @@ const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dis
 const WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
 const WIKI_EXTENSION = `${WIKI_ROOT}/extensions/llm-wiki/index.ts`;
 const WIKI_MODEL = "openai-codex/gpt-5.6-luna";
+const PERSONAL_TUI_FOOTER = /^gpt-5\.6-luna · high · 🧠 — · openai-codex\/gpt-5\.6-luna · Ready · Full Access · Context \S+\/\S+ · Session est\. \$\d+\.\d{3}$/u;
 
 class ChildPiProcess extends EventEmitter implements PiProcess {
   readonly identity = `child-${randomUUID()}`;
@@ -97,6 +98,108 @@ function cleanPiEnvironment(overrides: Readonly<Record<string, string>>): NodeJS
   };
 }
 
+function terminalFrame(output: string, rows = 40, columns = 240): string[] {
+  const screen = Array.from({ length: rows }, () => Array.from({ length: columns }, () => " "));
+  let row = 0;
+  let column = 0;
+  let savedRow = 0;
+  let savedColumn = 0;
+  const clampRow = (value: number): number => Math.max(0, Math.min(rows - 1, value));
+  const clampColumn = (value: number): number => Math.max(0, Math.min(columns - 1, value));
+  const parameter = (value: string | undefined, fallback: number): number => {
+    const parsed = Number(value?.replace(/^[?<>]/u, ""));
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+  };
+  const clearRow = (rowIndex: number, from = 0, to = columns): void => {
+    for (let index = Math.max(0, from); index < Math.min(columns, to); index += 1) screen[rowIndex]![index] = " ";
+  };
+  const clearScreen = (): void => {
+    for (const line of screen) line.fill(" ");
+  };
+  for (let index = 0; index < output.length;) {
+    if (output[index] !== "\u001b") {
+      const character = output[index]!;
+      if (character === "\r") column = 0;
+      else if (character === "\n") row = clampRow(row + 1);
+      else if (character === "\b") column = clampColumn(column - 1);
+      else if (character === "\t") column = clampColumn(column + 3);
+      else if (character >= " ") {
+        screen[row]![clampColumn(column)] = character;
+        column = clampColumn(column + 1);
+      }
+      index += 1;
+      continue;
+    }
+    if (output[index + 1] === "]" || output[index + 1] === "_") {
+      let end = index + 2;
+      while (end < output.length && output[end] !== "\u0007" && !(output[end] === "\u001b" && output[end + 1] === "\\")) end += 1;
+      index = output[end] === "\u0007" ? end + 1 : output[end] === "\u001b" ? end + 2 : end;
+      continue;
+    }
+    if (output[index + 1] !== "[") {
+      index = Math.min(output.length, index + 2);
+      continue;
+    }
+    let end = index + 2;
+    while (end < output.length && (output.charCodeAt(end) < 0x40 || output.charCodeAt(end) > 0x7e)) end += 1;
+    if (end >= output.length) break;
+    const final = output[end]!;
+    const body = output.slice(index + 2, end);
+    const params = body.split(";");
+    const count = parameter(params[0], 1);
+    switch (final) {
+      case "A": row = clampRow(row - count); break;
+      case "B": row = clampRow(row + count); break;
+      case "C": column = clampColumn(column + count); break;
+      case "D": column = clampColumn(column - count); break;
+      case "E": row = clampRow(row + count); column = 0; break;
+      case "F": row = clampRow(row - count); column = 0; break;
+      case "G": column = clampColumn(count - 1); break;
+      case "d": row = clampRow(count - 1); break;
+      case "H":
+      case "f": row = clampRow(parameter(params[0], 1) - 1); column = clampColumn(parameter(params[1], 1) - 1); break;
+      case "J": clearScreen(); break;
+      case "K": clearRow(row); break;
+      case "P": clearRow(row, column, column + count); break;
+      case "X": clearRow(row, column, column + count); break;
+      case "@": {
+        const amount = Math.min(count, columns - column);
+        const line = screen[row]!;
+        line.splice(column, amount, ...Array.from({ length: amount }, () => " "));
+        break;
+      }
+      case "s": savedRow = row; savedColumn = column; break;
+      case "u": if (!body.startsWith("<")) { row = savedRow; column = savedColumn; } break;
+      default: break;
+    }
+    index = end + 1;
+  }
+  return screen.map(line => line.join("").trimEnd());
+}
+
+function stripTerminalSequences(value: string): string {
+  let output = "";
+  for (let index = 0; index < value.length;) {
+    if (value[index] !== "\u001b") {
+      output += value[index];
+      index += 1;
+      continue;
+    }
+    if (value[index + 1] === "]" || value[index + 1] === "_") {
+      let end = index + 2;
+      while (end < value.length && value[end] !== "\u0007" && !(value[end] === "\u001b" && value[end + 1] === "\\")) end += 1;
+      index = value[end] === "\u0007" ? end + 1 : value[end] === "\u001b" ? end + 2 : end;
+    } else if (value[index + 1] === "[") {
+      let end = index + 2;
+      while (end < value.length && (value.charCodeAt(end) < 0x40 || value.charCodeAt(end) > 0x7e)) end += 1;
+      index = end < value.length ? end + 1 : end;
+    } else {
+      index = Math.min(value.length, index + 2);
+    }
+  }
+  return output;
+}
+
 async function runRealTuiFooterProbe(options: {
   workspace: string;
   agentDir: string;
@@ -104,7 +207,7 @@ async function runRealTuiFooterProbe(options: {
   wikiHomeDir: string;
   footerPath: string;
   probePath: string;
-}): Promise<{ output: string; stderr: string }> {
+}): Promise<{ output: string; stderr: string; frame: string[] }> {
   const command = [
     process.execPath,
     PI_CLI,
@@ -139,24 +242,42 @@ async function runRealTuiFooterProbe(options: {
   let output = "";
   let stderr = "";
   let sentExit = false;
-  const ready = new Promise<{ output: string; stderr: string }>((resolve, reject) => {
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  let stableFrame: string[] | undefined;
+  const ready = new Promise<{ output: string; stderr: string; frame: string[] }>((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       reject(new Error("real Pi TUI footer probe timed out"));
     }, 10_000);
-    child.stdout?.on("data", chunk => {
-      output += chunk.toString();
-      if (!sentExit && output.includes("🧠 — · openai-codex/gpt-5.6-luna")) {
+    const scheduleExitAfterStableFrame = (): void => {
+      if (sentExit) return;
+      if (settleTimer !== undefined) clearTimeout(settleTimer);
+      const frame = terminalFrame(output);
+      if (!frame.some(line => PERSONAL_TUI_FOOTER.test(line))) return;
+      settleTimer = setTimeout(() => {
+        settleTimer = undefined;
+        if (sentExit) return;
+        stableFrame = terminalFrame(output);
+        if (!stableFrame.some(line => PERSONAL_TUI_FOOTER.test(line))) return;
         sentExit = true;
         child.stdin?.write("\u0004");
-      }
+      }, 150);
+    };
+    child.stdout?.on("data", chunk => {
+      output += chunk.toString();
+      scheduleExitAfterStableFrame();
     });
     child.stderr?.on("data", chunk => { stderr += chunk.toString(); });
-    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("error", error => {
+      clearTimeout(timer);
+      if (settleTimer !== undefined) clearTimeout(settleTimer);
+      reject(error);
+    });
     child.once("exit", code => {
       clearTimeout(timer);
+      if (settleTimer !== undefined) clearTimeout(settleTimer);
       if (code !== 0) reject(new Error(`real Pi TUI footer probe exited with ${code ?? "unknown"}`));
-      else resolve({ output, stderr });
+      else resolve({ output, stderr, frame: stableFrame ?? terminalFrame(output) });
     });
   });
   try { return await ready; }
@@ -314,10 +435,19 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
       footerPath: materialized.footerExtensionPath,
       probePath,
     });
-    const visibleTui = tui.output.replace(/\x1B\[[0-?]*[\x20-\x2F]*[@-~]/gu, "").replace(/\r/gu, "");
-    // This compact line is only rendered when the trusted footer sees the
-    // healthy status emitted by the real wiki extension.
-    assert.match(visibleTui, /🧠 — · openai-codex\/gpt-5\.6-luna/u);
+    const visibleTui = stripTerminalSequences(tui.output).replace(/\r/gu, "");
+    // The stable terminal frame must contain the complete ordered personal
+    // line, not merely a wiki fragment left beside Pi's stock footer.
+    const stableFrameText = tui.frame.join("\n");
+    const footerRows = tui.frame.filter(line => PERSONAL_TUI_FOOTER.test(line));
+    assert.equal(footerRows.length, 1, `expected one personal footer row, got:\n${stableFrameText}`);
+    assert.match(footerRows[0]!, PERSONAL_TUI_FOOTER);
+    assert.match(stableFrameText, /🧠 — · openai-codex\/gpt-5\.6-luna/u);
+    // Pi's stock footer is a cwd row followed by a token/context stats row;
+    // neither may survive in the stable frame after setFooter replacement.
+    assert.doesNotMatch(stableFrameText, /\/workspace|(?:\d+\.\d+%|\?\/)\S+ \(auto\)|gpt-5\.6-luna • high|[↑↓]/u);
+    // Keep the native-status and loader-error checks over the complete PTY
+    // transcript as well; no diagnostic output is hidden by frame parsing.
     assert.equal(tui.stderr, "");
     assert.doesNotMatch(`${visibleTui}\n${tui.stderr}`, /extension_error|failed to load extension|cannot find module|syntaxerror/iu);
   } finally {

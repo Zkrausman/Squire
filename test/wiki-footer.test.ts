@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   ROUTINE_WIKI_STATUS_BLOCK,
@@ -150,6 +151,43 @@ test("ANSI-aware truncation keeps colored output within the requested width", ()
 function stripAnsi(value: string): string {
   return value.replace(/\u001B(?:\[[0-?]*[ -\/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)|_[^\u0007]*(?:\u0007|\u001B\\))/gu, "");
 }
+
+test("typed and generated truncation stays within pi-tui terminal columns", async () => {
+  const piTui = await import(pathToFileURL("/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/utils.js").href) as unknown as {
+    visibleWidth(value: string): number;
+  };
+  const ansiTheme: FooterThemeLike = { fg: (_color, text) => `\u001b[36m${text}\u001b[39m` };
+  const generatedSource = buildTrustedWikiFooterExtensionSource(profile);
+  const generatedModule = await import(`data:text/javascript,${encodeURIComponent(generatedSource)}`);
+  const callbacks = new Map<string, (event: unknown, context?: ExtensionContextLike) => unknown>();
+  generatedModule.default({ on(event: string, handler: (event: unknown, context?: ExtensionContextLike) => unknown) { callbacks.set(event, handler); } });
+  let factory: Parameters<ExtensionContextLike["ui"]["setFooter"]>[0] | undefined;
+  const context = {
+    ...footerContext(),
+    ui: { setFooter: (next: Parameters<ExtensionContextLike["ui"]["setFooter"]>[0]) => { factory = next; } },
+  } satisfies ExtensionContextLike;
+  await callbacks.get("session_start")!({}, context);
+  assert.ok(factory);
+  const statuses = footerData(normalStatuses());
+  const cases = [
+    { id: "界界", widths: [5, 6, 7, 8] },
+    { id: "ＡＡ", widths: [5, 6, 7] },
+    { id: "e\u0301e", widths: [4, 5, 6] },
+    { id: "👨‍👩‍👧‍👦", widths: [4, 5, 6, 7] },
+  ];
+  for (const current of cases) {
+    const currentContext = { ...footerContext(), model: { ...footerContext().model, id: current.id } };
+    for (const width of current.widths) {
+      const typed = renderCompactWikiFooter(width, currentContext, statuses, model, ansiTheme)[0]!;
+      await callbacks.get("model_select")!({ model: { ...currentContext.model } }, context);
+      const generated: string = factory!({ requestRender() {} }, ansiTheme, statuses).render(width)[0]!;
+      assert.equal(generated, typed, `generated width parity for ${current.id} at ${width}`);
+      assert.ok(piTui.visibleWidth(typed) <= width, `${current.id} exceeded ${width}: ${JSON.stringify(typed)}`);
+    }
+  }
+  const cjk = renderCompactWikiFooter(6, { ...footerContext(), model: { ...footerContext().model, id: "界界" } }, statuses, model, ansiTheme)[0]!;
+  assert.equal(stripAnsi(cjk), "界...");
+});
 
 test("ExtensionAPI installs both the hidden prompt transform and visible setFooter renderer", async () => {
   const callbacks = new Map<string, (event: unknown, context?: ExtensionContextLike) => unknown>();

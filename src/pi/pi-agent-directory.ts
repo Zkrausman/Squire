@@ -198,6 +198,8 @@ export interface PiAgentDirectoryMaterializerOptions {
   runLifecycleAuthority: RunQuiescenceAuthority;
   /** Internal deterministic publication crash seam; omitted in production. */
   retentionPublicationBarrier?: RetentionPublicationBarrier;
+  /** Internal deterministic auth-key handoff seam; omitted in production. */
+  retentionAuthCleanupBarrier?: RetentionAuthCleanupBarrier;
   /** Maximum retained capture records for one run. */
   maxRetainedCapturesPerRun?: number;
   /** Maximum retained capture records across this runtime root. */
@@ -295,6 +297,7 @@ interface RetentionLimits {
   perRun: number;
   global: number;
   publicationBarrier: RetentionPublicationBarrier | undefined;
+  authCleanupBarrier: RetentionAuthCleanupBarrier | undefined;
 }
 
 interface RetainedCaptureAllocation {
@@ -366,6 +369,14 @@ export type RetentionPublicationStage = "temporary-written" | "before-final-publ
 export type RetentionPublicationBarrier = (event: {
   kind: RetentionPublicationKind;
   stage: RetentionPublicationStage;
+  temporaryPath: string;
+  finalPath: string;
+}) => void | Promise<void>;
+
+/** Internal seam used to place a deterministic handoff between an observer's
+ * auth-key temporary scan and its identity-checked cleanup. */
+export type RetentionAuthCleanupBarrier = (event: {
+  stage: "after-observation-before-cleanup";
   temporaryPath: string;
   finalPath: string;
 }) => void | Promise<void>;
@@ -566,7 +577,7 @@ export class PiAgentDirectoryMaterializer {
     if (runKind === "missing" && await pathKind(publishedFencePath) === "directory") {
       // Finish any concurrent/previous terminal-fence construction handoff
       // before the retry path asks assertTerminalFence to authorize cleanup.
-      await publishTerminalFence(runRoot, runtimeRoot, fence, this.#retentionLimits.publicationBarrier, assertTrustedTeardown);
+      await publishTerminalFence(runRoot, runtimeRoot, fence, this.#retentionLimits.publicationBarrier, assertTrustedTeardown, this.#retentionLimits.authCleanupBarrier);
       const published = await readTerminalFenceDirectory(publishedFencePath, runtimeRoot);
       if (published.runId !== fence.runId || published.owner !== fence.owner || published.fencingToken !== fence.fencingToken) throw new PreparationLockRace("Pi agent-directory terminal fence ownership changed during retry");
       const capturesRemoved = await removeRetainedCapturesAfterQuiescence(runtimeRoot, runId, this.#retentionLimits, signal, assertTrustedTeardown);
@@ -582,14 +593,14 @@ export class PiAgentDirectoryMaterializer {
       homeDir: path.join(runRoot, "home"),
       wikiHomeDir: path.join(runRoot, "wiki-home"),
     });
-    await publishTerminalFence(runRoot, runtimeRoot, fence, this.#retentionLimits.publicationBarrier, assertTrustedTeardown);
+    await publishTerminalFence(runRoot, runtimeRoot, fence, this.#retentionLimits.publicationBarrier, assertTrustedTeardown, this.#retentionLimits.authCleanupBarrier);
     const staleMs = positiveInteger(this.#options.preparationLockStaleMs ?? PREPARATION_LOCK_STALE_MS, "preparation lock stale timeout");
     await assertPreparationLifecycleQuiescent(runRoot, staleMs, assertTrustedTeardown);
     // A crash can leave a complete or partial retained-record construction
     // pathname. Once the durable/filesystem fences and quiescence proof are
     // held, construction-only names are safe to discard before the strict
     // authenticated ledger scan; final records are never touched here.
-    const retentionLocation = await ensureRetentionLocation(runRoot, this.#retentionLimits.publicationBarrier);
+    const retentionLocation = await ensureRetentionLocation(runRoot, this.#retentionLimits.publicationBarrier, false, undefined, this.#retentionLimits.authCleanupBarrier);
     // Recover a prior teardown's private disposal objects before scanning the
     // ledger. This keeps an interrupted destructive handoff retryable without
     // ever treating its temporary pathname as a new capture.
@@ -1583,6 +1594,7 @@ function retentionLimits(options: PiAgentDirectoryMaterializerOptions): Retentio
     perRun: positiveInteger(options.maxRetainedCapturesPerRun ?? PREPARATION_RETAINED_PER_RUN_LIMIT, "maximum retained captures per run"),
     global: positiveInteger(options.maxRetainedCapturesGlobal ?? PREPARATION_RETAINED_GLOBAL_LIMIT, "maximum retained captures globally"),
     publicationBarrier: options.retentionPublicationBarrier,
+    authCleanupBarrier: options.retentionAuthCleanupBarrier,
   };
 }
 
@@ -1768,7 +1780,13 @@ async function readExistingCaptureAuthKey(retainedRoot: string): Promise<Buffer>
   throw lastError instanceof Error ? lastError : new Error("Pi agent-directory retained capture authentication key is invalid");
 }
 
-async function ensureCaptureAuthKey(retainedRoot: string, barrier?: RetentionPublicationBarrier, forceIncomplete = false, teardownAuthority?: TeardownAuthorityGuard): Promise<Buffer> {
+async function ensureCaptureAuthKey(
+  retainedRoot: string,
+  barrier?: RetentionPublicationBarrier,
+  forceIncomplete = false,
+  teardownAuthority?: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
+): Promise<Buffer> {
   const keyPath = path.join(retainedRoot, PREPARATION_RETAINED_AUTH_FILE);
   let lastError: unknown;
   for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
@@ -1776,7 +1794,7 @@ async function ensureCaptureAuthKey(retainedRoot: string, barrier?: RetentionPub
       const keyKind = await pathKind(keyPath);
       if (keyKind === "file") {
         const key = await readExistingCaptureAuthKey(retainedRoot);
-        await removeStaleCaptureAuthTemporaries(retainedRoot, key, forceIncomplete, teardownAuthority);
+        await removeStaleCaptureAuthTemporaries(retainedRoot, key, forceIncomplete, teardownAuthority, authCleanupBarrier);
         return key;
       }
       if (keyKind !== "missing") throw new Error("Pi agent-directory retained capture authentication key is not a regular file");
@@ -1788,7 +1806,7 @@ async function ensureCaptureAuthKey(retainedRoot: string, barrier?: RetentionPub
       const key = candidates.valid[0]?.bytes ?? randomBytes(32);
       await publishPrivateFile(keyPath, key, 0o600, retainedRoot, "auth-key", barrier, true, teardownAuthority);
       const published = await readExistingCaptureAuthKey(retainedRoot);
-      await removeStaleCaptureAuthTemporaries(retainedRoot, published, false, teardownAuthority);
+      await removeStaleCaptureAuthTemporaries(retainedRoot, published, false, teardownAuthority, authCleanupBarrier);
       return published;
     } catch (error) {
       lastError = error;
@@ -1827,7 +1845,13 @@ async function readCaptureAuthTemporaries(retainedRoot: string): Promise<{ valid
   return { valid, incomplete };
 }
 
-async function removeStaleCaptureAuthTemporaries(retainedRoot: string, published: Buffer, forceIncomplete = false, teardownAuthority?: TeardownAuthorityGuard): Promise<void> {
+async function removeStaleCaptureAuthTemporaries(
+  retainedRoot: string,
+  published: Buffer,
+  forceIncomplete = false,
+  teardownAuthority?: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
+): Promise<void> {
   const entries = await readdir(retainedRoot, { withFileTypes: true });
   for (const entry of entries) {
     if (!PREPARATION_RETAINED_AUTH_TEMP.test(entry.name)) continue;
@@ -1850,7 +1874,9 @@ async function removeStaleCaptureAuthTemporaries(retainedRoot: string, published
     // disposable. Its bytes are intentionally checked before identity-checked
     // removal so a tampered construction path fails closed.
     if (published.byteLength !== 32) throw new Error("Pi agent-directory retained capture authentication key is invalid");
-    await removeConstructionFile(temporary, info, teardownAuthority);
+    const finalPath = path.join(retainedRoot, PREPARATION_RETAINED_AUTH_FILE);
+    await authCleanupBarrier?.({ stage: "after-observation-before-cleanup", temporaryPath: temporary, finalPath });
+    await removeObservedAuthTemporaryAfterHandoff(temporary, info, finalPath, published, teardownAuthority);
   }
 }
 
@@ -2038,9 +2064,10 @@ async function publishTerminalFence(
   fence: RunTerminalFence,
   barrier: RetentionPublicationBarrier | undefined,
   teardownAuthority: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
 ): Promise<void> {
   if (fence.state !== "held") throw new Error("Pi agent-directory terminal fence is not held");
-  const location = await ensureRetentionLocation(runRoot, barrier, true, teardownAuthority);
+  const location = await ensureRetentionLocation(runRoot, barrier, true, teardownAuthority, authCleanupBarrier);
   const fenceRoot = path.join(runtimeRoot, PREPARATION_TERMINAL_FENCE_ROOT);
   await mkdir(fenceRoot, { recursive: true, mode: 0o700 });
   await ensureSecureDirectory(fenceRoot, "Pi agent-directory terminal fence root", true);
@@ -2091,7 +2118,7 @@ async function publishTerminalFence(
   assertPrivateDirectory(temporaryInfo, "Pi agent-directory terminal fence construction");
   await barrier?.({ kind: "terminal-fence", stage: "temporary-written", temporaryPath: temporary, finalPath });
   const payload = terminalFenceWithoutAuth(fence, sandboxIdentity);
-  const key = await ensureCaptureAuthKey(location.retainedRoot, barrier, false, teardownAuthority);
+  const key = await ensureCaptureAuthKey(location.retainedRoot, barrier, false, teardownAuthority, authCleanupBarrier);
   const auth = createHmac("sha256", key).update(Buffer.from(JSON.stringify(payload), "utf8")).digest("hex");
   const metadata = Buffer.from(`${JSON.stringify({ ...payload, auth })}\n`, "utf8");
   await publishPrivateFile(path.join(temporary, PREPARATION_TERMINAL_FENCE_FILE), metadata, 0o600, temporary, "fence-metadata", barrier, false, teardownAuthority);
@@ -2167,7 +2194,36 @@ async function assertRetentionAllocationRootMarker(markerPath: string): Promise<
   throw lastError instanceof Error ? lastError : new Error("Pi agent-directory retained allocation root marker is invalid");
 }
 
-async function ensureRetentionAllocationRoot(retainedRoot: string, teardownAuthority?: TeardownAuthorityGuard): Promise<void> {
+async function removeObservedAuthTemporaryAfterHandoff(
+  temporaryPath: string,
+  temporaryInfo: Awaited<ReturnType<typeof lstat>>,
+  finalPath: string,
+  expectedBytes: Buffer,
+  teardownAuthority?: TeardownAuthorityGuard,
+): Promise<void> {
+  try {
+    await removeConstructionFile(temporaryPath, temporaryInfo, teardownAuthority);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+    // The publisher may have completed the exact hard-link handoff and
+    // removed this construction pathname after the observer's scan. Accept
+    // that one missing-path interleaving only after rechecking the authenticated
+    // final key and its bytes; replacement or conflicting bytes still fail
+    // closed.
+    const finalInfo = await lstatRequired(finalPath, "Pi agent-directory retained capture authentication key after temporary handoff");
+    assertPrivateFile(finalInfo, "Pi agent-directory retained capture authentication key after temporary handoff");
+    const finalBytes = await readStablePublicationFile(finalPath, "Pi agent-directory retained capture authentication key after temporary handoff");
+    if (!finalBytes.equals(expectedBytes)) {
+      throw new PreparationLockRace("Pi agent-directory retained capture authentication key final bytes conflict with its temporary handoff");
+    }
+  }
+}
+
+async function ensureRetentionAllocationRoot(
+  retainedRoot: string,
+  teardownAuthority?: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
+): Promise<void> {
   const entries = await readdir(retainedRoot, { withFileTypes: true });
   let freeLock = false;
   let heldLock = false;
@@ -2204,7 +2260,8 @@ async function ensureRetentionAllocationRoot(retainedRoot: string, teardownAutho
       const finalPath = path.join(retainedRoot, PREPARATION_RETAINED_AUTH_FILE);
       const finalInfo = await lstatRequired(finalPath, "Pi agent-directory retained capture authentication key");
       assertPrivateFile(finalInfo, "Pi agent-directory retained capture authentication key");
-      await removeConstructionFile(temporaryPath, temporaryInfo, teardownAuthority);
+      await authCleanupBarrier?.({ stage: "after-observation-before-cleanup", temporaryPath, finalPath });
+      await removeObservedAuthTemporaryAfterHandoff(temporaryPath, temporaryInfo, finalPath, temporary, teardownAuthority);
       continue;
     }
     if (entry.name === PREPARATION_RETAINED_ALLOCATION_ROOT_MARKER) {
@@ -2264,7 +2321,13 @@ async function ensureRetentionAllocationRoot(retainedRoot: string, teardownAutho
   }
 }
 
-async function ensureRetentionLocation(runRoot: string, publicationBarrier?: RetentionPublicationBarrier, forceIncompleteAuth = false, teardownAuthority?: TeardownAuthorityGuard): Promise<RetainedCaptureLocation> {
+async function ensureRetentionLocation(
+  runRoot: string,
+  publicationBarrier?: RetentionPublicationBarrier,
+  forceIncompleteAuth = false,
+  teardownAuthority?: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
+): Promise<RetainedCaptureLocation> {
   const resolvedRunRoot = path.resolve(runRoot);
   const runtimeRoot = path.dirname(resolvedRunRoot);
   const runId = path.basename(resolvedRunRoot);
@@ -2274,8 +2337,8 @@ async function ensureRetentionLocation(runRoot: string, publicationBarrier?: Ret
   const retainedRoot = path.join(runtimeRoot, PREPARATION_RETAINED_DIRECTORY);
   await ensurePrivateDirectory(retainedRoot, "Pi agent-directory retained quarantine root");
   await ensurePrivateDirectory(path.join(retainedRoot, PREPARATION_RETAINED_DISPOSAL_DIRECTORY), "Pi agent-directory retained disposal root");
-  await ensureCaptureAuthKey(retainedRoot, publicationBarrier, forceIncompleteAuth, teardownAuthority);
-  await ensureRetentionAllocationRoot(retainedRoot, teardownAuthority);
+  await ensureCaptureAuthKey(retainedRoot, publicationBarrier, forceIncompleteAuth, teardownAuthority, authCleanupBarrier);
+  await ensureRetentionAllocationRoot(retainedRoot, teardownAuthority, authCleanupBarrier);
   const retainedRun = path.join(retainedRoot, runId);
   await ensurePrivateDirectory(retainedRun, "Pi agent-directory retained quarantine run");
   return { runtimeRoot, retainedRoot, retainedRun };
@@ -2372,12 +2435,13 @@ async function acquireRetentionAllocationLock(
   signal?: AbortSignal,
   force = false,
   teardownAuthority?: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
 ): Promise<RetentionAllocationLease> {
   const startedAt = monotonicMilliseconds();
   const timeoutMs = PREPARATION_LOCK_TIMEOUT_MS;
   for (;;) {
     throwIfAborted(signal);
-    await ensureRetentionAllocationRoot(retainedRoot, teardownAuthority);
+    await ensureRetentionAllocationRoot(retainedRoot, teardownAuthority, authCleanupBarrier);
     const canonical = path.join(retainedRoot, PREPARATION_RETAINED_ALLOCATION_LOCK);
     const canonicalKind = await pathKind(canonical);
     if (canonicalKind === "directory") {
@@ -2772,7 +2836,7 @@ async function reconcileRetainedCaptures(
   teardownAuthority?: TeardownAuthorityGuard,
 ): Promise<Array<{ record: RetainedCaptureRecord; recordPath: string }>> {
   throwIfAborted(signal);
-  const location = await ensureRetentionLocation(path.join(runtimeRoot, runId), limits.publicationBarrier, false, teardownAuthority);
+  const location = await ensureRetentionLocation(path.join(runtimeRoot, runId), limits.publicationBarrier, false, teardownAuthority, limits.authCleanupBarrier);
   const rootEntries = await readdir(location.retainedRoot, { withFileTypes: true });
   let globalCount = 0;
   for (const entry of rootEntries) {
@@ -3130,10 +3194,10 @@ async function removeRetainedCapturesAfterQuiescence(
   teardownAuthority: TeardownAuthorityGuard,
 ): Promise<number> {
   const runRoot = path.join(runtimeRoot, runId);
-  const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier, false, teardownAuthority);
+  const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier, false, teardownAuthority, limits.authCleanupBarrier);
   await assertTerminalFence(runRoot);
   await teardownAuthority?.();
-  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, runId, signal, true, teardownAuthority);
+  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, runId, signal, true, teardownAuthority, limits.authCleanupBarrier);
   try {
     await clearRetainedDisposalEntries(location.retainedRoot, runId, teardownAuthority);
     await clearRetainedConstructionEntries(
@@ -3338,9 +3402,9 @@ async function freshRetainedPath(
   quarantinePath: string,
   state: "retained" | "fence" = "retained",
 ): Promise<RetainedCaptureAllocation> {
-  const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier);
+  const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier, false, undefined, limits.authCleanupBarrier);
   if (!path.isAbsolute(source) || !path.isAbsolute(quarantinePath)) throw new Error(`${name} retained capture paths must be absolute`);
-  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, path.basename(runRoot));
+  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, path.basename(runRoot), undefined, false, undefined, limits.authCleanupBarrier);
   try {
     // Both bounds are checked while the process-independent allocation mutex is
     // held. This closes the last race where two run controllers observed the
@@ -3426,7 +3490,7 @@ async function createQuarantineFence(
     candidate,
     "fence",
   );
-  const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier);
+  const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier, false, undefined, limits.authCleanupBarrier);
   const record = await readRetainedCaptureRecord(allocation.recordPath, location.runtimeRoot);
   try {
     await mkdir(candidate, { recursive: false, mode: 0o700 });
