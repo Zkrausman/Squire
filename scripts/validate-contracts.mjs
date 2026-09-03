@@ -12,7 +12,8 @@ import {
   validateRevisedHandoff,
   validateTestEvidence,
   validateTransitionRequest,
-  validateWorkflowConfig
+  validateWorkflowConfig,
+  normalizeWorkflowConfig
 } from "../src/semantic-validation.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -49,7 +50,9 @@ async function main() {
     const name = contractName(file, validRoot);
     const validate = ajv.getSchema(`urn:squire:contracts:v1:${name}`);
     if (!validate) throw new Error(`No schema for ${file}`);
-    if (!validate(await json(file))) throw new Error(`Valid fixture rejected: ${file}\n${ajv.errorsText(validate.errors)}`);
+    const raw = await json(file);
+    const document = name === "workflow-config" ? normalizeWorkflowConfig(raw) : raw;
+    if (!validate(document)) throw new Error(`Valid fixture rejected: ${file}\n${ajv.errorsText(validate.errors)}`);
   }
 
   const structuralRoot = path.join(fixturesDir, "invalid/structural");
@@ -57,7 +60,9 @@ async function main() {
   for (const file of structuralFiles) {
     const name = contractName(file, structuralRoot);
     const validate = ajv.getSchema(`urn:squire:contracts:v1:${name}`);
-    if (validate(await json(file))) throw new Error(`Invalid structural fixture accepted: ${file}`);
+    const raw = await json(file);
+    const document = name === "workflow-config" ? normalizeWorkflowConfig(raw) : raw;
+    if (validate(document)) throw new Error(`Invalid structural fixture accepted: ${file}`);
   }
 
   const semanticRoot = path.join(fixturesDir, "invalid/semantic");

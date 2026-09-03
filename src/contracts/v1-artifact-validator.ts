@@ -4,6 +4,7 @@ import Ajv2020Import, { type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsImport from "ajv-formats";
 import type { ContractReference } from "../control/domain.js";
 import type { ImmutableArtifactReader } from "../control/safe-artifact-reader.js";
+import { normalizeWorkflowConfig } from "../pi/pi-configuration.js";
 
 const NAMES = ["common", "implementation-plan", "normalized-ticket", "phase-input", "phase-result", "phase-trigger", "pull-request-delivery-state", "review-findings", "runtime-resolution", "test-evidence", "transition-request", "workflow-config"] as const;
 export const V1_SCHEMA_IDS = new Set(NAMES.map(name => `urn:squire:contracts:v1:${name}`));
@@ -38,19 +39,21 @@ export class V1ArtifactValidator {
     try { parsed = JSON.parse(bytes.toString("utf8")); } catch { throw new ArtifactValidationError("artifact is not valid JSON"); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new ArtifactValidationError("artifact must be a JSON object");
     if ((parsed as JsonObject)["schemaVersion"] !== 1) throw new ArtifactValidationError("unsupported schema version");
+    const normalized = normalizeArtifact(reference.schemaId, parsed);
     const structural = this.#validators.get(reference.schemaId);
-    if (!structural || !structural(parsed)) throw new ArtifactValidationError(`structural validation failed: ${formatErrors(structural?.errors)}`);
-    const errors = trusted.semantic(parsed as T);
+    if (!structural || !structural(normalized)) throw new ArtifactValidationError(`structural validation failed: ${formatErrors(structural?.errors)}`);
+    const errors = trusted.semantic(normalized as T);
     if (errors.length) throw new ArtifactValidationError(`trusted semantic validation failed: ${errors.join("; ")}`);
-    return { document: parsed as T, bytes };
+    return { document: normalized as T, bytes };
   }
   validateDocument<T extends JsonObject>(schemaId: string, document: unknown): T {
     if (!V1_SCHEMA_IDS.has(schemaId)) throw new ArtifactValidationError("unsupported schema identity");
     if (!document || typeof document !== "object" || Array.isArray(document)) throw new ArtifactValidationError("artifact must be a JSON object");
     if ((document as JsonObject)["schemaVersion"] !== 1) throw new ArtifactValidationError("unsupported schema version");
+    const normalized = normalizeArtifact(schemaId, document);
     const structural = this.#validators.get(schemaId);
-    if (!structural || !structural(document)) throw new ArtifactValidationError(`structural validation failed: ${formatErrors(structural?.errors)}`);
-    return document as T;
+    if (!structural || !structural(normalized)) throw new ArtifactValidationError(`structural validation failed: ${formatErrors(structural?.errors)}`);
+    return normalized as T;
   }
   async acceptPhaseResult(reference: ContractReference, context: PhaseResultContext, semanticPolicy: (result: PhaseResultDocument) => Readonly<Record<string, (document: JsonObject) => readonly string[]>>, acceptedPaths: ReadonlySet<string> = new Set()): Promise<ValidatedPhaseResult> {
     const outer = await this.validate<PhaseResultDocument>(reference, { schemaId: "urn:squire:contracts:v1:phase-result", semantic: result => validatePhaseResultTrusted(result, context) }, acceptedPaths);
@@ -86,6 +89,12 @@ export class V1ArtifactValidator {
 }
 
 export interface ValidatedPhaseResult { result: PhaseResultDocument; reference: ContractReference; paths: ReadonlySet<string> }
+function normalizeArtifact(schemaId: string, document: unknown): unknown {
+  if (schemaId === "urn:squire:contracts:v1:workflow-config" && document && typeof document === "object" && !Array.isArray(document)) {
+    return normalizeWorkflowConfig(document as never);
+  }
+  return document;
+}
 function formatErrors(errors: ValidateFunction["errors"]): string { return errors?.map(error => `${error.instancePath || "/"} ${error.message ?? "invalid"}`).join(", ") ?? "unknown"; }
 
 export interface PhaseResultDocument extends JsonObject {

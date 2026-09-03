@@ -1,13 +1,22 @@
 import { randomUUID } from "node:crypto";
 import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
-import type { WorkflowStore } from "../control/workflow-store.js";
-import { StoreConflictError } from "../control/workflow-store.js";
-import { buildPiCommand, assertSafeResumeArgs, type PiRoleConfig } from "./pi-command.js";
+import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
+import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
+import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
+import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest, type PiAgentDirectoryTeardownResult } from "./pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
 import { PiRpcClient, type PiState } from "./pi-rpc-client.js";
 
 export interface RunnerConfig {
   roles: Record<Role, PiRoleConfig>;
+  /** Top-level project-wiki background profile; normalized to Luna/high by default. */
+  wiki?: PiWikiProfileInput;
+  /** Descriptive alias accepted by integrations that call it a profile. */
+  wikiProfile?: PiWikiProfileInput;
+  /** Trusted run-scoped filesystem preparation port. */
+  materializer?: PiAgentDirectoryMaterializerPort;
+  /** Durable workflow authority that gates every role start and teardown. */
+  runLifecycleAuthority?: RunQuiescenceAuthority;
   workspace?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
@@ -30,11 +39,67 @@ export class PiRunner {
   readonly live = new Map<string, LiveHandle>();
   readonly allocating = new Map<string, AllocatingHandle>();
   readonly #resolved = new Map<string, Promise<RuntimeResolution>>();
+  /** In-flight preparation sharing only; settled results are never trusted from this map. */
+  readonly #materializing = new Map<string, { fingerprint: string; promise: Promise<MaterializedPiAgentDirectory> }>();
   readonly #trackedProcesses = new WeakSet<PiProcess>();
+  readonly #defaultMaterializer: PiAgentDirectoryMaterializerPort;
+  readonly #runLifecycleAuthority: RunQuiescenceAuthority;
   #ownerSequence = 0;
-  constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {}
+  constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {
+    this.#runLifecycleAuthority = config.runLifecycleAuthority ?? store;
+    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace, this.#runLifecycleAuthority);
+  }
 
   resolveRuntime(runId: string): Promise<RuntimeResolution> { return this.#getOrResolveRuntime(runId); }
+
+  async #getOrMaterialize(runId: string, runtime: RuntimeResolution, wikiProfile: PiWikiProfileInput, signal?: AbortSignal): Promise<MaterializedPiAgentDirectory> {
+    const materializer = this.config.materializer ?? (runtime.llmWiki.root ? this.#defaultMaterializer : undefined);
+    if (!materializer) throw new Error("Pi agent-directory materializer is required when runtime resolution has no local wiki root");
+    const fingerprint = JSON.stringify({ runtime, wikiProfile, workspace: this.config.workspace });
+    const previous = this.#materializing.get(runId);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) throw new Error("conflicting Pi agent-directory materialization request");
+      return previous.promise;
+    }
+    const request: PiAgentDirectoryRequest = {
+      runId,
+      runtime,
+      wikiProfile,
+      ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
+      ...(signal ? { signal } : {}),
+    };
+    const promise = materializer.materialize(request);
+    this.#materializing.set(runId, { fingerprint, promise });
+    const clear = (): void => {
+      if (this.#materializing.get(runId)?.promise === promise) this.#materializing.delete(runId);
+    };
+    void promise.then(clear, clear);
+    return await promise;
+  }
+
+  async #verifyMaterialization(
+    runId: string,
+    runtime: RuntimeResolution,
+    wikiProfile: PiWikiProfileInput,
+    materialized: MaterializedPiAgentDirectory,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const materializer = this.config.materializer ?? (runtime.llmWiki.root ? this.#defaultMaterializer : undefined);
+    if (!materializer) throw new Error("Pi agent-directory materializer is required when runtime resolution has no local wiki root");
+    const request: PiAgentDirectoryRequest = {
+      runId,
+      runtime,
+      wikiProfile,
+      ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
+      ...(signal ? { signal } : {}),
+    };
+    if (materializer.verify) {
+      await materializer.verify(request, materialized);
+      return;
+    }
+    const refreshed = await this.#getOrMaterialize(runId, runtime, wikiProfile, signal);
+    if (JSON.stringify(refreshed) !== JSON.stringify(materialized)) throw new Error("Pi agent-directory changed during pre-spawn verification");
+  }
 
   /** Explicit cleanup seam for retry/restart; callers must not treat an unknown identity as exited. */
   async reconcileProcessAllocation(runId: string, role: Role): Promise<void> {
@@ -67,7 +132,8 @@ export class PiRunner {
     if (!allocation) await this.#verifyRegisteredProcessCleaned(runId, role, generation, process.identity);
   }
 
-  async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution }> {
+  async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
+    await this.#runLifecycleAuthority.assertRunStartAllowed(runId, this.clock.now());
     const key = `${runId}:${role}`;
     const pending = this.allocating.get(key);
     if (pending) throw new Error("role already has an unresolved allocating process");
@@ -78,7 +144,8 @@ export class PiRunner {
     const leaseKey = `process:${role}`;
     const processLeaseMs = positiveInteger(this.config.processLeaseMs ?? 30_000, "process lease");
     const stepTimeoutMs = positiveInteger(this.config.allocationStepTimeoutMs ?? Math.max(1, Math.floor(processLeaseMs / 2)), "allocation step timeout");
-    const roleTimeoutSeconds = positiveInteger(this.config.roles[role]!.timeoutSeconds ?? 0, `role timeout for ${role}`);
+    const roleConfig = normalizeRoleConfig(role, this.config.roles[role]!);
+    const roleTimeoutSeconds = positiveInteger(roleConfig.timeoutSeconds ?? 0, `role timeout for ${role}`);
     const allocationTimeoutMs = positiveInteger(this.config.allocationTimeoutMs ?? Math.max(roleTimeoutSeconds * 1_000, stepTimeoutMs * 12), "allocation timeout");
     const startedAt = this.clock.now();
     const acquired = await this.store.acquireLease(runId, leaseKey, owner, startedAt, Math.min(processLeaseMs, allocationTimeoutMs));
@@ -101,11 +168,30 @@ export class PiRunner {
         await this.#step("first-session allocation reservation", lease, () => this.#reserveAllocation(runId, role, generation!, lease));
       }
       const runtime = await this.#step("runtime resolution", lease, signal => this.#getOrResolveRuntime(runId, lease, signal));
-      const instructions = await this.#step("role instruction read", lease, signal => this.readRoleInstructions(this.config.roles[role].instructionsPath, signal));
+      const wikiProfile = normalizeWikiProfile(this.config.wikiProfile ?? this.config.wiki);
+      const materialized = await this.#step("Pi agent-directory materialization", lease, signal => this.#getOrMaterialize(runId, runtime, wikiProfile, signal));
+      const instructions = await this.#step("role instruction read", lease, signal => this.readRoleInstructions(roleConfig.instructionsPath, signal));
       if (instructions.length === 0) throw new Error("role instructions are empty");
-      const spec = buildPiCommand({ role, config: this.config.roles[role], instructions, piBinary: runtime.pi.executable, ...(this.config.workspace ? { workspace: this.config.workspace } : {}), ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}), ...(claimed ? { registration: claimed } : {}) });
-      if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
       await this.#step("spawn intent", lease, () => this.#setAllocation(runId, role, lease, "spawning"));
+      const verifiedMaterialized = await this.#step(
+        "Pi agent-directory integrity verification",
+        lease,
+        signal => this.#verifyMaterialization(runId, runtime, wikiProfile, materialized, signal),
+      ).then(() => materialized);
+      const spec = buildPiCommand({
+        role,
+        config: roleConfig,
+        instructions,
+        piBinary: runtime.pi.executable,
+        ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
+        ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}),
+        ...(claimed ? { registration: claimed } : {}),
+        agentDir: verifiedMaterialized.agentDir,
+        homeDir: verifiedMaterialized.homeDir,
+        wikiHomeDir: verifiedMaterialized.wikiHomeDir,
+        trustedExtensionPaths: verifiedMaterialized.trustedExtensionPaths,
+      });
+      if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
       const ownProcess = (value: PiProcess): void => {
         if (process && process !== value) throw new Error("process factory returned inconsistent process identity");
         process = value;
@@ -118,7 +204,8 @@ export class PiRunner {
       if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
       client.on("protocol_error", () => { void this.#markProcess(runId, role, generation!, process!.identity, "failed"); });
       const state = await this.#step("Pi handshake", lease, () => client.getState());
-      if (state.model?.provider !== this.config.roles[role].provider || state.model?.id !== this.config.roles[role].model) throw new Error("Pi handshake model mismatch");
+      if (state.model?.provider !== roleConfig.provider || state.model?.id !== roleConfig.model) throw new Error("Pi handshake model mismatch");
+      if (state.thinkingLevel !== roleConfig.thinking) throw new Error("Pi handshake thinking level mismatch");
       if (claimed && (state.sessionId !== claimed.sessionId || state.sessionFile !== claimed.sessionFile)) throw new Error("Pi resume handshake identity mismatch");
       if (!claimed) {
         const registration = registrationFromState(runId, role, state, generation, runtime.resolvedAt, process.identity, "live");
@@ -127,7 +214,7 @@ export class PiRunner {
       } else {
         await this.#step("live generation persistence", lease, () => this.#completeResumedGeneration(runId, role, generation!, process!.identity, lease));
       }
-      return { process, client, state, runtime };
+      return { process, client, state, runtime, agentDir: materialized.agentDir };
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try { if (process) await this.#terminate(process); }
@@ -350,12 +437,20 @@ export class PiRunner {
 
   async #step<T>(name: string, lease: AllocationLease, operation: (signal: AbortSignal) => Promise<T>, onSettled?: (value: T) => void): Promise<T> {
     await this.#renew(lease);
-    const remaining = lease.deadlineAt - this.clock.now(); if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
+    const startedAt = this.clock.now();
+    const remaining = lease.deadlineAt - startedAt; if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
+    const duration = Math.min(lease.stepTimeoutMs, remaining);
+    const deadline = startedAt + duration;
     const controller = new AbortController();
-    const wait = this.clock.sleep(Math.min(lease.stepTimeoutMs, remaining), controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
+    const wait = this.clock.sleep(duration, controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
     const timeout: Promise<T> = wait.then(() => { controller.abort(); throw new Error(`${name} exceeded bounded allocation step`); });
     try {
       const result = await Promise.race([operation(controller.signal), timeout]);
+      // A clock can advance inside an operation (for example, a durable store
+      // callback may settle just as the lease timer fires). Treat that result
+      // as late even if Promise.race observed it first; otherwise settlement
+      // would be scheduler-dependent and a stale owner could continue.
+      if (this.clock.now() >= deadline) throw new Error(`${name} exceeded bounded allocation step`);
       onSettled?.(result);
       controller.abort();
       await this.#renew(lease);
@@ -383,6 +478,25 @@ export class PiRunner {
     const owned = this.live.get(key);
     if (owned?.process.exitCode === null) throw new Error("cannot release ownership of a live process");
     this.live.delete(key);
+  }
+
+  /**
+   * Run-teardown integration for the retained preparation lifecycle. The
+   * The durable lifecycle authority fences the run before the materializer
+   * performs cleanup; this check prevents this runner from initiating teardown
+   * while it still owns a live or unresolved role process.
+   */
+  async teardownRunAgentDirectory(runId: string, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult> {
+    for (const handle of this.allocating.values()) {
+      if (handle.runId === runId) throw new Error("cannot tear down Pi agent directory while a role allocation is unresolved");
+    }
+    for (const handle of this.live.values()) {
+      if (handle.runId === runId && handle.process.exitCode === null) throw new Error("cannot tear down Pi agent directory while a role process is live");
+    }
+    const materializer = this.config.materializer ?? this.#defaultMaterializer;
+    if (!materializer.teardown) throw new Error("Pi agent-directory materializer does not provide trusted teardown");
+    await this.#runLifecycleAuthority.acquireRunTerminalFence(runId, `runner-teardown-${randomUUID()}`, this.clock.now());
+    return materializer.teardown(runId, signal);
   }
 }
 

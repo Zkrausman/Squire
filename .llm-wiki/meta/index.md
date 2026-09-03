@@ -10,6 +10,7 @@
 
 - [[concepts/five-session-pi-rpc-topology]] — five-session-pi-rpc-topology *(created: 2026-09-01)*
 - [[concepts/immutable-handoff-validation]] — immutable-handoff-validation *(created: 2026-09-01)*
+- [[concepts/run-scoped-pi-profiles-and-trusted-footer]] — Run-scoped Pi profiles and trusted wiki footer *(created: 2026-09-02)*
 - [[concepts/transition-remediation-and-fresh-gates]] — transition-remediation-and-fresh-gates *(created: 2026-09-01)*
 - [[concepts/trusted-controller-boundary]] — trusted-controller-boundary *(created: 2026-09-01)*
 
@@ -43,4 +44,4 @@
 - [[syntheses/aidev-216-and-aidev-224-ownership-boundary]] — aidev-216-and-aidev-224-ownership-boundary *(created: 2026-09-01)*
 
 ---
-*Last updated: 2026-09-02T01:50:03.498Z* | *Total pages: 25*
+*Last updated: 2026-09-03T05:44:04.916Z* | *Total pages: 26*

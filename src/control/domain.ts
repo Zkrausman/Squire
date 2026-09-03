@@ -93,9 +93,50 @@ export interface AcceptedPhaseResult {
 export interface GateRecord { phase: "review" | "test"; head: string; result: ContractReference; acceptedAt: string; completedAt: string; implementGeneration: number; attempt: number }
 export interface RemediationCounters { review: number; test: number; total: number }
 export interface TerminalError { code: string; message: string; at: string; evidence: readonly ArtifactReference[] }
-export interface ResolvedInstallation { version: string; installationId: string }
+export interface ResolvedInstallation {
+  version: string;
+  installationId: string;
+  /** Trusted absolute installation root retained so restart preparation never resolves latest. */
+  root?: string;
+}
 export interface ResolvedPiInstallation extends ResolvedInstallation { executable: string }
-export interface RuntimeResolution { schemaVersion: 1; runId: string; pi: ResolvedPiInstallation; llmWiki: ResolvedInstallation; resolvedAt: string }
+/**
+ * An authoritative model-registry result. Both installation identities bind the
+ * capability to the exact Pi/wiki runtime observation that was persisted for a
+ * run; a model name by itself is never sufficient evidence.
+ */
+export interface RuntimeModelCapability {
+  provider: string;
+  model: string;
+  reasoningCapable: boolean;
+  piInstallationId: string;
+  wikiInstallationId: string;
+}
+export interface RuntimeResolution {
+  schemaVersion: 1;
+  runId: string;
+  pi: ResolvedPiInstallation;
+  llmWiki: ResolvedInstallation;
+  /** Optional in published v1 observations; materialization requires exact evidence at its boundary. */
+  modelCapabilities?: readonly RuntimeModelCapability[];
+  resolvedAt: string;
+}
+
+export interface RunTerminalFence {
+  runId: string;
+  owner: string;
+  fencingToken: number;
+  acquiredAt: string;
+  state: "held" | "removed";
+}
+/** Durable controller preparation ownership held for the complete filesystem operation. */
+export interface RunPreparationLease {
+  runId: string;
+  owner: string;
+  fencingToken: number;
+  acquiredAt: string;
+  state: "held";
+}
 
 export interface RunSnapshot {
   runId: string;
@@ -114,6 +155,10 @@ export interface RunSnapshot {
   processLaunches: number;
   terminalError?: TerminalError;
   runtimeResolution?: RuntimeResolution;
+  /** Durable terminal lifecycle fence; held until sandbox/run removal. */
+  terminalFence?: RunTerminalFence;
+  /** Every materialize/verify operation must release its exact lease before teardown. */
+  preparationLeases?: readonly RunPreparationLease[];
 }
 export interface RunPrecondition { version: number; state?: WorkflowState; currentHead?: string }
 export interface Lease { key: string; owner: string; fencingToken: number; expiresAt: number }

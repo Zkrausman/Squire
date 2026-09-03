@@ -1,4 +1,27 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
+
+const PROFILE_DEFAULTS = JSON.parse(readFileSync(new URL("./pi/pi-profile-defaults.json", import.meta.url), "utf8"));
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const PI_ROLES = ["orchestrator", "plan", "implement", "review", "test"];
+
+/**
+ * Compatibility normalization for v1 documents written before AIDEV-228.
+ * It fills only additive profile fields; provider/model and operational fields
+ * are never guessed. The controller must use the returned copy before schema
+ * validation or launch and must not mutate the persisted artifact.
+ */
+export function normalizeWorkflowConfig(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config) || !config.pi || typeof config.pi !== "object") return config;
+  const roles = config.pi.roles && typeof config.pi.roles === "object" && !Array.isArray(config.pi.roles)
+    ? Object.fromEntries(Object.entries(config.pi.roles).map(([role, value]) => {
+      if (!value || typeof value !== "object" || Array.isArray(value) || !PI_ROLES.includes(role)) return [role, value];
+      return [role, { ...value, thinking: value.thinking ?? PROFILE_DEFAULTS.roles[role].thinking }];
+    }))
+    : config.pi.roles;
+  const wiki = config.pi.wiki ?? { ...PROFILE_DEFAULTS.wiki };
+  return { ...config, pi: { ...config.pi, roles, wiki } };
+}
 
 const NORMAL_TRANSITIONS = new Map([
   ["accepted:preparing", "run_accepted"],
@@ -50,20 +73,31 @@ function isCanonicalTicketPath(value) {
 
 export function validateWorkflowConfig(config) {
   const errors = [];
+  const normalized = normalizeWorkflowConfig(config);
   // pi.version is a legacy v1 advisory only. Runtime selection is resolved once per run
   // and recorded as runtime-resolution evidence; no exact repository-wide pin is enforced.
-  const commandIds = config.validation.commands.map(({ id }) => id);
+  if (!normalized?.pi?.roles || !normalized?.validation?.commands) return ["workflow config is missing required Pi or validation sections"];
+  const commandIds = normalized.validation.commands.map(({ id }) => id);
   if (new Set(commandIds).size !== commandIds.length) errors.push("validation command IDs must be unique");
   if (config.github.deliveryIdentity.appSlug === config.github.reviewerIdentity.appSlug) {
     errors.push("delivery and reviewer GitHub identities must be distinct");
   }
-  for (const [role, settings] of Object.entries(config.pi.roles)) {
+  for (const [role, settings] of Object.entries(normalized.pi.roles)) {
     if (!isCanonicalTicketPath(settings.instructionsPath)) errors.push(`${role} instructionsPath must be a canonical path beneath /ticket`);
+    if (!PI_THINKING_LEVELS.includes(settings.thinking)) errors.push(`${role} thinking must be a valid Pi thinking level`);
+    if (!safeProfilePart(settings.provider) || !safeProfilePart(settings.model)) errors.push(`${role} provider/model must be non-empty and free of control characters`);
   }
-  for (const command of config.validation.commands) {
+  if (!normalized.pi.wiki || !PI_THINKING_LEVELS.includes(normalized.pi.wiki.thinking)) errors.push("project-wiki thinking must be a valid Pi thinking level");
+  if (!normalized.pi.wiki?.provider || !normalized.pi.wiki?.model) errors.push("project-wiki profile must specify provider and model");
+  else if (!safeProfilePart(normalized.pi.wiki.provider) || !safeProfilePart(normalized.pi.wiki.model)) errors.push("project-wiki provider/model must be free of control characters");
+  for (const command of normalized.validation.commands) {
     if (!isCanonicalTicketPath(command.cwd)) errors.push(`validation command ${command.id} cwd must be a canonical path beneath /ticket`);
   }
   return errors;
+}
+
+function safeProfilePart(value) {
+  return typeof value === "string" && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 export function validatePhaseInput(input, context = {}) {

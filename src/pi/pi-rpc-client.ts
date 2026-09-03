@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
 import { LfJsonlDecoder, ProtocolError } from "./lf-jsonl-decoder.js";
 import type { PiProcess } from "./pi-process.js";
+import { isPiThinkingLevel, type PiThinkingLevel } from "./pi-configuration.js";
 
 export interface RpcResponse { id?: string; type: "response"; command: string; success: boolean; data?: unknown; error?: string }
-export interface PiState { model: { provider: string; id: string } | null; sessionFile: string; sessionId: string; isStreaming?: boolean }
+export interface PiState { model: { provider: string; id: string } | null; sessionFile: string; sessionId: string; thinkingLevel: PiThinkingLevel; isStreaming?: boolean }
 export interface RpcClientOptions { commandTimeoutMs?: number; maxLineBytes?: number; maxBufferBytes?: number; maxStderrBytes?: number; maxRenderedBytes?: number }
 type SupportedCommand = "get_state" | "get_entries" | "prompt" | "clear_queue" | "abort_retry" | "abort";
 interface Pending { command: SupportedCommand; resolve(value: RpcResponse): void; reject(error: Error): void; timer: NodeJS.Timeout }
@@ -79,5 +80,14 @@ function validateResponse(record: Record<string, unknown>, expectedCommand: Supp
 function isSupportedCommand(value: unknown): value is SupportedCommand { return typeof value === "string" && ["get_state", "get_entries", "prompt", "clear_queue", "abort_retry", "abort"].includes(value); }
 function isEntries(value: unknown): boolean { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; return Object.keys(v).every(key => key === "entries" || key === "leafId") && Array.isArray(v["entries"]) && (v["leafId"] === null || typeof v["leafId"] === "string"); }
 function isClearQueue(value: unknown): boolean { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; return Object.keys(v).every(key => key === "steering" || key === "followUp") && Array.isArray(v["steering"]) && v["steering"].every(item => typeof item === "string") && Array.isArray(v["followUp"]) && v["followUp"].every(item => typeof item === "string"); }
-function isState(value: unknown): value is PiState { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; const model = v["model"] as Record<string, unknown> | null; return typeof v["sessionFile"] === "string" && typeof v["sessionId"] === "string" && (model === null || (typeof model === "object" && typeof model["provider"] === "string" && typeof model["id"] === "string")); }
+function isState(value: unknown): value is PiState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  const model = v["model"] as Record<string, unknown> | null;
+  const thinking = v["thinkingLevel"];
+  return typeof v["sessionFile"] === "string"
+    && typeof v["sessionId"] === "string"
+    && isPiThinkingLevel(thinking)
+    && (model === null || (typeof model === "object" && typeof model["provider"] === "string" && typeof model["id"] === "string"));
+}
 function asError(value: unknown): Error { return value instanceof Error ? value : new Error(String(value)); }

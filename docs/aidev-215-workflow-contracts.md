@@ -24,7 +24,7 @@ Schemas live under [`contracts/v1/`](../contracts/v1/) and use closed objects un
 
 | Schema | Purpose |
 |---|---|
-| `workflow-config` | Ticket/repository/base, Linear IDs, sandbox template/resources/network/retention, per-role Pi provider/model/timeouts, validation commands, remediation limits, artifact retention, and GitHub identities/checks/rules |
+| `workflow-config` | Ticket/repository/base, Linear IDs, sandbox template/resources/network/retention, independently configurable per-role Pi provider/model/thinking/timeouts, project-wiki background profile, validation commands, remediation limits, artifact retention, and GitHub identities/checks/rules |
 | `normalized-ticket` | One immutable, normalized Linear issue and resolved repository/base/feature-branch identity |
 | `phase-input` | Complete immutable input for one phase attempt, bound to run, phase, target session, attempt, and input head |
 | `phase-trigger` | Small Pi RPC trigger containing identity bindings and a path/SHA-256/schema reference to the phase input |
@@ -34,7 +34,7 @@ Schemas live under [`contracts/v1/`](../contracts/v1/) and use closed objects un
 | `test-evidence` | Per-command timestamps, exit status, timeout state, immutable stdout/stderr references, and failures |
 | `transition-request` | Orchestrator request bound to run, orchestrator session, current state, current head, and validated phase result when applicable |
 | `pull-request-delivery-state` | Current-head PR, checks, Reviewer approval, mergeability, and human-only merge state |
-| `runtime-resolution` | Exact observed Pi and pi-llm-wiki versions, Pi executable, and installation identities resolved once for one run |
+| `runtime-resolution` | Exact observed Pi and pi-llm-wiki versions, Pi executable, installation identities, and (when supplied by the trusted resolver) local installation roots resolved once for one run; optional v1 model-capability evidence is additive for legacy observations |
 | `common` | IDs, SHAs, artifact references, evidence, findings, failures, phases, and states |
 
 `schemaVersion` is an integer discriminator and is `1` in every v1 top-level artifact. Schema IDs are stable `urn:squire:contracts:v1:<name>` values. Schema changes that alter accepted meaning require `v2`; additive prose clarification or stricter implementation tests may remain v1 only when existing valid artifacts retain the same meaning.
@@ -46,7 +46,7 @@ The v1 workflow configuration is repository-independent. Repository commands are
 - one Linear ticket UUID/identifier, repository owner/name/HTTPS clone URL, base branch, and Git object format;
 - Linear team UUID and accepted, in-progress, awaiting-human, completed, failed, and cancelled state UUIDs;
 - a digest-pinned sandbox template, CPU/memory/disk limits, explicit network mode, and success/failure sandbox retention;
-- all five Pi roles with provider, model, instructions beneath `/ticket`, and finite timeout; the optional legacy Pi version field is advisory, while the controller resolves the selected Pi and pi-llm-wiki installations once per run and records their exact observed versions and installation identities;
+- all five Pi roles with provider, model, instructions beneath `/ticket`, and finite timeout; the optional legacy Pi version field is advisory, while the controller resolves the selected Pi and pi-llm-wiki installations once per run and records their exact observed versions, installation identities, local roots, and (for new observations) bound model-capability records; legacy v1 observations may omit that additive evidence, which is required before materialization;
 - named validation commands with finite timeout and required/optional status;
 - finite review, test, and total remediation budgets;
 - trusted export, session, and evidence retention periods; and
@@ -54,7 +54,15 @@ The v1 workflow configuration is repository-independent. Repository commands are
 
 The trusted controller additionally rejects duplicate validation IDs and identical Delivery/Reviewer identities. It resolves the configured base SHA and writes it into normalized ticket input; agents cannot select or change it.
 
-## 4. Immutable handoff protocol
+Each Pi profile has `provider`, `model`, and the closed thinking enum `off | minimal | low | medium | high | xhigh | max`. The five defaults are Orchestrator `openai-codex/gpt-5.6-sol/high`, Plan `openai-codex/gpt-5.6-sol/high`, Implement `openai-codex/gpt-5.6-luna/max`, Review `openai-codex/gpt-5.6-sol/medium`, and Test `openai-codex/gpt-5.6-terra/high`. `pi.wiki` independently defaults to `openai-codex/gpt-5.6-luna/high`. A v1 document from before these additive fields is copied through the controller's normalization boundary, which fills only omitted thinking/wiki fields before structural validation; persisted bytes are not rewritten. Unknown thinking values still fail closed. The optional legacy `pi.version` remains advisory and never pins runtime selection.
+
+## 4. Run-scoped Pi configuration
+
+A run persists one `runtime-resolution` and prepares one deterministic agent directory at `/ticket/runtime/<runId>/pi-agent`, with sibling run-scoped `HOME` and `WIKI_HOME` directories. The directory contains only atomically-created `settings.json`, a manifest, and the controller-owned footer extension (plus an explicitly provisioned ticket-scoped auth file, when supplied; Pi's fixed private `auth.json` and `models-store.json` runtime files are handled separately). Its manifest binds the run ID, exact Pi and pi-llm-wiki identities/roots, the normalized wiki profile, exact entrypoint/package-tree digests, and SHA-256 digests. Existing state is reusable only after every manifest and file digest matches; package bytes, owner/mode, project overrides, partial, symlinked, tampered, or conflicting state fail closed on every pre-spawn check. Independent controllers serialize preparation through a private, bounded lock and converge on the verified winner; lock readers preserve filesystem causes/codes, retry release/replacement/enumeration races, and compare stable directory identities and owner tokens before acting. Destructive lock, reclaim-marker, staging, and failed-creation cleanup first atomically captures the live directory under a fresh private quarantine, revalidates the captured identity/token, and records authenticated run/source/type/identity metadata beside each verified capture under the runtime root's private `.pi-agent-quarantine-retained/<runId>` namespace. The ledger is bounded to 32 captures per run and 256 across a runtime root; a process-independent retained-allocation mutex makes both bounds atomic across controllers. Stale fences are reconciled only after bounded identity/owner checks. Each materialize/verify operation first acquires a durable preparation lease in the workflow snapshot, atomically competing with terminal-fence acquisition, and holds it through its final no-fence verification. Teardown first acquires a durable workflow terminal fence, publishes a matching authenticated filesystem fence outside the removable sandbox, and independently proves that fence plus absence of every process allocation/live or termination-failed role and preparation lease immediately before and immediately after each destructive disposal boundary. A noncooperative same-UID role is non-quiescent and teardown refuses; after the held fence authorizes disposal, compliant roles/controllers cannot recreate run state. Identity-checked objects move into private disposal paths before recursive removal. Interrupted authenticated publications are resumed or safely discarded only by fenced teardown; replacements and mismatches remain untouched and fail closed. A bound failure is recoverable through that fenced teardown handoff. A completed verified directory uses a validated lockless read path so high-contention identical waiters do not serialize package verification; only a dead, stale lock owner can be recovered.
+
+`settings.json` points at the already-resolved local pi-llm-wiki root (never an npm/latest specifier), sets `llm-wiki.taskModel` to the configured wiki profile, and records its thinking level in `modelThinkingLevels`. Each role passes the directory through `PI_CODING_AGENT_DIR`, run-scoped `HOME`/`WIKI_HOME`, and `PI_SKIP_VERSION_CHECK=1`. It launches explicit ordered extensions—pi-llm-wiki first, then the trusted compact footer—with project discovery disabled, so repository `.pi` resources cannot replace the footer or override a conflicting wiki model. In interactive Herdr tabs, the footer also uses `ctx.ui.setFooter` and `footerData.getExtensionStatuses()` to replace the stock/separate wiki presentation with the personal complementary one-line model/thinking/wiki/state/access/context/cost footer, displaying compact session and wiki model IDs without provider prefixes while retaining provider-qualified identities and those values' theme colors. A project `llm-wiki.taskModel` conflict is rejected without writing the worktree. The selected wiki model must have an exact authoritative reasoning-capability result bound to the persisted Pi/wiki identities; no model-name heuristic or fallback to the session model is allowed. All five processes use the same prepared bytes, while their provider/model/thinking flags and JSONL session roots remain role-specific. The launch integration gate starts the real Pi TUI through a pseudo-terminal, rejects loader diagnostics/stderr, and observes the generated footer's compact marker rather than rendering a separately imported copy.
+
+## 5. Immutable handoff protocol
 
 For every phase attempt, the controller performs this order:
 
@@ -70,7 +78,7 @@ Sandbox configuration paths must be canonical absolute `/ticket` paths with no `
 
 Herdr and manual Pi prompts are audited steering events, not handoffs. A prompt that only asks for status does not alter inputs. If intervention changes scope, acceptance criteria, feedback, commands, or any other phase input, the controller stops or supersedes the attempt and creates a new immutable handoff with a new `handoffId`, exactly incremented `attempt`, later creation time, artifact path, and digest while preserving run, phase, target session, and input head. The controller supplies the independently recorded old and new artifact references when validating the revision. It never edits the old artifact or treats chat history as the revised contract.
 
-## 5. Result and evidence invariants
+## 6. Result and evidence invariants
 
 Every `phase-result` requires:
 
@@ -87,7 +95,7 @@ Plan, Review, and Test are read-only with respect to Git, so their input and out
 
 JSON Schema validates shape. [`src/semantic-validation.mjs`](../src/semantic-validation.mjs) validates trusted-context bindings and cross-document/state invariants that JSON Schema cannot establish.
 
-## 6. Transition graph
+## 7. Transition graph
 
 The only normal transitions are:
 
@@ -108,7 +116,7 @@ After either remediation edge, Implement must produce a new head and the run rep
 
 Publication is legal only after Review and Test pass artifacts bind the current head. This is a controller precondition in addition to the graph edge.
 
-## 7. Fail-closed validation
+## 8. Fail-closed validation
 
 The controller rejects before state change or artifact consumption:
 
@@ -123,7 +131,7 @@ The controller rejects before state change or artifact consumption:
 
 A validation error is terminal for that requested action. Implementations may create a separately recorded retry only within configured budgets; they must not coerce, repair, or partially accept an invalid artifact.
 
-## 8. Examples and executable validation
+## 9. Examples and executable validation
 
 Examples are under [`fixtures/contracts/`](../fixtures/contracts/):
 
@@ -141,6 +149,6 @@ npm test
 
 `validate:contracts` compiles all schemas in strict JSON Schema 2020-12 mode, checks every fixture's expected structural outcome, verifies a real phase-input file SHA-256 against its short trigger, and runs semantic acceptance/rejection cases. Node's test runner independently exercises identity/head failures, immutable handoff revision, the complete transition graph, required evidence, and current-head PR readiness.
 
-## 9. Downstream controller obligations
+## 10. Downstream controller obligations
 
 AIDEV-216 and later controller tickets must add durable transaction/ledger integration, filesystem-safe immutable publication, actual Git/GitHub reconciliation, idempotency, timeout/cancellation enforcement, and artifact cleanup. They must call structural validation before semantic validation and semantic validation before Orchestrator consumption or side effects. Schema validation alone is intentionally insufficient.

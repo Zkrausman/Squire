@@ -13,7 +13,8 @@ The MVP uses:
 - one trusted host controller with a durable SQLite workflow ledger;
 - one persistent Docker Sandboxes microVM per ticket run;
 - one ticket-private Git repository and linked worktree inside that microVM;
-- five independent top-level Pi sessions: Orchestrator, Plan, Implement, Review, and Test;
+- five independent top-level Pi sessions: Orchestrator, Plan, Implement, Review, and Test, each with an explicit provider/model/thinking profile;
+- one run-scoped Pi agent directory beneath `/ticket/runtime/<runId>/pi-agent`, shared by those processes but never by the target repository or host home;
 - one Herdr workspace per ticket with one tab and exactly one root pane per Pi session;
 - Pi RPC plus persisted Pi JSONL and explicit result envelopes as the authoritative session seam;
 - a controller-mediated Git bundle export for trusted branch publication;
@@ -101,7 +102,15 @@ The Orchestrator is an independent top-level Pi process. It:
 
 The controller transports and validates information. The Orchestrator owns workflow reasoning.
 
-### 4.3 Phase sessions
+### 4.3 Pi profiles and run-scoped agent configuration
+
+The workflow configuration keeps five independently overridable profiles plus a separate `pi.wiki` background profile. Defaults are Orchestrator/Plan `openai-codex` + `gpt-5.6-sol` + `high`, Implement `openai-codex` + `gpt-5.6-luna` + `max`, Review `openai-codex` + `gpt-5.6-sol` + `medium`, Test `openai-codex` + `gpt-5.6-terra` + `high`, and wiki background `openai-codex` + `gpt-5.6-luna` + `high`. The closed Pi thinking enum is `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; every launch passes `--provider`, `--model`, and `--thinking`, and the RPC `get_state` handshake must echo all three effective values.
+
+Runtime selection resolves the Pi executable and pi-llm-wiki once, persists their exact identities (and trusted local roots), and never performs an in-run install/update/latest lookup. Published runtime-resolution v1 observations may omit additive model-capability records for legacy compatibility; preparation requires authoritative exact provider/model reasoning-capability evidence at its boundary and never infers it from a model name. Preparation consumes that persisted observation and the normalized wiki profile to atomically materialize `/ticket/runtime/<runId>/pi-agent/settings.json`, a binding manifest, and the controller-owned footer extension. The manifest also binds the exact resolved wiki entrypoint/package tree digests. Independent controllers serialize the materialization with a private bounded lock, atomic staging, stale dead-owner recovery, and winner verification; identical requests converge while conflicts fail closed. Cleanup atomically captures lock, reclaim-marker, staging, and failed-creation directories, revalidates their identity/token, and records authenticated run/source/type/identity metadata for verified captures under the runtime root's private `.pi-agent-quarantine-retained/<runId>` namespace because Node cannot bind recursive deletion to an inode. The ledger is strictly bounded to 32 captures per run and 256 globally; a process-independent retained-allocation mutex makes both checks atomic across concurrent controllers. Stale fences carry authenticated metadata and are reconciled with bounded owner/identity checks. Every materialize/verify operation first acquires a durable preparation lease in persisted workflow state and holds it through final no-fence verification; terminal-fence acquisition atomically rejects active preparation leases. Teardown first acquires a durable workflow terminal fence, publishes a matching authenticated filesystem fence outside the removable sandbox, independently re-proves absence of every process allocation/live or termination-failed role and preparation lease immediately before and immediately after each destructive disposal boundary, and moves identity-checked retained objects into a private disposal namespace before recursive removal. A noncooperative same-UID role makes quiescence false and teardown refuses; the permanent fence then rejects new role/controller work, including after restart. Interrupted authenticated publications are resumed or safely discarded only by fenced teardown. Active replacements remain untouched and fail closed. The settings point to the exact local wiki root, set `llm-wiki.taskModel` to Luna/high, and record `modelThinkingLevels`; an explicitly supplied ticket-scoped auth file is the only credential that may be copied. Restart preparation is idempotent only for matching digests; partial, symlinked, cross-run, or tampered directories fail closed. Pi's private `auth.json` and `models-store.json` runtime files are allowed only at their fixed names, with empty unprovisioned auth and private parseable cache validation.
+
+Every role launch exports `PI_CODING_AGENT_DIR`, run-scoped `HOME` and `WIKI_HOME`, and `PI_SKIP_VERSION_CHECK=1`, keeps `/ticket/workspace` as cwd, disables repository resource discovery, and explicitly loads pi-llm-wiki followed by the same trusted footer bytes. In sandboxed Herdr TUI tabs, that trusted extension installs `ctx.ui.setFooter` and reads `footerData.getExtensionStatuses()`; it replaces the stock/separate wiki presentation with the personal complementary one-line model/thinking/wiki/state/access/context/cost footer, rendering routine `llm-wiki`/`llm-wiki-model` entries as `🧠 <count-or-dash> · <model-id>` without provider prefixes while retaining provider-qualified identities in configuration, manifests, and validation. The footer replaces only the pinned healthy `<wiki_status>` block with the same compact marker. Evolved or warning/error/blocked/diagnostic blocks are retained in full, and extension warnings, RPC `extension_error`/warning/error records, stderr, and protocol failures are not intercepted or abbreviated. A conflicting target-repository wiki model setting is rejected rather than written over. Integrity and project-override checks run again in the fenced pre-spawn stage for every role, rather than trusting a completed first-role preparation.
+
+### 4.4 Phase sessions
 
 Plan, Implement, Review, and Test are separate Pi processes with separate JSONL histories and result artifacts.
 
@@ -112,7 +121,7 @@ Plan, Implement, Review, and Test are separate Pi processes with separate JSONL 
 
 A phase may use subagents internally. A subagent never represents a lifecycle phase.
 
-### 4.4 Squire runner and Herdr
+### 4.5 Squire runner and Herdr
 
 Each Herdr tab contains exactly one unavoidable root pane and one `squire-runner`. No pane splits or multi-pane layouts are created.
 
@@ -134,7 +143,7 @@ MSYS_NO_PATHCONV=1
 MSYS2_ARG_CONV_EXCL=*
 ```
 
-### 4.5 Docker Sandbox
+### 4.6 Docker Sandbox
 
 The isolation unit is one Docker Sandboxes microVM per ticket, not one microVM per phase. All five sessions intentionally share the active ticket workspace and ticket-local artifacts.
 
