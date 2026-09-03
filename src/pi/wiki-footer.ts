@@ -30,19 +30,25 @@ function hasDiagnostic(text: string): boolean {
   return DIAGNOSTIC_WORDS.test(text);
 }
 
+function compactModelId(model: string): string {
+  const separator = model.indexOf("/");
+  return separator >= 0 ? model.slice(separator + 1) : model;
+}
+
 function compactRoutineBlock(block: string, model: string): string | undefined {
+  const displayModel = compactModelId(model);
   const compact = COMPACT_BLOCK.exec(block);
   if (compact) {
     // A compact-looking block may come from a newer extension or an
     // untrusted resource. Only our exact model/count form is routine; never
     // rewrite a diagnostic-bearing or model-mismatched block.
-    if (compact[2] !== model || hasDiagnostic(block)) return undefined;
-    return block;
+    if ((compact[2] !== model && compact[2] !== displayModel) || hasDiagnostic(block)) return undefined;
+    return `<wiki_status>🧠 ${compact[1]} · ${displayModel}</wiki_status>`;
   }
   const match = ROUTINE_BLOCK.exec(block);
   if (!match || hasDiagnostic(block)) return undefined;
   const count = match[1] ?? "-";
-  return `<wiki_status>🧠 ${count} · ${model}</wiki_status>`;
+  return `<wiki_status>🧠 ${count} · ${displayModel}</wiki_status>`;
 }
 
 /**
@@ -465,7 +471,7 @@ function compactWikiModel(status: string | undefined): string | undefined {
   if (!status) return undefined;
   const label = status.replace(/^🧠\s*wiki model:\s*/iu, "").trim();
   const sessionModel = label.match(/^session model \((.+)\)$/iu);
-  return sessionModel ? `session:${sessionModel[1]}` : label;
+  return sessionModel ? `session:${compactModelId(sessionModel[1]!)}` : compactModelId(label);
 }
 
 function healthyWikiCount(status: string | undefined): string | undefined {
@@ -477,7 +483,8 @@ function healthyWikiCount(status: string | undefined): string | undefined {
 }
 
 function healthyModelStatus(status: string, wikiModel: string): boolean {
-  return status === `${HEALTHY_MODEL_STATUS_PREFIX}${wikiModel}`;
+  return status === `${HEALTHY_MODEL_STATUS_PREFIX}${wikiModel}`
+    || status === `${HEALTHY_MODEL_STATUS_PREFIX}${compactModelId(wikiModel)}`;
 }
 
 function statusLines(text: string): string[] {
@@ -494,7 +501,7 @@ interface VisibleWikiStatus {
 function visibleWikiStatus(statuses: ReadonlyMap<string, string>, configuredModel?: string): VisibleWikiStatus {
   const activity = statuses.get("llm-wiki");
   const modelStatus = statuses.get("llm-wiki-model");
-  const model = compactWikiModel(modelStatus) ?? configuredModel;
+  const model = compactWikiModel(modelStatus) ?? (configuredModel ? compactModelId(configuredModel) : undefined);
   const activityCount = healthyWikiCount(activity);
   const activityDiagnostic = activity !== undefined && activity.length > 0 && (activityCount === undefined || hasDiagnostic(activity) || /[\r\n]/u.test(activity));
   const modelDiagnostic = modelStatus !== undefined && modelStatus.length > 0 && (hasDiagnostic(modelStatus) || /[\r\n]/u.test(modelStatus));
@@ -536,13 +543,14 @@ export function compactVisibleWikiStatuses(statuses: ReadonlyMap<string, string>
   const activity = statuses.get("llm-wiki");
   const modelStatus = statuses.get("llm-wiki-model");
   const activityCount = healthyWikiCount(activity);
+  const displayModel = compactModelId(wikiModel);
   const healthyModel = modelStatus !== undefined && healthyModelStatus(modelStatus, wikiModel);
 
   if (activity) {
-    if (activityCount !== undefined && !hasDiagnostic(activity) && !/[\r\n]/u.test(activity)) lines.push(`🧠 ${activityCount} · ${wikiModel}`);
+    if (activityCount !== undefined && !hasDiagnostic(activity) && !/[\r\n]/u.test(activity)) lines.push(`🧠 ${activityCount} · ${displayModel}`);
     else lines.push(...statusLines(activity));
   } else if (modelStatus && healthyModel) {
-    lines.push(`🧠 ${EMPTY_COUNT} · ${wikiModel}`);
+    lines.push(`🧠 ${EMPTY_COUNT} · ${displayModel}`);
   } else if (modelStatus) {
     lines.push(...statusLines(modelStatus));
   }
@@ -567,7 +575,7 @@ function footerParts(
   wikiModel: string,
   theme: FooterThemeLike,
 ): FooterPartsResult {
-  const model = context.model?.id ?? "no-model";
+  const model = compactModelId(context.model?.id ?? "no-model");
   const thinking = context.model?.reasoning ? context.thinkingLevel ?? "off" : "";
   const contextUsage = context.getContextUsage();
   const contextTokens = contextUsage?.tokens;
@@ -906,22 +914,27 @@ function isCount(value) {
   }
   return true;
 }
+function compactModelId(model) {
+  const separator = model.indexOf("/");
+  return separator >= 0 ? model.slice(separator + 1) : model;
+}
 function compactRoutineBlock(block) {
+  const displayModel = compactModelId(WIKI_MODEL);
   const compact = COMPACT_BLOCK.exec(block);
   if (compact) {
-    if (compact[2] !== WIKI_MODEL || hasDiagnostic(block)) return undefined;
-    return block;
+    if ((compact[2] !== WIKI_MODEL && compact[2] !== displayModel) || hasDiagnostic(block)) return undefined;
+    return "<wiki_status>🧠 " + compact[1] + " · " + displayModel + CLOSE_TAG;
   }
   if (!block.startsWith("<wiki_status>") || !block.endsWith(CLOSE_TAG)) return undefined;
   const body = block.slice("<wiki_status>".length, -CLOSE_TAG.length);
   const plain = "LLM Wiki active" + ROUTINE_SUFFIX;
-  if (body === plain && !hasDiagnostic(body)) return "<wiki_status>🧠 - · " + WIKI_MODEL + CLOSE_TAG;
+  if (body === plain && !hasDiagnostic(body)) return "<wiki_status>🧠 - · " + displayModel + CLOSE_TAG;
   const countStart = "LLM Wiki active (";
   if (!body.startsWith(countStart) || hasDiagnostic(body)) return undefined;
   for (const suffix of [") tools" + ROUTINE_SUFFIX, ") tool" + ROUTINE_SUFFIX]) {
     if (!body.endsWith(suffix)) continue;
     const count = body.slice(countStart.length, body.length - suffix.length);
-    if (isCount(count) && count !== "-") return "<wiki_status>🧠 " + count + " · " + WIKI_MODEL + CLOSE_TAG;
+    if (isCount(count) && count !== "-") return "<wiki_status>🧠 " + count + " · " + displayModel + CLOSE_TAG;
   }
   return undefined;
 }
@@ -963,7 +976,7 @@ function compactWikiModel(status) {
   if (!status) return undefined;
   const label = status.replace(/^🧠\s*wiki model:\s*/iu, "").trim();
   const sessionModel = label.match(/^session model \((.+)\)$/iu);
-  return sessionModel ? "session:" + sessionModel[1] : label;
+  return sessionModel ? "session:" + compactModelId(sessionModel[1]) : compactModelId(label);
 }
 function healthyWikiCount(status) {
   if (!status) return undefined;
@@ -975,7 +988,7 @@ function healthyWikiCount(status) {
 function visibleWikiStatus(statuses) {
   const activity = statuses.get("llm-wiki");
   const modelStatus = statuses.get("llm-wiki-model");
-  const model = compactWikiModel(modelStatus) ?? WIKI_MODEL;
+  const model = compactWikiModel(modelStatus) ?? compactModelId(WIKI_MODEL);
   const activityCount = healthyWikiCount(activity);
   const activityDiagnostic = activity !== undefined && activity.length > 0 && (activityCount === undefined || hasDiagnostic(activity) || /[\r\n]/u.test(activity));
   const modelDiagnostic = modelStatus !== undefined && modelStatus.length > 0 && (hasDiagnostic(modelStatus) || /[\r\n]/u.test(modelStatus));
@@ -989,7 +1002,7 @@ function visibleWikiStatus(statuses) {
   return { text: marker, diagnostic: false };
 }
 function footerParts(context, footerData, theme) {
-  const model = context.model?.id ?? "no-model";
+  const model = compactModelId(context.model?.id ?? "no-model");
   const thinking = context.model?.reasoning ? context.thinkingLevel ?? "off" : "";
   const contextUsage = context.getContextUsage();
   const contextTokens = contextUsage?.tokens;

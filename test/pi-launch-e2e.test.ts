@@ -17,7 +17,7 @@ const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dis
 const WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
 const WIKI_EXTENSION = `${WIKI_ROOT}/extensions/llm-wiki/index.ts`;
 const WIKI_MODEL = "openai-codex/gpt-5.6-luna";
-const PERSONAL_TUI_FOOTER = /^gpt-5\.6-luna · high · 🧠 — · openai-codex\/gpt-5\.6-luna · Ready · Full Access · Context \S+\/\S+ · Session est\. \$\d+\.\d{3}$/u;
+const PERSONAL_TUI_FOOTER = /^gpt-5\.6-luna · high · 🧠 — · gpt-5\.6-luna · Ready · Full Access · Context \S+\/\S+ · Session est\. \$\d+\.\d{3}$/u;
 
 class ChildPiProcess extends EventEmitter implements PiProcess {
   readonly identity = `child-${randomUUID()}`;
@@ -442,7 +442,7 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     const footerRows = tui.frame.filter(line => PERSONAL_TUI_FOOTER.test(line));
     assert.equal(footerRows.length, 1, `expected one personal footer row, got:\n${stableFrameText}`);
     assert.match(footerRows[0]!, PERSONAL_TUI_FOOTER);
-    assert.match(stableFrameText, /🧠 — · openai-codex\/gpt-5\.6-luna/u);
+    assert.match(stableFrameText, /🧠 — · gpt-5\.6-luna/u);
     // Pi's stock footer is a cwd row followed by a token/context stats row;
     // neither may survive in the stable frame after setFooter replacement.
     assert.doesNotMatch(stableFrameText, /\/workspace|(?:\d+\.\d+%|\?\/)\S+ \(auto\)|gpt-5\.6-luna • high|[↑↓]/u);
