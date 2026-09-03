@@ -1,5 +1,5 @@
 import { assertPrecondition, StoreConflictError, type WorkflowStore } from "../../src/control/workflow-store.js";
-import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
+import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -13,9 +13,40 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     this.runs.set(snapshot.runId, copy(snapshot));
   }
   async read(runId: string): Promise<RunSnapshot | undefined> { const found = this.runs.get(runId); return found && copy(found); }
+  async assertRunStartAllowed(runId: string): Promise<void> {
+    const current = this.runs.get(runId);
+    if (!current) throw new StoreConflictError("run not found");
+    if (current.terminalFence) throw new StoreConflictError(current.terminalFence.state === "removed" ? "run has been removed" : "run has a permanent terminal fence");
+  }
+  async acquireRunTerminalFence(runId: string, owner: string, now = Date.now()): Promise<RunTerminalFence> {
+    const current = this.runs.get(runId);
+    if (!current) throw new StoreConflictError("run not found");
+    if (current.terminalFence?.state === "removed") throw new StoreConflictError("run has been removed");
+    this.assertDurablyQuiescent(runId, now, current);
+    if (current.terminalFence) return copy(current.terminalFence);
+    const fence: RunTerminalFence = { runId, owner, fencingToken: current.version + 1, acquiredAt: new Date(now).toISOString(), state: "held" };
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: fence }));
+    return copy(fence);
+  }
+  async completeRunTeardown(runId: string, fence: RunTerminalFence, now = Date.now()): Promise<void> {
+    const current = this.runs.get(runId);
+    if (!current) throw new StoreConflictError("run not found");
+    const persisted = current.terminalFence;
+    if (!persisted || persisted.runId !== fence.runId || persisted.owner !== fence.owner || persisted.fencingToken !== fence.fencingToken) throw new StoreConflictError("terminal fence ownership changed");
+    if (persisted.state === "removed") return;
+    this.assertDurablyQuiescent(runId, now, current);
+    const removed: RunTerminalFence = { ...persisted, state: "removed" };
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: removed }));
+  }
+  private assertDurablyQuiescent(runId: string, now: number, current: RunSnapshot): void {
+    if (Object.values(current.processAllocations ?? {}).some(Boolean)) throw new StoreConflictError("workflow is not durably quiescent: process allocation remains");
+    if (Object.values(current.sessions).some(session => session?.processState === "live" || session?.processState === "launching")) throw new StoreConflictError("workflow is not durably quiescent: role process remains");
+    if ([...this.leases.entries()].some(([key, lease]) => key.startsWith(`${runId}:`) && lease.expiresAt > now)) throw new StoreConflictError("workflow is not durably quiescent: lease remains");
+  }
   async compareAndSet(runId: string, expected: RunPrecondition, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
+    if (current.terminalFence) throw new StoreConflictError("run has a permanent terminal fence");
     assertPrecondition(current, expected);
     const next = mutate(copy(current));
     if (next.runId !== runId || next.version !== current.version + 1) throw new StoreConflictError("mutation must preserve run and increment version exactly once");
@@ -95,12 +126,16 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     return this.compareAndSet(runId, expected, snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions, processAllocations }));
   }
   async acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined> {
+    const snapshot = this.runs.get(runId);
+    if (!snapshot || snapshot.terminalFence) return undefined;
     const full = `${runId}:${key}`; const current = this.leases.get(full);
     if (current && current.expiresAt > now) return current.owner === owner ? copy(current) : undefined;
     const fencingToken = (this.leaseTokens.get(full) ?? 0) + 1; this.leaseTokens.set(full, fencingToken);
     const lease = { key, owner, fencingToken, expiresAt: now + ttlMs }; this.leases.set(full, lease); return copy(lease);
   }
   async renewLease(runId: string, key: string, owner: string, fencingToken: number, now: number, ttlMs: number): Promise<Lease | undefined> {
+    const snapshot = this.runs.get(runId);
+    if (!snapshot || snapshot.terminalFence) return undefined;
     const full = `${runId}:${key}`; const current = this.leases.get(full);
     if (!current || current.owner !== owner || current.fencingToken !== fencingToken || current.expiresAt <= now) return undefined;
     const renewed = { ...current, expiresAt: now + ttlMs }; this.leases.set(full, renewed); return copy(renewed);

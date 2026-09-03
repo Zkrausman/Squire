@@ -122,6 +122,14 @@ export interface RuntimeResolution {
   resolvedAt: string;
 }
 
+export interface RunTerminalFence {
+  runId: string;
+  owner: string;
+  fencingToken: number;
+  acquiredAt: string;
+  state: "held" | "removed";
+}
+
 export interface RunSnapshot {
   runId: string;
   version: number;
@@ -139,6 +147,8 @@ export interface RunSnapshot {
   processLaunches: number;
   terminalError?: TerminalError;
   runtimeResolution?: RuntimeResolution;
+  /** Durable terminal lifecycle fence; held until sandbox/run removal. */
+  terminalFence?: RunTerminalFence;
 }
 export interface RunPrecondition { version: number; state?: WorkflowState; currentHead?: string }
 export interface Lease { key: string; owner: string; fencingToken: number; expiresAt: number }

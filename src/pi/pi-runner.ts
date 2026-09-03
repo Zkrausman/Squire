@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
-import type { WorkflowStore } from "../control/workflow-store.js";
-import { StoreConflictError } from "../control/workflow-store.js";
+import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
 import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
 import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
-import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest, type PiAgentDirectoryTeardownGuard, type PiAgentDirectoryTeardownResult } from "./pi-agent-directory.js";
+import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest, type PiAgentDirectoryTeardownResult } from "./pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
 import { PiRpcClient, type PiState } from "./pi-rpc-client.js";
 
@@ -16,8 +15,8 @@ export interface RunnerConfig {
   wikiProfile?: PiWikiProfileInput;
   /** Trusted run-scoped filesystem preparation port. */
   materializer?: PiAgentDirectoryMaterializerPort;
-  /** Cross-controller quiescence authority used by the default materializer teardown. */
-  assertPiAgentDirectoryTeardownQuiescent?: PiAgentDirectoryTeardownGuard;
+  /** Durable workflow authority that gates every role start and teardown. */
+  runLifecycleAuthority?: RunQuiescenceAuthority;
   workspace?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
@@ -44,9 +43,11 @@ export class PiRunner {
   readonly #materializing = new Map<string, { fingerprint: string; promise: Promise<MaterializedPiAgentDirectory> }>();
   readonly #trackedProcesses = new WeakSet<PiProcess>();
   readonly #defaultMaterializer: PiAgentDirectoryMaterializerPort;
+  readonly #runLifecycleAuthority: RunQuiescenceAuthority;
   #ownerSequence = 0;
   constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {
-    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace, config.assertPiAgentDirectoryTeardownQuiescent);
+    this.#runLifecycleAuthority = config.runLifecycleAuthority ?? store;
+    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace, this.#runLifecycleAuthority);
   }
 
   resolveRuntime(runId: string): Promise<RuntimeResolution> { return this.#getOrResolveRuntime(runId); }
@@ -132,6 +133,7 @@ export class PiRunner {
   }
 
   async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
+    await this.#runLifecycleAuthority.assertRunStartAllowed(runId, this.clock.now());
     const key = `${runId}:${role}`;
     const pending = this.allocating.get(key);
     if (pending) throw new Error("role already has an unresolved allocating process");
@@ -480,9 +482,9 @@ export class PiRunner {
 
   /**
    * Run-teardown integration for the retained preparation lifecycle. The
-   * materializer's own quiescence guard additionally covers other controller
-   * processes; this check prevents this runner from tearing down while it
-   * still owns a live or unresolved role process.
+   * The durable lifecycle authority fences the run before the materializer
+   * performs cleanup; this check prevents this runner from initiating teardown
+   * while it still owns a live or unresolved role process.
    */
   async teardownRunAgentDirectory(runId: string, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult> {
     for (const handle of this.allocating.values()) {
@@ -493,6 +495,7 @@ export class PiRunner {
     }
     const materializer = this.config.materializer ?? this.#defaultMaterializer;
     if (!materializer.teardown) throw new Error("Pi agent-directory materializer does not provide trusted teardown");
+    await this.#runLifecycleAuthority.acquireRunTerminalFence(runId, `runner-teardown-${randomUUID()}`, this.clock.now());
     return materializer.teardown(runId, signal);
   }
 }

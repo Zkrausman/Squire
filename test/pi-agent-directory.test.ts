@@ -7,8 +7,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import type { RuntimeResolution } from "../src/control/domain.js";
-import { PiAgentDirectoryMaterializer, type PreparationCaptureBarrier } from "../src/pi/pi-agent-directory.js";
+import type { RunTerminalFence, RuntimeResolution } from "../src/control/domain.js";
+import type { RunQuiescenceAuthority } from "../src/control/workflow-store.js";
+import { PiAgentDirectoryMaterializer, type PreparationCaptureBarrier, type RetentionPublicationBarrier } from "../src/pi/pi-agent-directory.js";
 
 async function fixture() {
   const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "squire-agent-dir-"));
@@ -31,6 +32,31 @@ async function fixture() {
 
 const profile = { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" as const };
 const execFile = promisify(execFileCallback);
+
+function lifecycleAuthority(
+  quiescent: () => boolean = () => true,
+  afterAcquire?: () => void | Promise<void>,
+): RunQuiescenceAuthority {
+  const fences = new Map<string, RunTerminalFence>();
+  return {
+    async assertRunStartAllowed(runId) {
+      if (fences.has(runId)) throw new Error("run has a permanent terminal fence");
+    },
+    async acquireRunTerminalFence(runId, owner, now = Date.now()) {
+      const existing = fences.get(runId);
+      if (existing) return existing;
+      if (!quiescent()) throw new Error("role processes/controllers are not quiescent");
+      const fence: RunTerminalFence = { runId, owner, fencingToken: 1, acquiredAt: new Date(now).toISOString(), state: "held" };
+      fences.set(runId, fence);
+      await afterAcquire?.();
+      return fence;
+    },
+    async completeRunTeardown(runId, fence) {
+      const existing = fences.get(runId);
+      if (!existing || existing.owner !== fence.owner || existing.fencingToken !== fence.fencingToken) throw new Error("terminal fence ownership changed");
+    },
+  };
+}
 
 test("materializer writes deterministic run-scoped settings, manifest, and trusted footer", async () => {
   const { root, workspace, runtime } = await fixture();
@@ -85,9 +111,7 @@ test("retained captures have authenticated bounds and quiescent teardown", async
     workspace,
     maxRetainedCapturesPerRun: 2,
     maxRetainedCapturesGlobal: 2,
-    assertTeardownQuiescent: async () => {
-      if (!quiescent) throw new Error("role processes/controllers are not quiescent");
-    },
+    runLifecycleAuthority: lifecycleAuthority(() => quiescent),
   };
   const materializer = new PiAgentDirectoryMaterializer(options);
   const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
@@ -116,13 +140,42 @@ test("retained captures have authenticated bounds and quiescent teardown", async
     assert.ok(teardown.capturesRemoved >= 2);
     assert.equal(teardown.fencesRemoved, 0);
     await assert.rejects(lstat(retainedRun), { code: "ENOENT" });
-    assert.equal((await readdir(path.join(runtimeRoot, runtime.runId))).includes(".pi-agent-lock"), false);
+    await assert.rejects(lstat(path.join(runtimeRoot, runtime.runId)), { code: "ENOENT" });
+    assert.equal((await lstat(path.join(runtimeRoot, ".pi-agent-terminal-fences", runtime.runId, "fence.json"))).isFile(), true);
 
-    // Teardown is the explicit lifecycle handoff; it unwedges a later
-    // legitimate preparation without allowing active contenders to delete
-    // one another's captures.
-    await materializer.materialize(request);
+    // A completed teardown is permanent; the durable and filesystem fences
+    // reject every later preparation for this run.
+    await assert.rejects(materializer.materialize(request), /terminal fence/iu);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("durable teardown fencing excludes an independent materializer", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let acquiredResolve!: () => void;
+  const acquired = new Promise<void>(resolve => { acquiredResolve = resolve; });
+  let releaseAcquire!: () => void;
+  const hold = new Promise<void>(resolve => { releaseAcquire = resolve; });
+  const authority = lifecycleAuthority(() => true, async () => {
+    acquiredResolve();
+    await hold;
+  });
+  const options = { runtimeRoot, workspace, runLifecycleAuthority: authority };
+  const first = new PiAgentDirectoryMaterializer(options);
+  const second = new PiAgentDirectoryMaterializer(options);
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    await first.materialize(request);
+    const teardown = first.teardown(runtime.runId);
+    await acquired;
+    await assert.rejects(second.materialize(request), /terminal fence/iu);
+    releaseAcquire();
+    await teardown;
+    await assert.rejects(second.materialize(request), /terminal fence/iu);
+  } finally {
+    releaseAcquire?.();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -137,7 +190,7 @@ test("global retained-capture bound stays closed under concurrent run allocation
     workspace,
     maxRetainedCapturesPerRun: 32,
     maxRetainedCapturesGlobal: 1,
-    assertTeardownQuiescent: async () => undefined,
+    runLifecycleAuthority: lifecycleAuthority(),
   });
   const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
   const secondRequest = { runId: secondRunId, runtime: secondRuntime, wikiProfile: profile, workspace };
@@ -173,7 +226,7 @@ test("metadata-bearing quarantine fences reconcile through trusted teardown", as
     runtimeRoot,
     workspace,
     preparationCaptureBarrier: barrier,
-    assertTeardownQuiescent: async () => undefined,
+    runLifecycleAuthority: lifecycleAuthority(),
   });
   const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
   try {
@@ -188,9 +241,135 @@ test("metadata-bearing quarantine fences reconcile through trusted teardown", as
     assert.equal(metadata["type"], "quarantine-fence");
     const teardown = await materializer.teardown(runtime.runId);
     assert.equal(teardown.fencesRemoved, 1);
-    assert.equal((await readdir(runRoot)).filter(name => name.startsWith(".pi-agent-quarantine-")).length, 0);
+    await assert.rejects(lstat(runRoot), { code: "ENOENT" });
+    assert.equal((await lstat(path.join(runtimeRoot, ".pi-agent-terminal-fences", runtime.runId, "fence.json"))).isFile(), true);
     assert.ok(moved);
     assert.equal((await lstat(moved!)).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("trusted teardown discards an interrupted empty quarantine fence", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const runRoot = path.join(runtimeRoot, runtime.runId);
+  let moved: string | undefined;
+  const barrier: PreparationCaptureBarrier = async event => {
+    if (event.name !== "Pi agent-directory preparation lock") return;
+    moved = path.join(root, "interrupted-fence-capture");
+    await rename(event.quarantine, moved);
+  };
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, preparationCaptureBarrier: barrier, runLifecycleAuthority: lifecycleAuthority() });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    await assert.rejects(materializer.materialize(request), /quarantine|replacement|missing|disappeared/iu);
+    const fenceName = (await readdir(runRoot)).find(name => name.startsWith(".pi-agent-quarantine-"));
+    assert.ok(fenceName);
+    await rm(path.join(runRoot, fenceName!, "capture.json"), { force: false });
+    const teardown = await materializer.teardown(runtime.runId);
+    assert.equal(teardown.fencesRemoved, 1);
+    assert.ok(moved);
+    assert.equal((await lstat(moved!)).isDirectory(), true);
+    await assert.rejects(lstat(runRoot), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("interrupted authenticated record publication is resumable by trusted teardown", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let interrupt = true;
+  const publicationBarrier: RetentionPublicationBarrier = async event => {
+    if (interrupt && event.kind === "capture-record" && event.stage === "temporary-written") {
+      interrupt = false;
+      throw new Error("simulated record publication interruption");
+    }
+  };
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, retentionPublicationBarrier: publicationBarrier, runLifecycleAuthority: lifecycleAuthority() });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    await assert.rejects(materializer.materialize(request), /simulated record publication interruption/iu);
+    const teardown = await materializer.teardown(runtime.runId);
+    assert.ok(teardown.capturesRemoved >= 1);
+    await assert.rejects(lstat(path.join(runtimeRoot, runtime.runId)), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("trusted teardown discards a partial authentication-key publication", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let interrupt = true;
+  const publicationBarrier: RetentionPublicationBarrier = async event => {
+    if (interrupt && event.kind === "auth-key" && event.stage === "temporary-written") {
+      interrupt = false;
+      await writeFile(event.temporaryPath, "partial-auth-key", { mode: 0o600 });
+      throw new Error("simulated auth-key publication interruption");
+    }
+  };
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, retentionPublicationBarrier: publicationBarrier, runLifecycleAuthority: lifecycleAuthority() });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    await assert.rejects(materializer.materialize(request), /simulated auth-key publication interruption/iu);
+    const teardown = await materializer.teardown(runtime.runId);
+    assert.equal(teardown.capturesRemoved, 0);
+    await assert.rejects(lstat(path.join(runtimeRoot, runtime.runId)), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("trusted teardown resumes an interrupted terminal-fence publication", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let interrupt = true;
+  const publicationBarrier: RetentionPublicationBarrier = async event => {
+    if (interrupt && event.kind === "terminal-fence" && event.stage === "temporary-written") {
+      interrupt = false;
+      throw new Error("simulated terminal-fence publication interruption");
+    }
+  };
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, retentionPublicationBarrier: publicationBarrier, runLifecycleAuthority: lifecycleAuthority() });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    await materializer.materialize(request);
+    await assert.rejects(materializer.teardown(runtime.runId), /simulated terminal-fence publication interruption/iu);
+    const terminalRoot = path.join(runtimeRoot, ".pi-agent-terminal-fences");
+    assert.ok((await readdir(terminalRoot)).some(name => name.startsWith(".terminal-fence-run_materializer01-")));
+    await materializer.teardown(runtime.runId);
+    await assert.rejects(lstat(path.join(runtimeRoot, runtime.runId)), { code: "ENOENT" });
+    assert.equal((await lstat(path.join(terminalRoot, runtime.runId, "fence.json"))).isFile(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal teardown preserves a replaced run sandbox", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let interrupt = true;
+  const publicationBarrier: RetentionPublicationBarrier = async event => {
+    if (interrupt && event.kind === "terminal-fence" && event.stage === "final-published") {
+      interrupt = false;
+      throw new Error("simulated post-publication interruption");
+    }
+  };
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, retentionPublicationBarrier: publicationBarrier, runLifecycleAuthority: lifecycleAuthority() });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  const runRoot = path.join(runtimeRoot, runtime.runId);
+  const original = path.join(root, "original-run-sandbox");
+  try {
+    await materializer.materialize(request);
+    await assert.rejects(materializer.teardown(runtime.runId), /post-publication interruption/iu);
+    await rename(runRoot, original);
+    await mkdir(runRoot, { recursive: false, mode: 0o700 });
+    await chmod(runRoot, 0o700);
+    await assert.rejects(materializer.teardown(runtime.runId), /sandbox identity changed/iu);
+    assert.equal((await lstat(runRoot)).isDirectory(), true);
+    assert.equal((await lstat(original)).isDirectory(), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

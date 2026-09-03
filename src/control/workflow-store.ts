@@ -1,11 +1,20 @@
-import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RuntimeResolution, SessionRegistration } from "./domain.js";
+import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "./domain.js";
 
 export class StoreConflictError extends Error {
   constructor(message: string) { super(message); this.name = "StoreConflictError"; }
 }
 
 /** Persistence port only. AIDEV-224 supplies SQLite, migrations, intake, and startup reconciliation. */
-export interface WorkflowStore {
+export interface RunQuiescenceAuthority {
+  /** Atomically rejects new run work once the durable terminal fence is held. */
+  assertRunStartAllowed(runId: string, now?: number): Promise<void>;
+  /** Acquire or resume the permanent terminal fence after durable quiescence. */
+  acquireRunTerminalFence(runId: string, owner: string, now?: number): Promise<RunTerminalFence>;
+  /** Mark the durable run removed; the terminal fence is never released. */
+  completeRunTeardown(runId: string, fence: RunTerminalFence, now?: number): Promise<void>;
+}
+
+export interface WorkflowStore extends RunQuiescenceAuthority {
   create(snapshot: RunSnapshot): Promise<void>;
   read(runId: string): Promise<RunSnapshot | undefined>;
   compareAndSet(runId: string, precondition: RunPrecondition, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot>;

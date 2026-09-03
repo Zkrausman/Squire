@@ -75,7 +75,7 @@ class ChildPiProcessFactory implements PiProcessFactory {
     if (signal?.aborted) throw new Error("spawn aborted");
     const child = spawnChild(spec.command, spec.args, {
       cwd: spec.cwd,
-      env: { ...globalThis.process.env, ...spec.env },
+      env: cleanPiEnvironment({ ...spec.env, PI_OFFLINE: "1" }),
       stdio: ["pipe", "pipe", "pipe"],
     });
     const spawned = new ChildPiProcess(child);
@@ -88,6 +88,13 @@ class ChildPiProcessFactory implements PiProcessFactory {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function cleanPiEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(Object.entries(globalThis.process.env).filter(([key]) => !key.startsWith("PI_"))),
+    ...overrides,
+  };
 }
 
 async function runRealTuiFooterProbe(options: {
@@ -111,19 +118,22 @@ async function runRealTuiFooterProbe(options: {
     "--no-themes",
     "--no-context-files",
     "--no-approve",
+    // Observe the real wiki extension's subsequent status calls; this probe
+    // never supplies a wiki status itself.
+    "--extension", options.probePath,
     "--extension", WIKI_EXTENSION,
     "--extension", options.footerPath,
-    "--extension", options.probePath,
   ].map(shellQuote).join(" ");
-  const child = spawnChild("script", ["-qefc", command, "/dev/null"], {
+  const ttyCommand = `stty cols 240 rows 40; ${command}`;
+  const child = spawnChild("script", ["-qefc", ttyCommand, "/dev/null"], {
     cwd: options.workspace,
-    env: {
-      ...globalThis.process.env,
+    env: cleanPiEnvironment({
       HOME: options.homeDir,
       WIKI_HOME: options.wikiHomeDir,
       PI_CODING_AGENT_DIR: options.agentDir,
+      PI_OFFLINE: "1",
       TERM: "xterm-256color",
-    },
+    }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   let output = "";
@@ -136,7 +146,7 @@ async function runRealTuiFooterProbe(options: {
     }, 10_000);
     child.stdout?.on("data", chunk => {
       output += chunk.toString();
-      if (!sentExit && output.includes("SQUIRE_FOOTER_PROBE_OK") && output.includes("🧠 - · openai-codex/gpt-5.6-luna")) {
+      if (!sentExit && output.includes("🧠 - · openai-codex/gpt-5.6-luna")) {
         sentExit = true;
         child.stdin?.write("\u0004");
       }
@@ -212,7 +222,18 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
   const probePath = path.join(root, "trusted-footer-probe.mjs");
   await writeFile(probePath, `export default function (pi) {
   pi.on("session_start", (_event, context) => {
-    context.ui.setStatus("llm-wiki", "🧠 LLM Wiki (16 tools, trajectory + observe + recall active)");
+    const original = context.ui.setStatus.bind(context.ui);
+    let sawWiki = false;
+    let sawModel = false;
+    context.ui.setStatus = (key, value) => {
+      if (key === "llm-wiki" && /^🧠 LLM Wiki \\(\\d+ tools, observe \\+ recall active\\)$/u.test(value)) sawWiki = true;
+      if (key === "llm-wiki-model" && value === "🧠 wiki model: openai-codex/gpt-5.6-luna") sawModel = true;
+      original(key, value);
+      if (sawWiki && sawModel) {
+        context.ui.notify("SQUIRE_WIKI_RUNTIME_OK", "info");
+        context.ui.notify("SQUIRE_FOOTER_PROBE_OK", "info");
+      }
+    };
     context.ui.notify("SQUIRE_FOOTER_PROBE_OK", "info");
   });
 }
@@ -226,6 +247,17 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
       wikiProfile: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" },
       workspace,
     });
+    // Seed the run-local vault before extension startup. This keeps the real
+    // wiki extension on its deterministic project-vault path in both RPC and
+    // TUI modes; the probe still observes its native status calls below.
+    await mkdir(path.join(materialized.wikiHomeDir, ".llm-wiki"), { recursive: true, mode: 0o700 });
+    await writeFile(path.join(materialized.wikiHomeDir, ".llm-wiki", "config.json"), JSON.stringify({
+      knowledge_format: "okf-0.2",
+      name: "Squire e2e wiki",
+      topic: "Squire e2e wiki",
+      mode: "project",
+      version: "1.0",
+    }) + "\n", { mode: 0o600 });
     const launched = await runner.launch("run_example01", "implement");
     process = factory.processes[0];
     const launch = factory.launches[0]!;
@@ -265,10 +297,14 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     assert.doesNotMatch(rpcOutput, /"type":"extension_error"/u);
     assert.equal(process?.errors.join(""), "");
 
+    // The real @zosmaai/pi-llm-wiki extension emitted both status keys during
+    // RPC session_start above; the TUI repeats that native path and the probe
+    // observes those calls without synthesizing a wiki status.
     // A real TUI, allocated by `script`, installs the same generated footer
-    // through Pi's actual ExtensionAPI. The probe only supplies a healthy
-    // wiki status; the compact line can therefore appear only if the trusted
-    // footer loaded, registered setFooter, and rendered the status map.
+    // through Pi's actual ExtensionAPI. The probe only observes status calls
+    // from the real wiki extension; the compact line can therefore appear
+    // only if the trusted footer loaded, registered setFooter, and rendered
+    // the status map.
     const tui = await runRealTuiFooterProbe({
       workspace,
       agentDir: materialized.agentDir,
@@ -278,7 +314,8 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
       probePath,
     });
     const visibleTui = tui.output.replace(/\x1B\[[0-?]*[\x20-\x2F]*[@-~]/gu, "").replace(/\r/gu, "");
-    assert.match(visibleTui, /SQUIRE_FOOTER_PROBE_OK/u);
+    // This compact line is only rendered when the trusted footer sees the
+    // healthy status emitted by the real wiki extension.
     assert.match(visibleTui, /🧠 - · openai-codex\/gpt-5\.6-luna/u);
     assert.equal(tui.stderr, "");
     assert.doesNotMatch(`${visibleTui}\n${tui.stderr}`, /extension_error|failed to load extension|cannot find module|syntaxerror/iu);
