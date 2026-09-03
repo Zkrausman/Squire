@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, spawn } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -503,6 +503,53 @@ test("trusted teardown discards a partial authentication-key publication", async
     const teardown = await materializer.teardown(runtime.runId);
     assert.equal(teardown.capturesRemoved, 0);
     await assert.rejects(lstat(path.join(runtimeRoot, runtime.runId)), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retained-record publication converges when an authenticated final handoff wins", async () => {
+  for (const removeTemporary of [false, true]) {
+    const { root, workspace, runtime } = await fixture();
+    const runtimeRoot = path.join(root, "runtime");
+    let observed = 0;
+    const handoff: RetentionPublicationBarrier = async event => {
+      if (event.kind !== "capture-record" || event.stage !== "before-temporary-read") return;
+      observed += 1;
+      await link(event.temporaryPath, event.finalPath);
+      if (removeTemporary) await rm(event.temporaryPath, { recursive: false, force: false });
+    };
+    const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, retentionPublicationBarrier: handoff, runLifecycleAuthority: lifecycleAuthority() });
+    const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+    try {
+      const result = await materializer.materialize(request);
+      assert.equal(observed, 1);
+      assert.equal(result.agentDir, path.join(runtimeRoot, runtime.runId, "pi-agent"));
+      const retainedRun = path.join(runtimeRoot, ".pi-agent-quarantine-retained", runtime.runId);
+      assert.deepEqual((await readdir(retainedRun)).filter(name => name.startsWith(".capture-")), []);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("retained-record publication rejects a replaced temporary despite matching final bytes", async () => {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  let observed = false;
+  const publicationBarrier: RetentionPublicationBarrier = async event => {
+    if (observed || event.kind !== "capture-record" || event.stage !== "before-temporary-read") return;
+    observed = true;
+    const bytes = await readFile(event.temporaryPath);
+    await link(event.temporaryPath, event.finalPath);
+    await rm(event.temporaryPath, { recursive: false, force: false });
+    await writeFile(event.temporaryPath, bytes, { flag: "wx", mode: 0o600 });
+  };
+  const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, retentionPublicationBarrier: publicationBarrier, runLifecycleAuthority: lifecycleAuthority() });
+  const request = { runId: runtime.runId, runtime, wikiProfile: profile, workspace };
+  try {
+    await assert.rejects(materializer.materialize(request), /temporary file identity changed during handoff/iu);
+    assert.equal(observed, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

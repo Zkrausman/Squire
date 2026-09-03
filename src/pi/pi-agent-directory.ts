@@ -365,7 +365,7 @@ interface TerminalFenceRecord extends RunTerminalFence {
 }
 
 export type RetentionPublicationKind = "auth-key" | "capture-record" | "terminal-fence" | "fence-metadata";
-export type RetentionPublicationStage = "temporary-written" | "before-final-publication" | "final-published";
+export type RetentionPublicationStage = "temporary-written" | "before-temporary-read" | "before-final-publication" | "final-published";
 export type RetentionPublicationBarrier = (event: {
   kind: RetentionPublicationKind;
   stage: RetentionPublicationStage;
@@ -1672,6 +1672,62 @@ async function removeOwnedPathAfterQuiescence(
   }
 }
 
+function isPublicationReadRace(error: unknown): boolean {
+  return isNotFound(error)
+    || error instanceof Error && /changed while it was being read/iu.test(error.message)
+    || error instanceof PreparationLockRace && /did not stabilize after publication/iu.test(error.message);
+}
+
+async function recoverPrivatePublicationHandoff(
+  temporaryPath: string,
+  temporaryInfo: Awaited<ReturnType<typeof lstat>>,
+  finalPath: string,
+  expectedBytes: Buffer,
+  initialError: unknown,
+): Promise<void> {
+  let lastError: unknown = initialError;
+  for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
+    try {
+      const temporaryKind = await pathKind(temporaryPath);
+      let currentTemporaryInfo: Awaited<ReturnType<typeof lstat>> | undefined;
+      if (temporaryKind === "file") {
+        currentTemporaryInfo = await lstatRequired(temporaryPath, "private publication temporary file during handoff");
+        assertPrivateFile(currentTemporaryInfo, "private publication temporary file during handoff");
+        if (currentTemporaryInfo.dev !== temporaryInfo.dev || currentTemporaryInfo.ino !== temporaryInfo.ino) {
+          throw new PreparationLockRace("private publication temporary file identity changed during handoff");
+        }
+      } else if (temporaryKind !== "missing") {
+        throw new PreparationLockRace("private publication temporary path was replaced during handoff");
+      }
+
+      const finalInfo = await lstatRequired(finalPath, "private publication recovered final file");
+      assertPrivateFile(finalInfo, "private publication recovered final file");
+      const finalBytes = await readStablePublicationFile(finalPath, "private publication recovered final file");
+      if (!finalBytes.equals(expectedBytes)) {
+        throw new PreparationLockRace("private publication recovered final file contains conflicting bytes");
+      }
+
+      if (temporaryKind === "file") {
+        if (!currentTemporaryInfo) throw new PreparationLockRace("private publication temporary file identity was lost during handoff");
+        if (currentTemporaryInfo.dev !== finalInfo.dev || currentTemporaryInfo.ino !== finalInfo.ino) {
+          const currentBytes = await readStableFile(temporaryPath, "private publication alternate temporary file");
+          if (!currentBytes.equals(expectedBytes)) {
+            throw new PreparationLockRace("private publication alternate temporary file contains conflicting bytes");
+          }
+        }
+        try { await removeConstructionFile(temporaryPath, temporaryInfo); }
+        catch (error) { if (!isNotFound(error)) throw error; }
+      }
+      return;
+    } catch (error) {
+      if (!isPublicationReadRace(error)) throw error;
+      lastError = error;
+      if (attempt + 1 < PREPARATION_LOCK_RACE_RETRIES) await waitForDelay(PREPARATION_LOCK_RACE_DELAY_MS);
+    }
+  }
+  throw new PreparationLockRace("private publication authenticated final handoff did not stabilize", lastError);
+}
+
 async function publishPrivateFile(
   finalPath: string,
   bytes: Buffer,
@@ -1701,16 +1757,20 @@ async function publishPrivateFile(
   temporaryInfo = await lstatRequired(temporaryPath, "private publication temporary file");
   assertPrivateFile(temporaryInfo, "private publication temporary file");
   let temporaryBytes: Buffer;
-  try { temporaryBytes = await readStableFile(temporaryPath, "private publication temporary file"); }
-  catch (error) {
+  try {
+    temporaryBytes = await readStableFile(
+      temporaryPath,
+      "private publication temporary file",
+      () => barrier?.({ kind, stage: "before-temporary-read", temporaryPath, finalPath }),
+    );
+  } catch (error) {
     // A retained-record observer can complete this exact construction handoff
-    // and remove the temporary name while this publisher is doing its stable
-    // read. The final hard-link is the only acceptable replacement.
-    if (isNotFound(error) && await pathKind(finalPath) === "file") {
-      const recoveredFinalInfo = await lstatRequired(finalPath, "private publication recovered final file");
-      assertPrivateFile(recoveredFinalInfo, "private publication recovered final file");
-      const recoveredFinalBytes = await readStablePublicationFile(finalPath, "private publication recovered final file");
-      if (!recoveredFinalBytes.equals(bytes)) throw new PreparationLockRace("private publication recovered final file contains conflicting bytes");
+    // and change the temporary inode's ctime or remove its construction name
+    // while this publisher is doing its stable read. Reuse only an exact,
+    // authenticated final handoff; identity changes and conflicting bytes fail
+    // closed instead of being hidden behind a retry.
+    if (isPublicationReadRace(error)) {
+      await recoverPrivatePublicationHandoff(temporaryPath, temporaryInfo, finalPath, bytes, error);
       return false;
     }
     throw new PreparationLockRace("private publication temporary file changed while being read", error);
@@ -4492,9 +4552,10 @@ function assertSecureInstallationMode(info: Awaited<ReturnType<typeof lstat>>, n
   if ((modeBits(info) & 0o022) !== 0) throw new Error(`${name} has unsafe permissions`);
 }
 
-async function readStableFile(value: string, name: string): Promise<Buffer> {
+async function readStableFile(value: string, name: string, beforeRead?: () => void | Promise<void>): Promise<Buffer> {
   const before = await lstatRequired(value, name);
   if (!before.isFile() || before.isSymbolicLink()) throw new Error(`${name} is not a regular file`);
+  await beforeRead?.();
   const bytes = await readFile(value);
   const after = await lstatRequired(value, name);
   if (!sameFileStat(before, after)) throw new Error(`${name} changed while it was being read`);
