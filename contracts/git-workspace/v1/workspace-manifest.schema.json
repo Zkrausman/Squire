@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:git-workspace:v1:workspace-manifest",
+  "title": "Squire isolated Git workspace observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "ref": { "type": "object", "additionalProperties": false, "required": ["path", "sha256", "schemaId"], "properties": { "path": { "type": "string", "pattern": "^artifacts/git/run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}/[A-Za-z0-9._-]+\\.json$" }, "sha256": { "$ref": "#/$defs/sha256" }, "schemaId": { "const": "urn:squire:git-workspace:v1:workspace-spec" } } },
+    "resource": { "type": "object", "additionalProperties": false, "required": ["path", "kind", "device", "inode", "mode", "linkCount"], "properties": { "path": { "type": "string", "pattern": "^/ticket/.+" }, "kind": { "enum": ["file", "directory"] }, "device": { "type": "string", "minLength": 1 }, "inode": { "type": "string", "minLength": 1 }, "mode": { "type": "integer", "minimum": 0, "maximum": 511 }, "linkCount": { "type": "integer", "minimum": 1 } } },
+    "repository": { "type": "object", "additionalProperties": false, "required": ["owner", "name", "cloneUrl"], "properties": { "owner": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "cloneUrl": { "type": "string", "format": "uri" } } },
+    "resources": { "type": "object", "additionalProperties": false, "required": ["repository", "worktree", "worktreeGitDir", "config", "hooks", "objects", "alternates", "artifactRoot", "controlRoot"], "properties": { "repository": { "$ref": "#/$defs/resource" }, "worktree": { "$ref": "#/$defs/resource" }, "worktreeGitDir": { "$ref": "#/$defs/resource" }, "config": { "$ref": "#/$defs/resource" }, "hooks": { "$ref": "#/$defs/resource" }, "objects": { "$ref": "#/$defs/resource" }, "alternates": { "const": null }, "artifactRoot": { "$ref": "#/$defs/resource" }, "controlRoot": { "$ref": "#/$defs/resource" } } }
+  },
+  "required": ["schemaVersion", "kind", "spec", "specFingerprint", "runId", "ticketIdentifier", "repository", "baseBranch", "baseSha", "featureBranch", "headSha", "objectFormat", "gitCommonDir", "worktreeGitDir", "worktree", "hooksPath", "objectDirectory", "alternates", "worktreeCount", "safeConfigDigest", "resources", "verifierVersion", "verifiedAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "squire-git-workspace-manifest" },
+    "spec": { "$ref": "#/$defs/ref" },
+    "specFingerprint": { "$ref": "#/$defs/sha256" },
+    "runId": { "type": "string", "pattern": "^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "ticketIdentifier": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[1-9][0-9]*$" },
+    "repository": { "$ref": "#/$defs/repository" },
+    "baseBranch": { "type": "string", "minLength": 1 },
+    "baseSha": { "$ref": "#/$defs/sha" },
+    "featureBranch": { "type": "string", "pattern": "^squire/[a-z][a-z0-9]+-[1-9][0-9]*-run_[A-Za-z0-9._-]+$", "maxLength": 1024 },
+    "headSha": { "$ref": "#/$defs/sha" },
+    "objectFormat": { "enum": ["sha1", "sha256"] },
+    "gitCommonDir": { "type": "string", "pattern": "^/ticket/.+" },
+    "worktreeGitDir": { "type": "string", "pattern": "^/ticket/.+" },
+    "worktree": { "const": "/ticket/workspace" },
+    "hooksPath": { "type": "string", "pattern": "^/ticket/.+" },
+    "objectDirectory": { "type": "string", "pattern": "^/ticket/.+" },
+    "alternates": { "const": null },
+    "worktreeCount": { "const": 1 },
+    "safeConfigDigest": { "$ref": "#/$defs/sha256" },
+    "resources": { "$ref": "#/$defs/resources" },
+    "verifierVersion": { "type": "string", "pattern": "^aidev-222-git-verifier-v1(?:\\.[0-9]+)*$" },
+    "verifiedAt": { "type": "string", "format": "date-time" }
+  }
+}

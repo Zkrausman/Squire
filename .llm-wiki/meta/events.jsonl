@@ -28,3 +28,9 @@
 {"slug":"durable-noncooperative-process-ownership","title":"Durable non-cooperative process ownership","category":"architecture","timestamp":"2026-09-02T00:58:22.966Z","kind":"retro"}
 {"source_id":"SRC-2026-09-02-002","format":"json","timestamp":"2026-09-02T01:43:48.764Z","kind":"capture"}
 {"slug":"registered-session-process-recovery","title":"Registered-session process recovery","category":"architecture","timestamp":"2026-09-02T01:49:10.587Z","kind":"retro"}
+{"page_type":"synthesis","title":"AIDEV-222 isolated Git workspace","path":"syntheses/aidev-222-isolated-git-workspace","timestamp":"2026-09-03T18:24:34.798Z","kind":"ensure_page"}
+{"slug":"obs-2026-09-03-aidev-222-git-workspace-implementation-completed","title":"AIDEV-222 Git workspace implementation completed","relevance":"high","timestamp":"2026-09-03T19:52:20.155Z","kind":"observe"}
+{"slug":"aidev-222-isolated-git-workspace","title":"AIDEV-222 isolated Git workspace","category":"architecture","timestamp":"2026-09-03T19:52:28.162Z","kind":"retro"}
+{"orphans":3,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:53:18.376Z","kind":"lint"}
+{"orphans":1,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:54:40.357Z","kind":"lint"}
+{"orphans":0,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:55:04.780Z","kind":"lint"}

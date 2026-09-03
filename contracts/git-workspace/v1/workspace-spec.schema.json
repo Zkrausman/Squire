@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:git-workspace:v1:workspace-spec",
+  "title": "Squire isolated Git workspace specification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "runId", "ticketIdentifier", "repository", "baseBranch", "baseSha", "objectFormat", "featureBranch", "paths", "createdAt", "fingerprint"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "squire-git-workspace-spec" },
+    "runId": { "type": "string", "pattern": "^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "ticketIdentifier": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[1-9][0-9]*$" },
+    "repository": {
+      "type": "object", "additionalProperties": false,
+      "required": ["owner", "name", "cloneUrl"],
+      "properties": {
+        "owner": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" },
+        "cloneUrl": { "type": "string", "format": "uri", "maxLength": 2048 }
+      }
+    },
+    "baseBranch": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\u0000-\\u001f\\u007f\\\\]+$" },
+    "baseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "objectFormat": { "enum": ["sha1", "sha256"] },
+    "featureBranch": { "type": "string", "pattern": "^squire/[a-z][a-z0-9]+-[1-9][0-9]*-run_[A-Za-z0-9._-]+$", "maxLength": 1024 },
+    "paths": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "worktree", "artifactRoot", "controlRoot"],
+      "properties": {
+        "repository": { "const": "/ticket/git/repo.git" },
+        "worktree": { "const": "/ticket/workspace" },
+        "artifactRoot": { "type": "string", "pattern": "^artifacts/git/run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "controlRoot": { "type": "string", "pattern": "^control/git/run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+      }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

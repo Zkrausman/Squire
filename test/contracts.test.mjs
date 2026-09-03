@@ -23,7 +23,7 @@ const headB = "b".repeat(40);
 
 test("all schemas and positive/negative fixtures satisfy their expected outcome", async () => {
   const { stdout } = await execFileAsync(process.execPath, ["scripts/validate-contracts.mjs"], { cwd: root });
-  assert.match(stdout, /Validated 12 schemas/);
+  assert.match(stdout, /Validated 15 schemas/);
 });
 
 test("published v1 runtime-resolution accepts the exact legacy shape without capability evidence", async () => {
@@ -37,7 +37,7 @@ test("published v1 runtime-resolution accepts the exact legacy shape without cap
   });
   assert.equal(Object.hasOwn(legacy, "modelCapabilities"), false);
   const { stdout } = await execFileAsync(process.execPath, ["scripts/validate-contracts.mjs"], { cwd: root });
-  assert.match(stdout, /13 valid fixtures/);
+  assert.match(stdout, /16 valid fixtures/);
 });
 
 test("phase results fail closed on wrong identity, stale SHA, and contradictory pass", async () => {

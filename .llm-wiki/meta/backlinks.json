@@ -56,6 +56,7 @@
     "sources/SRC-2026-09-01-010",
     "sources/SRC-2026-09-02-001",
     "sources/SRC-2026-09-02-002",
+    "sources/aidev-222-isolated-git-workspace",
     "sources/durable-noncooperative-process-ownership",
     "sources/fenced-first-session-allocation",
     "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
@@ -64,7 +65,8 @@
     "sources/registered-session-process-recovery",
     "sources/run-scoped-agent-runtime-resolution",
     "sources/stable-history-trigger-resend-proof",
-    "syntheses/aidev-216-and-aidev-224-ownership-boundary"
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary",
+    "syntheses/aidev-222-isolated-git-workspace"
   ],
   "entities/squire": [
     "concepts/trusted-controller-boundary",
@@ -143,6 +145,9 @@
     "sources/registered-session-process-recovery",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
+  "sources/aidev-222-isolated-git-workspace": [
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
   "sources/durable-noncooperative-process-ownership": [
     "sources/SRC-2026-09-02-002",
     "sources/fenced-first-session-allocation",
@@ -156,6 +161,9 @@
   ],
   "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": [
     "concepts/trusted-controller-boundary"
+  ],
+  "sources/obs-2026-09-03-aidev-222-git-workspace-implementation-completed": [
+    "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
@@ -183,9 +191,13 @@
     "sources/SRC-2026-09-01-010",
     "sources/SRC-2026-09-02-001",
     "sources/SRC-2026-09-02-002",
+    "sources/aidev-222-isolated-git-workspace",
     "sources/durable-noncooperative-process-ownership",
     "sources/fenced-first-session-allocation",
     "sources/post-settlement-lease-loss-compensation",
     "sources/stable-history-trigger-resend-proof"
+  ],
+  "syntheses/aidev-222-isolated-git-workspace": [
+    "sources/aidev-222-isolated-git-workspace"
   ]
 }

@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-03T05:44:04.916Z",
+  "last_updated": "2026-09-03T19:55:04.788Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -155,6 +155,15 @@
       "format": "json",
       "captured": "2026-09-02"
     },
+    "sources/aidev-222-isolated-git-workspace": {
+      "type": "source",
+      "title": "AIDEV-222 isolated Git workspace",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "aidev-222-isolated-git-workspace",
+      "created": "2026-09-03",
+      "updated": "2026-09-03"
+    },
     "sources/durable-noncooperative-process-ownership": {
       "type": "source",
       "title": "Durable non-cooperative process ownership",
@@ -190,6 +199,24 @@
       "source_context": "Implement remediation attempt 4",
       "created": "2026-09-01",
       "updated": "2026-09-01"
+    },
+    "sources/obs-2026-09-03-aidev-222-git-workspace-implementation-completed": {
+      "type": "source",
+      "title": "Observation: AIDEV-222 Git workspace implementation completed",
+      "tags": [
+        "aidev-222",
+        "git",
+        "workspace",
+        "security",
+        "lifecycle"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-03-aidev-222-git-workspace-implementation-completed",
+      "relevance": "high",
+      "observed_at": "2026-09-03T19:52:20.150Z",
+      "source_context": "Implementing isolated Git workspace for AIDEV-222",
+      "created": "2026-09-03",
+      "updated": "2026-09-03"
     },
     "sources/persisted-acceptance-authority-chain": {
       "type": "source",
@@ -242,6 +269,12 @@
       "confidence": "high",
       "created": "2026-09-01",
       "updated": "2026-09-02"
+    },
+    "syntheses/aidev-222-isolated-git-workspace": {
+      "type": "synthesis",
+      "title": "AIDEV-222 isolated Git workspace",
+      "created": "2026-09-03",
+      "updated": "2026-09-03"
     }
   }
 }

@@ -1,5 +1,6 @@
 import { assertPrecondition, StoreConflictError, type WorkflowStore } from "../../src/control/workflow-store.js";
 import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPreparationLease, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
+import type { GitWorkspaceRecord } from "../../src/git/domain.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -80,6 +81,7 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     const operations = next.attempts.map(a => a.dispatch.operationKey);
     if (new Set(attemptKeys).size !== attemptKeys.length || new Set(handoffs).size !== handoffs.length || new Set(operations).size !== operations.length) throw new StoreConflictError("duplicate attempt, handoff, or operation");
     if (new Set(next.acceptedResultPaths).size !== next.acceptedResultPaths.length || new Set(next.committedRequestIds).size !== next.committedRequestIds.length) throw new StoreConflictError("duplicate result acceptance or transition request");
+    assertGitWorkspaceMutation(current.gitWorkspace, next.gitWorkspace);
     this.runs.set(runId, copy(next));
     return copy(next);
   }
@@ -168,4 +170,26 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   async releaseLease(runId: string, key: string, owner: string, fencingToken: number): Promise<void> {
     const full = `${runId}:${key}`; const current = this.leases.get(full); if (current?.owner === owner && current.fencingToken === fencingToken) this.leases.delete(full);
   }
+}
+
+function assertGitWorkspaceMutation(previous: GitWorkspaceRecord | undefined, next: GitWorkspaceRecord | undefined): void {
+  if (!previous && !next) return;
+  if (!previous && next) {
+    if (next.stage !== "provisioning" || next.operationGeneration !== 1) throw new StoreConflictError("Git workspace must begin at provisioning generation one");
+    return;
+  }
+  if (!next) throw new StoreConflictError("Git workspace record cannot be removed by an arbitrary mutation");
+  if (!previous) throw new StoreConflictError("Git workspace record creation was not a provisioning mutation");
+  if (previous.runId !== next.runId || previous.spec.path !== next.spec.path || previous.spec.sha256 !== next.spec.sha256 || previous.spec.schemaId !== next.spec.schemaId || previous.specFingerprint !== next.specFingerprint || previous.featureBranch !== next.featureBranch || JSON.stringify(previous.paths) !== JSON.stringify(next.paths)) throw new StoreConflictError("Git workspace immutable identity changed");
+  if (next.operationGeneration < previous.operationGeneration || next.operationGeneration > previous.operationGeneration + 1) throw new StoreConflictError("Git workspace operation generation is not monotonic");
+  const allowed: Record<GitWorkspaceRecord["stage"], readonly GitWorkspaceRecord["stage"][]> = {
+    provisioning: ["provisioning", "ready", "blocked"],
+    ready: ["ready", "exporting", "retained", "blocked"],
+    exporting: ["exporting", "ready", "blocked"],
+    retained: ["retained"],
+    blocked: ["blocked"],
+  };
+  if (!allowed[previous.stage].includes(next.stage)) throw new StoreConflictError(`illegal Git workspace stage transition ${previous.stage}->${next.stage}`);
+  if (previous.stage === "ready" && next.stage === "exporting" && next.operationGeneration !== previous.operationGeneration + 1) throw new StoreConflictError("bundle export did not allocate a new generation");
+  if (!(previous.stage === "ready" && next.stage === "exporting") && next.operationGeneration !== previous.operationGeneration) throw new StoreConflictError("Git workspace generation changed outside export reservation");
 }

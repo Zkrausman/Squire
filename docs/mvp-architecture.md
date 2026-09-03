@@ -163,6 +163,8 @@ The microVM has its own Docker Engine. Builds and tests therefore cannot control
 
 ## 5. Git workspace and delivery boundary
 
+The trusted isolated Git component is specified in [AIDEV-222 Isolated Git Workspace](aidev-222-git-workspace.md). It owns the private bare repository, single linked worktree, bounded offline operations, immutable bundle handoff, retention metadata, and component disposal; downstream tickets retain sandbox, scheduling, host publication, and merge ownership.
+
 ### 5.1 Import and branch creation
 
 A trusted setup operation:

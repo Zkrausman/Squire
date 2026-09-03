@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
+import type { GitWorkspaceReadiness } from "../git/domain.js";
 import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
 import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
 import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
@@ -17,6 +18,8 @@ export interface RunnerConfig {
   materializer?: PiAgentDirectoryMaterializerPort;
   /** Durable workflow authority that gates every role start and teardown. */
   runLifecycleAuthority?: RunQuiescenceAuthority;
+  /** Production composition supplies AIDEV-222 readiness before any Pi spawn. */
+  workspaceReadiness?: GitWorkspaceReadiness;
   workspace?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
@@ -134,6 +137,7 @@ export class PiRunner {
 
   async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
     await this.#runLifecycleAuthority.assertRunStartAllowed(runId, this.clock.now());
+    if (this.config.workspaceReadiness) await this.config.workspaceReadiness.verify(runId);
     const key = `${runId}:${role}`;
     const pending = this.allocating.get(key);
     if (pending) throw new Error("role already has an unresolved allocating process");
