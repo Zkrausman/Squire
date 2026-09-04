@@ -19,6 +19,8 @@ import {
 const root = path.resolve(import.meta.dirname, "..");
 const schemasDir = path.join(root, "contracts/v1");
 const fixturesDir = path.join(root, "fixtures/contracts");
+const gitSchemasDir = path.join(root, "contracts/git-workspace/v1");
+const gitFixturesDir = path.join(root, "fixtures/git-workspace/v1");
 
 async function json(file) {
   return JSON.parse(await readFile(file, "utf8"));
@@ -37,12 +39,40 @@ function contractName(file, base) {
   return path.relative(base, file).split(path.sep)[0];
 }
 
+function nameForGitFixture(file) {
+  const stem = path.basename(file, ".json");
+  for (const name of ["workspace-spec", "workspace-manifest", "bundle-manifest"]) {
+    if (stem === name || stem.startsWith(`${name}-`)) return name;
+  }
+  throw new Error(`Git workspace fixture does not identify a schema: ${file}`);
+}
+
+function gitSemanticErrors(name, data) {
+  const errors = [];
+  if (name === "workspace-spec") {
+    if (data.featureBranch !== `squire/${data.ticketIdentifier.toLowerCase()}-${data.runId}`) errors.push("featureBranch is not deterministic");
+    if (data.paths?.repository !== "/ticket/git/repo.git" || data.paths?.worktree !== "/ticket/workspace" || data.paths?.artifactRoot !== `artifacts/git/${data.runId}` || data.paths?.controlRoot !== `control/git/${data.runId}`) errors.push("workspace paths are not fixed");
+  }
+  if (name === "workspace-manifest") {
+    if (data.featureBranch !== `squire/${data.ticketIdentifier.toLowerCase()}-${data.runId}` || data.baseSha !== data.baseSha?.toLowerCase()) errors.push("manifest identity is not bound");
+    if (data.alternates !== null || data.worktreeCount !== 1 || data.worktree !== "/ticket/workspace") errors.push("manifest isolation proof is invalid");
+  }
+  if (name === "bundle-manifest") {
+    if (data.refs?.length !== 1 || data.refs[0]?.name !== `refs/heads/${data.featureBranch}` || data.refs[0]?.oid !== data.headSha) errors.push("bundle ref inventory is invalid");
+    if (data.bundlePath !== `artifacts/git/${data.runId}/${data.headSha}.bundle`) errors.push("bundle path is not head-bound");
+  }
+  return errors;
+}
+
 async function main() {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   addFormats(ajv);
   const schemaFiles = await filesBelow(schemasDir);
   const schemas = await Promise.all(schemaFiles.map(json));
   for (const schema of schemas) ajv.addSchema(schema);
+  const gitSchemaFiles = await filesBelow(gitSchemasDir);
+  const gitSchemas = await Promise.all(gitSchemaFiles.map(json));
+  for (const schema of gitSchemas) ajv.addSchema(schema);
 
   const validRoot = path.join(fixturesDir, "valid");
   const validFiles = await filesBelow(validRoot);
@@ -117,7 +147,32 @@ async function main() {
     if (check(data).length === 0) throw new Error(`Invalid semantic fixture accepted: ${relative}`);
   }
 
-  console.log(`Validated ${schemas.length} schemas, ${validFiles.length} valid fixtures, ${structuralFiles.length} structural rejections, and ${invalidChecks.length} semantic rejections.`);
+  const gitName = file => path.basename(file, ".json");
+  const gitValidFiles = await filesBelow(path.join(gitFixturesDir, "valid"));
+  for (const file of gitValidFiles) {
+    const name = gitName(file);
+    const data = await json(file);
+    const validate = ajv.getSchema(`urn:squire:git-workspace:v1:${name}`);
+    if (!validate || !validate(data)) throw new Error(`Valid Git workspace fixture rejected: ${file}\n${ajv.errorsText(validate?.errors)}`);
+    const semanticErrors = gitSemanticErrors(name, data);
+    if (semanticErrors.length) throw new Error(`Valid Git workspace semantic fixture rejected: ${file}: ${semanticErrors.join(", ")}`);
+  }
+  const gitStructuralFiles = await filesBelow(path.join(gitFixturesDir, "invalid/structural"));
+  for (const file of gitStructuralFiles) {
+    const name = nameForGitFixture(file);
+    const validate = ajv.getSchema(`urn:squire:git-workspace:v1:${name}`);
+    if (!validate || validate(await json(file))) throw new Error(`Invalid Git workspace structural fixture accepted: ${file}`);
+  }
+  const gitSemanticFiles = await filesBelow(path.join(gitFixturesDir, "invalid/semantic"));
+  for (const file of gitSemanticFiles) {
+    const name = nameForGitFixture(file);
+    const data = await json(file);
+    const validate = ajv.getSchema(`urn:squire:git-workspace:v1:${name}`);
+    if (!validate || !validate(data)) throw new Error(`Git workspace semantic fixture must remain structurally valid: ${file}`);
+    if (gitSemanticErrors(name, data).length === 0) throw new Error(`Git workspace semantic fixture accepted: ${file}`);
+  }
+
+  console.log(`Validated ${schemas.length + gitSchemas.length} schemas, ${validFiles.length + gitValidFiles.length} valid fixtures, ${structuralFiles.length + gitStructuralFiles.length} structural rejections, and ${invalidChecks.length + gitSemanticFiles.length} semantic rejections.`);
 }
 
 main().catch(error => {

@@ -28,3 +28,19 @@
 {"slug":"durable-noncooperative-process-ownership","title":"Durable non-cooperative process ownership","category":"architecture","timestamp":"2026-09-02T00:58:22.966Z","kind":"retro"}
 {"source_id":"SRC-2026-09-02-002","format":"json","timestamp":"2026-09-02T01:43:48.764Z","kind":"capture"}
 {"slug":"registered-session-process-recovery","title":"Registered-session process recovery","category":"architecture","timestamp":"2026-09-02T01:49:10.587Z","kind":"retro"}
+{"page_type":"synthesis","title":"AIDEV-222 isolated Git workspace","path":"syntheses/aidev-222-isolated-git-workspace","timestamp":"2026-09-03T18:24:34.798Z","kind":"ensure_page"}
+{"slug":"obs-2026-09-03-aidev-222-git-workspace-implementation-completed","title":"AIDEV-222 Git workspace implementation completed","relevance":"high","timestamp":"2026-09-03T19:52:20.155Z","kind":"observe"}
+{"slug":"aidev-222-isolated-git-workspace","title":"AIDEV-222 isolated Git workspace","category":"architecture","timestamp":"2026-09-03T19:52:28.162Z","kind":"retro"}
+{"orphans":3,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:53:18.376Z","kind":"lint"}
+{"orphans":1,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:54:40.357Z","kind":"lint"}
+{"orphans":0,"missing_pages":0,"contradictions":2,"auto_fix":true,"legacy_pages_repaired":0,"timestamp":"2026-09-03T19:55:04.780Z","kind":"lint"}
+{"slug":"aidev-222-hardened-git-workspace-remediation","title":"AIDEV-222 hardened Git workspace remediation","category":"architecture","timestamp":"2026-09-03T23:03:42.785Z","kind":"retro"}
+{"slug":"obs-2026-09-03-aidev-222-remediation-commit-verified","title":"AIDEV-222 remediation commit verified","relevance":"high","timestamp":"2026-09-03T23:04:20.324Z","kind":"observe"}
+{"slug":"obs-2026-09-04-aidev-222-review-2-blockers-remediated","title":"AIDEV-222 review-2 blockers remediated","relevance":"high","timestamp":"2026-09-04T00:02:47.487Z","kind":"observe"}
+{"slug":"aidev-222-review-2-remediation-complete","title":"AIDEV-222 review-2 remediation complete","category":"architecture","timestamp":"2026-09-04T00:05:59.993Z","kind":"retro"}
+{"slug":"aidev-222-review-3-isolation-authentication","title":"AIDEV-222 runtime isolation authentication","category":"security","timestamp":"2026-09-04T01:27:53.256Z","kind":"retro"}
+{"slug":"obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed","title":"AIDEV-222 Review 3 isolation blocker closed","relevance":"high","timestamp":"2026-09-04T01:35:30.298Z","kind":"observe"}
+{"slug":"aidev-222-descriptor-bound-isolation-evidence","title":"AIDEV-222 descriptor-bound isolation evidence","category":"security","timestamp":"2026-09-04T02:43:19.810Z","kind":"retro"}
+{"slug":"obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete","title":"AIDEV-222 descriptor evidence remediation complete","relevance":"high","timestamp":"2026-09-04T02:49:24.446Z","kind":"observe"}
+{"slug":"aidev-222-deterministic-retention-tests","title":"AIDEV-222 deterministic retention tests","category":"testing","timestamp":"2026-09-04T04:17:35.279Z","kind":"retro"}
+{"slug":"obs-2026-09-04-aidev-222-retention-flake-removed","title":"AIDEV-222 retention flake removed","relevance":"high","timestamp":"2026-09-04T04:17:51.240Z","kind":"observe"}

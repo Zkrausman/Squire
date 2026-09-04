@@ -9,7 +9,7 @@ import type { PiProcessFactory, ProcessLaunch } from "../src/pi/pi-process.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
 import { FakePiProcess, FakePiProcessFactory } from "./support/fake-pi-process.js";
-import { run, runtime } from "./support/fixtures.js";
+import { run, runtime, testWorkspaceReadiness } from "./support/fixtures.js";
 
 const clock: Clock = { now: () => Date.parse("2026-09-01T12:00:00Z"), sleep: () => new Promise<void>(() => undefined) };
 const profiles = {
@@ -95,7 +95,7 @@ test("runner selects each independent profile and shares one run materialization
     factory,
     { resolve: async () => structuredClone(runtime) },
     store,
-    { roles: roleConfig, sessionRoot: root, materializer },
+    { roles: roleConfig, workspaceReadiness: testWorkspaceReadiness, sessionRoot: root, materializer },
     async () => undefined,
     async () => "trusted role",
     clock,
@@ -137,7 +137,7 @@ test("runner teardown delegates only after its owned role processes are quiescen
     new FakePiProcessFactory(),
     { resolve: async () => structuredClone(runtime) },
     store,
-    { roles: roleConfig, materializer },
+    { roles: roleConfig, workspaceReadiness: testWorkspaceReadiness, materializer },
     async () => undefined,
     async () => "trusted role",
     clock,
@@ -168,7 +168,7 @@ test("runner rechecks project overrides on each role launch instead of trusting 
     factory,
     { resolve: async () => structuredClone(runtime) },
     store,
-    { roles: roleConfig, sessionRoot: root, workspace: root, materializer },
+    { roles: roleConfig, workspaceReadiness: testWorkspaceReadiness, sessionRoot: root, workspace: root, materializer },
     async () => undefined,
     async () => "trusted role",
     clock,
@@ -190,7 +190,7 @@ test("thinking-level handshake mismatch fails closed before registration", async
   await store.create(run());
   const factory = new OneProcessFactory();
   const materializer = new RecordingMaterializer();
-  const config = { roles: roleConfig, materializer, processLeaseMs: 100, allocationStepTimeoutMs: 50, allocationTimeoutMs: 500 };
+  const config = { roles: roleConfig, workspaceReadiness: testWorkspaceReadiness, materializer, processLeaseMs: 100, allocationStepTimeoutMs: 50, allocationTimeoutMs: 500 };
   const runner = new PiRunner(factory, { resolve: async () => structuredClone(runtime) }, store, config, async () => undefined, async () => "trusted role", clock);
   const pending = runner.launch("run_example01", "implement");
   await waitForStateRequest({ processes: [factory.process] } as unknown as FakePiProcessFactory, 0);
@@ -244,7 +244,7 @@ test("materialization is a bounded pre-spawn stage and lease expiry cannot spawn
     factory,
     { resolve: async () => structuredClone(runtime) },
     store,
-    { roles: roleConfig, materializer, processLeaseMs: 10, allocationStepTimeoutMs: 5, allocationTimeoutMs: 50 },
+    { roles: roleConfig, workspaceReadiness: testWorkspaceReadiness, materializer, processLeaseMs: 10, allocationStepTimeoutMs: 5, allocationTimeoutMs: 50 },
     async () => undefined,
     async () => "trusted role",
     raceClock,

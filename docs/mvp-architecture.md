@@ -163,6 +163,8 @@ The microVM has its own Docker Engine. Builds and tests therefore cannot control
 
 ## 5. Git workspace and delivery boundary
 
+The trusted isolated Git component is specified in [AIDEV-222 Isolated Git Workspace](aidev-222-git-workspace.md). It owns the private bare repository, single linked worktree, bounded offline operations, immutable bundle handoff, retention metadata, and component disposal; downstream tickets retain sandbox, scheduling, host publication, and merge ownership. Its production constructor requires the runtime-authenticated filesystem-isolation authority composed by AIDEV-223: trusted composition pre-opens and retains procfs/nsfs evidence descriptors, binds a private token to their exact kernel identities plus the canonical ticket root, mount namespace, root identity, and observed mount topology, and the operation boundary fails closed on descriptor error, closure, staleness, malformed evidence, or bounded-read overflow. The trusted controller and untrusted phase processes are separate security principals. AIDEV-223 owns namespace creation, principal/identity provisioning, and the same-filesystem bind-mount/path-swap proof; AIDEV-222 only consumes that narrow authority. AIDEV-222's Node `st_dev` and descriptor checks are defense in depth, not a substitute for the AIDEV-223 proof.
+
 ### 5.1 Import and branch creation
 
 A trusted setup operation:
@@ -386,7 +388,7 @@ See [Docker Sandboxes viability spike](docker-sandboxes-viability-spike.md) for 
 | AIDEV-220 | Independent Review gate and remediation loop |
 | AIDEV-221 | Test gate, evidence, and remediation loop |
 | AIDEV-222 | Ticket-private bare repository, worktree, branch, and bundle |
-| AIDEV-223 | Docker Sandboxes template, isolation checks, private Docker |
+| AIDEV-223 | Docker Sandboxes template, isolation checks, private Docker, and the trusted filesystem-isolation capability required by AIDEV-222 |
 | AIDEV-224 | One-ticket intake, concrete SQLite ledger/migrations, reconciliation |
 | AIDEV-225 | Bundle verification, Delivery App branch publication, PR creation |
 | AIDEV-226 | Reviewer App approval and enforced human-only merge preflight |

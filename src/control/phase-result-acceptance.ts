@@ -11,8 +11,9 @@ export class PhaseResultAcceptanceService {
   constructor(readonly store: WorkflowStore, readonly git: GitHeadObserver, readonly validator: V1ArtifactValidator, readonly clock: Clock, readonly semanticPolicy: TransitiveSemanticPolicy) {}
 
   async accept(runId: string, handoffId: string, reference: ContractReference, lease: LeaseGuard): Promise<{ run: RunSnapshot; accepted: AcceptedPhaseResult; result: PhaseResultDocument }> {
-    const current = await this.store.read(runId);
+    let current = await this.store.read(runId);
     if (!current) throw new Error("run not found");
+    const initial = current;
     if (isTerminal(current.state)) throw new Error("terminal run retains late result as audit-only");
     const index = current.attempts.findIndex(attempt => attempt.handoffId === handoffId);
     const attempt = current.attempts[index];
@@ -21,7 +22,7 @@ export class PhaseResultAcceptanceService {
     if (latestAttempt?.handoffId !== handoffId) throw new Error("result belongs to a superseded phase attempt");
     if (attempt.accepted || attempt.acceptedResult || current.acceptedResultPaths.includes(reference.path)) throw new Error("phase result already accepted");
     if (attempt.inputHead !== current.currentHead) throw new Error("attempt input head is stale");
-    const observedOutputHead = await this.git.observeHead();
+    const observedOutputHead = await this.git.observeHead(runId);
     const validated = await this.validator.acceptPhaseResult(reference, {
       runId,
       handoffId,
@@ -30,9 +31,12 @@ export class PhaseResultAcceptanceService {
       inputHead: attempt.inputHead,
       observedOutputHead,
       inputArtifact: attempt.input
-    }, result => this.semanticPolicy({ run: current, attempt, observedOutputHead, result }), new Set(current.acceptedResultPaths));
-    const observedAgain = await this.git.observeHead();
+    }, result => this.semanticPolicy({ run: initial, attempt, observedOutputHead, result }), new Set(initial.acceptedResultPaths));
+    const observedAgain = await this.git.observeHead(runId);
     if (observedAgain !== observedOutputHead) throw new Error("Git head changed during result acceptance");
+    const refreshed = await this.store.read(runId);
+    if (!refreshed || refreshed.state !== initial.state || refreshed.currentHead !== initial.currentHead || refreshed.attempts[index]?.handoffId !== handoffId || refreshed.attempts[index]?.accepted) throw new Error("run changed during result acceptance");
+    current = refreshed;
     const result = validated.result;
     const nextGeneration = result.phase === "implement" && result.status === "pass" ? current.implementGeneration + 1 : current.implementGeneration;
     const accepted: AcceptedPhaseResult = {

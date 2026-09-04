@@ -56,6 +56,8 @@
     "sources/SRC-2026-09-01-010",
     "sources/SRC-2026-09-02-001",
     "sources/SRC-2026-09-02-002",
+    "sources/aidev-222-descriptor-bound-isolation-evidence",
+    "sources/aidev-222-isolated-git-workspace",
     "sources/durable-noncooperative-process-ownership",
     "sources/fenced-first-session-allocation",
     "sources/obs-2026-09-01-fenced-dispatch-authority-invariant",
@@ -64,7 +66,8 @@
     "sources/registered-session-process-recovery",
     "sources/run-scoped-agent-runtime-resolution",
     "sources/stable-history-trigger-resend-proof",
-    "syntheses/aidev-216-and-aidev-224-ownership-boundary"
+    "syntheses/aidev-216-and-aidev-224-ownership-boundary",
+    "syntheses/aidev-222-isolated-git-workspace"
   ],
   "entities/squire": [
     "concepts/trusted-controller-boundary",
@@ -143,6 +146,34 @@
     "sources/registered-session-process-recovery",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
+  "sources/aidev-222-descriptor-bound-isolation-evidence": [
+    "sources/aidev-222-deterministic-retention-tests",
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/aidev-222-deterministic-retention-tests": [
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/aidev-222-hardened-git-workspace-remediation": [
+    "sources/aidev-222-isolated-git-workspace",
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/aidev-222-isolated-git-workspace": [
+    "sources/aidev-222-deterministic-retention-tests",
+    "sources/aidev-222-hardened-git-workspace-remediation",
+    "sources/aidev-222-review-2-remediation-complete",
+    "sources/aidev-222-review-3-isolation-authentication",
+    "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated",
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/aidev-222-review-2-remediation-complete": [
+    "sources/aidev-222-isolated-git-workspace",
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/aidev-222-review-3-isolation-authentication": [
+    "sources/aidev-222-descriptor-bound-isolation-evidence",
+    "sources/aidev-222-isolated-git-workspace",
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
   "sources/durable-noncooperative-process-ownership": [
     "sources/SRC-2026-09-02-002",
     "sources/fenced-first-session-allocation",
@@ -156,6 +187,24 @@
   ],
   "sources/obs-2026-09-01-fenced-dispatch-authority-invariant": [
     "concepts/trusted-controller-boundary"
+  ],
+  "sources/obs-2026-09-03-aidev-222-git-workspace-implementation-completed": [
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/obs-2026-09-03-aidev-222-remediation-commit-verified": [
+    "sources/aidev-222-isolated-git-workspace"
+  ],
+  "sources/obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete": [
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/obs-2026-09-04-aidev-222-retention-flake-removed": [
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated": [
+    "sources/aidev-222-hardened-git-workspace-remediation"
+  ],
+  "sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed": [
+    "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
@@ -183,9 +232,19 @@
     "sources/SRC-2026-09-01-010",
     "sources/SRC-2026-09-02-001",
     "sources/SRC-2026-09-02-002",
+    "sources/aidev-222-isolated-git-workspace",
     "sources/durable-noncooperative-process-ownership",
     "sources/fenced-first-session-allocation",
     "sources/post-settlement-lease-loss-compensation",
     "sources/stable-history-trigger-resend-proof"
+  ],
+  "syntheses/aidev-222-isolated-git-workspace": [
+    "sources/aidev-222-descriptor-bound-isolation-evidence",
+    "sources/aidev-222-isolated-git-workspace",
+    "sources/aidev-222-review-2-remediation-complete",
+    "sources/aidev-222-review-3-isolation-authentication",
+    "sources/obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete",
+    "sources/obs-2026-09-04-aidev-222-retention-flake-removed",
+    "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated"
   ]
 }

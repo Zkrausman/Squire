@@ -20,7 +20,7 @@ Terminal text and conversational claims never advance workflow state. Unknown co
 
 ## 2. Version 1 schemas
 
-Schemas live under [`contracts/v1/`](../contracts/v1/) and use closed objects unless an extension point is explicitly defined.
+Schemas live under [`contracts/v1/`](../contracts/v1/) and use closed objects unless an extension point is explicitly defined. AIDEV-222 adds a separate closed Git-workspace family under [`contracts/git-workspace/v1/`](../contracts/git-workspace/v1/); it is not a revision of this published v1 family.
 
 | Schema | Purpose |
 |---|---|
@@ -36,6 +36,8 @@ Schemas live under [`contracts/v1/`](../contracts/v1/) and use closed objects un
 | `pull-request-delivery-state` | Current-head PR, checks, Reviewer approval, mergeability, and human-only merge state |
 | `runtime-resolution` | Exact observed Pi and pi-llm-wiki versions, Pi executable, installation identities, and (when supplied by the trusted resolver) local installation roots resolved once for one run; optional v1 model-capability evidence is additive for legacy observations |
 | `common` | IDs, SHAs, artifact references, evidence, findings, failures, phases, and states |
+
+The Git-workspace family contains `workspace-spec`, `workspace-manifest`, and `bundle-manifest`. Its spec binds the exact `squire/<ticket-id>-<run-id>` branch and fixed `/ticket` logical paths; its manifests bind independent Git/resource observations and digest-bound bundle bytes. The published `normalized-ticket` v1 contract remains unchanged even though its legacy physical-branch spelling differs; intake reconciliation is a later owner decision and disagreement must fail closed.
 
 `schemaVersion` is an integer discriminator and is `1` in every v1 top-level artifact. Schema IDs are stable `urn:squire:contracts:v1:<name>` values. Schema changes that alter accepted meaning require `v2`; additive prose clarification or stricter implementation tests may remain v1 only when existing valid artifacts retain the same meaning.
 

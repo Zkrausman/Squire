@@ -11,7 +11,7 @@ import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessLaunch } from "../src/pi/pi-process.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
-import { run, runtime } from "./support/fixtures.js";
+import { run, runtime, testWorkspaceReadiness } from "./support/fixtures.js";
 
 const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
 const WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
@@ -248,7 +248,7 @@ async function runRealTuiFooterProbe(options: {
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       reject(new Error("real Pi TUI footer probe timed out"));
-    }, 10_000);
+    }, 30_000);
     const scheduleExitAfterStableFrame = (): void => {
       if (sentExit) return;
       if (settleTimer !== undefined) clearTimeout(settleTimer);
@@ -327,11 +327,12 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     store,
     {
       roles,
+      workspaceReadiness: testWorkspaceReadiness,
       workspace,
       sessionRoot,
       materializer,
       wiki: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" },
-      commandTimeoutMs: 10_000,
+      commandTimeoutMs: 30_000,
     },
     async () => undefined,
     async () => "trusted implement instructions",

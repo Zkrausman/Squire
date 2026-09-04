@@ -138,6 +138,8 @@ export interface RunPreparationLease {
   state: "held";
 }
 
+import type { GitWorkspaceRecord } from "../git/domain.js";
+
 export interface RunSnapshot {
   runId: string;
   version: number;
@@ -159,12 +161,14 @@ export interface RunSnapshot {
   terminalFence?: RunTerminalFence;
   /** Every materialize/verify operation must release its exact lease before teardown. */
   preparationLeases?: readonly RunPreparationLease[];
+  /** AIDEV-222's operation state; RunQuiescenceAuthority remains the only lifecycle authority. */
+  gitWorkspace?: GitWorkspaceRecord;
 }
 export interface RunPrecondition { version: number; state?: WorkflowState; currentHead?: string }
 export interface Lease { key: string; owner: string; fencingToken: number; expiresAt: number }
 export interface LeaseGuard { key: string; owner: string; fencingToken: number; now: number }
 export interface Clock { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> }
-export interface GitHeadObserver { observeHead(): Promise<string> }
+export interface GitHeadObserver { observeHead(runId?: string): Promise<string> }
 
 export function isTerminal(state: WorkflowState): state is TerminalState {
   return (TERMINAL_STATES as readonly string[]).includes(state);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { ArtifactReference, ContractReference } from "./domain.js";
 
@@ -18,17 +18,33 @@ export class SafeArtifactReader implements ImmutableArtifactReader {
     const root = path.join(this.ticketRoot, rootName);
     const target = path.join(this.ticketRoot, ...reference.path.split("/"));
     let canonicalRoot: string;
-    try { canonicalRoot = await realpath(root); } catch { throw new ArtifactReadError("artifact root is missing"); }
-    const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch(() => { throw new ArtifactReadError("artifact is missing or a symlink"); });
+    try {
+      const rootInfo = await lstat(root);
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new ArtifactReadError("artifact root is not a trusted directory");
+      canonicalRoot = await realpath(root);
+      if (path.resolve(canonicalRoot) !== path.resolve(root)) throw new ArtifactReadError("artifact root has a symbolic-link ancestor");
+    } catch (error) {
+      if (error instanceof ArtifactReadError) throw error;
+      throw new ArtifactReadError("artifact root is missing");
+    }
+    if (constants.O_NOFOLLOW === undefined) throw new ArtifactReadError("secure no-follow artifact reads are unsupported on this platform");
+    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => { throw new ArtifactReadError("artifact is missing or a symlink"); });
     try {
       const before = await handle.stat();
       if (!before.isFile()) throw new ArtifactReadError("artifact is not a regular file");
+      if (before.nlink !== 1) throw new ArtifactReadError("artifact is hardlinked");
       if (before.size > this.maxBytes) throw new ArtifactReadError("artifact exceeds size limit");
       const canonical = await realpath(target);
       if (canonical !== canonicalRoot && !canonical.startsWith(`${canonicalRoot}${path.sep}`)) throw new ArtifactReadError("artifact escapes trusted root");
-      const bytes = await handle.readFile();
+      const bytes = Buffer.allocUnsafe(before.size);
+      let offset = 0;
+      while (offset < before.size) {
+        const read = await handle.read(bytes, offset, before.size - offset, offset);
+        if (read.bytesRead <= 0) throw new ArtifactReadError("artifact ended during bounded read");
+        offset += read.bytesRead;
+      }
       const after = await handle.stat();
-      if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new ArtifactReadError("artifact changed during read");
+      if (before.dev !== after.dev || before.ino !== after.ino || before.mode !== after.mode || before.nlink !== after.nlink || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new ArtifactReadError("artifact changed during read");
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== reference.sha256) throw new ArtifactReadError("artifact digest mismatch");
       return bytes;

@@ -28,6 +28,15 @@ export interface RunQuiescenceAuthority {
   completeRunTeardown(runId: string, fence: RunTerminalFence, now?: number): Promise<void>;
 }
 
+/**
+ * Git workspace operations use this existing generic lease/CAS surface. The
+ * RunQuiescenceAuthority preparation leases and terminal fence remain the
+ * single lifecycle authority: acquireRunTerminalFence must continue to see
+ * generic leases and preparationLeases, ordinary mutation is forbidden after
+ * the fence, and a crashed Git operation may release only its exact persisted
+ * preparation owner after command-supervisor proof that no child is live or
+ * unknown. No Git-specific lifecycle or SQL method belongs here.
+ */
 export interface WorkflowStore extends RunQuiescenceAuthority {
   create(snapshot: RunSnapshot): Promise<void>;
   read(runId: string): Promise<RunSnapshot | undefined>;
