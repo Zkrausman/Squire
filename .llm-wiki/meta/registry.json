@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-04T01:28:21.807Z",
+  "last_updated": "2026-09-04T01:37:03.332Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -279,6 +279,24 @@
       "relevance": "high",
       "observed_at": "2026-09-04T00:02:47.484Z",
       "source_context": "Remediating AIDEV-222 after independent review attempt 2",
+      "created": "2026-09-04",
+      "updated": "2026-09-04"
+    },
+    "sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed": {
+      "type": "source",
+      "title": "Observation: AIDEV-222 Review 3 isolation blocker closed",
+      "tags": [
+        "aidev-222",
+        "security",
+        "filesystem",
+        "git",
+        "review-3"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed",
+      "relevance": "high",
+      "observed_at": "2026-09-04T01:35:30.296Z",
+      "source_context": "AIDEV-222 attempt-4 review remediation and verification",
       "created": "2026-09-04",
       "updated": "2026-09-04"
     },

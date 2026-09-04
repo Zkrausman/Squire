@@ -30,6 +30,7 @@
 - [[sources/obs-2026-09-03-aidev-222-git-workspace-implementation-completed]] — Observation: AIDEV-222 Git workspace implementation completed *(created: 2026-09-03)*
 - [[sources/obs-2026-09-03-aidev-222-remediation-commit-verified]] — Observation: AIDEV-222 remediation commit verified *(created: 2026-09-03)*
 - [[sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated]] — Observation: AIDEV-222 review-2 blockers remediated *(created: 2026-09-04)*
+- [[sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed]] — Observation: AIDEV-222 Review 3 isolation blocker closed *(created: 2026-09-04)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/post-settlement-lease-loss-compensation]] — Post-settlement lease-loss compensation *(created: 2026-09-01)*
 - [[sources/registered-session-process-recovery]] — Registered-session process recovery *(created: 2026-09-02)*
@@ -52,4 +53,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-04T01:28:21.807Z* | *Total pages: 34*
+*Last updated: 2026-09-04T01:37:03.332Z* | *Total pages: 35*
