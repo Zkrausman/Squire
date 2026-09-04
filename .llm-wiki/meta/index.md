@@ -21,6 +21,7 @@
 ## Sources
 
 - [[sources/aidev-222-descriptor-bound-isolation-evidence]] — AIDEV-222 descriptor-bound isolation evidence *(created: 2026-09-04)*
+- [[sources/aidev-222-deterministic-retention-tests]] — AIDEV-222 deterministic retention tests *(created: 2026-09-04)*
 - [[sources/aidev-222-hardened-git-workspace-remediation]] — AIDEV-222 hardened Git workspace remediation *(created: 2026-09-03)*
 - [[sources/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 - [[sources/aidev-222-review-2-remediation-complete]] — AIDEV-222 review-2 remediation complete *(created: 2026-09-04)*
@@ -31,6 +32,7 @@
 - [[sources/obs-2026-09-03-aidev-222-git-workspace-implementation-completed]] — Observation: AIDEV-222 Git workspace implementation completed *(created: 2026-09-03)*
 - [[sources/obs-2026-09-03-aidev-222-remediation-commit-verified]] — Observation: AIDEV-222 remediation commit verified *(created: 2026-09-03)*
 - [[sources/obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete]] — Observation: AIDEV-222 descriptor evidence remediation complete *(created: 2026-09-04)*
+- [[sources/obs-2026-09-04-aidev-222-retention-flake-removed]] — Observation: AIDEV-222 retention flake removed *(created: 2026-09-04)*
 - [[sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated]] — Observation: AIDEV-222 review-2 blockers remediated *(created: 2026-09-04)*
 - [[sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed]] — Observation: AIDEV-222 Review 3 isolation blocker closed *(created: 2026-09-04)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
@@ -55,4 +57,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-04T02:49:29.740Z* | *Total pages: 37*
+*Last updated: 2026-09-04T04:17:56.247Z* | *Total pages: 39*
