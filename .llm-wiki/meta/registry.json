@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-04T02:43:25.334Z",
+  "last_updated": "2026-09-04T02:49:29.740Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -271,6 +271,23 @@
       "source_context": "Implementing isolated Git workspace for AIDEV-222",
       "created": "2026-09-03",
       "updated": "2026-09-03"
+    },
+    "sources/obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete": {
+      "type": "source",
+      "title": "Observation: AIDEV-222 descriptor evidence remediation complete",
+      "tags": [
+        "aidev-222",
+        "descriptor-isolation",
+        "security",
+        "review-4"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete",
+      "relevance": "high",
+      "observed_at": "2026-09-04T02:49:24.441Z",
+      "source_context": "AIDEV-222 attempt-5 REV4-001 remediation completion",
+      "created": "2026-09-04",
+      "updated": "2026-09-04"
     },
     "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated": {
       "type": "source",

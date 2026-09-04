@@ -22,6 +22,7 @@
 - [Observation: Fenced dispatch authority invariant](obs-2026-09-01-fenced-dispatch-authority-invariant.md)
 - [Observation: AIDEV-222 Git workspace implementation completed](obs-2026-09-03-aidev-222-git-workspace-implementation-completed.md)
 - [Observation: AIDEV-222 remediation commit verified](obs-2026-09-03-aidev-222-remediation-commit-verified.md)
+- [Observation: AIDEV-222 descriptor evidence remediation complete](obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete.md)
 - [Observation: AIDEV-222 review-2 blockers remediated](obs-2026-09-04-aidev-222-review-2-blockers-remediated.md)
 - [Observation: AIDEV-222 Review 3 isolation blocker closed](obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed.md)
 - [Persisted acceptance authority chain](persisted-acceptance-authority-chain.md)

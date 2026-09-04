@@ -189,6 +189,9 @@
   "sources/obs-2026-09-03-aidev-222-remediation-commit-verified": [
     "sources/aidev-222-isolated-git-workspace"
   ],
+  "sources/obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete": [
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
   "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated": [
     "sources/aidev-222-hardened-git-workspace-remediation"
   ],
@@ -232,6 +235,7 @@
     "sources/aidev-222-isolated-git-workspace",
     "sources/aidev-222-review-2-remediation-complete",
     "sources/aidev-222-review-3-isolation-authentication",
+    "sources/obs-2026-09-04-aidev-222-descriptor-evidence-remediation-complete",
     "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated"
   ]
 }
