@@ -7,7 +7,7 @@ import { InMemoryWorkflowStore } from "./in-memory-workflow-store.js";
 import { run } from "./fixtures.js";
 import { GitWorkspaceService, type GitSourceAuthorization } from "../../src/git/workspace-service.js";
 import type { GitWorkspaceSpecInput } from "../../src/git/domain.js";
-import { composeTrustedFilesystemIsolationAuthority, type TrustedFilesystemIsolationAuthority } from "../../src/git/trusted-isolation.js";
+import { closeTrustedFilesystemIsolationAuthority, composeTrustedFilesystemIsolationAuthority, type TrustedFilesystemIsolationAuthority } from "../../src/git/trusted-isolation.js";
 
 const exec = promisify(execFile);
 
@@ -91,6 +91,9 @@ export async function createGitFixture(options: { readonly runId?: string; reado
     service,
     filesystemAuthority,
     input,
-    cleanup: () => rm(root, { recursive: true, force: true }),
+    cleanup: async () => {
+      await closeTrustedFilesystemIsolationAuthority(filesystemAuthority).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    },
   };
 }

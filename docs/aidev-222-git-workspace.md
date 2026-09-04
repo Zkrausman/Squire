@@ -18,16 +18,28 @@ is rechecked against the merged preparation/terminal authority.
 
 The constructor requires a runtime-authenticated
 `TrustedFilesystemIsolationAuthority` issued by the narrow
-`composeTrustedFilesystemIsolationAuthority` composition boundary. The token's
-class, constructor secret, identity set, and root/mount observation are private;
-a JavaScript lookalike, stale token, cross-root token, or unavailable namespace
-evidence fails closed. The operation boundary rechecks the exact canonical root,
-mount namespace, root identity, and nested-mount topology immediately before
-service side effects. AIDEV-223 composes this boundary only after its
-sandbox/openat2-or-equivalent setup has proved ticket containment,
-same-filesystem bind-mount resistance, and descriptor/path swap resistance.
-Node's descriptor and `st_dev` checks remain defense in depth and are not the
-production mount proof.
+`composeTrustedFilesystemIsolationAuthority` composition boundary. At issuance,
+trusted composition pre-opens the procfs root, the mount-namespace nsfs
+handle, and `/proc/self/mountinfo`; it retains their non-substitutable kernel
+references, records exact `fstat` identities, and reads bounded live topology
+only from the held mountinfo descriptor. Operations revalidate those descriptor
+identities and read the same descriptors without reopening a procfs pathname;
+descriptor errors, closure/staleness, malformed data, or overflow fail closed.
+The token's class, constructor secret, identity set, descriptors, and
+root/mount observation are private; a JavaScript lookalike, stale token,
+cross-root token, or unavailable namespace evidence fails closed. The explicit
+`closeTrustedFilesystemIsolationAuthority` owner lifecycle is idempotent, and
+closed authorities cannot authorize a constructor or side effect. AIDEV-223
+composes this boundary only after its sandbox/openat2-or-equivalent setup has
+proved ticket containment, same-filesystem bind-mount resistance, and
+descriptor/path swap resistance. Node's descriptor and `st_dev` checks remain
+defense in depth and are not the production mount proof.
+
+The trusted controller process and each untrusted phase process are separate
+security principals. AIDEV-222 consumes the already-composed authority; it
+neither creates a namespace nor provisions controller/phase identities.
+Namespace creation, principal separation, and identity provisioning belong to
+AIDEV-223.
 
 The service validates the immutable spec, requires an injected closed
 repository-source authorizer, rejects private/DNS-resolved destinations and
@@ -87,6 +99,7 @@ disposal identity contains authenticated snapshots of the exact contract bytes
 and per-target completion markers, preserving the validated resource proof
 after the artifact manifest itself is removed; recovery never trusts a mutable
 journal alone. Repeating the same disposal under the same held fence is safe. Sandbox setup, scheduling, publication, and merge remain owned by AIDEV-223
-through AIDEV-226. AIDEV-223 also owns the concrete OS isolation proof and
-composes the narrow authority required before this component may perform
-production Git side effects.
+through AIDEV-226. AIDEV-223 also owns the concrete OS isolation proof, namespace creation, and
+controller/phase principal and identity provisioning; it composes the narrow
+authority required before this component may perform production Git side
+effects.

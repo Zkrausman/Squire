@@ -7,7 +7,7 @@ import path from "node:path";
 import { AllowlistedRepositorySourceAuthorizer, buildGitHttpsResolveConfig, RepositorySourceAuthorizationError } from "../src/git/source-authorizer.js";
 import { assertCredentialFreeHttpsCloneUrl, isUnsafeNetworkAddress } from "../src/git/identity.js";
 import { GitWorkspaceService } from "../src/git/workspace-service.js";
-import { composeTrustedFilesystemIsolationAuthority } from "../src/git/trusted-isolation.js";
+import { closeTrustedFilesystemIsolationAuthority, composeTrustedFilesystemIsolationAuthority } from "../src/git/trusted-isolation.js";
 import { createGitFixture } from "./support/git-fixture.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
 import { run } from "./support/fixtures.js";
@@ -39,7 +39,11 @@ test("Git HTTPS transport receives only the authorizer-approved address set", as
 
 test("production authorizer and real Git import pin the approved HTTPS addresses across a DNS change", async t => {
   const ticketRoot = await mkdtemp(path.join(os.tmpdir(), "squire-https-import-"));
-  t.after(() => rm(ticketRoot, { recursive: true, force: true }));
+  let filesystemAuthority: Awaited<ReturnType<typeof composeTrustedFilesystemIsolationAuthority>> | undefined;
+  t.after(async () => {
+    if (filesystemAuthority) await closeTrustedFilesystemIsolationAuthority(filesystemAuthority).catch(() => undefined);
+    await rm(ticketRoot, { recursive: true, force: true });
+  });
   const repository = { owner: "octocat", name: "Hello-World", cloneUrl: "https://github.com/octocat/Hello-World.git" };
   const publicAddresses = (await lookup("github.com", { all: true, verbatim: true })).map(value => value.address).filter(address => !isUnsafeNetworkAddress(address));
   assert.ok(publicAddresses.length > 0, "the HTTPS E2E requires at least one public GitHub address");
@@ -59,8 +63,9 @@ test("production authorizer and real Git import pin the approved HTTPS addresses
   });
   const store = new InMemoryWorkflowStore();
   await store.create(run({ currentHead: "a".repeat(40) }));
-  const filesystemAuthority = await composeTrustedFilesystemIsolationAuthority(ticketRoot);
-  const service = new GitWorkspaceService({ store, ticketRoot, filesystemAuthority, sourceAuthorizer: authorizer, requirePublishingGates: false, commandTimeoutMs: 30_000 });
+  const authority = await composeTrustedFilesystemIsolationAuthority(ticketRoot);
+  filesystemAuthority = authority;
+  const service = new GitWorkspaceService({ store, ticketRoot, filesystemAuthority: authority, sourceAuthorizer: authorizer, requirePublishingGates: false, commandTimeoutMs: 30_000 });
   const input = { runId: "run_example01", ticketIdentifier: "AIDEV-222", repository, baseBranch: "master", baseSha: "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d", objectFormat: "sha1" as const };
   const spec = await service.createSpec(input);
   const ready = await service.provision(input.runId, spec, "https-e2e");

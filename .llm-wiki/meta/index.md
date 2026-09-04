@@ -20,6 +20,7 @@
 
 ## Sources
 
+- [[sources/aidev-222-descriptor-bound-isolation-evidence]] — AIDEV-222 descriptor-bound isolation evidence *(created: 2026-09-04)*
 - [[sources/aidev-222-hardened-git-workspace-remediation]] — AIDEV-222 hardened Git workspace remediation *(created: 2026-09-03)*
 - [[sources/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 - [[sources/aidev-222-review-2-remediation-complete]] — AIDEV-222 review-2 remediation complete *(created: 2026-09-04)*
@@ -53,4 +54,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-04T01:37:03.332Z* | *Total pages: 35*
+*Last updated: 2026-09-04T02:43:25.334Z* | *Total pages: 36*

@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-04T01:37:03.332Z",
+  "last_updated": "2026-09-04T02:43:25.334Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -154,6 +154,15 @@
       "source_id": "SRC-2026-09-02-002",
       "format": "json",
       "captured": "2026-09-02"
+    },
+    "sources/aidev-222-descriptor-bound-isolation-evidence": {
+      "type": "source",
+      "title": "AIDEV-222 descriptor-bound isolation evidence",
+      "category": "security",
+      "status": "insight",
+      "slug": "aidev-222-descriptor-bound-isolation-evidence",
+      "created": "2026-09-04",
+      "updated": "2026-09-04"
     },
     "sources/aidev-222-hardened-git-workspace-remediation": {
       "type": "source",

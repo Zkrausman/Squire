@@ -12,6 +12,7 @@
 - [AIDEV-216 Review Attempt 4 Findings](SRC-2026-09-01-010.md)
 - [AIDEV-216 Review Attempt 5 Findings](SRC-2026-09-02-001.md)
 - [AIDEV-216 Review Attempt 6 Findings](SRC-2026-09-02-002.md)
+- [AIDEV-222 descriptor-bound isolation evidence](aidev-222-descriptor-bound-isolation-evidence.md)
 - [AIDEV-222 hardened Git workspace remediation](aidev-222-hardened-git-workspace-remediation.md)
 - [AIDEV-222 isolated Git workspace](aidev-222-isolated-git-workspace.md)
 - [AIDEV-222 review-2 remediation complete](aidev-222-review-2-remediation-complete.md)

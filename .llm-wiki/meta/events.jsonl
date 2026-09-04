@@ -40,3 +40,4 @@
 {"slug":"aidev-222-review-2-remediation-complete","title":"AIDEV-222 review-2 remediation complete","category":"architecture","timestamp":"2026-09-04T00:05:59.993Z","kind":"retro"}
 {"slug":"aidev-222-review-3-isolation-authentication","title":"AIDEV-222 runtime isolation authentication","category":"security","timestamp":"2026-09-04T01:27:53.256Z","kind":"retro"}
 {"slug":"obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed","title":"AIDEV-222 Review 3 isolation blocker closed","relevance":"high","timestamp":"2026-09-04T01:35:30.298Z","kind":"observe"}
+{"slug":"aidev-222-descriptor-bound-isolation-evidence","title":"AIDEV-222 descriptor-bound isolation evidence","category":"security","timestamp":"2026-09-04T02:43:19.810Z","kind":"retro"}
