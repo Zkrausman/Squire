@@ -22,6 +22,7 @@
 
 - [[sources/aidev-222-hardened-git-workspace-remediation]] — AIDEV-222 hardened Git workspace remediation *(created: 2026-09-03)*
 - [[sources/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
+- [[sources/aidev-222-review-2-remediation-complete]] — AIDEV-222 review-2 remediation complete *(created: 2026-09-04)*
 - [[sources/durable-noncooperative-process-ownership]] — Durable non-cooperative process ownership *(created: 2026-09-02)*
 - [[sources/fenced-first-session-allocation]] — Fenced first-session allocation *(created: 2026-09-01)*
 - [[sources/obs-2026-09-01-fenced-dispatch-authority-invariant]] — Observation: Fenced dispatch authority invariant *(created: 2026-09-01)*
@@ -50,4 +51,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-04T00:04:24.584Z* | *Total pages: 32*
+*Last updated: 2026-09-04T00:06:40.458Z* | *Total pages: 33*

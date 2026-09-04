@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-04T00:04:24.584Z",
+  "last_updated": "2026-09-04T00:06:40.458Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -172,6 +172,15 @@
       "slug": "aidev-222-isolated-git-workspace",
       "created": "2026-09-03",
       "updated": "2026-09-03"
+    },
+    "sources/aidev-222-review-2-remediation-complete": {
+      "type": "source",
+      "title": "AIDEV-222 review-2 remediation complete",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "aidev-222-review-2-remediation-complete",
+      "created": "2026-09-04",
+      "updated": "2026-09-04"
     },
     "sources/durable-noncooperative-process-ownership": {
       "type": "source",

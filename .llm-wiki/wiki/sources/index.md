@@ -14,6 +14,7 @@
 - [AIDEV-216 Review Attempt 6 Findings](SRC-2026-09-02-002.md)
 - [AIDEV-222 hardened Git workspace remediation](aidev-222-hardened-git-workspace-remediation.md)
 - [AIDEV-222 isolated Git workspace](aidev-222-isolated-git-workspace.md)
+- [AIDEV-222 review-2 remediation complete](aidev-222-review-2-remediation-complete.md)
 - [Durable non-cooperative process ownership](durable-noncooperative-process-ownership.md)
 - [Fenced first-session allocation](fenced-first-session-allocation.md)
 - [Observation: Fenced dispatch authority invariant](obs-2026-09-01-fenced-dispatch-authority-invariant.md)

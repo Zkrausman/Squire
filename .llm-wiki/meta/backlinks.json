@@ -151,7 +151,12 @@
   ],
   "sources/aidev-222-isolated-git-workspace": [
     "sources/aidev-222-hardened-git-workspace-remediation",
+    "sources/aidev-222-review-2-remediation-complete",
     "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated",
+    "syntheses/aidev-222-isolated-git-workspace"
+  ],
+  "sources/aidev-222-review-2-remediation-complete": [
+    "sources/aidev-222-isolated-git-workspace",
     "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/durable-noncooperative-process-ownership": [
@@ -211,6 +216,7 @@
   ],
   "syntheses/aidev-222-isolated-git-workspace": [
     "sources/aidev-222-isolated-git-workspace",
+    "sources/aidev-222-review-2-remediation-complete",
     "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated"
   ]
 }
