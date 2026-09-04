@@ -7,6 +7,7 @@ import { InMemoryWorkflowStore } from "./in-memory-workflow-store.js";
 import { run } from "./fixtures.js";
 import { GitWorkspaceService, type GitSourceAuthorization } from "../../src/git/workspace-service.js";
 import type { GitWorkspaceSpecInput } from "../../src/git/domain.js";
+import type { Clock } from "../../src/control/domain.js";
 import { closeTrustedFilesystemIsolationAuthority, composeTrustedFilesystemIsolationAuthority, type TrustedFilesystemIsolationAuthority } from "../../src/git/trusted-isolation.js";
 
 const exec = promisify(execFile);
@@ -25,7 +26,7 @@ export interface GitFixture {
   readonly cleanup: () => Promise<void>;
 }
 
-export async function createGitFixture(options: { readonly runId?: string; readonly objectFormat?: "sha1" | "sha256"; readonly workflowState?: "accepted" | "publishing"; readonly maliciousSourceMetadata?: boolean } = {}): Promise<GitFixture> {
+export async function createGitFixture(options: { readonly runId?: string; readonly objectFormat?: "sha1" | "sha256"; readonly workflowState?: "accepted" | "publishing"; readonly maliciousSourceMetadata?: boolean; readonly clock?: Clock } = {}): Promise<GitFixture> {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-git-workspace-"));
   const source = path.join(root, "source");
   const ticketRoot = path.join(root, "ticket");
@@ -72,7 +73,7 @@ export async function createGitFixture(options: { readonly runId?: string; reado
     authorize: async (): Promise<GitSourceAuthorization> => ({ cloneUrl: source, localTransport: true }),
   };
   const filesystemAuthority = await composeTrustedFilesystemIsolationAuthority(ticketRoot);
-  const service = new GitWorkspaceService({ store, ticketRoot, filesystemAuthority, allowLocalTransport: true, requirePublishingGates: false, sourceAuthorizer });
+  const service = new GitWorkspaceService({ store, ticketRoot, filesystemAuthority, ...(options.clock ? { clock: options.clock } : {}), allowLocalTransport: true, requirePublishingGates: false, sourceAuthorizer });
   const input: GitWorkspaceSpecInput = {
     runId,
     ticketIdentifier: "AIDEV-222",

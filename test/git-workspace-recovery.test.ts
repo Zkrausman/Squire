@@ -6,6 +6,7 @@ import path from "node:path";
 import type { GitChildProcess, GitReadable } from "../src/git/git-command.js";
 import { GitWorkspaceService } from "../src/git/workspace-service.js";
 import { createGitFixture } from "./support/git-fixture.js";
+import { createControllableClock } from "./support/controllable-clock.js";
 
 test("concurrent controllers serialize provisioning and converge on one immutable manifest", async t => {
   const fixture = await createGitFixture();
@@ -25,24 +26,24 @@ test("concurrent controllers serialize provisioning and converge on one immutabl
 });
 
 test("cleanup does not bless an unexplained missing resource", async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   t.after(fixture.cleanup);
   const spec = await fixture.service.createSpec(fixture.input);
   await fixture.service.provision(fixture.input.runId, spec, "cleanup-missing");
-  const now = Date.now();
-  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(now + 50).toISOString(), bundleRetainUntil: new Date(now + 50).toISOString() };
+  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(clock.now() + 60_000).toISOString(), bundleRetainUntil: new Date(clock.now() + 60_000).toISOString() };
   await fixture.service.markRetained(fixture.input.runId, policy, "cleanup-missing-retention");
-  await new Promise(resolve => setTimeout(resolve, 100));
+  clock.advance(120_000);
   await (await import("node:fs/promises")).rm(path.join(fixture.ticketRoot, "workspace"), { recursive: true, force: true });
-  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "cleanup-missing-terminal", Date.now());
-  await assert.rejects(() => fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: now + 1_000, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil }), /neither source|proven/u);
+  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "cleanup-missing-terminal", clock.now());
+  await assert.rejects(() => fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil }), /neither source|proven/u);
 });
 
 test("future caller time cannot bypass a persisted retention deadline", async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   t.after(fixture.cleanup);
-  const trustedNow = Date.now();
-  const clock = { now: () => trustedNow, sleep: async () => undefined };
+  const trustedNow = clock.now();
   const trustedService = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, clock, requirePublishingGates: false });
   const spec = await fixture.service.createSpec(fixture.input);
   await fixture.service.provision(fixture.input.runId, spec, "trusted-time-provision");
@@ -54,25 +55,25 @@ test("future caller time cannot bypass a persisted retention deadline", async t 
 });
 
 test("retention is immutable and fenced disposal is idempotent without completing global teardown", async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   t.after(fixture.cleanup);
   const spec = await fixture.service.createSpec(fixture.input);
   await fixture.service.provision(fixture.input.runId, spec, "retention");
-  const now = Date.now();
-  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(now + 500).toISOString(), bundleRetainUntil: new Date(now + 500).toISOString() };
+  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(clock.now() + 60_000).toISOString(), bundleRetainUntil: new Date(clock.now() + 60_000).toISOString() };
   await fixture.service.markRetained(fixture.input.runId, policy, "retention");
   assert.deepEqual(await fixture.service.markRetained(fixture.input.runId, policy, "retention-retry"), await fixture.store.read(fixture.input.runId).then(snapshot => snapshot!.gitWorkspace));
-  await new Promise(resolve => setTimeout(resolve, 600));
-  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "terminal-owner", Date.now());
-  await assert.rejects(() => fixture.service.disposeUnderTerminalFence(fixture.input.runId, { ...fence, fencingToken: fence.fencingToken + 1 }, { now: Date.now() }), /fence/u);
+  clock.advance(120_000);
+  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "terminal-owner", clock.now());
+  await assert.rejects(() => fixture.service.disposeUnderTerminalFence(fixture.input.runId, { ...fence, fencingToken: fence.fencingToken + 1 }, { now: clock.now() }), /fence/u);
   const disposals = await Promise.all([
-    fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil }),
-    fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil }),
+    fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil }),
+    fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil }),
   ]);
   assert.equal(disposals[0]!.removed.length + disposals[0]!.alreadyAbsent.length, 4);
   assert.equal(disposals[1]!.removed.length + disposals[1]!.alreadyAbsent.length, 4);
-  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, requirePublishingGates: false });
-  const repeated = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, clock, requirePublishingGates: false });
+  const repeated = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.equal(repeated.alreadyAbsent.length, 4);
   assert.equal((await fixture.store.read(fixture.input.runId))?.terminalFence?.state, "held");
   await assert.rejects(() => stat(path.join(fixture.ticketRoot, "workspace")));
@@ -102,56 +103,55 @@ async function seedUnresolvedGitOperation(fixture: Awaited<ReturnType<typeof cre
 }
 
 test("workspace-first disposal preserves the bundle for restart-safe later cleanup", async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   t.after(fixture.cleanup);
   const spec = await fixture.service.createSpec(fixture.input);
   const ready = await fixture.service.provision(fixture.input.runId, spec, "workspace-first-provision");
   await fixture.service.exportBundle(fixture.input.runId, ready.headSha, "workspace-first-export");
-  const now = Date.now();
-  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(now + 50).toISOString(), bundleRetainUntil: new Date(now + 300).toISOString() };
+  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(clock.now() + 60_000).toISOString(), bundleRetainUntil: new Date(clock.now() + 60_000).toISOString() };
   await fixture.service.markRetained(fixture.input.runId, policy, "workspace-first-retention");
-  await new Promise(resolve => setTimeout(resolve, 100));
-  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "workspace-first-terminal", Date.now());
-  const first = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: true, disposeBundle: false, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  clock.advance(120_000);
+  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "workspace-first-terminal", clock.now());
+  const first = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), disposeWorkspace: true, disposeBundle: false, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.deepEqual(first.removed, [path.join(fixture.ticketRoot, "workspace"), path.join(fixture.ticketRoot, "git", "repo.git"), path.join(fixture.ticketRoot, "control", "git", fixture.input.runId)]);
-  await new Promise(resolve => setTimeout(resolve, 250));
-  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, requirePublishingGates: false });
-  const second = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: false, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, clock, requirePublishingGates: false });
+  const second = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), disposeWorkspace: false, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.deepEqual(second.removed, [path.join(fixture.ticketRoot, "artifacts", "git", fixture.input.runId)]);
-  const retry = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: true, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  const retry = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), disposeWorkspace: true, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.equal(retry.alreadyAbsent.length, 4);
 });
 
 test("bundle-only disposal retains an authenticated snapshot for later workspace cleanup", async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   t.after(fixture.cleanup);
   const spec = await fixture.service.createSpec(fixture.input);
   await fixture.service.provision(fixture.input.runId, spec, "split-disposal-provision");
-  const now = Date.now();
-  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(now + 50).toISOString(), bundleRetainUntil: new Date(now + 50).toISOString() };
+  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(clock.now() + 60_000).toISOString(), bundleRetainUntil: new Date(clock.now() + 60_000).toISOString() };
   await fixture.service.markRetained(fixture.input.runId, policy, "split-disposal-retention");
-  await new Promise(resolve => setTimeout(resolve, 100));
-  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "split-disposal-terminal", Date.now());
-  const first = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: false, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  clock.advance(120_000);
+  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "split-disposal-terminal", clock.now());
+  const first = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), disposeWorkspace: false, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.deepEqual(first.removed, [path.join(fixture.ticketRoot, "artifacts", "git", fixture.input.runId)]);
-  const second = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: true, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  const second = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), disposeWorkspace: true, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.equal(second.removed.length + second.alreadyAbsent.length, 4);
 });
 
 test("disposal resumes an exact root that was moved before the next controller started", async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   t.after(fixture.cleanup);
   const spec = await fixture.service.createSpec(fixture.input);
   await fixture.service.provision(fixture.input.runId, spec, "partial-disposal-provision");
-  const now = Date.now();
-  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(now + 50).toISOString(), bundleRetainUntil: new Date(now + 50).toISOString() };
+  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(clock.now() + 60_000).toISOString(), bundleRetainUntil: new Date(clock.now() + 60_000).toISOString() };
   await fixture.service.markRetained(fixture.input.runId, policy, "partial-disposal-retention");
-  await new Promise(resolve => setTimeout(resolve, 100));
-  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "partial-disposal-terminal", Date.now());
+  clock.advance(120_000);
+  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "partial-disposal-terminal", clock.now());
   const disposal = path.join(fixture.ticketRoot, "control", "git-workspace-disposal", `.git-workspace-disposal-${fixture.input.runId}-${fence.fencingToken}`);
   await mkdir(disposal, { recursive: true, mode: 0o700 });
   await rename(path.join(fixture.ticketRoot, "workspace"), path.join(disposal, "workspace"));
-  const result = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  const result = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.equal(result.removed.length + result.alreadyAbsent.length, 4);
   await assert.rejects(() => stat(path.join(fixture.ticketRoot, "workspace")));
 });

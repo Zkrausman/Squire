@@ -68,6 +68,8 @@ class RealChild implements GitChildProcess {
 
 class RealProcessFactory implements GitProcessFactory {
   last?: RealChild;
+  #spawnWaiters: Array<() => void> = [];
+  waitForNextSpawn(): Promise<void> { return new Promise(resolve => this.#spawnWaiters.push(resolve)); }
   async spawn(spec: { command: string; args: readonly string[]; cwd: string; env: Readonly<Record<string, string>> }, signal?: AbortSignal, onSpawn?: (process: GitChildProcess) => void | Promise<void>, passFileDescriptors: readonly number[] = []): Promise<GitChildProcess> {
     const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: { ...spec.env }, shell: false, stdio: ["ignore", "pipe", "pipe", ...passFileDescriptors] });
     const process = new RealChild(child);
@@ -78,6 +80,7 @@ class RealProcessFactory implements GitProcessFactory {
       signal.addEventListener("abort", abort, { once: true });
       process.on("exit", () => signal.removeEventListener("abort", abort));
     }
+    for (const resolve of this.#spawnWaiters.splice(0)) resolve();
     return process;
   }
 }
@@ -86,7 +89,7 @@ test("real Git supervisor observes immediate/abnormal exits, bounds output, and 
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-git-command-real-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const script = path.join(root, "git-test-child.mjs");
-  await writeFile(script, `#!/usr/bin/env ${process.execPath}\nconst mode = process.argv[3];\nif (mode === "fail") process.exit(7);\nif (mode === "overflow") { process.on("SIGTERM", () => {}); process.stdout.write("x".repeat(4096)); setInterval(() => {}, 1000); }\nif (mode === "sleep") { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }\nif (mode === "immediate") { process.stdout.write("observed\\n"); process.exit(0); }
+  await writeFile(script, `#!/usr/bin/env ${process.execPath}\nconst mode = process.argv[3];\nif (mode === "fail") process.exit(7);\nif (mode === "overflow") { process.on("SIGTERM", () => process.exit(143)); process.stdout.write("x".repeat(4096)); setInterval(() => {}, 1000); }\nif (mode === "sleep") { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }\nif (mode === "immediate") { process.stdout.write("observed\\n"); process.exit(0); }
 if (!mode) process.exit(0);\n`);
   await chmod(script, 0o700);
   const factory = new RealProcessFactory();
@@ -95,14 +98,16 @@ if (!mode) process.exit(0);\n`);
   const immediate = await runner.run(["immediate"], { cwd: root, ticketRoot: root, runId: "run_example01", onObservedExit: () => { observed = true; } });
   assert.equal(immediate.stdout, "observed\n");
   assert.equal(observed, true);
-  const delayedAcknowledgement = await runner.run(["immediate"], { cwd: root, ticketRoot: root, runId: "run_example01", onSpawn: async () => new Promise<void>(resolve => setTimeout(resolve, 50)) });
+  const delayedAcknowledgement = await runner.run(["immediate"], { cwd: root, ticketRoot: root, runId: "run_example01", onSpawn: async process => { await process.waitForExit(5_000); } });
   assert.equal(delayedAcknowledgement.stdout, "observed\n", "output must be collected before durable spawn acknowledgement settles");
   await assert.rejects(() => runner.run(["fail"], { cwd: root, ticketRoot: root, runId: "run_example01" }), (error: unknown) => error instanceof GitCommandError && error.result?.exitCode === 7);
-  await assert.rejects(() => runner.run(["overflow"], { cwd: root, ticketRoot: root, runId: "run_example01", timeoutMs: 100, maxOutputBytes: 256 }), GitCommandError);
+  await assert.rejects(() => runner.run(["overflow"], { cwd: root, ticketRoot: root, runId: "run_example01", timeoutMs: 5_000, maxOutputBytes: 256 }), GitCommandError);
   assert.equal(factory.last?.signals[0], "SIGTERM");
   const controller = new AbortController();
-  const cancellation = runner.run(["sleep"], { cwd: root, ticketRoot: root, runId: "run_example01", timeoutMs: 100, signal: controller.signal });
-  setTimeout(() => controller.abort(), 100);
+  const spawned = factory.waitForNextSpawn();
+  const cancellation = runner.run(["sleep"], { cwd: root, ticketRoot: root, runId: "run_example01", timeoutMs: 5_000, signal: controller.signal });
+  await spawned;
+  controller.abort();
   await assert.rejects(() => cancellation, GitCommandAbortedError);
   assert.ok((factory.last?.signals.length ?? 0) >= 2, "cancellation must escalate a noncooperative child");
 });

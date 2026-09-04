@@ -11,6 +11,7 @@ import { createGitFixture } from "./support/git-fixture.js";
 import { FakePiProcessFactory, FakeRuntimeResolver } from "./support/fake-pi-process.js";
 import { RealPiProcessFactory } from "./support/real-pi-process.js";
 import { runtime } from "./support/fixtures.js";
+import { createControllableClock } from "./support/controllable-clock.js";
 
 const REAL_PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
 const REAL_WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
@@ -19,7 +20,8 @@ const REAL_WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
  * Git, the materializer, profile defaults, footer bytes, and lifecycle store
  * are exercised against temporary ticket/repository roots. */
 test("Git readiness gates real Pi materialization and ordered aggregate teardown", async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   t.after(fixture.cleanup);
   const wikiRoot = path.join(fixture.root, "wiki-installation");
   await mkdir(path.join(wikiRoot, "extensions", "llm-wiki"), { recursive: true, mode: 0o700 });
@@ -78,11 +80,13 @@ test("Git readiness gates real Pi materialization and ordered aggregate teardown
     await new Promise(resolve => setImmediate(resolve));
   }
   runner.release(fixture.input.runId, "implement");
-  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(Date.now() + 100).toISOString(), bundleRetainUntil: new Date(Date.now() + 100).toISOString() };
+  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(clock.now() + 60_000).toISOString(), bundleRetainUntil: new Date(clock.now() + 60_000).toISOString() };
   await fixture.service.markRetained(fixture.input.runId, policy, "real-cross-component-retention");
-  await new Promise(resolve => setTimeout(resolve, 150));
-  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "aggregate-owner", Date.now());
-  await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  // Advance the service's injected trusted clock only after retention is
+  // durably recorded; the product deadline assertion remains active.
+  clock.advance(120_000);
+  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "aggregate-owner", clock.now());
+  await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.equal(await readFile(materialized.footerExtensionPath, "utf8") !== "", true, "Git disposal must not remove AIDEV-228 footer state");
   assert.equal(await readFile(path.join(materialized.homeDir, "../pi-agent/settings.json"), "utf8") !== "", true);
   const teardown = await runner.teardownRunAgentDirectory(fixture.input.runId);
@@ -92,7 +96,8 @@ test("Git readiness gates real Pi materialization and ordered aggregate teardown
 });
 
 test("real Git readiness gates an actual Pi launch and ordered teardown", { skip: !(existsSync(REAL_PI_CLI) && existsSync(REAL_WIKI_ROOT)) ? "Pi runtime dependency is unavailable" : false }, async t => {
-  const fixture = await createGitFixture();
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
   const factory = new RealPiProcessFactory();
   t.after(async () => {
     for (const process of factory.processes) {
@@ -157,11 +162,11 @@ test("real Git readiness gates an actual Pi launch and ordered teardown", { skip
     await new Promise(resolve => setImmediate(resolve));
   }
   runner.release(fixture.input.runId, "implement");
-  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(Date.now() + 100).toISOString(), bundleRetainUntil: new Date(Date.now() + 100).toISOString() };
+  const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(clock.now() + 60_000).toISOString(), bundleRetainUntil: new Date(clock.now() + 60_000).toISOString() };
   await fixture.service.markRetained(fixture.input.runId, policy, "real-git-real-pi-retention");
-  await new Promise(resolve => setTimeout(resolve, 150));
-  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "real-git-real-pi-terminal", Date.now());
-  await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
+  clock.advance(120_000);
+  const fence = await fixture.store.acquireRunTerminalFence(fixture.input.runId, "real-git-real-pi-terminal", clock.now());
+  await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: clock.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.equal((await readFile(prepared.footerExtensionPath, "utf8")).length > 0, true, "Git disposal must preserve AIDEV-228 footer state until Pi teardown");
   await runner.teardownRunAgentDirectory(fixture.input.runId);
   assert.equal(await readFile(prepared.footerExtensionPath, "utf8").then(() => true, () => false), false);
