@@ -190,6 +190,11 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     this.#authority = options.runLifecycleAuthority ?? options.store;
     this.#clock = options.clock ?? REAL_CLOCK;
     this.#ticketRoot = assertTicketRoot(options.ticketRoot ?? "/ticket");
+    // Authenticate before constructing any other service-owned adapter. A
+    // forged JavaScript caller must not even get a partially initialized
+    // production service capable of reaching an artifact reader/writer.
+    authenticateTrustedFilesystemAuthority(options.filesystemAuthority, this.#ticketRoot);
+    this.#filesystemAuthority = options.filesystemAuthority;
     const commandOptions = {
       ...(options.commandOptions ?? {}),
       ...(options.commandTimeoutMs !== undefined ? { defaultTimeoutMs: options.commandTimeoutMs } : {}),
@@ -199,8 +204,6 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     this.#reader = options.artifactReader ?? new SafeArtifactReader(this.#ticketRoot);
     this.#writer = options.artifactWriter ?? new FileGitContractWriter(this.#ticketRoot);
     this.#validatorPromise = options.contractValidator ? Promise.resolve(options.contractValidator) : GitWorkspaceContractValidator.create(this.#reader);
-    authenticateTrustedFilesystemAuthority(options.filesystemAuthority, this.#ticketRoot);
-    this.#filesystemAuthority = options.filesystemAuthority;
     this.#sourceAuthorizer = options.sourceAuthorizer ?? options.repositorySourceAuthorizer ?? new RejectingRepositorySourceAuthorizer();
     this.#processResolver = options.process?.processResolver;
     this.#operationLeaseMs = positiveInteger(options.operationLeaseMs ?? DEFAULT_OPERATION_LEASE_MS, "Git operation lease");
