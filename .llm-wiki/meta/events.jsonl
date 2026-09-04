@@ -38,3 +38,4 @@
 {"slug":"obs-2026-09-03-aidev-222-remediation-commit-verified","title":"AIDEV-222 remediation commit verified","relevance":"high","timestamp":"2026-09-03T23:04:20.324Z","kind":"observe"}
 {"slug":"obs-2026-09-04-aidev-222-review-2-blockers-remediated","title":"AIDEV-222 review-2 blockers remediated","relevance":"high","timestamp":"2026-09-04T00:02:47.487Z","kind":"observe"}
 {"slug":"aidev-222-review-2-remediation-complete","title":"AIDEV-222 review-2 remediation complete","category":"architecture","timestamp":"2026-09-04T00:05:59.993Z","kind":"retro"}
+{"slug":"aidev-222-review-3-isolation-authentication","title":"AIDEV-222 runtime isolation authentication","category":"security","timestamp":"2026-09-04T01:27:53.256Z","kind":"retro"}

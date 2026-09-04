@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { lookup } from "node:dns/promises";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AllowlistedRepositorySourceAuthorizer, buildGitHttpsResolveConfig, RepositorySourceAuthorizationError } from "../src/git/source-authorizer.js";
 import { assertCredentialFreeHttpsCloneUrl, isUnsafeNetworkAddress } from "../src/git/identity.js";
-import { GitWorkspaceService, type GitWorkspaceServiceOptions } from "../src/git/workspace-service.js";
-import type { TrustedFilesystemIsolationCapability } from "../src/git/trusted-isolation.js";
+import { GitWorkspaceService } from "../src/git/workspace-service.js";
+import { composeTrustedFilesystemIsolationAuthority } from "../src/git/trusted-isolation.js";
 import { createGitFixture } from "./support/git-fixture.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
 import { run } from "./support/fixtures.js";
@@ -59,8 +59,8 @@ test("production authorizer and real Git import pin the approved HTTPS addresses
   });
   const store = new InMemoryWorkflowStore();
   await store.create(run({ currentHead: "a".repeat(40) }));
-  const filesystemIsolation = { assertTicketRoot: async (): Promise<void> => undefined } as unknown as TrustedFilesystemIsolationCapability;
-  const service = new GitWorkspaceService({ store, ticketRoot, filesystemIsolation, sourceAuthorizer: authorizer, requirePublishingGates: false, commandTimeoutMs: 30_000 });
+  const filesystemAuthority = await composeTrustedFilesystemIsolationAuthority(ticketRoot);
+  const service = new GitWorkspaceService({ store, ticketRoot, filesystemAuthority, sourceAuthorizer: authorizer, requirePublishingGates: false, commandTimeoutMs: 30_000 });
   const input = { runId: "run_example01", ticketIdentifier: "AIDEV-222", repository, baseBranch: "master", baseSha: "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d", objectFormat: "sha1" as const };
   const spec = await service.createSpec(input);
   const ready = await service.provision(input.runId, spec, "https-e2e");
@@ -73,21 +73,19 @@ test("production authorizer and real Git import pin the approved HTTPS addresses
 test("workspace provisioning refuses the permissive missing production authorizer", async t => {
   const fixture = await createGitFixture();
   t.after(fixture.cleanup);
-  assert.throws(() => new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, requirePublishingGates: false } as unknown as GitWorkspaceServiceOptions), /trusted filesystem isolation capability/u);
-  const service = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: fixture.filesystemIsolation, requirePublishingGates: false });
+  const service = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, requirePublishingGates: false });
   await assert.rejects(() => service.createSpec(fixture.input), /explicit approved repository source authorizer/u);
-  const isolationBlocked = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: { assertTicketRoot: async () => { throw new Error("sandbox isolation unavailable"); } } as unknown as typeof fixture.filesystemIsolation, requirePublishingGates: false });
-  await assert.rejects(() => isolationBlocked.createSpec(fixture.input), /sandbox isolation unavailable/u);
   await assert.rejects(() => stat(path.join(fixture.ticketRoot, "git", "repo.git")));
 });
 
-test("filesystem isolation is re-proven before Git side effects", async t => {
+test("stale runtime authority blocks a replaced ticket root before side effects", async t => {
   const fixture = await createGitFixture();
   t.after(fixture.cleanup);
-  let checks = 0;
-  const capability = { assertTicketRoot: async (): Promise<void> => { checks += 1; if (checks > 2) throw new Error("sandbox isolation unavailable"); } } as unknown as TrustedFilesystemIsolationCapability;
-  const service = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: capability, allowLocalTransport: true, sourceAuthorizer: { authorize: async (): Promise<{ cloneUrl: string; localTransport: true }> => ({ cloneUrl: fixture.source, localTransport: true }) }, requirePublishingGates: false });
-  const spec = await service.createSpec(fixture.input);
-  await assert.rejects(() => service.provision(fixture.input.runId, spec, "isolation-recheck"), /sandbox isolation unavailable/u);
+  const spec = await fixture.service.createSpec(fixture.input);
+  const movedRoot = path.join(fixture.root, "ticket-replaced");
+  await rename(fixture.ticketRoot, movedRoot);
+  await mkdir(fixture.ticketRoot, { mode: 0o700 });
+  await assert.rejects(() => fixture.service.createSpec(fixture.input), /stale|root|topology|canonical/u);
+  await assert.rejects(() => fixture.service.provision(fixture.input.runId, spec, "stale-root"), /stale|root|topology|canonical/u);
   await assert.rejects(() => stat(path.join(fixture.ticketRoot, "git", "repo.git")));
 });

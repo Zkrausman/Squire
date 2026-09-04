@@ -11,7 +11,7 @@ import { assertBaseBranch, assertCredentialFreeHttpsCloneUrl, assertFullObjectId
 import { assertSafeAncestors, assertTicketRoot, chmodDirectoryNoFollow, chmodFileNoFollow, createGitWorkspaceFilesystemPaths, descriptorChildPath, ensurePrivateDirectory, entryKind, fsyncDirectory, GitPathSecurityError, inspectResource, isAlreadyExists, isMissing, logicalGitWorkspacePaths, openNoFollow, openNoFollowAt, readExactNoFollow, removeEmptyDirectoryNoFollow, removeTreeNoFollow, renameWithIdentity, sameResourceIdentity, sameStat, writeExclusiveFile, type GitWorkspaceFilesystemPaths, type RemovalChildIdentity } from "./paths.js";
 import { GitCommandError, GitCommandRunner, GitCommandUncertainError, type GitChildProcess, type GitCommandOptions, type GitCommandResult, type GitCommandRunnerOptions } from "./git-command.js";
 import { RejectingRepositorySourceAuthorizer, buildGitHttpsResolveConfig } from "./source-authorizer.js";
-import { assertTrustedFilesystemIsolationCapability, type TrustedFilesystemIsolationCapability } from "./trusted-isolation.js";
+import { assertTrustedFilesystemOperation, authenticateTrustedFilesystemAuthority, type TrustedFilesystemIsolationAuthority } from "./trusted-isolation.js";
 import type { GitBundleManifestDocument, GitBundleRecord, GitDisposalAuthorization, GitDisposalResult, GitObjectFormat, GitOperationStep, GitRepositoryIdentity, GitWorkspaceManifestDocument, GitWorkspaceReadiness, GitWorkspaceRecord, GitWorkspaceRetention, GitWorkspaceServicePort, GitWorkspaceSpecDocument, GitWorkspaceStatus, GitWorkspaceCommit, ReadyGitWorkspace, ResourceIdentity } from "./domain.js";
 
 export interface GitSourceAuthorization {
@@ -46,8 +46,8 @@ export interface GitWorkspaceServiceOptions {
   readonly contractValidator?: GitWorkspaceContractValidator;
   readonly sourceAuthorizer?: RepositorySourceAuthorizer;
   readonly repositorySourceAuthorizer?: RepositorySourceAuthorizer;
-  /** Must be supplied by AIDEV-223; Git never infers or self-asserts sandbox isolation. */
-  readonly filesystemIsolation: TrustedFilesystemIsolationCapability;
+  /** Runtime-authenticated authority issued by trusted filesystem composition. */
+  readonly filesystemAuthority: TrustedFilesystemIsolationAuthority;
   readonly process?: GitWorkspaceProcessOptions;
   readonly operationLeaseMs?: number;
   readonly commandTimeoutMs?: number;
@@ -162,8 +162,9 @@ const REAL_CLOCK: Clock = {
 
 /** Trusted Git workspace component. It owns only its exact Git/artifact/control
  * paths; the run lifecycle fence is always supplied by the merged authority.
- * Production side effects also require the opaque isolation capability issued
- * by AIDEV-223; this component never infers that filesystem proof itself. */
+ * Production side effects also require the runtime-authenticated authority
+ * issued by trusted filesystem composition; this component never infers that
+ * filesystem proof itself. */
 export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspaceReadiness {
   readonly #store: WorkflowStore;
   readonly #authority: RunQuiescenceAuthority;
@@ -174,7 +175,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   readonly #writer: GitContractArtifactWriter;
   readonly #validatorPromise: Promise<GitWorkspaceContractValidator>;
   readonly #sourceAuthorizer: RepositorySourceAuthorizer;
-  readonly #filesystemIsolation: TrustedFilesystemIsolationCapability;
+  readonly #filesystemAuthority: TrustedFilesystemIsolationAuthority;
   readonly #processResolver: GitWorkspaceProcessOptions["processResolver"];
   readonly #operationLeaseMs: number;
   readonly #commandTimeoutMs: number;
@@ -198,8 +199,8 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     this.#reader = options.artifactReader ?? new SafeArtifactReader(this.#ticketRoot);
     this.#writer = options.artifactWriter ?? new FileGitContractWriter(this.#ticketRoot);
     this.#validatorPromise = options.contractValidator ? Promise.resolve(options.contractValidator) : GitWorkspaceContractValidator.create(this.#reader);
-    assertTrustedFilesystemIsolationCapability(options.filesystemIsolation);
-    this.#filesystemIsolation = options.filesystemIsolation;
+    authenticateTrustedFilesystemAuthority(options.filesystemAuthority, this.#ticketRoot);
+    this.#filesystemAuthority = options.filesystemAuthority;
     this.#sourceAuthorizer = options.sourceAuthorizer ?? options.repositorySourceAuthorizer ?? new RejectingRepositorySourceAuthorizer();
     this.#processResolver = options.process?.processResolver;
     this.#operationLeaseMs = positiveInteger(options.operationLeaseMs ?? DEFAULT_OPERATION_LEASE_MS, "Git operation lease");
@@ -318,10 +319,14 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       const exporting = await this.#beginExporting(context, ready, record, expectedHead, exportGeneration, bundleRelativePath, operationId);
       if (exporting.stage !== "exporting") throw new Error("Git bundle export reservation did not persist");
       const fs = this.#paths(runId);
+      // The reservation is a store operation; all following pathname reads
+      // and artifact mutations are guarded by the runtime filesystem fence.
+      await this.#assertFilesystemIsolation();
       const destination = path.join(this.#ticketRoot, ...bundleRelativePath.split("/"));
       const destinationKind = await this.#pathKind(destination);
       if (destinationKind !== "missing") {
         if (record.stage !== "exporting") throw new Error("pre-existing Git bundle cannot be adopted");
+        await this.#assertFilesystemIsolation();
         const existingFile = await openImmutableFile(destination, this.#maxBundleBytes, this.#ticketRoot);
         try {
           const existingInfo = await existingFile.handle.stat();
@@ -337,6 +342,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
             manifestReference = existingManifestReference;
           } else {
             const existingManifestDocument = buildBundleManifest({ spec: record.spec, workspaceManifest: ready.manifest, runId, featureBranch: spec.featureBranch, baseSha: spec.baseSha, headSha: expectedHead, bundlePath: bundleRelativePath, byteLength: existingDigest.byteLength, sha256: existingDigest.sha256, objectFormat: spec.objectFormat, prerequisites: existingVerification.prerequisites, refs: existingVerification.refs, exportGeneration: exporting.exportGeneration, verifiedAt: new Date(this.#clock.now()).toISOString() });
+            await this.#assertFilesystemIsolation();
             manifestReference = await this.#writer.writeCreateOnly(existingManifestPath, serializeCanonical(existingManifestDocument));
             await (await this.#validatorPromise).validateBundle(manifestReference, { runId, spec: record.spec, workspaceManifest: ready.manifest, headSha: expectedHead });
           }
@@ -356,6 +362,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
         // no-path check. Create the staging inode exclusively first and pass
         // its held descriptor to Git, so a late hardlink/symlink replacement
         // cannot redirect bundle creation.
+        await this.#assertFilesystemIsolation();
         stagingHandle = await openNoFollow(staging, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, this.#ticketRoot, 0o600);
         const stagingDescriptor = descriptorPathForGit(stagingHandle, 3);
         await this.#git(context, exporting.operation?.operationId ?? operationId, "bundle-create", ["--git-dir", fs.repository, "bundle", "create", stagingDescriptor, branchRef(spec.featureBranch)], { passFileDescriptors: [stagingHandle.fd] });
@@ -367,6 +374,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
         if (digest.byteLength <= 0) throw new Error("Git bundle is empty");
         const bundleVerification = await this.#verifyBundleBytes(context, spec, expectedHead, opened.handle, digest, exporting.operation?.operationId ?? operationId);
         if (bundleVerification.refs.length !== 1 || bundleVerification.refs[0]?.name !== branchRef(spec.featureBranch) || bundleVerification.refs[0]?.oid !== expectedHead) throw new Error("Git bundle advertised an unexpected ref");
+        await this.#assertFilesystemIsolation();
         await copyDescriptorToExclusive(opened.handle, destination, this.#ticketRoot, digest);
         const destinationFile = await openImmutableFile(destination, this.#maxBundleBytes, this.#ticketRoot);
         try {
@@ -401,6 +409,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
           if (existingManifest.document.bundlePath !== bundleRelativePath || existingManifest.document.sha256 !== digest.sha256 || existingManifest.document.byteLength !== digest.byteLength || existingManifest.document.exportGeneration !== exportGeneration || canonicalJson(existingManifest.document.prerequisites) !== canonicalJson(bundleVerification.prerequisites) || canonicalJson(existingManifest.document.refs) !== canonicalJson(bundleVerification.refs)) throw new Error("existing Git bundle manifest does not match the current export");
           manifestReference = existingManifestReference;
         } else {
+          await this.#assertFilesystemIsolation();
           manifestReference = await this.#writer.writeCreateOnly(manifestRelativePath, serializeCanonical(manifestDocument));
           await (await this.#validatorPromise).validateBundle(manifestReference, { runId, spec: record.spec, workspaceManifest: ready.manifest, headSha: expectedHead });
         }
@@ -736,6 +745,9 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
 
   async #provisionFilesystem(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, record: GitWorkspaceRecord, source: GitSourceAuthorization, transportResolve: readonly string[]): Promise<void> {
     if (record.stage !== "provisioning") throw new Error("provisioning record changed");
+    // Source authorization is an external, potentially slow boundary. Recheck
+    // the authenticated filesystem immediately before the first local write.
+    await this.#assertFilesystemIsolation();
     const fs = this.#paths(spec.runId);
     await this.#ensureRoots(fs, context);
     await this.#assertNoUnownedGitPaths(fs);
@@ -744,11 +756,13 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const repositoryKind = await this.#pathKind(fs.repository);
     if (repositoryKind === "missing") {
       await this.#git(context, record.operation?.operationId ?? context.operationId, "initialize", ["init", "--bare", `--object-format=${spec.objectFormat}`, `--template=${fs.templatePath}`, fs.repository]);
+      await this.#assertFilesystemIsolation();
       await chmodDirectoryNoFollow(fs.repository, this.#ticketRoot, 0o700);
       await this.#authority.assertRunStartAllowed(spec.runId, this.#clock.now());
       await inspectResource(fs.repository, "directory", true, this.#ticketRoot);
     } else {
       await this.#verifyOwnedRepository(context, spec, record);
+      await this.#assertFilesystemIsolation();
       await chmodDirectoryNoFollow(fs.repository, this.#ticketRoot, 0o700);
     }
     await this.#verifyRepositorySafety(context, spec, record, true);
@@ -772,9 +786,11 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const worktreeKind = await this.#pathKind(fs.worktree);
     if (worktreeKind === "missing") {
       await this.#git(context, record.operation?.operationId ?? context.operationId, "worktree", ["--git-dir", fs.repository, "worktree", "add", "--no-guess-remote", fs.worktree, spec.featureBranch]);
+      await this.#assertFilesystemIsolation();
       await chmodDirectoryNoFollow(fs.worktree, this.#ticketRoot, 0o700);
     } else {
       await this.#verifyWorktreePair(context, spec, record);
+      await this.#assertFilesystemIsolation();
       await chmodDirectoryNoFollow(fs.worktree, this.#ticketRoot, 0o700);
     }
     await this.#configureSafeRepository(context, spec, record);
@@ -817,6 +833,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
         verifierVersion: this.#verifierVersion,
         verifiedAt: new Date(this.#clock.now()).toISOString(),
       });
+      await this.#assertFilesystemIsolation();
       manifestReference = await this.#writer.writeCreateOnly(manifestPath, serializeCanonical(manifestDocument));
       await (await this.#validatorPromise).validateManifest(manifestReference, { spec: record.spec, runId: spec.runId, specFingerprint: spec.fingerprint });
     }
@@ -890,6 +907,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #verifyBundleRecord(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord, specReference: ContractReference, workspaceManifest: ContractReference): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const validated = await (await this.#validatorPromise).validateBundle(bundle.manifest, { runId: spec.runId, spec: specReference, workspaceManifest, headSha: bundle.headSha }).catch(error => {
       // The exact spec reference is checked below from the persisted record;
       // this branch avoids fabricating authority when a custom reader returns a
@@ -925,6 +943,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #verifyBundleBytesWithInvoker(spec: GitWorkspaceSpecDocument, expectedHead: string, handle: import("node:fs/promises").FileHandle, digest: DescriptorDigest, scratchRoot: string, invoke: GitInvoker): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
+    await this.#assertFilesystemIsolation();
     const descriptor = descriptorPathForGit(handle, 3);
     const disposable = path.join(scratchRoot, `.bundle-check-${randomUUID()}.git`);
     await this.#assertNoPath(disposable);
@@ -958,6 +977,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #verifyWorkspace(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, record: GitWorkspaceRecord, expectedHead: string | undefined, requireClean: boolean): Promise<WorkspaceObservation> {
+    await this.#assertFilesystemIsolation();
     const fs = this.#paths(spec.runId);
     await this.#authority.assertRunStartAllowed(spec.runId, this.#clock.now());
     const repository = await inspectResource(fs.repository, "directory", true, this.#ticketRoot);
@@ -1103,6 +1123,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #configureSafeRepository(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, record: GitWorkspaceRecord): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const fs = this.#paths(spec.runId);
     const config = path.join(fs.repository, "config");
     await this.#assertConfigIsNotSubstituted(context, spec, record);
@@ -1138,6 +1159,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       "",
     ].join("\n");
     const expectedBytes = Buffer.from(lines, "utf8");
+    await this.#assertFilesystemIsolation();
     const identity = await inspectResource(config, "file", true, this.#ticketRoot);
     const handle = await openNoFollow(config, constants.O_RDWR, this.#ticketRoot);
     try {
@@ -1209,6 +1231,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #writeOwnershipMarker(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, generation: number): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const fs = this.#paths(spec.runId);
     const target = path.join(fs.controlRoot, OWNERSHIP_FILE);
     const document = { schemaVersion: 1, kind: OWNERSHIP_KIND, runId: spec.runId, specFingerprint: spec.fingerprint, generation, repository: "/ticket/git/repo.git", worktree: "/ticket/workspace" };
@@ -1216,6 +1239,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const existing = await this.#pathKind(target);
     if (existing === "missing") {
       await this.#authority.assertRunStartAllowed(spec.runId, this.#clock.now());
+      await this.#assertFilesystemIsolation();
       const handle = await openNoFollow(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, this.#ticketRoot, 0o600);
       try { await handle.writeFile(bytes); await handle.chmod(0o600); await handle.sync(); } finally { await handle.close(); }
       await inspectResource(target, "file", true, this.#ticketRoot);
@@ -1239,6 +1263,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #ensureRoots(fs: GitWorkspaceFilesystemPaths, context: GitLeaseContext): Promise<void> {
+    await this.#assertFilesystemIsolation();
     await this.#authority.assertRunStartAllowed(context.runId, this.#clock.now());
     await ensurePrivateDirectory(fs.gitRoot, this.#ticketRoot);
     await ensurePrivateDirectory(path.join(this.#ticketRoot, "control"), this.#ticketRoot);
@@ -1259,6 +1284,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #ensureTemplateAndHooks(fs: GitWorkspaceFilesystemPaths, context: GitLeaseContext): Promise<void> {
+    await this.#assertFilesystemIsolation();
     await ensurePrivateDirectory(fs.hooksPath, this.#ticketRoot);
     await ensurePrivateDirectory(fs.templatePath, this.#ticketRoot);
     await this.#assertDirectoryEmpty(fs.hooksPath);
@@ -1398,7 +1424,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   #guard(context: GitLeaseContext): LeaseGuard { return { key: GIT_LEASE_KEY, owner: context.owner, fencingToken: context.lease.fencingToken, now: this.#clock.now() }; }
 
   async #assertFilesystemIsolation(signal?: AbortSignal): Promise<void> {
-    await this.#filesystemIsolation.assertTicketRoot(this.#ticketRoot, signal);
+    await assertTrustedFilesystemOperation(this.#filesystemAuthority, this.#ticketRoot, signal);
   }
 
   #assertExistingRecord(existing: GitWorkspaceRecord | undefined, spec: GitWorkspaceSpecDocument, reference: ContractReference, runId: string): void {
@@ -1572,17 +1598,24 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #removeOwnedTemporary(target: string): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const kind = await this.#pathKind(target);
     if (kind === "missing") return;
     const name = path.basename(target);
     if (!BUNDLE_STAGING.test(name) && !BUNDLE_CHECK.test(name)) return;
-    if (kind === "symlink") { await removeTreeNoFollow(target, undefined, this.#ticketRoot); return; }
+    if (kind === "symlink") {
+      await this.#assertFilesystemIsolation();
+      await removeTreeNoFollow(target, undefined, this.#ticketRoot);
+      return;
+    }
     const identity = await inspectResource(target, kind === "directory" ? "directory" : "file", true, this.#ticketRoot);
+    await this.#assertFilesystemIsolation();
     await removeTreeNoFollow(target, identity, this.#ticketRoot);
   }
 
   async #removeEmptyControllerRoot(target: string, runId: string, fence: RunTerminalFence, signal?: AbortSignal): Promise<void> {
     if (target === this.#ticketRoot || target === "/ticket") return;
+    await this.#assertFilesystemIsolation(signal);
     const kind = await this.#pathKind(target);
     if (kind === "missing") return;
     if (kind !== "directory") throw new Error(`Git controller root was replaced: ${target}`);
@@ -1593,15 +1626,18 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const beforeRemoval = await inspectResource(target, "directory", true, this.#ticketRoot);
     if (!sameResourceIdentity(identity, beforeRemoval)) throw new Error(`Git controller root changed before removal: ${target}`);
     if (signal?.aborted) throw new Error("Git disposal was aborted");
+    await this.#assertFilesystemIsolation(signal);
     await removeEmptyDirectoryNoFollow(target, this.#ticketRoot, identity);
     await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
   }
 
   async #ensureDisposalRoot(fs: GitWorkspaceFilesystemPaths): Promise<void> {
+    await this.#assertFilesystemIsolation();
     await ensurePrivateDirectory(fs.disposalRoot, this.#ticketRoot);
   }
 
   async #assertDisposalDirectory(directory: string, runId: string, token: number): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const name = path.basename(directory);
     const match = DISPOSAL_DIRECTORY.exec(name);
     if (!match || match[1] !== runId || Number(match[2]) !== token) throw new Error("Git disposal directory identity is invalid");
@@ -1618,6 +1654,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #buildDisposalArtifactProof(spec: GitWorkspaceSpecDocument, record: Extract<GitWorkspaceRecord, { stage: "retained" }>, resources: GitWorkspaceManifestDocument["resources"], scratchRoot: string): Promise<DisposalArtifactProof> {
+    await this.#assertFilesystemIsolation();
     const fs = this.#paths(spec.runId);
     const root = await inspectResource(fs.artifactRoot, "directory", true, this.#ticketRoot);
     const expectedRoot = resources.artifactRoot;
@@ -1657,6 +1694,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #verifyBundleRecordOffline(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord, specReference: ContractReference, workspaceManifest: ContractReference, scratchRoot: string): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const validated = await (await this.#validatorPromise).validateBundle(bundle.manifest, { runId: spec.runId, spec: specReference, workspaceManifest, headSha: bundle.headSha });
     if (bundle.manifest.path !== `artifacts/git/${spec.runId}/bundle-manifest.json` || validated.document.bundlePath !== bundle.bundlePath || validated.document.sha256 !== bundle.sha256 || validated.document.byteLength !== bundle.byteLength || validated.document.featureBranch !== spec.featureBranch || validated.document.baseSha !== spec.baseSha || validated.document.objectFormat !== spec.objectFormat) throw new Error("retained bundle manifest binding mismatch");
     const verification = await this.#readAndVerifyBundleDescriptorOffline(spec, bundle, scratchRoot);
@@ -1664,6 +1702,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #readAndVerifyBundleDescriptorOffline(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord, scratchRoot: string): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
+    await this.#assertFilesystemIsolation();
     const file = await openImmutableFile(path.join(this.#ticketRoot, ...bundle.bundlePath.split("/")), this.#maxBundleBytes, this.#ticketRoot);
     try {
       const info = await file.handle.stat();
@@ -1697,6 +1736,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #verifyDisposalArtifactTarget(target: string, proof: DisposalArtifactProof): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const root = await inspectResource(target, "directory", true, this.#ticketRoot);
     if (root.device !== proof.root.device || root.inode !== proof.root.inode || root.mode !== proof.root.mode || root.linkCount !== proof.root.linkCount) throw new Error("disposal artifact root identity changed");
     const rootHandle = await openNoFollow(target, constants.O_RDONLY | constants.O_DIRECTORY, this.#ticketRoot);
@@ -1720,6 +1760,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #disposeOne(runId: string, fence: RunTerminalFence, target: string, source: string, destination: string, expected: ResourceIdentity | undefined, removed: string[], alreadyAbsent: string[], signal?: AbortSignal, retries = 0, verifyTarget?: (target: string) => Promise<void>, removalChildren?: readonly RemovalChildIdentity[]): Promise<void> {
+    await this.#assertFilesystemIsolation(signal);
     const completion = path.join(path.dirname(destination), `.complete-${target}.json`);
     const sourceKind = await this.#pathKind(source);
     const destinationKind = await this.#pathKind(destination);
@@ -1771,10 +1812,12 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #writeDisposalIdentity(target: string, runId: string, fence: RunTerminalFence, manifest: ContractReference, resources: GitWorkspaceManifestDocument["resources"], contracts: DisposalContractSnapshots, artifacts: DisposalArtifactProof): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const document = serializeCanonical({ schemaVersion: 1, kind: "squire-git-disposal-identity", runId, token: fence.fencingToken, manifest, resources, contracts, artifacts });
     const kind = await this.#pathKind(target);
     if (kind === "missing") {
       await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
+      await this.#assertFilesystemIsolation();
       await writeExclusiveFile(target, document, this.#ticketRoot, 0o600);
       await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
       return;
@@ -1785,6 +1828,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #captureDisposalContracts(record: Extract<GitWorkspaceRecord, { stage: "retained" }>): Promise<DisposalContractSnapshots> {
+    await this.#assertFilesystemIsolation();
     const read = async (reference: ContractReference): Promise<string> => (await readExactNoFollow(path.join(this.#ticketRoot, ...reference.path.split("/")), this.#ticketRoot, 16 * 1024 * 1024)).toString("base64");
     return { spec: await read(record.spec), manifest: await read(record.manifest), ...(record.bundle ? { bundle: await read(record.bundle.manifest) } : {}) };
   }
@@ -1810,6 +1854,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #readRelocatedDisposalManifest(artifactRoot: string, record: Extract<GitWorkspaceRecord, { stage: "retained" }>): Promise<GitWorkspaceManifestDocument["resources"]> {
+    await this.#assertFilesystemIsolation();
     const validator = await this.#validatorPromise;
     const readContract = async <T extends GitWorkspaceSpecDocument | GitWorkspaceManifestDocument | GitBundleManifestDocument>(name: string, reference: ContractReference, schemaId: "urn:squire:git-workspace:v1:workspace-spec" | "urn:squire:git-workspace:v1:workspace-manifest" | "urn:squire:git-workspace:v1:bundle-manifest"): Promise<T> => {
       const target = path.join(artifactRoot, name);
@@ -1829,6 +1874,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #readDisposalIdentity(target: string, runId: string, token: number, manifest: ContractReference): Promise<{ readonly resources: GitWorkspaceManifestDocument["resources"]; readonly contracts: DisposalContractSnapshots; readonly artifacts: DisposalArtifactProof }> {
+    await this.#assertFilesystemIsolation();
     const identity = await inspectResource(target, "file", true, this.#ticketRoot);
     if (identity.mode !== 0o600) throw new Error("Git disposal identity is not private");
     let value: unknown;
@@ -1843,6 +1889,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #hasDisposalCompletion(target: string, runId: string, token: number, name: string, expected: ResourceIdentity | undefined): Promise<boolean> {
+    await this.#assertFilesystemIsolation();
     const kind = await this.#pathKind(target);
     if (kind === "missing") return false;
     if (kind !== "file") throw new Error("Git disposal completion marker is an unsafe replacement");
@@ -1854,10 +1901,12 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #writeDisposalCompletion(target: string, runId: string, fence: RunTerminalFence, name: string, identity: ResourceIdentity): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const document = serializeCanonical({ schemaVersion: 1, kind: "squire-git-disposal-complete", runId, token: fence.fencingToken, target: name, identity: { kind: identity.kind, device: identity.device, inode: identity.inode, mode: identity.mode, linkCount: identity.linkCount } });
     const kind = await this.#pathKind(target);
     if (kind === "missing") {
       await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
+      await this.#assertFilesystemIsolation();
       await writeExclusiveFile(target, document, this.#ticketRoot, 0o600);
       await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
       return;

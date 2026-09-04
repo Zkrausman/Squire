@@ -16,13 +16,18 @@ are persisted in `RunSnapshot.gitWorkspace`; a command with an unknown child
 identity blocks recovery rather than being replaced. Every filesystem boundary
 is rechecked against the merged preparation/terminal authority.
 
-The constructor requires an opaque `TrustedFilesystemIsolationCapability` from
-AIDEV-223. Git does not provide a constructor, probe, boolean, or fallback that
-can self-assert this capability. AIDEV-223 must compose the service only after
-its sandbox/openat2-or-equivalent boundary has proved ticket containment,
+The constructor requires a runtime-authenticated
+`TrustedFilesystemIsolationAuthority` issued by the narrow
+`composeTrustedFilesystemIsolationAuthority` composition boundary. The token's
+class, constructor secret, identity set, and root/mount observation are private;
+a JavaScript lookalike, stale token, cross-root token, or unavailable namespace
+evidence fails closed. The operation boundary rechecks the exact canonical root,
+mount namespace, root identity, and nested-mount topology immediately before
+service side effects. AIDEV-223 composes this boundary only after its
+sandbox/openat2-or-equivalent setup has proved ticket containment,
 same-filesystem bind-mount resistance, and descriptor/path swap resistance.
 Node's descriptor and `st_dev` checks remain defense in depth and are not the
-production mount proof; omitted or unavailable isolation fails closed.
+production mount proof.
 
 The service validates the immutable spec, requires an injected closed
 repository-source authorizer, rejects private/DNS-resolved destinations and
@@ -81,7 +86,7 @@ and leaves Pi runtime/session/footer state and other runs untouched. A private
 disposal identity contains authenticated snapshots of the exact contract bytes
 and per-target completion markers, preserving the validated resource proof
 after the artifact manifest itself is removed; recovery never trusts a mutable
-journal alone. Repeating the same disposal under the same held fence is safe. Sandbox setup, scheduling,
-publication, and merge remain owned by AIDEV-223 through AIDEV-226. AIDEV-223
-also owns the trusted filesystem-isolation composition required before this
-component may perform production Git side effects.
+journal alone. Repeating the same disposal under the same held fence is safe. Sandbox setup, scheduling, publication, and merge remain owned by AIDEV-223
+through AIDEV-226. AIDEV-223 also owns the concrete OS isolation proof and
+composes the narrow authority required before this component may perform
+production Git side effects.

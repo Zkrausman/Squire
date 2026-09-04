@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-04T00:06:40.458Z",
+  "last_updated": "2026-09-04T01:28:21.807Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -179,6 +179,15 @@
       "category": "architecture",
       "status": "insight",
       "slug": "aidev-222-review-2-remediation-complete",
+      "created": "2026-09-04",
+      "updated": "2026-09-04"
+    },
+    "sources/aidev-222-review-3-isolation-authentication": {
+      "type": "source",
+      "title": "AIDEV-222 runtime isolation authentication",
+      "category": "security",
+      "status": "insight",
+      "slug": "aidev-222-review-3-isolation-authentication",
       "created": "2026-09-04",
       "updated": "2026-09-04"
     },

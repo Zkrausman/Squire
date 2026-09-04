@@ -95,6 +95,8 @@ if (!mode) process.exit(0);\n`);
   const immediate = await runner.run(["immediate"], { cwd: root, ticketRoot: root, runId: "run_example01", onObservedExit: () => { observed = true; } });
   assert.equal(immediate.stdout, "observed\n");
   assert.equal(observed, true);
+  const delayedAcknowledgement = await runner.run(["immediate"], { cwd: root, ticketRoot: root, runId: "run_example01", onSpawn: async () => new Promise<void>(resolve => setTimeout(resolve, 50)) });
+  assert.equal(delayedAcknowledgement.stdout, "observed\n", "output must be collected before durable spawn acknowledgement settles");
   await assert.rejects(() => runner.run(["fail"], { cwd: root, ticketRoot: root, runId: "run_example01" }), (error: unknown) => error instanceof GitCommandError && error.result?.exitCode === 7);
   await assert.rejects(() => runner.run(["overflow"], { cwd: root, ticketRoot: root, runId: "run_example01", timeoutMs: 100, maxOutputBytes: 256 }), GitCommandError);
   assert.equal(factory.last?.signals[0], "SIGTERM");

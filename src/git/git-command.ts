@@ -214,14 +214,19 @@ export class GitCommandRunner {
       child = await this.#factory.spawn(launch, options.signal, async process => {
         callbackChild = process;
         child = process;
+        // Attach the bounded collectors before awaiting the durable spawn
+        // acknowledgement. A very short Git command may exit while the
+        // caller persists its child identity; attaching only after spawn()
+        // resolves loses that command's output and can make valid state look
+        // absent (notably `git config --null --list`).
+        process.stdout.on("data", collect("stdout"));
+        process.stderr.on("data", collect("stderr"));
         await options.onSpawn?.(process);
       }, options.passFileDescriptors);
       // The awaited callback is the durable ownership boundary. Refuse a
       // factory that omits it or returns a different process identity; accepting
       // either would make recovery unable to prove which child was spawned.
       if (!child || !callbackChild || !validProcessIdentity(child.identity) || !validProcessIdentity(callbackChild.identity) || child.identity !== callbackChild.identity) throw new GitCommandUncertainError("Git child identity was not established exactly");
-      child.stdout.on("data", collect("stdout"));
-      child.stderr.on("data", collect("stderr"));
       const observed = await observeExit(child, timeoutMs, options.signal, () => {
         if (child?.exitCode === null) child.kill("SIGTERM");
       });

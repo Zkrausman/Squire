@@ -7,7 +7,7 @@ import { InMemoryWorkflowStore } from "./in-memory-workflow-store.js";
 import { run } from "./fixtures.js";
 import { GitWorkspaceService, type GitSourceAuthorization } from "../../src/git/workspace-service.js";
 import type { GitWorkspaceSpecInput } from "../../src/git/domain.js";
-import type { TrustedFilesystemIsolationCapability } from "../../src/git/trusted-isolation.js";
+import { composeTrustedFilesystemIsolationAuthority, type TrustedFilesystemIsolationAuthority } from "../../src/git/trusted-isolation.js";
 
 const exec = promisify(execFile);
 
@@ -19,8 +19,8 @@ export interface GitFixture {
   readonly git: (...args: string[]) => Promise<string>;
   readonly store: InMemoryWorkflowStore;
   readonly service: GitWorkspaceService;
-  /** Test-only adapter; production receives this from AIDEV-223. */
-  readonly filesystemIsolation: TrustedFilesystemIsolationCapability;
+  /** Runtime-authenticated authority issued by the real composition boundary. */
+  readonly filesystemAuthority: TrustedFilesystemIsolationAuthority;
   readonly input: GitWorkspaceSpecInput;
   readonly cleanup: () => Promise<void>;
 }
@@ -71,8 +71,8 @@ export async function createGitFixture(options: { readonly runId?: string; reado
   const sourceAuthorizer = {
     authorize: async (): Promise<GitSourceAuthorization> => ({ cloneUrl: source, localTransport: true }),
   };
-  const filesystemIsolation = { assertTicketRoot: async (): Promise<void> => undefined } as unknown as TrustedFilesystemIsolationCapability;
-  const service = new GitWorkspaceService({ store, ticketRoot, filesystemIsolation, allowLocalTransport: true, requirePublishingGates: false, sourceAuthorizer });
+  const filesystemAuthority = await composeTrustedFilesystemIsolationAuthority(ticketRoot);
+  const service = new GitWorkspaceService({ store, ticketRoot, filesystemAuthority, allowLocalTransport: true, requirePublishingGates: false, sourceAuthorizer });
   const input: GitWorkspaceSpecInput = {
     runId,
     ticketIdentifier: "AIDEV-222",
@@ -89,7 +89,7 @@ export async function createGitFixture(options: { readonly runId?: string; reado
     git,
     store,
     service,
-    filesystemIsolation,
+    filesystemAuthority,
     input,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };

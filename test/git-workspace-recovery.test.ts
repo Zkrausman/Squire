@@ -43,7 +43,7 @@ test("future caller time cannot bypass a persisted retention deadline", async t 
   t.after(fixture.cleanup);
   const trustedNow = Date.now();
   const clock = { now: () => trustedNow, sleep: async () => undefined };
-  const trustedService = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: fixture.filesystemIsolation, clock, requirePublishingGates: false });
+  const trustedService = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, clock, requirePublishingGates: false });
   const spec = await fixture.service.createSpec(fixture.input);
   await fixture.service.provision(fixture.input.runId, spec, "trusted-time-provision");
   const policy = { outcome: "success" as const, workspaceRetainUntil: new Date(trustedNow + 3_600_000).toISOString(), bundleRetainUntil: new Date(trustedNow + 3_600_000).toISOString() };
@@ -71,7 +71,7 @@ test("retention is immutable and fenced disposal is idempotent without completin
   ]);
   assert.equal(disposals[0]!.removed.length + disposals[0]!.alreadyAbsent.length, 4);
   assert.equal(disposals[1]!.removed.length + disposals[1]!.alreadyAbsent.length, 4);
-  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: fixture.filesystemIsolation, requirePublishingGates: false });
+  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, requirePublishingGates: false });
   const repeated = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.equal(repeated.alreadyAbsent.length, 4);
   assert.equal((await fixture.store.read(fixture.input.runId))?.terminalFence?.state, "held");
@@ -98,7 +98,7 @@ async function seedUnresolvedGitOperation(fixture: Awaited<ReturnType<typeof cre
   const operation = { operationId, owner: `git-operation-${operationId}`, generation: current.gitWorkspace.operationGeneration, step: "fetch" as const, startedAt: new Date().toISOString(), command: { operationId, step: "fetch" as const, state: "spawned" as const, owner: `git-operation-${operationId}`, fencingToken: 9001, processIdentity: child.identity } };
   await fixture.store.compareAndSet(fixture.input.runId, { version: current.version }, snapshot => ({ ...snapshot, version: snapshot.version + 1, gitWorkspace: { ...snapshot.gitWorkspace!, operation } }));
   await fixture.store.acquireRunPreparationLease(fixture.input.runId, `git-operation-${operationId}`, Date.now());
-  return new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: fixture.filesystemIsolation, requirePublishingGates: false, process: { processResolver: { resolve: async identity => identity === child.identity ? child : undefined } } });
+  return new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, requirePublishingGates: false, process: { processResolver: { resolve: async identity => identity === child.identity ? child : undefined } } });
 }
 
 test("workspace-first disposal preserves the bundle for restart-safe later cleanup", async t => {
@@ -115,7 +115,7 @@ test("workspace-first disposal preserves the bundle for restart-safe later clean
   const first = await fixture.service.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: true, disposeBundle: false, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.deepEqual(first.removed, [path.join(fixture.ticketRoot, "workspace"), path.join(fixture.ticketRoot, "git", "repo.git"), path.join(fixture.ticketRoot, "control", "git", fixture.input.runId)]);
   await new Promise(resolve => setTimeout(resolve, 250));
-  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: fixture.filesystemIsolation, requirePublishingGates: false });
+  const restarted = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, requirePublishingGates: false });
   const second = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: false, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
   assert.deepEqual(second.removed, [path.join(fixture.ticketRoot, "artifacts", "git", fixture.input.runId)]);
   const retry = await restarted.disposeUnderTerminalFence(fixture.input.runId, fence, { now: Date.now(), disposeWorkspace: true, disposeBundle: true, workspaceRetainUntil: policy.workspaceRetainUntil, bundleRetainUntil: policy.bundleRetainUntil });
@@ -175,7 +175,7 @@ test("recovery does not release a Git preparation lease when the identity resolv
   t.after(fixture.cleanup);
   const child = new RecoveryChild("git-unknown-child", true);
   const restarted = await seedUnresolvedGitOperation(fixture, child);
-  const unknown = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemIsolation: fixture.filesystemIsolation, requirePublishingGates: false, process: { processResolver: { resolve: async () => undefined } } });
+  const unknown = new GitWorkspaceService({ store: fixture.store, ticketRoot: fixture.ticketRoot, filesystemAuthority: fixture.filesystemAuthority, requirePublishingGates: false, process: { processResolver: { resolve: async () => undefined } } });
   await assert.rejects(() => unknown.recover(fixture.input.runId, "recovery-unknown"), /live or unknown|unresolved/);
   assert.equal((await fixture.store.read(fixture.input.runId))?.preparationLeases?.length, 1);
   void restarted;
