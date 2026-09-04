@@ -8,7 +8,8 @@ import type { GitSourceAuthorization, RepositorySourceAuthorizer } from "./works
  * A production source policy must be explicit. The policy is intentionally
  * small: repository identity and the complete HTTPS origin are allowlisted,
  * literal private destinations are rejected, and every resolved address must
- * also be public. Git is separately invoked with redirects disabled.
+ * also be public. The returned address set is consumed by Git's
+ * `http.curloptResolve` transport pinning with redirects disabled.
  */
 export interface RepositorySourceApprovalPolicy {
   readonly allowedOrigins: readonly string[];
@@ -54,9 +55,31 @@ export class AllowlistedRepositorySourceAuthorizer implements RepositorySourceAu
     let addresses: readonly string[];
     try { addresses = await this.#resolveAddresses(approved.url.hostname); }
     catch (error) { throw new RepositorySourceAuthorizationError("repository source DNS resolution failed", { cause: error } as ErrorOptions); }
-    if (addresses.length === 0 || addresses.some(address => typeof address !== "string" || isIP(address) === 0 || isUnsafeNetworkAddress(address))) throw new RepositorySourceAuthorizationError("repository source DNS result contains a private or local address");
-    return { cloneUrl: repository.cloneUrl };
+    if (!Array.isArray(addresses) || addresses.length === 0 || addresses.length > 32 || addresses.some(address => typeof address !== "string" || isIP(address) === 0 || isUnsafeNetworkAddress(address))) throw new RepositorySourceAuthorizationError("repository source DNS result contains a private or local address");
+    buildGitHttpsResolveConfig(repository, addresses);
+    return { cloneUrl: repository.cloneUrl, resolvedAddresses: Object.freeze([...addresses]) };
   }
+}
+
+/**
+ * Converts the approved address set into Git's libcurl resolve pinning
+ * configuration. CURLOPT_RESOLVE routes the connection to these addresses
+ * while libcurl retains the URL hostname for TLS SNI/certificate validation.
+ * Repeated `-c` entries are intentional: Git documents this key as
+ * multi-valued.
+ */
+export function buildGitHttpsResolveConfig(repository: GitRepositoryIdentity, addresses: readonly string[]): readonly string[] {
+  const approved = assertCredentialFreeHttpsCloneUrl(repository.cloneUrl, repository.owner, repository.name);
+  if (!Array.isArray(addresses) || addresses.length === 0 || addresses.length > 32) throw new RepositorySourceAuthorizationError("approved Git DNS address set is bounded");
+  const normalized = addresses.map(address => {
+    if (typeof address !== "string" || isIP(address) === 0 || isUnsafeNetworkAddress(address) || /[\u0000-\u0020\u007f\r\n=]/u.test(address)) throw new RepositorySourceAuthorizationError("approved Git DNS address is not a public IP literal");
+    return address;
+  });
+  if (new Set(normalized).size !== normalized.length) throw new RepositorySourceAuthorizationError("approved Git DNS address set contains duplicates");
+  const hostname = approved.url.hostname.replace(/^\[|\]$/gu, "");
+  const curlHost = hostname.includes(":") ? `[${hostname}]` : hostname;
+  const port = approved.url.port || "443";
+  return Object.freeze(normalized.map(address => `http.curloptResolve=${curlHost}:${port}:${address.includes(":") ? `[${address}]` : address}`));
 }
 
 /** Explicitly rejecting default. Tests and production composition must inject

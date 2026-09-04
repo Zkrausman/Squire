@@ -146,10 +146,12 @@
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
   "sources/aidev-222-hardened-git-workspace-remediation": [
-    "sources/aidev-222-isolated-git-workspace"
+    "sources/aidev-222-isolated-git-workspace",
+    "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/aidev-222-isolated-git-workspace": [
     "sources/aidev-222-hardened-git-workspace-remediation",
+    "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated",
     "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/durable-noncooperative-process-ownership": [
@@ -171,6 +173,9 @@
   ],
   "sources/obs-2026-09-03-aidev-222-remediation-commit-verified": [
     "sources/aidev-222-isolated-git-workspace"
+  ],
+  "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated": [
+    "sources/aidev-222-hardened-git-workspace-remediation"
   ],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
@@ -205,6 +210,7 @@
     "sources/stable-history-trigger-resend-proof"
   ],
   "syntheses/aidev-222-isolated-git-workspace": [
-    "sources/aidev-222-isolated-git-workspace"
+    "sources/aidev-222-isolated-git-workspace",
+    "sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated"
   ]
 }

@@ -27,6 +27,7 @@
 - [[sources/obs-2026-09-01-fenced-dispatch-authority-invariant]] — Observation: Fenced dispatch authority invariant *(created: 2026-09-01)*
 - [[sources/obs-2026-09-03-aidev-222-git-workspace-implementation-completed]] — Observation: AIDEV-222 Git workspace implementation completed *(created: 2026-09-03)*
 - [[sources/obs-2026-09-03-aidev-222-remediation-commit-verified]] — Observation: AIDEV-222 remediation commit verified *(created: 2026-09-03)*
+- [[sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated]] — Observation: AIDEV-222 review-2 blockers remediated *(created: 2026-09-04)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/post-settlement-lease-loss-compensation]] — Post-settlement lease-loss compensation *(created: 2026-09-01)*
 - [[sources/registered-session-process-recovery]] — Registered-session process recovery *(created: 2026-09-02)*
@@ -49,4 +50,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-03T23:04:47.880Z* | *Total pages: 31*
+*Last updated: 2026-09-04T00:04:24.584Z* | *Total pages: 32*

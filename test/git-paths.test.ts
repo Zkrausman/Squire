@@ -69,10 +69,11 @@ test("descriptor-bound cleanup rejects synchronized parent and leaf substitution
   assert.equal(await import("node:fs/promises").then(({ readFile }) => readFile(path.join(outside, "sentinel"), "utf8")), "must-survive\n");
 });
 
-test("filesystem-crossing policy is fail-closed on Linux when a bind mount cannot be proven", { skip: process.platform !== "linux" || typeof process.getuid !== "function" || process.getuid() !== 0 }, async t => {
-  // CI environments without CAP_SYS_ADMIN skip this privileged probe. The
-  // production helper still rejects every differing device seen through a
-  // held descriptor; the test is intentionally never run against the checkout.
+test("descriptor helpers reject a proven filesystem crossing; production isolation is external", { skip: process.platform !== "linux" || typeof process.getuid !== "function" || process.getuid() !== 0 }, async t => {
+  // CI environments without CAP_SYS_ADMIN skip this privileged defense-in-
+  // depth probe. AIDEV-222 does not treat this helper or st_dev equality as
+  // proof against same-device bind mounts; production Git side effects require
+  // the external AIDEV-223 isolation capability.
   const root = await mkdtemp(path.join("/tmp", "squire-path-mount-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const mounted = path.join(root, "mounted");

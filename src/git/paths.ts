@@ -33,10 +33,13 @@ const PRIVATE_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 
 /**
- * Linux descriptor filesystem boundary. Node does not expose openat(2) or
- * renameat2(2) directly, so all sensitive Git paths are opened relative to a
- * held O_DIRECTORY|O_NOFOLLOW descriptor and the fixed GNU coreutils
+ * Linux descriptor defense-in-depth boundary. Node does not expose openat(2)
+ * or renameat2(2) directly, so sensitive paths are opened relative to held
+ * O_DIRECTORY|O_NOFOLLOW descriptors and the fixed GNU coreutils
  * `mv --no-clobber --no-copy -T` helper supplies the narrow no-replace move.
+ * These Node checks cannot prove absence of same-device bind mounts or make a
+ * later Git pathname immune to replacement; production side effects are
+ * consequently gated by the external AIDEV-223 isolation capability.
  * Unsupported platforms fail closed instead of treating pathname lstat as a
  * proof. The helper is invoked with argv only and a fresh environment.
  */
@@ -211,7 +214,10 @@ export function assertPathWithin(root: string, target: string): string {
 }
 
 /** Walks existing ancestors with lstat. Missing leaf components are allowed for
- * create-only publication, but no existing symlink or non-directory ancestor is. */
+ * create-only publication, but no existing symlink or non-directory ancestor is.
+ * The st_dev comparison is defense in depth only; it does not prove that a
+ * same-device bind mount is absent. Production Git side effects therefore
+ * require the external AIDEV-223 TrustedFilesystemIsolationCapability. */
 export async function assertSafeAncestors(target: string, root: string, allowMissingLeaf = true): Promise<void> {
   if (process.platform === "win32") throw new GitPathSecurityError("secure no-follow path operations are unsupported on win32");
   const absolute = assertPathWithin(root, target);

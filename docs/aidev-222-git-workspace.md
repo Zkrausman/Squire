@@ -16,9 +16,19 @@ are persisted in `RunSnapshot.gitWorkspace`; a command with an unknown child
 identity blocks recovery rather than being replaced. Every filesystem boundary
 is rechecked against the merged preparation/terminal authority.
 
+The constructor requires an opaque `TrustedFilesystemIsolationCapability` from
+AIDEV-223. Git does not provide a constructor, probe, boolean, or fallback that
+can self-assert this capability. AIDEV-223 must compose the service only after
+its sandbox/openat2-or-equivalent boundary has proved ticket containment,
+same-filesystem bind-mount resistance, and descriptor/path swap resistance.
+Node's descriptor and `st_dev` checks remain defense in depth and are not the
+production mount proof; omitted or unavailable isolation fails closed.
+
 The service validates the immutable spec, requires an injected closed
 repository-source authorizer, rejects private/DNS-resolved destinations and
-unapproved redirects, and imports only the literal base
+unapproved redirects, binds the authorizer's public DNS answer set to Git's
+libcurl `http.curloptResolve` transport configuration while retaining TLS
+hostname validation, and imports only the literal base
 `refs/heads/<base-branch>`. Fetch explicitly disables redirects. It rejects
 shallow/partial/alternate/graft/replace state, and verifies object closure,
 config, paths, hooks, worktree metadata, and a clean initial status. It never
@@ -53,9 +63,12 @@ verifies the advertised ref, base ancestry, object format, offline fetch, and
 strict object closure from the held bytes. The destination and bundle manifest
 are exclusive publications; an existing or substituted digest is never
 repaired. Published bundles are owner-non-writable and are reverified from
-held descriptors before persistence and again during retained disposal;
-artifact children are journaled with exact identity and digest. Host transfer
-and GitHub publication belong to AIDEV-225.
+held descriptors before persistence and again during retained disposal. The
+retained verifier creates its scratch repository beneath the private,
+fence-owned disposal directory, not beneath the run control/repository roots,
+so workspace-first disposal remains retryable after restart; artifact children
+are journaled with exact identity and digest. Host transfer and GitHub
+publication belong to AIDEV-225.
 
 ## Retention and disposal
 
@@ -69,4 +82,6 @@ disposal identity contains authenticated snapshots of the exact contract bytes
 and per-target completion markers, preserving the validated resource proof
 after the artifact manifest itself is removed; recovery never trusts a mutable
 journal alone. Repeating the same disposal under the same held fence is safe. Sandbox setup, scheduling,
-publication, and merge remain owned by AIDEV-223 through AIDEV-226.
+publication, and merge remain owned by AIDEV-223 through AIDEV-226. AIDEV-223
+also owns the trusted filesystem-isolation composition required before this
+component may perform production Git side effects.

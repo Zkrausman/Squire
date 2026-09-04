@@ -10,7 +10,8 @@ import { descriptorPathForGit, digestDescriptor, openImmutableFile, copyDescript
 import { assertBaseBranch, assertCredentialFreeHttpsCloneUrl, assertFullObjectId, assertGitRefFormat, assertValidInternalRefName, assertRepositoryPart, assertRunId, assertTicketIdentifier, branchRef, deriveFeatureBranch, objectIdLength, zeroObjectId } from "./identity.js";
 import { assertSafeAncestors, assertTicketRoot, chmodDirectoryNoFollow, chmodFileNoFollow, createGitWorkspaceFilesystemPaths, descriptorChildPath, ensurePrivateDirectory, entryKind, fsyncDirectory, GitPathSecurityError, inspectResource, isAlreadyExists, isMissing, logicalGitWorkspacePaths, openNoFollow, openNoFollowAt, readExactNoFollow, removeEmptyDirectoryNoFollow, removeTreeNoFollow, renameWithIdentity, sameResourceIdentity, sameStat, writeExclusiveFile, type GitWorkspaceFilesystemPaths, type RemovalChildIdentity } from "./paths.js";
 import { GitCommandError, GitCommandRunner, GitCommandUncertainError, type GitChildProcess, type GitCommandOptions, type GitCommandResult, type GitCommandRunnerOptions } from "./git-command.js";
-import { RejectingRepositorySourceAuthorizer } from "./source-authorizer.js";
+import { RejectingRepositorySourceAuthorizer, buildGitHttpsResolveConfig } from "./source-authorizer.js";
+import { assertTrustedFilesystemIsolationCapability, type TrustedFilesystemIsolationCapability } from "./trusted-isolation.js";
 import type { GitBundleManifestDocument, GitBundleRecord, GitDisposalAuthorization, GitDisposalResult, GitObjectFormat, GitOperationStep, GitRepositoryIdentity, GitWorkspaceManifestDocument, GitWorkspaceReadiness, GitWorkspaceRecord, GitWorkspaceRetention, GitWorkspaceServicePort, GitWorkspaceSpecDocument, GitWorkspaceStatus, GitWorkspaceCommit, ReadyGitWorkspace, ResourceIdentity } from "./domain.js";
 
 export interface GitSourceAuthorization {
@@ -18,6 +19,8 @@ export interface GitSourceAuthorization {
   readonly cloneUrl: string;
   /** A test-only local transport may be supplied by an explicitly trusted test authorizer. */
   readonly localTransport?: boolean;
+  /** The exact public address set authorized for this HTTPS connection. */
+  readonly resolvedAddresses?: readonly string[];
   /** Only non-secret, command-specific values may be supplied by a source adapter. */
   readonly environment?: Readonly<Record<string, string>>;
   readonly release?: () => void | Promise<void>;
@@ -43,6 +46,8 @@ export interface GitWorkspaceServiceOptions {
   readonly contractValidator?: GitWorkspaceContractValidator;
   readonly sourceAuthorizer?: RepositorySourceAuthorizer;
   readonly repositorySourceAuthorizer?: RepositorySourceAuthorizer;
+  /** Must be supplied by AIDEV-223; Git never infers or self-asserts sandbox isolation. */
+  readonly filesystemIsolation: TrustedFilesystemIsolationCapability;
   readonly process?: GitWorkspaceProcessOptions;
   readonly operationLeaseMs?: number;
   readonly commandTimeoutMs?: number;
@@ -156,7 +161,9 @@ const REAL_CLOCK: Clock = {
 };
 
 /** Trusted Git workspace component. It owns only its exact Git/artifact/control
- * paths; the run lifecycle fence is always supplied by the merged authority. */
+ * paths; the run lifecycle fence is always supplied by the merged authority.
+ * Production side effects also require the opaque isolation capability issued
+ * by AIDEV-223; this component never infers that filesystem proof itself. */
 export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspaceReadiness {
   readonly #store: WorkflowStore;
   readonly #authority: RunQuiescenceAuthority;
@@ -167,6 +174,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   readonly #writer: GitContractArtifactWriter;
   readonly #validatorPromise: Promise<GitWorkspaceContractValidator>;
   readonly #sourceAuthorizer: RepositorySourceAuthorizer;
+  readonly #filesystemIsolation: TrustedFilesystemIsolationCapability;
   readonly #processResolver: GitWorkspaceProcessOptions["processResolver"];
   readonly #operationLeaseMs: number;
   readonly #commandTimeoutMs: number;
@@ -190,6 +198,8 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     this.#reader = options.artifactReader ?? new SafeArtifactReader(this.#ticketRoot);
     this.#writer = options.artifactWriter ?? new FileGitContractWriter(this.#ticketRoot);
     this.#validatorPromise = options.contractValidator ? Promise.resolve(options.contractValidator) : GitWorkspaceContractValidator.create(this.#reader);
+    assertTrustedFilesystemIsolationCapability(options.filesystemIsolation);
+    this.#filesystemIsolation = options.filesystemIsolation;
     this.#sourceAuthorizer = options.sourceAuthorizer ?? options.repositorySourceAuthorizer ?? new RejectingRepositorySourceAuthorizer();
     this.#processResolver = options.process?.processResolver;
     this.#operationLeaseMs = positiveInteger(options.operationLeaseMs ?? DEFAULT_OPERATION_LEASE_MS, "Git operation lease");
@@ -203,6 +213,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async createSpec(input: import("./domain.js").GitWorkspaceSpecInput): Promise<ContractReference> {
+    await this.#assertFilesystemIsolation();
     const paths = logicalGitWorkspacePaths(input.runId);
     const document = buildWorkspaceSpec(input, paths);
     // Approval is required before an immutable spec is published; provision
@@ -210,6 +221,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const source = await this.#sourceAuthorizer.authorize(document.repository);
     try { this.#assertAuthorizedTransport(document.repository, source); }
     finally { await source.release?.(); }
+    await this.#assertFilesystemIsolation();
     const relativePath = `artifacts/git/${input.runId}/workspace-spec.json`;
     const reference = await this.#writer.writeCreateOnly(relativePath, serializeCanonical(document));
     if (reference.path !== relativePath || reference.schemaId !== "urn:squire:git-workspace:v1:workspace-spec" || reference.sha256 !== sha256Bytes(serializeCanonical(document))) throw new GitWorkspaceContractError("workspace spec writer returned a substituted reference");
@@ -241,8 +253,8 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       try {
         const source = await this.#sourceAuthorizer.authorize(document.repository);
         try {
-          this.#assertAuthorizedTransport(document.repository, source);
-          await this.#provisionFilesystem(context, document, record, source);
+          const transport = this.#assertAuthorizedTransport(document.repository, source);
+          await this.#provisionFilesystem(context, document, record, source, transport);
         } finally { await source.release?.(); }
         return await this.#finishProvisioning(context, document, record);
       } catch (error) {
@@ -550,6 +562,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
 
   async disposeUnderTerminalFence(runId: string, fence: RunTerminalFence, authorization: GitDisposalAuthorization, signal?: AbortSignal): Promise<GitDisposalResult> {
     assertRunId(runId);
+    await this.#assertFilesystemIsolation(signal);
     const lockKey = `${this.#ticketRoot}:${runId}:${fence.fencingToken}`;
     const previous = DISPOSAL_LOCKS.get(lockKey);
     let unlock!: () => void;
@@ -598,7 +611,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       // This is an independent retained-evidence check, not just a directory
       // identity check. It authenticates every create-only contract and runs
       // the full bundle verifier before any disposal move is attempted.
-      artifacts = await this.#buildDisposalArtifactProof(specDocument, record, resources);
+      artifacts = await this.#buildDisposalArtifactProof(specDocument, record, resources, disposal);
       contracts = await this.#captureDisposalContracts(record);
       const authenticatedResources = await this.#validateDisposalContractSnapshots(contracts, record);
       if (canonicalJson(authenticatedResources) !== canonicalJson(resources)) throw new Error("disposal contract snapshot does not match the retained manifest");
@@ -645,6 +658,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
 
   async #acquire(runId: string, owner: string): Promise<GitLeaseContext> {
     if (typeof owner !== "string" || owner.length === 0 || owner.length > 200 || /[\u0000-\u001f\u007f\r\n]/u.test(owner)) throw new Error("Git operation owner is invalid");
+    await this.#assertFilesystemIsolation();
     await this.#authority.assertRunStartAllowed(runId, this.#clock.now());
     const lease = await this.#store.acquireLease(runId, GIT_LEASE_KEY, owner, this.#clock.now(), this.#operationLeaseMs);
     if (!lease) throw new StoreConflictError("Git workspace operation lease is held");
@@ -720,7 +734,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     })).gitWorkspace!;
   }
 
-  async #provisionFilesystem(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, record: GitWorkspaceRecord, source: GitSourceAuthorization): Promise<void> {
+  async #provisionFilesystem(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, record: GitWorkspaceRecord, source: GitSourceAuthorization, transportResolve: readonly string[]): Promise<void> {
     if (record.stage !== "provisioning") throw new Error("provisioning record changed");
     const fs = this.#paths(spec.runId);
     await this.#ensureRoots(fs, context);
@@ -741,7 +755,10 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const baseRef = INTERNAL_BASE_REF(spec.runId);
     const imported = await this.#readRef(context, fs.repository, baseRef, spec.objectFormat, record.operation?.operationId ?? context.operationId);
     if (!imported) {
-      await this.#git(context, record.operation?.operationId ?? context.operationId, "fetch", ["-c", "http.followRedirects=false", "--git-dir", fs.repository, "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-gc", "--no-write-fetch-head", source.cloneUrl, `refs/heads/${spec.baseBranch}:${baseRef}`], { allowNetwork: source.localTransport !== true, ...(source.localTransport ? { extraEnv: { GIT_ALLOW_PROTOCOL: "file" } } : source.environment ? { extraEnv: source.environment } : {}) });
+      const operationId = record.operation?.operationId ?? context.operationId;
+      if (!source.localTransport) await this.#assertHttpsResolveSupport(context, operationId);
+      const transportArgs = transportResolve.flatMap(value => ["-c", value]);
+      await this.#git(context, operationId, "fetch", [...transportArgs, "-c", "http.followRedirects=false", "--git-dir", fs.repository, "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-gc", "--no-write-fetch-head", source.cloneUrl, `refs/heads/${spec.baseBranch}:${baseRef}`], { allowNetwork: source.localTransport !== true, ...(source.localTransport ? { extraEnv: { GIT_ALLOW_PROTOCOL: "file" } } : source.environment ? { extraEnv: source.environment } : {}) });
     }
     await this.#verifyFetchedBase(context, spec, record);
     const featureRef = branchRef(spec.featureBranch);
@@ -895,31 +912,36 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #verifyBundleBytes(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, expectedHead: string, handle: import("node:fs/promises").FileHandle, digest: DescriptorDigest, operationId: string): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
-    return this.#verifyBundleBytesWithInvoker(spec, expectedHead, handle, digest, (args, overrides) => this.#git(context, operationId, "bundle-verify", args, overrides));
+    return this.#verifyBundleBytesWithInvoker(spec, expectedHead, handle, digest, this.#paths(spec.runId).controlRoot, (args, overrides) => this.#git(context, operationId, "bundle-verify", args, overrides));
   }
 
-  async #verifyBundleBytesOffline(spec: GitWorkspaceSpecDocument, expectedHead: string, handle: import("node:fs/promises").FileHandle, digest: DescriptorDigest): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
-    return this.#verifyBundleBytesWithInvoker(spec, expectedHead, handle, digest, (args, overrides) => this.#runOfflineGit(spec.runId, args, overrides));
+  async #verifyBundleBytesOffline(spec: GitWorkspaceSpecDocument, expectedHead: string, handle: import("node:fs/promises").FileHandle, digest: DescriptorDigest, scratchRoot: string): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
+    return this.#verifyBundleBytesWithInvoker(spec, expectedHead, handle, digest, scratchRoot, (args, overrides) => this.#runOfflineGit(spec.runId, args, overrides));
   }
 
   async #runOfflineGit(runId: string, args: readonly string[], overrides: Partial<Pick<GitCommandOptions, "allowExitCodes" | "allowNetwork" | "passFileDescriptors" | "extraEnv">> = {}): Promise<GitCommandResult> {
+    await this.#assertFilesystemIsolation();
     return this.#command.run(args, { cwd: this.#ticketRoot, runId, ticketRoot: this.#ticketRoot, timeoutMs: this.#commandTimeoutMs, maxOutputBytes: this.#commandOutputBytes, ...overrides });
   }
 
-  async #verifyBundleBytesWithInvoker(spec: GitWorkspaceSpecDocument, expectedHead: string, handle: import("node:fs/promises").FileHandle, digest: DescriptorDigest, invoke: GitInvoker): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
+  async #verifyBundleBytesWithInvoker(spec: GitWorkspaceSpecDocument, expectedHead: string, handle: import("node:fs/promises").FileHandle, digest: DescriptorDigest, scratchRoot: string, invoke: GitInvoker): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
     const descriptor = descriptorPathForGit(handle, 3);
-    const verify = await invoke(["--git-dir", this.#paths(spec.runId).repository, "bundle", "verify", descriptor], { passFileDescriptors: [handle.fd], extraEnv: { GIT_ALLOW_PROTOCOL: "file" } });
-    const listed = await invoke(["--git-dir", this.#paths(spec.runId).repository, "bundle", "list-heads", descriptor], { passFileDescriptors: [handle.fd], extraEnv: { GIT_ALLOW_PROTOCOL: "file" } });
-    const refs = parseBundleRefs(listed.stdout, spec.objectFormat);
-    assertFullObjectId(expectedHead, spec.objectFormat);
-    if (refs.length !== 1 || refs[0]?.name !== branchRef(spec.featureBranch) || refs[0]?.oid !== expectedHead) throw new Error("bundle ref inventory is not exactly the feature branch");
-    const prerequisites = parsePrerequisites(`${verify.stdout}\n${verify.stderr}`, spec.objectFormat).filter(value => value !== expectedHead);
-    const disposable = path.join(this.#paths(spec.runId).controlRoot, `.bundle-check-${randomUUID()}.git`);
+    const disposable = path.join(scratchRoot, `.bundle-check-${randomUUID()}.git`);
     await this.#assertNoPath(disposable);
     try {
       await assertSafeAncestors(path.dirname(disposable), this.#ticketRoot, false);
       await ensurePrivateDirectory(disposable, this.#ticketRoot);
-      await invoke(["init", "--bare", `--object-format=${spec.objectFormat}`, `--template=${this.#paths(spec.runId).templatePath}`, disposable]);
+      await invoke(["init", "--bare", `--object-format=${spec.objectFormat}`, disposable]);
+      // Verify and enumerate against the disposal-owned scratch repository. It
+      // is deliberately not the run repository: workspace-first retention may
+      // already have removed that repository and its control root.
+      const verify = await invoke(["--git-dir", disposable, "bundle", "verify", descriptor], { allowExitCodes: [0, 1], passFileDescriptors: [handle.fd], extraEnv: { GIT_ALLOW_PROTOCOL: "file" } });
+      if (verify.exitCode !== 0) throw new Error("retained Git bundle has prerequisites unavailable after workspace disposal");
+      const listed = await invoke(["--git-dir", disposable, "bundle", "list-heads", descriptor], { passFileDescriptors: [handle.fd], extraEnv: { GIT_ALLOW_PROTOCOL: "file" } });
+      const refs = parseBundleRefs(listed.stdout, spec.objectFormat);
+      assertFullObjectId(expectedHead, spec.objectFormat);
+      if (refs.length !== 1 || refs[0]?.name !== branchRef(spec.featureBranch) || refs[0]?.oid !== expectedHead) throw new Error("bundle ref inventory is not exactly the feature branch");
+      const prerequisites = parsePrerequisites(`${verify.stdout}\n${verify.stderr}`, spec.objectFormat).filter(value => value !== expectedHead);
       await invoke(["--git-dir", disposable, "fetch", "--no-tags", "--no-recurse-submodules", descriptor, `${branchRef(spec.featureBranch)}:${branchRef(spec.featureBranch)}`], { passFileDescriptors: [handle.fd], extraEnv: { GIT_ALLOW_PROTOCOL: "file" } });
       const baseType = await invoke(["--git-dir", disposable, "cat-file", "-t", spec.baseSha]);
       const headType = await invoke(["--git-dir", disposable, "cat-file", "-t", expectedHead]);
@@ -929,10 +951,10 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       await invoke(["--git-dir", disposable, "fsck", "--full", "--strict", "--no-reflogs"]);
       const format = await invoke(["--git-dir", disposable, "rev-parse", "--show-object-format"]);
       if (format.stdout.trim() !== spec.objectFormat) throw new Error("bundle object format mismatch");
+      const after = await digestDescriptor(handle, this.#maxBundleBytes);
+      if (after.sha256 !== digest.sha256 || after.byteLength !== digest.byteLength) throw new Error("bundle changed during content verification");
+      return { prerequisites, refs };
     } finally { await this.#removeOwnedTemporary(disposable); }
-    const after = await digestDescriptor(handle, this.#maxBundleBytes);
-    if (after.sha256 !== digest.sha256 || after.byteLength !== digest.byteLength) throw new Error("bundle changed during content verification");
-    return { prerequisites, refs };
   }
 
   async #verifyWorkspace(context: GitLeaseContext, spec: GitWorkspaceSpecDocument, record: GitWorkspaceRecord, expectedHead: string | undefined, requireClean: boolean): Promise<WorkspaceObservation> {
@@ -1313,6 +1335,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       onObservedExit: (process, result) => this.#setCommand(context, operationId, step, "exited", process.identity).catch(error => { spawnFailure = error; throw error; }),
     };
     try {
+      await this.#assertFilesystemIsolation(options.signal);
       const result = await this.#command.run(args, options);
       await spawnPersist;
       if (spawnFailure) throw spawnFailure;
@@ -1366,12 +1389,17 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   }
 
   async #renew(context: GitLeaseContext): Promise<void> {
+    await this.#assertFilesystemIsolation();
     const renewed = await this.#store.renewLease(context.runId, GIT_LEASE_KEY, context.owner, context.lease.fencingToken, this.#clock.now(), this.#operationLeaseMs);
     if (!renewed) throw new StoreConflictError("Git workspace lease was fenced or expired");
     context.lease.expiresAt = renewed.expiresAt;
   }
 
   #guard(context: GitLeaseContext): LeaseGuard { return { key: GIT_LEASE_KEY, owner: context.owner, fencingToken: context.lease.fencingToken, now: this.#clock.now() }; }
+
+  async #assertFilesystemIsolation(signal?: AbortSignal): Promise<void> {
+    await this.#filesystemIsolation.assertTicketRoot(this.#ticketRoot, signal);
+  }
 
   #assertExistingRecord(existing: GitWorkspaceRecord | undefined, spec: GitWorkspaceSpecDocument, reference: ContractReference, runId: string): void {
     if (!existing) return;
@@ -1396,20 +1424,31 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     if (canonicalJson(spec.paths) !== canonicalJson(logicalGitWorkspacePaths(runId))) throw new Error("workspace spec paths are not the fixed logical paths");
   }
 
-  #assertAuthorizedTransport(repository: GitRepositoryIdentity, authorization: GitSourceAuthorization): void {
+  async #assertHttpsResolveSupport(context: GitLeaseContext, operationId: string): Promise<void> {
+    const result = await this.#git(context, operationId, "fetch", ["help", "--config"]);
+    if (!result.stdout.split("\n").some(line => line.trim() === "http.curloptResolve")) throw new Error("Git binary does not support mandatory HTTPS address pinning");
+  }
+
+  #assertAuthorizedTransport(repository: GitRepositoryIdentity, authorization: GitSourceAuthorization): readonly string[] {
     if (!authorization || typeof authorization.cloneUrl !== "string" || authorization.cloneUrl.length === 0 || authorization.cloneUrl.length > 2048 || /[\u0000-\u001f\u007f\r\n]/u.test(authorization.cloneUrl)) throw new Error("approved Git source URL is malformed");
+    if (authorization.localTransport !== undefined && typeof authorization.localTransport !== "boolean") throw new Error("approved Git source transport flag is malformed");
+    if (authorization.resolvedAddresses !== undefined && !Array.isArray(authorization.resolvedAddresses)) throw new Error("approved Git source address set is malformed");
+    if (authorization.environment !== undefined && (!authorization.environment || typeof authorization.environment !== "object" || Array.isArray(authorization.environment))) throw new Error("approved Git source environment is malformed");
+    if (authorization.release !== undefined && typeof authorization.release !== "function") throw new Error("approved Git source release hook is malformed");
     for (const [key, value] of Object.entries(authorization.environment ?? {})) {
+      if (typeof value !== "string") throw new Error(`approved Git source environment value is malformed: ${key}`);
       if (key === "GIT_ALLOW_PROTOCOL" && value !== "https") throw new Error("approved Git source may not widen the HTTPS protocol allowlist");
       if (key !== "GIT_ALLOW_PROTOCOL" && key !== "GIT_HTTP_USER_AGENT") throw new Error(`approved Git source environment is not allowlisted: ${key}`);
     }
     if (authorization.localTransport) {
       if (!this.#allowLocalTransport) throw new Error("local Git transport is disabled in production");
       if (!/^(?:file:|[A-Za-z]:[\\/]|\\\\|\/)/u.test(authorization.cloneUrl)) throw new Error("test local transport authorization is not local");
-      return;
+      return [];
     }
     const approved = assertCredentialFreeHttpsCloneUrl(authorization.cloneUrl, repository.owner, repository.name);
     const requested = assertCredentialFreeHttpsCloneUrl(repository.cloneUrl, repository.owner, repository.name);
     if (approved.url.toString() !== requested.url.toString() || authorization.cloneUrl !== repository.cloneUrl) throw new Error("approved Git source is not bound to the immutable repository URL");
+    return buildGitHttpsResolveConfig(repository, authorization.resolvedAddresses ?? []);
   }
 
   #readyResult(spec: GitWorkspaceSpecDocument, record: GitWorkspaceRecord, headSha?: string): ReadyGitWorkspace {
@@ -1578,12 +1617,12 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     return path.join(this.#ticketRoot, ...logical.slice("/ticket/".length).split("/"));
   }
 
-  async #buildDisposalArtifactProof(spec: GitWorkspaceSpecDocument, record: Extract<GitWorkspaceRecord, { stage: "retained" }>, resources: GitWorkspaceManifestDocument["resources"]): Promise<DisposalArtifactProof> {
+  async #buildDisposalArtifactProof(spec: GitWorkspaceSpecDocument, record: Extract<GitWorkspaceRecord, { stage: "retained" }>, resources: GitWorkspaceManifestDocument["resources"], scratchRoot: string): Promise<DisposalArtifactProof> {
     const fs = this.#paths(spec.runId);
     const root = await inspectResource(fs.artifactRoot, "directory", true, this.#ticketRoot);
     const expectedRoot = resources.artifactRoot;
     if (expectedRoot.path !== `/ticket/artifacts/git/${spec.runId}` || expectedRoot.kind !== "directory" || !matchesCleanupIdentity(root, { ...expectedRoot, path: root.path })) throw new Error("retained artifact root identity does not match the workspace manifest");
-    if (record.bundle) await this.#verifyBundleRecordOffline(spec, record.bundle, record.spec, record.manifest);
+    if (record.bundle) await this.#verifyBundleRecordOffline(spec, record.bundle, record.spec, record.manifest, scratchRoot);
     const expectedNames = new Set(["workspace-spec.json", "workspace-manifest.json", ...(record.bundle ? ["bundle-manifest.json", path.basename(record.bundle.bundlePath)] : [])]);
     const rootHandle = await openNoFollow(fs.artifactRoot, constants.O_RDONLY | constants.O_DIRECTORY, this.#ticketRoot);
     const children: DisposalArtifactChildProof[] = [];
@@ -1605,26 +1644,26 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
         } finally { await file.close(); }
       }
     } finally { await rootHandle.close(); }
-    return { root: { kind: "directory", device: root.device, inode: root.inode, mode: root.mode, linkCount: root.linkCount }, children: children.sort((a, b) => a.name.localeCompare(b.name)), ...(record.bundle ? { bundle: await this.#disposalBundleProof(spec, record.bundle) } : {}) };
+    return { root: { kind: "directory", device: root.device, inode: root.inode, mode: root.mode, linkCount: root.linkCount }, children: children.sort((a, b) => a.name.localeCompare(b.name)), ...(record.bundle ? { bundle: await this.#disposalBundleProof(spec, record.bundle, scratchRoot) } : {}) };
   }
 
-  async #disposalBundleProof(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord): Promise<DisposalArtifactBundleProof> {
+  async #disposalBundleProof(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord, scratchRoot: string): Promise<DisposalArtifactBundleProof> {
     // #verifyBundleRecordOffline already authenticated the manifest binding and
     // descriptor. Journal the independently rechecked content inventory so a
     // crash after a move cannot turn an altered retained bundle into a clean
     // disposal retry.
-    const verification = await this.#readAndVerifyBundleDescriptorOffline(spec, bundle);
+    const verification = await this.#readAndVerifyBundleDescriptorOffline(spec, bundle, scratchRoot);
     return { bundlePath: bundle.bundlePath, manifestPath: bundle.manifest.path, byteLength: bundle.byteLength, sha256: bundle.sha256, objectFormat: bundle.objectFormat, featureBranch: bundle.featureBranch, baseSha: bundle.baseSha, headSha: bundle.headSha, prerequisites: verification.prerequisites, refs: verification.refs };
   }
 
-  async #verifyBundleRecordOffline(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord, specReference: ContractReference, workspaceManifest: ContractReference): Promise<void> {
+  async #verifyBundleRecordOffline(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord, specReference: ContractReference, workspaceManifest: ContractReference, scratchRoot: string): Promise<void> {
     const validated = await (await this.#validatorPromise).validateBundle(bundle.manifest, { runId: spec.runId, spec: specReference, workspaceManifest, headSha: bundle.headSha });
     if (bundle.manifest.path !== `artifacts/git/${spec.runId}/bundle-manifest.json` || validated.document.bundlePath !== bundle.bundlePath || validated.document.sha256 !== bundle.sha256 || validated.document.byteLength !== bundle.byteLength || validated.document.featureBranch !== spec.featureBranch || validated.document.baseSha !== spec.baseSha || validated.document.objectFormat !== spec.objectFormat) throw new Error("retained bundle manifest binding mismatch");
-    const verification = await this.#readAndVerifyBundleDescriptorOffline(spec, bundle);
+    const verification = await this.#readAndVerifyBundleDescriptorOffline(spec, bundle, scratchRoot);
     if (canonicalJson(verification.refs) !== canonicalJson(validated.document.refs) || canonicalJson(verification.prerequisites) !== canonicalJson(validated.document.prerequisites)) throw new Error("retained bundle verification metadata mismatch");
   }
 
-  async #readAndVerifyBundleDescriptorOffline(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
+  async #readAndVerifyBundleDescriptorOffline(spec: GitWorkspaceSpecDocument, bundle: GitBundleRecord, scratchRoot: string): Promise<{ readonly prerequisites: readonly string[]; readonly refs: readonly { readonly name: string; readonly oid: string }[] }> {
     const file = await openImmutableFile(path.join(this.#ticketRoot, ...bundle.bundlePath.split("/")), this.#maxBundleBytes, this.#ticketRoot);
     try {
       const info = await file.handle.stat();
@@ -1632,7 +1671,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       if (!sameBundleResource(actualResource, bundle.resource, bundle.bundlePath) || (info.mode & 0o222) !== 0) throw new Error("retained Git bundle identity or permissions mismatch");
       const digest = await digestDescriptor(file.handle, this.#maxBundleBytes);
       if (digest.sha256 !== bundle.sha256 || digest.byteLength !== bundle.byteLength) throw new Error("retained Git bundle digest mismatch");
-      const verification = await this.#verifyBundleBytesOffline(spec, bundle.headSha, file.handle, digest);
+      const verification = await this.#verifyBundleBytesOffline(spec, bundle.headSha, file.handle, digest, scratchRoot);
       if (verification.refs.length !== 1 || verification.refs[0]?.name !== branchRef(spec.featureBranch) || verification.refs[0]?.oid !== bundle.headSha) throw new Error("retained Git bundle ref inventory mismatch");
       return verification;
     } finally { await file.handle.close(); }
@@ -1696,6 +1735,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       await verifyTarget?.(destination);
       await this.#writeDisposalCompletion(completion, runId, fence, target, moved);
       await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
+      await this.#assertFilesystemIsolation(signal);
       if (signal?.aborted) throw new Error("Git disposal was aborted");
       await verifyTarget?.(destination);
       await removeTreeNoFollow(destination, moved, this.#ticketRoot, removalChildren, ...(signal ? [{ signal }] : []));
@@ -1708,6 +1748,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const sourceIdentity = await inspectResource(source, sourceKind, true, this.#ticketRoot);
     if (expected && !matchesCleanupIdentity(sourceIdentity, expected)) throw new Error("Git disposal source identity mismatch");
     await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
+    await this.#assertFilesystemIsolation(signal);
     if (signal?.aborted) throw new Error("Git disposal was aborted");
     try { await renameWithIdentity(source, destination, this.#ticketRoot, sourceIdentity); }
     catch (error) {
@@ -1721,6 +1762,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     await verifyTarget?.(destination);
     await this.#writeDisposalCompletion(completion, runId, fence, target, moved);
     await this.#authority.assertRunTeardownQuiescent(runId, fence, this.#clock.now());
+    await this.#assertFilesystemIsolation(signal);
     if (signal?.aborted) throw new Error("Git disposal was aborted");
     await verifyTarget?.(destination);
     await removeTreeNoFollow(destination, moved, this.#ticketRoot, removalChildren, ...(signal ? [{ signal }] : []));

@@ -19,6 +19,7 @@
 - [Observation: Fenced dispatch authority invariant](obs-2026-09-01-fenced-dispatch-authority-invariant.md)
 - [Observation: AIDEV-222 Git workspace implementation completed](obs-2026-09-03-aidev-222-git-workspace-implementation-completed.md)
 - [Observation: AIDEV-222 remediation commit verified](obs-2026-09-03-aidev-222-remediation-commit-verified.md)
+- [Observation: AIDEV-222 review-2 blockers remediated](obs-2026-09-04-aidev-222-review-2-blockers-remediated.md)
 - [Persisted acceptance authority chain](persisted-acceptance-authority-chain.md)
 - [Post-settlement lease-loss compensation](post-settlement-lease-loss-compensation.md)
 - [Registered-session process recovery](registered-session-process-recovery.md)
