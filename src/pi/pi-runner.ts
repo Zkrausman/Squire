@@ -144,7 +144,7 @@ export class PiRunner {
     if (allocation) {
       await this.#recoverFailedAllocation(runId, role, allocation.owner, allocation.fencingToken, generation, process);
       const remaining = (await this.store.read(runId))?.processAllocations?.[role];
-      if (remaining?.state === "failed" && !remaining.sessionId) await this.#recoverFailedAllocation(runId, role, remaining.owner, remaining.fencingToken, remaining.generation, undefined);
+      if (remaining?.state === "failed" && !remaining.sessionId) await this.#recoverFailedAllocation(runId, role, remaining.owner, remaining.fencingToken, remaining.generation, process);
     } else await this.#markProcess(runId, role, generation, process.identity, "failed");
     if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
     if (this.live.get(key)?.process === process) this.live.delete(key);
@@ -405,7 +405,7 @@ export class PiRunner {
       if (exactAllocation) {
         await this.#recoverFailedAllocation(handle.runId, handle.role, handle.owner, handle.fencingToken, handle.generation, handle.process);
         const remaining = (await this.store.read(handle.runId))?.processAllocations?.[handle.role];
-        if (remaining?.state === "failed" && !remaining.sessionId) await this.#recoverFailedAllocation(handle.runId, handle.role, remaining.owner, remaining.fencingToken, remaining.generation, undefined);
+        if (remaining?.state === "failed" && !remaining.sessionId) await this.#recoverFailedAllocation(handle.runId, handle.role, remaining.owner, remaining.fencingToken, remaining.generation, handle.process);
       } else await this.#markProcess(handle.runId, handle.role, handle.generation, handle.process.identity, "exited");
       if (this.allocating.get(key)?.process === handle.process) this.allocating.delete(key);
       if (this.live.get(key)?.process === handle.process) this.live.delete(key);
