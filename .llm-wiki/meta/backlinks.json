@@ -177,6 +177,7 @@
   "sources/durable-noncooperative-process-ownership": [
     "sources/SRC-2026-09-02-002",
     "sources/fenced-first-session-allocation",
+    "sources/pi-allocation-recovery-requires-exact-exit-identity",
     "sources/registered-session-process-recovery"
   ],
   "sources/fenced-first-session-allocation": [
@@ -209,6 +210,7 @@
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
   ],
+  "sources/pi-allocation-recovery-requires-exact-exit-identity": [],
   "sources/post-settlement-lease-loss-compensation": [
     "sources/durable-noncooperative-process-ownership",
     "sources/fenced-first-session-allocation"

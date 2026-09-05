@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-04T04:17:56.247Z",
+  "last_updated": "2026-09-05T20:05:35.838Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -361,6 +361,15 @@
       "slug": "persisted-acceptance-authority-chain",
       "created": "2026-09-01",
       "updated": "2026-09-01"
+    },
+    "sources/pi-allocation-recovery-requires-exact-exit-identity": {
+      "type": "source",
+      "title": "Exact Pi allocation recovery identity",
+      "category": "bugfix",
+      "status": "insight",
+      "slug": "pi-allocation-recovery-requires-exact-exit-identity",
+      "created": "2026-09-05",
+      "updated": "2026-09-05"
     },
     "sources/post-settlement-lease-loss-compensation": {
       "type": "source",
