@@ -7,11 +7,11 @@ export interface SessionEntryPage { entries: readonly unknown[]; cursor: string 
 export interface ProcessEnsureResult { launched: boolean }
 export interface AttemptRuntime {
   roleTimeoutMs(role: Role): number;
-  ensureProcess(runId: string, role: Role, launchAllowed: boolean): Promise<ProcessEnsureResult>;
-  getEntries(cursor: string | null): Promise<SessionEntryPage>;
-  prompt(message: string): Promise<void>;
-  waitForSettled(timeoutMs: number): Promise<void>;
-  abort(): Promise<void>;
+  ensureProcess(runId: string, role: Role, launchAllowed: boolean, signal?: AbortSignal): Promise<ProcessEnsureResult>;
+  getEntries(cursor: string | null, signal?: AbortSignal): Promise<SessionEntryPage>;
+  prompt(message: string, signal?: AbortSignal): Promise<void>;
+  waitForSettled(timeoutMs: number, signal?: AbortSignal): Promise<void>;
+  abort(signal?: AbortSignal): Promise<void>;
 }
 export interface AttemptResultPort {
   discover(attempt: PhaseAttempt): Promise<ContractReference | undefined>;
@@ -36,12 +36,19 @@ export class AttemptCoordinator {
 
   async execute(options: AttemptExecution): Promise<"result_accepted"> {
     const initial = await this.#attempt(options.runId, options.handoffId);
+    // Reject terminal runs before touching the dispatch lease. A previous
+    // non-cooperative operation may intentionally retain its exact lease until
+    // late settlement; terminal state is already authoritative and must not be
+    // masked by that cleanup lease. Cancellation still acquires its lease so
+    // the existing terminalization path can persist the cancellation.
+    if (isTerminal(initial.run.state)) throw new Error("terminal run cannot execute an attempt");
     const roleTimeoutMs = this.runtime.roleTimeoutMs(initial.attempt.phase);
     const key = `dispatch:${options.handoffId}`;
     const ttlMs = Math.max(this.leaseMs, roleTimeoutMs + this.leaseMs);
     const acquired = await this.store.acquireLease(options.runId, key, options.owner, this.clock.now(), ttlMs);
     if (!acquired) throw new Error("dispatch lease is held by another coordinator");
     const lease: LeaseContext = { runId: options.runId, key, owner: options.owner, fencingToken: acquired.fencingToken, ttlMs };
+    const activeOperations = new Set<Promise<unknown>>();
     try {
       await this.#fence(lease);
       let attempt = await this.#attempt(options.runId, options.handoffId);
@@ -58,35 +65,35 @@ export class AttemptCoordinator {
       attempt = await this.#prepareAttempt(lease, options, attempt, roleTimeoutMs);
       const launches = attempt.attempt.dispatch.launchCount ?? 0;
       await this.#fence(lease);
-      const ensured = await this.runtime.ensureProcess(options.runId, attempt.attempt.phase, launches < this.maxLaunches);
+      const ensured = await this.#track(activeOperations, this.runtime.ensureProcess(options.runId, attempt.attempt.phase, launches < this.maxLaunches, options.signal));
       await this.#fence(lease);
       if (ensured.launched) attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, launchCount: launches + 1, generation: dispatch.generation + 1 }));
       this.#crash(options, "after_spawn");
 
-      const history = await this.#stableHistory(lease, attempt.attempt.dispatch.marker);
+      const history = await this.#stableHistory(lease, attempt.attempt.dispatch.marker, options.signal, activeOperations);
       attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, cursor: history.cursor }));
       if (!history.markerObserved && !history.stableAbsence) throw new Error("session history could not prove trigger marker absence");
       if (!history.markerObserved && (attempt.attempt.dispatch.state === "prepared" || attempt.attempt.dispatch.state === "sent")) {
         attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, state: "sent" }));
         this.#crash(options, "send_intent");
-        await this.#prompt(lease, triggerPrompt(options.triggerPath, attempt.attempt.dispatch.marker));
+        await this.#prompt(lease, triggerPrompt(options.triggerPath, attempt.attempt.dispatch.marker), options.signal, activeOperations);
         this.#crash(options, "prompt_write");
       } else if (history.markerObserved && attempt.attempt.dispatch.state !== "accepted" && attempt.attempt.dispatch.state !== "settled") {
         if (attempt.attempt.dispatch.recoveryPrompts >= this.maxRecoveryPrompts) throw new Error("recovery prompt budget exhausted");
-        await this.#prompt(lease, `${attempt.attempt.dispatch.marker} Continue the already-recorded handoff without replaying its trigger.`);
+        await this.#prompt(lease, `${attempt.attempt.dispatch.marker} Continue the already-recorded handoff without replaying its trigger.`, options.signal, activeOperations);
         attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, recoveryPrompts: dispatch.recoveryPrompts + 1 }));
       }
       attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, state: "accepted" }));
       this.#crash(options, "acceptance");
       const deadlineAt = attempt.attempt.dispatch.deadlineAt!;
-      await this.#waitForSettled(lease, deadlineAt, options.signal);
+      await this.#waitForSettled(lease, deadlineAt, options.signal, activeOperations);
       this.#crash(options, "tool_work");
       attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, state: "settled" }));
       let result = await this.results.discover(attempt.attempt);
       if (!result && attempt.attempt.dispatch.recoveryPrompts < this.maxRecoveryPrompts) {
-        await this.#prompt(lease, `${attempt.attempt.dispatch.marker} Write or identify the immutable result for this settled handoff; do not repeat completed work.`);
+        await this.#prompt(lease, `${attempt.attempt.dispatch.marker} Write or identify the immutable result for this settled handoff; do not repeat completed work.`, options.signal, activeOperations);
         attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, recoveryPrompts: dispatch.recoveryPrompts + 1 }));
-        await this.#waitForSettled(lease, deadlineAt, options.signal);
+        await this.#waitForSettled(lease, deadlineAt, options.signal, activeOperations);
         result = await this.results.discover(attempt.attempt);
       }
       if (!result) throw new Error("bounded recovery ended without a valid immutable result");
@@ -98,13 +105,19 @@ export class AttemptCoordinator {
       if (error instanceof SimulatedCrash || error instanceof FencedLeaseError) throw error;
       try {
         await this.#fence(lease);
-        await this.runtime.abort().catch(() => undefined);
+        await this.#track(activeOperations, this.runtime.abort()).catch(() => undefined);
         await this.#fence(lease);
         const cancelled = options.signal?.aborted === true;
         await this.#terminalize(lease, cancelled ? "cancelled" : "failed", cancelled ? "operator_cancel" : error instanceof AttemptTimeoutError ? "timeout" : "attempt_failure", error instanceof Error ? error.message : String(error));
       } catch (fenceError) { if (!(fenceError instanceof FencedLeaseError)) throw fenceError; }
       throw error;
-    } finally { await this.store.releaseLease(options.runId, key, options.owner, acquired.fencingToken); }
+    } finally {
+      // Keep exact dispatch ownership until every started runtime operation has
+      // settled. A timeout/cancellation signal is advisory to a non-cooperative
+      // guest; releasing here would let a replacement owner race its late call.
+      if (activeOperations.size === 0) await this.store.releaseLease(options.runId, key, options.owner, acquired.fencingToken);
+      else void this.#releaseAfterOperations(activeOperations, options.runId, key, options.owner, acquired.fencingToken);
+    }
   }
 
   async #attempt(runId: string, handoffId: string): Promise<{ run: RunSnapshot; attempt: PhaseAttempt; index: number }> {
@@ -128,23 +141,41 @@ export class AttemptCoordinator {
       }
     }
   }
-  async #stableHistory(lease: LeaseContext, marker: string): Promise<{ markerObserved: boolean; stableAbsence: boolean; cursor: string | null }> {
-    await this.#fence(lease); const first = await this.runtime.getEntries(null); await this.#fence(lease);
+  async #stableHistory(lease: LeaseContext, marker: string, signal: AbortSignal | undefined, activeOperations: Set<Promise<unknown>>): Promise<{ markerObserved: boolean; stableAbsence: boolean; cursor: string | null }> {
+    this.#assertSignal(signal);
+    await this.#fence(lease);
+    const first = await this.#track(activeOperations, this.runtime.getEntries(null, signal));
+    await this.#fence(lease);
     if (first.entries.some(entry => JSON.stringify(entry).includes(marker))) return { markerObserved: true, stableAbsence: false, cursor: first.cursor };
-    const second = await this.runtime.getEntries(null); await this.#fence(lease);
+    this.#assertSignal(signal);
+    const second = await this.#track(activeOperations, this.runtime.getEntries(null, signal));
+    await this.#fence(lease);
     const markerObserved = second.entries.some(entry => JSON.stringify(entry).includes(marker));
     return { markerObserved, stableAbsence: !markerObserved && first.complete && second.complete && first.cursor === second.cursor && JSON.stringify(first.entries) === JSON.stringify(second.entries), cursor: second.cursor };
   }
-  async #prompt(lease: LeaseContext, message: string): Promise<void> { await this.#fence(lease); await this.runtime.prompt(message); await this.#fence(lease); }
-  async #waitForSettled(lease: LeaseContext, deadlineAt: number, signal: AbortSignal | undefined): Promise<void> {
-    await this.#fence(lease); await this.#withDeadline(this.runtime.waitForSettled(Math.max(0, deadlineAt - this.clock.now())), deadlineAt, signal); await this.#fence(lease);
+  async #prompt(lease: LeaseContext, message: string, signal: AbortSignal | undefined, activeOperations: Set<Promise<unknown>>): Promise<void> {
+    this.#assertSignal(signal); await this.#fence(lease); await this.#track(activeOperations, this.runtime.prompt(message, signal)); await this.#fence(lease);
+  }
+  async #waitForSettled(lease: LeaseContext, deadlineAt: number, signal: AbortSignal | undefined, activeOperations: Set<Promise<unknown>>): Promise<void> {
+    this.#assertSignal(signal); await this.#fence(lease); await this.#withDeadline(this.#track(activeOperations, this.runtime.waitForSettled(Math.max(0, deadlineAt - this.clock.now()), signal)), deadlineAt, signal); await this.#fence(lease);
   }
   async #acceptResult(lease: LeaseContext, options: AttemptExecution, result: ContractReference): Promise<void> { await this.#fence(lease); await this.results.accept(options.runId, options.handoffId, result, this.#guard(lease)); await this.#fence(lease); }
   async #withDeadline<T>(operation: Promise<T>, deadlineAt: number, signal: AbortSignal | undefined): Promise<T> {
-    if (signal?.aborted) throw new Error("attempt cancelled");
+    this.#assertSignal(signal);
     const remaining = deadlineAt - this.clock.now(); if (remaining <= 0) throw new AttemptTimeoutError();
     const timeout = this.clock.sleep(remaining, signal).then(() => { throw new AttemptTimeoutError(); });
     return Promise.race([operation, timeout]);
+  }
+  #assertSignal(signal: AbortSignal | undefined): void { if (signal?.aborted) throw new Error("attempt cancelled"); }
+  #track<T>(activeOperations: Set<Promise<unknown>>, operation: Promise<T>): Promise<T> {
+    const settled = Promise.resolve(operation).then(() => undefined, () => undefined);
+    activeOperations.add(settled);
+    void settled.then(() => activeOperations.delete(settled));
+    return operation;
+  }
+  async #releaseAfterOperations(activeOperations: Set<Promise<unknown>>, runId: string, key: string, owner: string, fencingToken: number): Promise<void> {
+    while (activeOperations.size > 0) await Promise.all([...activeOperations]);
+    await this.store.releaseLease(runId, key, owner, fencingToken);
   }
   async #terminalize(lease: LeaseContext, state: "failed" | "cancelled", code: string, message: string): Promise<void> {
     for (;;) {

@@ -87,17 +87,27 @@ async function openDirectoryChain(root: string, target: string): Promise<FileHan
   let current: FileHandle;
   try { current = await open(rootPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW!); }
   catch (error) { throw new GitPathSecurityError(`cannot open trusted ticket root: ${rootPath}`, { cause: error } as ErrorOptions); }
-  const rootInfo = await current.stat();
+  let rootInfo: Stats;
+  try { rootInfo = await current.stat(); }
+  catch (error) {
+    await current.close().catch(() => undefined);
+    throw new GitPathSecurityError(`cannot inspect trusted ticket root: ${rootPath}`, { cause: error } as ErrorOptions);
+  }
   if (!rootInfo.isDirectory()) { await current.close(); throw new GitPathSecurityError("ticket root is not a directory"); }
   const device = String(rootInfo.dev);
   try {
     for (const part of parts) {
       assertComponent(part);
       const next = await openAtNoFollow(current, part, constants.O_RDONLY | constants.O_DIRECTORY);
-      const info = await next.stat();
-      if (!info.isDirectory() || String(info.dev) !== device) { await next.close(); throw new GitPathSecurityError(`trusted path crosses a filesystem boundary: ${absolute}`); }
-      await current.close();
-      current = next;
+      try {
+        const info = await next.stat();
+        if (!info.isDirectory() || String(info.dev) !== device) throw new GitPathSecurityError(`trusted path crosses a filesystem boundary: ${absolute}`);
+        await current.close();
+        current = next;
+      } catch (error) {
+        await next.close().catch(() => undefined);
+        throw error;
+      }
     }
     return current;
   } catch (error) {
@@ -114,24 +124,29 @@ export async function openNoFollowWithin(target: string, root: string, flags = c
   const absolute = assertPathWithin(rootPath, target);
   if (absolute === rootPath) {
     assertDescriptorFilesystem();
-    const handle = await open(rootPath, flags | constants.O_NOFOLLOW!, mode);
-    const handleInfo = await handle.stat();
-    const pathInfo = await lstat(absolute);
-    if (handleInfo.dev !== pathInfo.dev || handleInfo.ino !== pathInfo.ino || handleInfo.mode !== pathInfo.mode || handleInfo.nlink !== pathInfo.nlink) { await handle.close(); throw new GitPathSecurityError(`trusted path was replaced during descriptor open: ${absolute}`); }
-    return handle;
+    let handle: FileHandle | undefined;
+    try {
+      handle = await open(rootPath, flags | constants.O_NOFOLLOW!, mode);
+      const handleInfo = await handle.stat();
+      const pathInfo = await lstat(absolute);
+      if (handleInfo.dev !== pathInfo.dev || handleInfo.ino !== pathInfo.ino || handleInfo.mode !== pathInfo.mode || handleInfo.nlink !== pathInfo.nlink) throw new GitPathSecurityError(`trusted path was replaced during descriptor open: ${absolute}`);
+      return handle;
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      throw error;
+    }
   }
   const parent = await openDirectoryChain(rootPath, path.dirname(absolute));
+  let child: FileHandle | undefined;
   try {
-    const child = await openAtNoFollow(parent, path.basename(absolute), flags, mode);
+    child = await openAtNoFollow(parent, path.basename(absolute), flags, mode);
     const childInfo = await child.stat();
     const pathInfo = await lstat(absolute).catch(error => { throw new GitPathSecurityError(`trusted path disappeared during descriptor open: ${absolute}`, { cause: error } as ErrorOptions); });
-    if (childInfo.dev !== pathInfo.dev || childInfo.ino !== pathInfo.ino || childInfo.mode !== pathInfo.mode || childInfo.nlink !== pathInfo.nlink) {
-      await child.close();
-      throw new GitPathSecurityError(`trusted path was replaced during descriptor open: ${absolute}`);
-    }
+    if (childInfo.dev !== pathInfo.dev || childInfo.ino !== pathInfo.ino || childInfo.mode !== pathInfo.mode || childInfo.nlink !== pathInfo.nlink) throw new GitPathSecurityError(`trusted path was replaced during descriptor open: ${absolute}`);
     await parent.close();
     return child;
   } catch (error) {
+    await child?.close().catch(() => undefined);
     await parent.close().catch(() => undefined);
     throw error;
   }
@@ -201,14 +216,14 @@ export function createGitWorkspaceFilesystemPaths(runId: string, ticketRoot = LO
 }
 
 export function assertTicketRoot(ticketRoot: string): string {
-  if (typeof ticketRoot !== "string" || !path.isAbsolute(ticketRoot) || path.resolve(ticketRoot) !== ticketRoot || path.parse(ticketRoot).root === ticketRoot) throw new GitPathSecurityError("ticket root must be a non-root absolute canonical path");
+  if (typeof ticketRoot !== "string" || !path.isAbsolute(ticketRoot) || path.resolve(ticketRoot) !== ticketRoot || path.parse(ticketRoot).root === ticketRoot || ticketRoot.includes("\\") || ticketRoot.includes("//")) throw new GitPathSecurityError("ticket root must be a non-root absolute canonical path");
   if (/[\u0000-\u001f\u007f\r\n]/u.test(ticketRoot)) throw new GitPathSecurityError("ticket root contains control data");
   return ticketRoot;
 }
 
 export function assertPathWithin(root: string, target: string): string {
   const canonicalRoot = path.resolve(assertTicketRoot(root));
-  if (typeof target !== "string" || target.includes("\0")) throw new GitPathSecurityError("path contains NUL or is not a string");
+  if (typeof target !== "string" || target.includes("\0") || target.includes("\\") || /[\u0000-\u001f\u007f\r\n]/u.test(target) || !path.isAbsolute(target) || path.normalize(target) !== target || target.includes("//") || target !== path.parse(target).root && target.endsWith(path.sep) || target.split(path.sep).some(part => part === "." || part === "..")) throw new GitPathSecurityError("path is not canonical or contains unsafe traversal");
   const canonicalTarget = path.resolve(target);
   if (canonicalTarget !== canonicalRoot && !canonicalTarget.startsWith(`${canonicalRoot}${path.sep}`)) throw new GitPathSecurityError("path escapes ticket root");
   return canonicalTarget;
@@ -233,7 +248,7 @@ export async function assertSafeAncestors(target: string, root: string, allowMis
     let info: Stats;
     try { info = await lstat(current); }
     catch (error) {
-      if (isMissing(error) && index >= 0 && allowMissingLeaf) return;
+      if (isMissing(error) && index === parts.length - 1 && allowMissingLeaf) return;
       throw new GitPathSecurityError(`path ancestor is unavailable: ${current}`);
     }
     if (index === -1) rootDevice = String(info.dev);
@@ -427,6 +442,8 @@ export async function removeEmptyDirectoryNoFollow(target: string, root: string,
       if ((await readdir(`/proc/self/fd/${directory.fd}`)).length !== 0) return false;
       const final = await directory.stat();
       if (!sameStatExceptSizeAndTime(final, opened)) throw new GitPathSecurityError(`trusted empty-directory identity changed before removal: ${absolute}`);
+      const targetBeforeRemove = await lstat(targetPath).catch(error => { if (isMissing(error)) return undefined; throw error; });
+      if (!targetBeforeRemove || !sameStatExceptSizeAndTime(targetBeforeRemove, opened)) throw new GitPathSecurityError(`trusted empty-directory identity changed before final removal: ${absolute}`);
       try { await rmdir(targetPath); return true; }
       catch (error) { if (isMissing(error) || isCode(error, "ENOTEMPTY")) return false; throw error; }
     } finally { await directory.close(); }
@@ -447,8 +464,9 @@ export async function removeTreeNoFollow(
   options: RemovalOptions = {},
 ): Promise<void> {
   assertDescriptorFilesystem();
-  const absolute = root ? assertPathWithin(root, target) : path.resolve(target);
-  if (root) await assertSafeAncestors(path.dirname(absolute), root, false);
+  if (!root || !options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(key => !["maxDepth", "maxEntries", "signal"].includes(key)) || options.maxEntries !== undefined && (!Number.isSafeInteger(options.maxEntries) || options.maxEntries <= 0 || options.maxEntries > 1_000_000) || options.maxDepth !== undefined && (!Number.isSafeInteger(options.maxDepth) || options.maxDepth <= 0 || options.maxDepth > 128) || options.signal?.aborted) throw new GitPathSecurityError("safe tree removal requires a live containment root and bounded options");
+  const absolute = assertPathWithin(root, target);
+  await assertSafeAncestors(path.dirname(absolute), root, false);
   const parent = root
     ? await openDirectoryChain(root, path.dirname(absolute))
     : await open(path.dirname(absolute), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW!);
@@ -463,6 +481,7 @@ export async function removeTreeNoFollow(
     if (kind !== "file" && kind !== "directory" && !info.isSymbolicLink()) throw new GitPathSecurityError(`unsupported resource type during removal: ${absolute}`);
     if (String(info.dev) !== String(parentInfo.dev)) throw new GitPathSecurityError(`filesystem crossing during removal: ${absolute}`);
     if (expected && (kind !== "file" && kind !== "directory" || !sameResourceIdentity(resourceIdentity(absolute, kind, info), expected))) throw new GitPathSecurityError(`resource identity changed before removal: ${absolute}`);
+    if (options.signal?.aborted) throw new GitPathSecurityError("tree removal was aborted");
     if (info.isSymbolicLink()) {
       await removeEntryAt(parent, name, { dev: info.dev, ino: info.ino, mode: info.mode, nlink: info.nlink, kind: "symlink" });
       return;
@@ -580,7 +599,12 @@ export function isAlreadyExists(error: unknown): boolean { return isCode(error, 
 
 function assertTicketRootForExport(root: string): string { return assertTicketRoot(root); }
 
-function isCode(error: unknown, code: string): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === code); }
+function isCode(error: unknown, code: string, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 3) return false;
+  if ("code" in error && (error as { code?: unknown }).code === code) return true;
+  if ("cause" in error) return isCode((error as { cause?: unknown }).cause, code, depth + 1);
+  return false;
+}
 
 // Keep the helper referenced so tree-shaking cannot accidentally turn the root
 // policy into a lexical-only check in a future build.

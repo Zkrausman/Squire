@@ -1,7 +1,7 @@
 # Docker Sandboxes viability spike
 
 - **Ticket:** AIDEV-214
-- **Status:** Core POC complete — **viable for the Squire MVP architecture**
+- **Status:** Historical feasibility POC — not release or security acceptance
 - **Date:** 2026-09-01
 
 ## Purpose
@@ -120,4 +120,4 @@ These are downstream implementation concerns and do not change the selected isol
 
 ## Assessment
 
-Docker Sandboxes is confirmed as a viable foundation for the Squire MVP. It provides a stronger ticket boundary than ordinary containers, a persistent internal Git workspace, a private Docker daemon, five independently controllable Pi sessions, manual Herdr steering, and a safe controller-mediated branch export path. AIDEV-214 can use this result to finalize the architecture while credential brokering, GitHub App delivery, and operational hardening proceed in downstream tickets.
+The POC supports further engineering investigation; it does not prove the AIDEV-223 product boundary. In particular, it used stock/root-equivalent guest behavior, mutable nested-Docker image tags, a manually bootstrapped environment, a read/write bridge, and retained output that was not an independent host-conformance release record. It did not prove disk quota enforcement, rootless role Docker, principal separation, authenticated network logs, credential absence, exact process reaping, or exact removal. AIDEV-223 therefore keeps the release blocked until the versioned template and trusted external v0.39.0 harness independently prove those facts. AIDEV-224/225/226/217 remain downstream/out of scope here.

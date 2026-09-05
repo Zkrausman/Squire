@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "squire-sandbox-spec",
+  "runId": "run_example01",
+  "ticketIdentifier": "AIDEV-223",
+  "sandboxName": "squire-v1-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "template": {
+    "name": "registry/squire",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reference": "registry/squire@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "resources": {
+    "cpus": 2,
+    "memoryMiB": 512,
+    "disk": {
+      "enforcement": "quota-composed",
+      "ticketQuotaBytes": 1048576,
+      "bridgeQuotaBytes": 65536,
+      "writableTmpfsBytes": 65536,
+      "proof": {
+        "path": "evidence/sandbox/disk-proof.json",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schemaId": "urn:squire:sandbox:v1:disk-proof"
+      }
+    }
+  },
+  "network": {
+    "mode": "deny-all",
+    "allowedHosts": [],
+    "profileDigest": "eaf2d7d4d6f5159b028304905892bb7c0ac15b8e35219cb6dd3e2d9a140d52a3"
+  },
+  "bridge": {
+    "name": "squire-bridge-v1-ovlrhna7ywf75jisvz3xzrt3di",
+    "logicalPath": "/ticket/bridge",
+    "quotaBytes": 65536,
+    "identityReference": "bridge-meta-eb49ccc0acf4a4db53b8103dacd9781f3bfc2208713708cd54bc66c746e0a303"
+  },
+  "retention": {
+    "successUntil": "2026-10-01T00:00:00.000Z",
+    "failureUntil": "2026-10-02T00:00:00.000Z",
+    "artifactUntil": "2026-10-03T00:00:00.000Z"
+  },
+  "creationNonce": "11111111-1111-4111-8111-111111111111",
+  "fingerprint": "2981bb8da3ea2e2a3e0a64ce5be24109f4ab07b0eee37087a13b478d3329485c"
+}

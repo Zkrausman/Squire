@@ -11,23 +11,23 @@ export class PiAttemptRuntime implements AttemptRuntime {
   #process: PiProcess | undefined;
   constructor(readonly runner: PiRunner, readonly clock: Clock, readonly limits: LifecycleLimits = DEFAULT_LIFECYCLE_LIMITS) {}
   roleTimeoutMs(role: Role): number { const seconds = this.runner.config.roles[role]?.timeoutSeconds; if (!Number.isInteger(seconds) || seconds === undefined || seconds <= 0) throw new Error(`missing finite role timeout: ${role}`); return seconds * 1_000; }
-  async ensureProcess(runId: string, role: Role, launchAllowed: boolean): Promise<{ launched: boolean }> {
+  async ensureProcess(runId: string, role: Role, launchAllowed: boolean, signal?: AbortSignal): Promise<{ launched: boolean }> {
     const existing = this.runner.live.get(`${runId}:${role}`);
     if (existing?.process.exitCode === null && !existing.client.failure) { this.#client = existing.client; this.#process = existing.process; return { launched: false }; }
     if (!launchAllowed) throw new Error("process launch budget exhausted");
-    const launched = await this.runner.launch(runId, role); this.#client = launched.client; this.#process = launched.process; return { launched: true };
+    const launched = await this.runner.launch(runId, role, signal); this.#client = launched.client; this.#process = launched.process; return { launched: true };
   }
-  async getEntries(cursor: string | null): Promise<SessionEntryPage> {
-    const response = await this.#requiredClient().command({ type: "get_entries", ...(cursor ? { since: cursor } : {}) });
+  async getEntries(cursor: string | null, signal?: AbortSignal): Promise<SessionEntryPage> {
+    const response = await this.#requiredClient().command({ type: "get_entries", ...(cursor ? { since: cursor } : {}) }, undefined, signal);
     const data = response.data as { entries?: unknown[]; leafId?: unknown } | undefined;
     if (!response.success || !data || !Array.isArray(data.entries) || (data.leafId !== null && typeof data.leafId !== "string")) throw new Error("malformed get_entries response");
     return { entries: data.entries, cursor: data.leafId, complete: cursor === null };
   }
-  async prompt(message: string): Promise<void> { await this.#requiredClient().prompt(message); }
-  waitForSettled(timeoutMs: number): Promise<void> { return this.#requiredClient().waitForSettled(timeoutMs); }
-  async abort(): Promise<void> {
+  async prompt(message: string, signal?: AbortSignal): Promise<void> { await this.#requiredClient().prompt(message, signal); }
+  waitForSettled(timeoutMs: number, signal?: AbortSignal): Promise<void> { return this.#requiredClient().waitForSettled(timeoutMs, signal); }
+  async abort(signal?: AbortSignal): Promise<void> {
     const client = this.#client; const process = this.#process; if (!client || !process || process.exitCode !== null) return;
-    await boundedAbort({ command: async (type, timeoutMs) => { await client.command({ type }, timeoutMs); }, terminate: () => { process.kill("SIGTERM"); }, kill: () => { process.kill("SIGKILL"); }, exited: () => process.exitCode !== null }, this.clock, this.limits);
+    await boundedAbort({ command: async (type, timeoutMs) => { await client.command({ type }, timeoutMs, signal); }, terminate: () => { process.kill("SIGTERM"); }, kill: () => { process.kill("SIGKILL"); }, exited: () => process.exitCode !== null }, this.clock, this.limits);
   }
   #requiredClient(): PiRpcClient { if (!this.#client || this.#client.failure) throw this.#client?.failure ?? new Error("Pi process is not available"); return this.#client; }
 }

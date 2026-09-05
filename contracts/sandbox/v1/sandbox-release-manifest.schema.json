@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:sandbox:v1:sandbox-release-manifest",
+  "title": "Squire promoted Docker Sandboxes v0.39.0 release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "releaseId", "sbxVersion", "platform", "architecture", "sbxBinary", "template", "runtimeCompatibility", "supportedResources", "bridgeQuotaBytes", "networkProfileDigest", "conformanceEvidence", "provenance", "promotion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "squire-sandbox-release-manifest" },
+    "releaseId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "sbxVersion": { "const": "0.39.0" },
+    "platform": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$" },
+    "architecture": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,31}$" },
+    "sbxBinary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "versionOutput", "helpDigest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^(?:/|[A-Za-z]:[\\\\/])[^\\u0000-\\u001f\\u007f\\r\\n]*$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "versionOutput": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\u0000-\\u001f\\u007f]*0\\.39\\.0[^\\u0000-\\u001f\\u007f]*$" },
+        "helpDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "template": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reference", "digest", "configDigest", "helperDigests"],
+      "properties": {
+        "reference": { "type": "string", "pattern": "^([a-z0-9.-]+/)?[a-z0-9._-]+/[a-z0-9._-]+@sha256:[0-9a-f]{64}$", "maxLength": 1024 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "configDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "helperDigests": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+      }
+    },
+    "runtimeCompatibility": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pi", "llmWiki"],
+      "properties": {
+        "pi": { "$ref": "#/$defs/versionRange" },
+        "llmWiki": { "$ref": "#/$defs/versionRange" }
+      }
+    },
+    "supportedResources": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/resourceTuple" } },
+    "bridgeQuotaBytes": { "type": "integer", "minimum": 4096, "maximum": 107374182400 },
+    "networkProfileDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "conformanceEvidence": { "type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/evidence" } },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["buildReference", "sbomReference"],
+      "properties": {
+        "buildReference": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+        "sbomReference": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" }
+      }
+    },
+    "promotion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "algorithm", "keyId", "signature"],
+      "properties": {
+        "state": { "enum": ["validated", "blocked"] },
+        "algorithm": { "enum": ["sha256-hmac", "ed25519"] },
+        "keyId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "signature": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[A-Za-z0-9+/=_-]+$" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "schemaId"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^(?:artifacts|evidence)(?:/[A-Za-z0-9._-]+)+$", "maxLength": 1024 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "schemaId": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "versionRange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["minimum", "maximum"],
+      "properties": {
+        "minimum": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "maximum": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+      }
+    },
+    "disk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enforcement"],
+      "properties": {
+        "enforcement": { "enum": ["native", "quota-composed", "unsupported"] },
+        "ticketQuotaBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "bridgeQuotaBytes": { "type": "integer", "minimum": 4096, "maximum": 107374182400 },
+        "writableTmpfsBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "nativeLimitBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "proof": { "$ref": "#/$defs/reference" },
+        "unsupportedReason": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\u0000-\\u001f\\u007f]*$" }
+      }
+    },
+    "resourceTuple": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tupleId", "cpus", "memoryMiB", "disk"],
+      "properties": {
+        "tupleId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$" },
+        "cpus": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "memoryMiB": { "type": "integer", "minimum": 128, "maximum": 1048576 },
+        "disk": { "$ref": "#/$defs/disk" }
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "platform", "architecture", "path", "sha256", "hostOnly"],
+      "properties": {
+        "kind": { "enum": ["host-conformance", "resource", "network", "identity", "removal", "provenance"] },
+        "platform": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$" },
+        "architecture": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,31}$" },
+        "path": { "type": "string", "pattern": "^(?:artifacts|evidence)(?:/[A-Za-z0-9._-]+)+$", "maxLength": 1024 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "hostOnly": { "const": true }
+      }
+    }
+  }
+}

@@ -7,35 +7,73 @@ export interface RpcResponse { id?: string; type: "response"; command: string; s
 export interface PiState { model: { provider: string; id: string } | null; sessionFile: string; sessionId: string; thinkingLevel: PiThinkingLevel; isStreaming?: boolean }
 export interface RpcClientOptions { commandTimeoutMs?: number; maxLineBytes?: number; maxBufferBytes?: number; maxStderrBytes?: number; maxRenderedBytes?: number }
 type SupportedCommand = "get_state" | "get_entries" | "prompt" | "clear_queue" | "abort_retry" | "abort";
-interface Pending { command: SupportedCommand; resolve(value: RpcResponse): void; reject(error: Error): void; timer: NodeJS.Timeout }
+interface Pending { command: SupportedCommand; resolve(value: RpcResponse): void; reject(error: Error): void; timer: NodeJS.Timeout; onAbort?: () => void }
+
+const MAX_COMMAND_TIMEOUT_MS = 300_000;
 
 export class PiRpcClient extends EventEmitter {
   readonly #decoder: LfJsonlDecoder; readonly #pending = new Map<string, Pending>(); readonly #timeout: number; readonly #maxStderr: number; readonly #maxRendered: number;
   #sequence = 0; #stderr = ""; #rendered = 0; #closed = false; #failure: Error | undefined;
   constructor(readonly process: PiProcess, options: RpcClientOptions = {}) {
-    super(); this.#timeout = options.commandTimeoutMs ?? 5_000; this.#maxStderr = options.maxStderrBytes ?? 256 * 1024; this.#maxRendered = options.maxRenderedBytes ?? 2 * 1024 * 1024;
+    super();
+    this.#timeout = boundedTimeout(options.commandTimeoutMs ?? 5_000, "RPC command timeout");
+    this.#maxStderr = boundedLimit(options.maxStderrBytes ?? 256 * 1024, 16 * 1024 * 1024, "stderr limit");
+    this.#maxRendered = boundedLimit(options.maxRenderedBytes ?? 2 * 1024 * 1024, 32 * 1024 * 1024, "rendered output limit");
     this.#decoder = new LfJsonlDecoder(options.maxLineBytes, options.maxBufferBytes);
-    process.stdout.on("data", chunk => this.#consume(chunk)); process.stdout.on("end", () => { try { for (const line of this.#decoder.end()) this.#line(line); } catch (e) { this.#fail(asError(e)); } });
+    process.stdout.on("data", chunk => this.#consume(chunk));
+    process.stdout.on("end", () => { try { for (const line of this.#decoder.end()) this.#line(line); } catch (e) { this.#fail(asError(e)); } });
     process.stderr.on("data", chunk => { this.#stderr += chunk.toString(); if (Buffer.byteLength(this.#stderr) > this.#maxStderr) this.#fail(new ProtocolError("stderr limit exceeded")); else this.emit("stderr", chunk.toString()); });
     process.on("exit", (code, signal) => { this.#closed = true; this.#fail(new ProtocolError(`Pi exited unexpectedly: ${code ?? signal ?? "unknown"}`)); this.emit("process_exit", { code, signal }); });
   }
   get stderr(): string { return this.#stderr; }
   get failure(): Error | undefined { return this.#failure; }
-  async command(command: Record<string, unknown>, timeoutMs = this.#timeout): Promise<RpcResponse> {
+
+  async command(command: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<RpcResponse> {
     if (this.#failure) throw this.#failure;
     if (this.#closed) throw new ProtocolError("Pi process is closed");
+    if (signal?.aborted) throw new ProtocolError("Pi RPC command was aborted");
     const commandType = command["type"];
     if (!isSupportedCommand(commandType)) throw new ProtocolError("unsupported RPC command");
+    const timeout = boundedTimeout(timeoutMs ?? this.#timeout, "RPC command timeout");
     const id = `squire-${String(++this.#sequence).padStart(8, "0")}`;
     return new Promise<RpcResponse>((resolve, reject) => {
-      const timer = setTimeout(() => this.#fail(new ProtocolError(`RPC command timed out: ${commandType}`)), timeoutMs);
-      this.#pending.set(id, { command: commandType, resolve, reject, timer });
-      try { if (!this.process.stdin.write(`${JSON.stringify({ id, ...command })}\n`)) throw new ProtocolError("Pi stdin rejected RPC write"); } catch (error) { this.#fail(asError(error)); }
+      let settled = false;
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      };
+      const complete = (callback: () => void): void => { if (settled) return; settled = true; cleanup(); callback(); };
+      const timer = setTimeout(() => this.#fail(new ProtocolError(`RPC command timed out: ${commandType}`)), timeout);
+      timer.unref?.();
+      const onAbort = (): void => this.#fail(new ProtocolError("Pi RPC command was aborted"));
+      const pending: Pending = { command: commandType, resolve: response => complete(() => resolve(response)), reject: error => complete(() => reject(error)), timer, ...(signal ? { onAbort } : {}) };
+      this.#pending.set(id, pending);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
+      try {
+        // false is the Writable backpressure signal, not a rejected write;
+        // pending commands remain bounded by their timers and map entries.
+        this.process.stdin.write(`${JSON.stringify({ id, ...command })}\n`);
+      } catch (error) { this.#fail(asError(error)); }
     });
   }
-  async getState(): Promise<PiState> { const response = await this.command({ type: "get_state" }); if (!response.success || !isState(response.data)) throw new ProtocolError("malformed get_state response"); return response.data; }
-  async prompt(message: string): Promise<void> { const response = await this.command({ type: "prompt", message }); if (!response.success) throw new ProtocolError(response.error ?? "prompt rejected"); this.emit("prompt_accepted"); }
-  waitForSettled(timeoutMs = this.#timeout): Promise<void> { if (this.#failure) return Promise.reject(this.#failure); return new Promise((resolve, reject) => { const timer = setTimeout(() => this.#fail(new ProtocolError("agent_settled timed out")), timeoutMs); const settled = () => { cleanup(); resolve(); }; const failed = (error: Error) => { cleanup(); reject(error); }; const cleanup = () => { clearTimeout(timer); this.off("agent_settled", settled); this.off("protocol_error", failed); }; this.once("agent_settled", settled); this.once("protocol_error", failed); }); }
+  async getState(signal?: AbortSignal): Promise<PiState> { const response = await this.command({ type: "get_state" }, this.#timeout, signal); if (!response.success || !isState(response.data)) throw new ProtocolError("malformed get_state response"); return response.data; }
+  async prompt(message: string, signal?: AbortSignal): Promise<void> { const response = await this.command({ type: "prompt", message }, this.#timeout, signal); if (!response.success) throw new ProtocolError(response.error ?? "prompt rejected"); this.emit("prompt_accepted"); }
+  waitForSettled(timeoutMs = this.#timeout, signal?: AbortSignal): Promise<void> {
+    if (this.#failure) return Promise.reject(this.#failure);
+    if (this.#closed) return Promise.reject(new ProtocolError("Pi process is closed"));
+    if (signal?.aborted) return Promise.reject(new ProtocolError("Pi settlement wait was aborted"));
+    const timeout = boundedTimeout(timeoutMs, "agent settlement timeout");
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => this.#fail(new ProtocolError("agent_settled timed out")), timeout); timer.unref?.();
+      const settled = (): void => { cleanup(); resolve(); };
+      const failed = (error: Error): void => { cleanup(); reject(error); };
+      const onAbort = (): void => this.#fail(new ProtocolError("Pi settlement wait was aborted"));
+      const cleanup = (): void => { clearTimeout(timer); this.off("agent_settled", settled); this.off("protocol_error", failed); signal?.removeEventListener("abort", onAbort); };
+      this.once("agent_settled", settled); this.once("protocol_error", failed); signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
+  }
   #consume(chunk: Buffer | string): void { if (this.#closed) return; try { for (const line of this.#decoder.push(chunk)) this.#line(line); } catch (error) { this.#fail(asError(error)); } }
   #line(line: string): void {
     if (!line) return; let record: Record<string, unknown>; try { record = JSON.parse(line) as Record<string, unknown>; } catch { throw new ProtocolError("malformed JSON on Pi stdout"); }
@@ -45,7 +83,7 @@ export class PiRpcClient extends EventEmitter {
       if (typeof id !== "string" || !this.#pending.has(id)) throw new ProtocolError("uncorrelated RPC response");
       const pending = this.#pending.get(id)!;
       const response = validateResponse(record, pending.command);
-      clearTimeout(pending.timer); this.#pending.delete(id); pending.resolve(response); return;
+      this.#pending.delete(id); pending.resolve(response); return;
     }
     if (record["type"] === "agent_settled") this.emit("agent_settled");
     if (record["type"] === "extension_ui_request") this.emit("extension_ui", record);
@@ -58,7 +96,10 @@ export class PiRpcClient extends EventEmitter {
     for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.#pending.clear();
     this.emit("protocol_error", error);
-    if (this.process.exitCode === null) this.process.kill("SIGTERM");
+    if (this.process.exitCode === null) {
+      const termDelivered = this.process.kill("SIGTERM");
+      if (!termDelivered && this.process.exitCode === null) this.process.kill("SIGKILL");
+    }
   }
 }
 function validateResponse(record: Record<string, unknown>, expectedCommand: SupportedCommand): RpcResponse {
@@ -90,4 +131,6 @@ function isState(value: unknown): value is PiState {
     && isPiThinkingLevel(thinking)
     && (model === null || (typeof model === "object" && typeof model["provider"] === "string" && typeof model["id"] === "string"));
 }
+function boundedTimeout(value: number, label: string): number { if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_COMMAND_TIMEOUT_MS) throw new ProtocolError(`${label} is invalid`); return value; }
+function boundedLimit(value: number, maximum: number, label: string): number { if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) throw new ProtocolError(`${label} is invalid`); return value; }
 function asError(value: unknown): Error { return value instanceof Error ? value : new Error(String(value)); }

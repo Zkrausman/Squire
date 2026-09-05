@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:sandbox:v1:sandbox-transfer-manifest",
+  "title": "Squire controller-mediated sandbox transfer manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "direction", "runId", "sandboxName", "specFingerprint", "bootId", "source", "destination", "byteLength", "sha256", "transferGeneration", "sourceVerified", "destinationVerified", "bridgeUsed", "createdAt", "fingerprint"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "squire-sandbox-transfer-manifest" },
+    "direction": { "enum": ["import", "export"] },
+    "runId": { "type": "string", "pattern": "^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sandboxName": { "type": "string", "pattern": "^squire-v1-[a-z2-7]{26}$" },
+    "specFingerprint": { "$ref": "#/$defs/sha256" },
+    "bootId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+    "source": { "$ref": "#/$defs/location" },
+    "destination": { "$ref": "#/$defs/location" },
+    "byteLength": { "type": "integer", "minimum": 1, "maximum": 1099511627776 },
+    "sha256": { "$ref": "#/$defs/sha256" },
+    "expectedGit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["objectFormat", "baseSha"],
+      "properties": {
+        "objectFormat": { "enum": ["sha1", "sha256"] },
+        "baseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "repository": { "type": "string", "pattern": "^/ticket/git/repo\\.git$" },
+        "bundle": { "type": "string", "pattern": "^artifacts/git/run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}/[0-9a-f]{40,64}\\.bundle$", "maxLength": 1024 }
+      }
+    },
+    "transferGeneration": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "sourceVerified": { "const": true },
+    "destinationVerified": { "const": true },
+    "bridgeUsed": { "const": false },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "fingerprint": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "location": {
+      "type": "object", "additionalProperties": false,
+      "required": ["logicalPath", "side"],
+      "properties": {
+        "logicalPath": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\u0000-\\u001f\\u007f\\\\]+$" },
+        "side": { "enum": ["host", "sandbox"] }
+      }
+    }
+  }
+}

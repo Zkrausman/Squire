@@ -44,6 +44,10 @@ A successful workflow run must:
 
 ## 3. Functional requirements
 
+### PR-0: Restricted sandbox and evidence gate
+
+The sandbox release must be signed, platform-specific, and pinned to the exact `sbx` v0.39.0 binary/help/template/helper identities. Mutable tags, rootful Docker, sudo/root escalation, host sockets/paths/secrets, unverified disk limits, ambient configuration, shell commands, bridge-based trusted transfer, and broad removal are prohibited. CPU/memory/disk/network/credential/isolation claims require measured evidence; if a supported disk quota tuple cannot be proved it is encoded as unsupported and remains blocked. Host-only probes are external request/result artifacts and cannot be synthesized by a role.
+
 ### PR-1: Generic, configurable workflow
 
 Squire must not hard-code itself to one repository or one ticket. The workflow, stage contracts, and repository-specific behavior must have a defined configuration boundary suitable for later extension.
@@ -55,6 +59,8 @@ The minimum v1 configuration and workflow contracts are defined in [AIDEV-215 Wo
 Each run must accept exactly one ticket and maintain an identifiable workflow state for that ticket through completion or failure.
 
 ### PR-3: Independent phase sessions
+
+AIDEV-223 adds one persistent v0.39.0 microVM per run and keeps all five phase endpoints independent. A role is admitted only through a digest-bound sandbox Pi allocation with a durable allocation ID, boot ID, PID/start-time evidence, exact session JSONL identity, and an allowlisted empty-map environment. Killing the outer `sbx exec` is not process-exit proof.
 
 Each lifecycle phase must run as its own top-level Pi session with a distinct responsibility and explicit inputs and outputs. A phase session may delegate bounded internal work to subagents, but the phase itself must never be implemented as a subagent.
 

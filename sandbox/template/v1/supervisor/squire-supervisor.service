@@ -1,0 +1,18 @@
+[Unit]
+Description=Squire ticket rootless Docker and guest supervisor
+After=network.target
+
+[Service]
+Type=simple
+User=squireagent
+Group=squireagent
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/ticket/docker /ticket/runtime /ticket/sessions /ticket/artifacts /ticket/evidence /ticket/workspace
+ExecStart=/opt/squire/build/rootless-docker.sh
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

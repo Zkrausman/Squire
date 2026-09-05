@@ -21,7 +21,7 @@ The MVP uses:
 - separate Squire Delivery and Squire Reviewer GitHub App identities; and
 - GitHub rules that deny both Squire identities merge, bypass, and protected-base update authority.
 
-Docker Sandboxes was selected over ordinary containers because it provides a hypervisor-backed ticket boundary, a private persistent filesystem, and a private Docker daemon while still supporting normal developer tooling. The supporting POC is documented in [Docker Sandboxes viability spike](docker-sandboxes-viability-spike.md).
+Docker Sandboxes was selected over ordinary containers because it provides a hypervisor-backed ticket boundary, a private persistent filesystem, and a private Docker daemon while still supporting normal developer tooling. The supporting POC is documented in [Docker Sandboxes viability spike](docker-sandboxes-viability-spike.md). The POC is not release acceptance: AIDEV-223 requires the digest-pinned v0.39.0 template, distinct `squirectl`/`squireagent` principals, rootless ticket-private Docker, measured quota/network/credential proofs, and independent host conformance before a release can resolve.
 
 ## 2. Fixed product boundary
 
@@ -71,6 +71,8 @@ The controller is trusted infrastructure, but it is not the Pi orchestrator. The
 ## 4. Component responsibilities
 
 ### 4.1 Trusted controller
+
+AIDEV-223's sandbox controller is an additive host authority, not a second workflow graph. `SandboxLifecycleService` uses the shared WorkflowStore CAS/lease and `RunQuiescenceAuthority`; `SandboxTeardownCoordinator` writes the durable drain, reaps exact identities, uses the existing terminal fence, and completes it only after Git/AIDEV-222, Pi/AIDEV-228, transfer, bridge, VM, and scoped-secret cleanup. Raw `sbx` argv, bridge paths, guest RPC, and release-signing internals are not package-root APIs.
 
 The controller is one Node.js/TypeScript process for the MVP. It owns:
 

@@ -163,6 +163,10 @@ export interface RunSnapshot {
   preparationLeases?: readonly RunPreparationLease[];
   /** AIDEV-222's operation state; RunQuiescenceAuthority remains the only lifecycle authority. */
   gitWorkspace?: GitWorkspaceRecord;
+  /** AIDEV-223 sandbox record; additive and absent for pre-sandbox runs. */
+  sandbox?: import("../sandbox/domain.js").SandboxRecord;
+  /** Permanent drain/fence teardown intent shared by every component. */
+  teardown?: import("../sandbox/domain.js").RunTeardownRecord;
 }
 export interface RunPrecondition { version: number; state?: WorkflowState; currentHead?: string }
 export interface Lease { key: string; owner: string; fencingToken: number; expiresAt: number }

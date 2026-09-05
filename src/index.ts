@@ -29,3 +29,4 @@ export * from "./pi/pi-agent-directory.js";
 export * from "./pi/wiki-footer.js";
 export * from "./pi/session-registry.js";
 export * from "./pi/lf-jsonl-decoder.js";
+export * from "./sandbox/index.js";

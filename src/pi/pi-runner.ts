@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
+import { ROLES, type Clock, type Lease, type LeaseGuard, type ProcessAllocation, type Role, type RunTerminalFence, type RuntimeResolution, type SessionRegistration } from "../control/domain.js";
 import type { GitWorkspaceReadiness } from "../git/domain.js";
 import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
 import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
 import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
 import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest, type PiAgentDirectoryTeardownResult } from "./pi-agent-directory.js";
-import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
+import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, ProcessLaunch, RuntimeResolver } from "./pi-process.js";
 import { PiRpcClient, type PiState } from "./pi-rpc-client.js";
+import { assertRunId } from "../git/identity.js";
+import { canonicalJson } from "../sandbox/identity.js";
 
 export interface RunnerConfig {
   roles: Record<Role, PiRoleConfig>;
@@ -27,12 +29,14 @@ export interface RunnerConfig {
   allocationStepTimeoutMs?: number;
   allocationTimeoutMs?: number;
   cleanupGraceMs?: number;
+  /** Optional run/sandbox composition; the existing allocation authority stays here. */
+  sandboxProcessFactory?: (context: { readonly runId: string; readonly role: Role; readonly generation: number; readonly runtime: RuntimeResolution; readonly launch: ProcessLaunch }) => PiProcessFactory;
 }
 export type RegistrationValidator = (registration: SessionRegistration, signal?: AbortSignal) => Promise<void>;
 export type RoleInstructionReader = (canonicalPath: string, signal?: AbortSignal) => Promise<string>;
 interface LiveHandle { process: PiProcess; client: PiRpcClient; runId: string; role: Role; generation: number }
 interface AllocatingHandle { process: PiProcess; runId: string; role: Role; generation: number; owner: string; fencingToken: number }
-interface AllocationLease extends Lease { runId: string; deadlineAt: number; ttlMs: number; stepTimeoutMs: number }
+interface AllocationLease extends Lease { runId: string; deadlineAt: number; ttlMs: number; stepTimeoutMs: number; activeOperations: Set<Promise<unknown>>; callerSignal?: AbortSignal }
 
 export class ProcessLeaseError extends Error {
   constructor(message: string) { super(message); this.name = "ProcessLeaseError"; }
@@ -59,9 +63,10 @@ export class PiRunner {
   async #getOrMaterialize(runId: string, runtime: RuntimeResolution, wikiProfile: PiWikiProfileInput, signal?: AbortSignal): Promise<MaterializedPiAgentDirectory> {
     const materializer = this.config.materializer ?? (runtime.llmWiki.root ? this.#defaultMaterializer : undefined);
     if (!materializer) throw new Error("Pi agent-directory materializer is required when runtime resolution has no local wiki root");
-    const fingerprint = JSON.stringify({ runtime, wikiProfile, workspace: this.config.workspace });
+    const fingerprint = canonicalJson({ runtime, wikiProfile, ...(this.config.workspace ? { workspace: this.config.workspace } : {}) });
     const previous = this.#materializing.get(runId);
     if (previous) {
+      if (signal?.aborted) throw new Error("Pi agent-directory materialization was aborted");
       if (previous.fingerprint !== fingerprint) throw new Error("conflicting Pi agent-directory materialization request");
       return previous.promise;
     }
@@ -102,26 +107,33 @@ export class PiRunner {
       return;
     }
     const refreshed = await this.#getOrMaterialize(runId, runtime, wikiProfile, signal);
-    if (JSON.stringify(refreshed) !== JSON.stringify(materialized)) throw new Error("Pi agent-directory changed during pre-spawn verification");
+    if (canonicalJson(refreshed) !== canonicalJson(materialized)) throw new Error("Pi agent-directory changed during pre-spawn verification");
   }
 
   /** Explicit cleanup seam for retry/restart; callers must not treat an unknown identity as exited. */
-  async reconcileProcessAllocation(runId: string, role: Role): Promise<void> {
+  async reconcileProcessAllocation(runId: string, role: Role, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new Error("process allocation reconciliation was aborted");
     const key = `${runId}:${role}`;
     const snapshot = await this.store.read(runId); if (!snapshot) throw new Error("run not found");
     const allocation = snapshot.processAllocations?.[role]; const session = snapshot.sessions[role];
-    if (allocation && (allocation.state !== "termination_failed" || !allocation.processIdentity)) throw new StoreConflictError("process allocation is not actionable for termination recovery");
+    if (allocation && (!allocation.processIdentity || (allocation.state !== "termination_failed" && allocation.state !== "failed"))) throw new StoreConflictError("process allocation is not actionable for termination recovery");
+    if (allocation?.state === "failed") {
+      await this.#recoverFailedAllocation(runId, role, allocation.owner, allocation.fencingToken, allocation.generation, undefined);
+      const allocating = this.allocating.get(key); if (allocating && allocating.process.exitCode !== null) this.allocating.delete(key);
+      const live = this.live.get(key); if (live && live.process.exitCode !== null) this.live.delete(key);
+      return;
+    }
     const registered = !allocation && session && (session.processState === "live" || session.processState === "launching") ? session : undefined;
     if (!allocation && !registered) return;
     const processIdentity = allocation?.processIdentity ?? registered?.processIdentity;
     if (!processIdentity) throw new StoreConflictError("registered live process has no actionable durable identity");
     const generation = allocation?.generation ?? registered!.processGeneration;
     let process = this.allocating.get(key)?.process ?? this.live.get(key)?.process;
-    if (!process) process = await this.#resolveProcessIdentity(processIdentity);
+    if (!process) process = await this.#resolveProcessIdentity(processIdentity, signal);
     if (!process) throw new Error("durable process identity could not be resolved; process ownership remains blocked");
     if (process.identity !== processIdentity) throw new Error("process identity resolver returned a mismatched handle");
     this.#trackAllocating(key, { process, runId, role, generation, owner: allocation?.owner ?? `registered:${registered!.sessionId}`, fencingToken: allocation?.fencingToken ?? -1 });
-    try { await this.#terminate(process); }
+    try { await this.#terminate(process, signal); }
     catch (error) {
       if (process.exitCode === null) {
         if (allocation) await this.#retainUnresolvedAllocation(runId, role, allocation.owner, allocation.fencingToken, generation, process.identity);
@@ -129,14 +141,18 @@ export class PiRunner {
       }
       throw error;
     }
-    if (allocation) await this.#recoverFailedAllocation(runId, role, allocation.owner, allocation.fencingToken, generation, process);
-    else await this.#markProcess(runId, role, generation, process.identity, "failed");
+    if (allocation) {
+      await this.#recoverFailedAllocation(runId, role, allocation.owner, allocation.fencingToken, generation, process);
+      const remaining = (await this.store.read(runId))?.processAllocations?.[role];
+      if (remaining?.state === "failed" && !remaining.sessionId) await this.#recoverFailedAllocation(runId, role, remaining.owner, remaining.fencingToken, remaining.generation, undefined);
+    } else await this.#markProcess(runId, role, generation, process.identity, "failed");
     if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
     if (this.live.get(key)?.process === process) this.live.delete(key);
     if (!allocation) await this.#verifyRegisteredProcessCleaned(runId, role, generation, process.identity);
   }
 
-  async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
+  async launch(runId: string, role: Role, signal?: AbortSignal): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
+    if (signal?.aborted) throw new Error("Pi launch was aborted");
     await this.#runLifecycleAuthority.assertRunStartAllowed(runId, this.clock.now());
     await this.config.workspaceReadiness.verify(runId);
     const key = `${runId}:${role}`;
@@ -155,7 +171,7 @@ export class PiRunner {
     const startedAt = this.clock.now();
     const acquired = await this.store.acquireLease(runId, leaseKey, owner, startedAt, Math.min(processLeaseMs, allocationTimeoutMs));
     if (!acquired) throw new Error("role process lease is held");
-    const lease: AllocationLease = { ...acquired, runId, deadlineAt: startedAt + allocationTimeoutMs, ttlMs: processLeaseMs, stepTimeoutMs };
+    const lease: AllocationLease = { ...acquired, runId, deadlineAt: startedAt + allocationTimeoutMs, ttlMs: processLeaseMs, stepTimeoutMs, activeOperations: new Set(), ...(signal ? { callerSignal: signal } : {}) };
     let released = false;
     let claimed: SessionRegistration | undefined;
     let generation: number | undefined;
@@ -207,14 +223,15 @@ export class PiRunner {
         // mutable materialization/instruction work and immediately before the
         // child factory is allowed to create a process.
         await this.config.workspaceReadiness.verify(runId);
-        return this.factory.spawn(spec, signal, ownProcess);
+        const selectedFactory = this.config.sandboxProcessFactory?.({ runId, role, generation: generation!, runtime, launch: spec }) ?? this.factory;
+        return selectedFactory.spawn(spec, signal, ownProcess);
       }, ownProcess);
       await this.#step("spawn ownership claim", lease, () => this.#setAllocation(runId, role, lease, "spawned", process!.identity));
       const client = new PiRpcClient(process, { commandTimeoutMs: this.config.commandTimeoutMs ?? 5_000 });
       this.live.set(key, { process, client, runId, role, generation });
       if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
       client.on("protocol_error", () => { void this.#markProcess(runId, role, generation!, process!.identity, "failed"); });
-      const state = await this.#step("Pi handshake", lease, () => client.getState());
+      const state = await this.#step("Pi handshake", lease, signal => client.getState(signal));
       if (state.model?.provider !== roleConfig.provider || state.model?.id !== roleConfig.model) throw new Error("Pi handshake model mismatch");
       if (state.thinkingLevel !== roleConfig.thinking) throw new Error("Pi handshake thinking level mismatch");
       if (claimed && (state.sessionId !== claimed.sessionId || state.sessionFile !== claimed.sessionFile)) throw new Error("Pi resume handshake identity mismatch");
@@ -225,13 +242,14 @@ export class PiRunner {
       } else {
         await this.#step("live generation persistence", lease, () => this.#completeResumedGeneration(runId, role, generation!, process!.identity, lease));
       }
+      await this.#drainAllocationOperations(lease);
       return { process, client, state, runtime, agentDir: materialized.agentDir };
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try { if (process) await this.#terminate(process); }
       catch (terminationError) { if (process?.exitCode === null) cleanupErrors.push(terminationError); }
-      await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken); released = true;
       if (process?.exitCode === null) {
+
         try { await this.#retainUnresolvedAllocation(runId, role, owner, lease.fencingToken, generation!, process.identity); }
         catch (retentionError) { cleanupErrors.push(retentionError); }
       } else {
@@ -244,11 +262,16 @@ export class PiRunner {
       if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], "process allocation failed and cleanup could not converge");
       throw error;
     } finally {
-      if (!released) await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken);
+      if (!released) {
+        released = true;
+        if (lease.activeOperations.size === 0) await this.store.releaseLease(runId, leaseKey, owner, lease.fencingToken);
+        else void this.#releaseAfterOperations(lease, runId, leaseKey, owner).catch(() => undefined);
+      }
     }
   }
 
   async #getOrResolveRuntime(runId: string, lease?: AllocationLease, signal?: AbortSignal): Promise<RuntimeResolution> {
+    if (signal?.aborted) throw new Error("runtime resolution aborted");
     const existing = this.#resolved.get(runId); if (existing) return existing;
     const resolution = this.#resolveAndRecord(runId, lease, signal); this.#resolved.set(runId, resolution);
     try { return await resolution; }
@@ -341,8 +364,8 @@ export class PiRunner {
   }
 
   async #markProcess(runId: string, role: Role, generation: number, identity: string | undefined, state: "live" | "exited" | "failed"): Promise<void> {
-    for (;;) {
-      const current = await this.store.read(runId); if (!current) return;
+    for (let attempts = 0; attempts < 16; attempts += 1) {
+      const current = await this.store.read(runId); if (!current || current.terminalFence || current.teardown) return;
       const session = current.sessions[role]; if (!session || session.processGeneration !== generation) return;
       if (state === "exited" && session.processState === "failed") return;
       if (identity && session.processIdentity && session.processIdentity !== identity) return;
@@ -350,6 +373,7 @@ export class PiRunner {
       try { await this.store.compareAndSet(runId, { version: current.version }, snapshot => ({ ...snapshot, version: snapshot.version + 1, sessions: { ...snapshot.sessions, [role]: next } })); return; }
       catch (error) { if (!(error instanceof StoreConflictError)) throw error; }
     }
+    throw new StoreConflictError("process exit persistence did not converge within retry bound");
   }
 
   async #registerFirstSession(registration: SessionRegistration, lease: AllocationLease): Promise<void> {
@@ -378,8 +402,11 @@ export class PiRunner {
       const current = await this.store.read(handle.runId);
       const allocation = current?.processAllocations?.[handle.role];
       const exactAllocation = allocation?.owner === handle.owner && allocation.fencingToken === handle.fencingToken && allocation.generation === handle.generation;
-      if (exactAllocation) await this.#recoverFailedAllocation(handle.runId, handle.role, handle.owner, handle.fencingToken, handle.generation, handle.process);
-      else await this.#markProcess(handle.runId, handle.role, handle.generation, handle.process.identity, "exited");
+      if (exactAllocation) {
+        await this.#recoverFailedAllocation(handle.runId, handle.role, handle.owner, handle.fencingToken, handle.generation, handle.process);
+        const remaining = (await this.store.read(handle.runId))?.processAllocations?.[handle.role];
+        if (remaining?.state === "failed" && !remaining.sessionId) await this.#recoverFailedAllocation(handle.runId, handle.role, remaining.owner, remaining.fencingToken, remaining.generation, undefined);
+      } else await this.#markProcess(handle.runId, handle.role, handle.generation, handle.process.identity, "exited");
       if (this.allocating.get(key)?.process === handle.process) this.allocating.delete(key);
       if (this.live.get(key)?.process === handle.process) this.live.delete(key);
     } catch { /* Preserve the exited handle so explicit reconciliation can retry persistence. */ }
@@ -426,27 +453,78 @@ export class PiRunner {
     throw new StoreConflictError("process allocation cleanup did not converge within retry bound");
   }
 
-  async #resolveProcessIdentity(identity: string): Promise<PiProcess | undefined> {
+  async #resolveProcessIdentity(identity: string, signal?: AbortSignal): Promise<PiProcess | undefined> {
     if (!this.processIdentities) return undefined;
+    if (signal?.aborted) throw new Error("process identity resolution was aborted");
     const timeoutMs = positiveInteger(this.config.cleanupGraceMs ?? this.config.commandTimeoutMs ?? 5_000, "cleanup grace");
     const controller = new AbortController();
+    let rejectAbort!: (error: Error) => void;
+    const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+    const onAbort = (): void => { controller.abort(); rejectAbort(new Error("process identity resolution was aborted")); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     const wait = this.clock.sleep(timeoutMs, controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
-    try { return await Promise.race([this.processIdentities.resolve(identity, controller.signal), wait.then(() => { controller.abort(); throw new Error("process identity resolution timed out"); })]); }
-    finally { controller.abort(); }
+    try {
+      return await Promise.race([
+        this.processIdentities.resolve(identity, controller.signal),
+        wait.then(() => { controller.abort(); throw new Error("process identity resolution timed out"); }),
+        aborted,
+      ]);
+    }
+    finally { controller.abort(); signal?.removeEventListener("abort", onAbort); }
   }
 
-  async #terminate(process: PiProcess): Promise<void> {
+  async #terminate(process: PiProcess, signal?: AbortSignal): Promise<void> {
     if (process.exitCode !== null) return;
+    if (signal?.aborted) throw new Error("process termination was aborted");
     const graceMs = positiveInteger(this.config.cleanupGraceMs ?? this.config.commandTimeoutMs ?? 5_000, "cleanup grace");
-    process.kill("SIGTERM");
+    let aborted = false;
+    const waitForExit = async (): Promise<void> => {
+      let onAbort!: () => void;
+      const abort = new Promise<never>((_, reject) => { onAbort = () => { aborted = true; reject(new Error("process termination was aborted")); }; signal?.addEventListener("abort", onAbort, { once: true }); });
+      try { await Promise.race([process.waitForExit(graceMs), abort]); }
+      finally { signal?.removeEventListener("abort", onAbort); }
+    };
+
+    // A false return from kill() is not proof that the process is gone. Still
+    // make the bounded escalation attempt so a stale owner cannot leave an
+    // actionable process behind merely because SIGTERM was refused.
+    const termDelivered = process.kill("SIGTERM");
+    if (process.exitCode === null && !termDelivered) {
+      const killDelivered = process.kill("SIGKILL");
+      if (process.exitCode === null && !killDelivered) {
+        try { await process.waitForExit(graceMs); }
+        catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(`spawned process kill signal was not delivered; ${detail}`);
+        }
+      }
+    }
     if (process.exitCode === null) {
-      try { await process.waitForExit(graceMs); }
-      catch { process.kill("SIGKILL"); await process.waitForExit(graceMs); }
+      try { await waitForExit(); }
+      catch (error) {
+        if (process.exitCode === null) {
+          const killDelivered = process.kill("SIGKILL");
+          if (!killDelivered && process.exitCode === null) {
+            try { await process.waitForExit(graceMs); }
+            catch (killError) {
+              const detail = killError instanceof Error ? killError.message : String(killError);
+              throw new Error(`spawned process kill signal was not delivered; ${detail}`);
+            }
+          } else if (process.exitCode === null) await process.waitForExit(graceMs);
+        } else if (error instanceof Error) {
+          // The process exited while the graceful wait was settling. Preserve
+          // cancellation as a failure even though the exit is now observed.
+          if (/process termination was aborted/u.test(error.message)) throw error;
+        }
+      }
     }
     if (process.exitCode === null) throw new Error("spawned process did not terminate during allocation cleanup");
+    if (aborted || signal?.aborted) throw new Error("process termination was aborted");
   }
 
   async #step<T>(name: string, lease: AllocationLease, operation: (signal: AbortSignal) => Promise<T>, onSettled?: (value: T) => void): Promise<T> {
+    if (lease.callerSignal?.aborted) throw new Error("Pi allocation was aborted");
     await this.#renew(lease);
     const startedAt = this.clock.now();
     const remaining = lease.deadlineAt - startedAt; if (remaining <= 0) throw new ProcessLeaseError("process allocation deadline expired");
@@ -455,8 +533,17 @@ export class PiRunner {
     const controller = new AbortController();
     const wait = this.clock.sleep(duration, controller.signal).catch(error => { if (controller.signal.aborted) return new Promise<void>(() => undefined); throw error; });
     const timeout: Promise<T> = wait.then(() => { controller.abort(); throw new Error(`${name} exceeded bounded allocation step`); });
+    let rejectCaller!: (error: Error) => void;
+    const callerAbort = new Promise<never>((_, reject) => { rejectCaller = reject; });
+    const onCallerAbort = (): void => { controller.abort(); rejectCaller(new Error("Pi allocation was aborted")); };
+    lease.callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+    if (lease.callerSignal?.aborted) onCallerAbort();
+    const operationPromise = Promise.resolve().then(() => operation(controller.signal));
+    const settled = operationPromise.then(() => undefined, () => undefined);
+    lease.activeOperations.add(settled);
+    void settled.then(() => lease.activeOperations.delete(settled));
     try {
-      const result = await Promise.race([operation(controller.signal), timeout]);
+      const result = await Promise.race([operationPromise, timeout, callerAbort]);
       // A clock can advance inside an operation (for example, a durable store
       // callback may settle just as the lease timer fires). Treat that result
       // as late even if Promise.race observed it first; otherwise settlement
@@ -465,12 +552,23 @@ export class PiRunner {
       onSettled?.(result);
       controller.abort();
       await this.#renew(lease);
+      lease.callerSignal?.removeEventListener("abort", onCallerAbort);
       return result;
     } catch (error) {
+      lease.callerSignal?.removeEventListener("abort", onCallerAbort);
       controller.abort();
       await this.#renew(lease).catch(renewalError => { throw renewalError; });
       throw error;
     }
+  }
+
+  async #drainAllocationOperations(lease: AllocationLease): Promise<void> {
+    while (lease.activeOperations.size > 0) await Promise.all([...lease.activeOperations]);
+  }
+
+  async #releaseAfterOperations(lease: AllocationLease, runId: string, key: string, owner: string): Promise<void> {
+    await this.#drainAllocationOperations(lease);
+    await this.store.releaseLease(runId, key, owner, lease.fencingToken);
   }
 
   async #renew(lease: AllocationLease): Promise<void> {
@@ -491,12 +589,46 @@ export class PiRunner {
     this.live.delete(key);
   }
 
+  /** Reaps every exact role allocation after the shared durable drain has
+   * stopped new work. This method never acquires or completes the terminal
+   * fence; the aggregate sandbox coordinator owns those transitions. */
+  async reapRunProcesses(runId: string, signal?: AbortSignal): Promise<void> {
+    assertRunId(runId);
+    if (signal?.aborted) throw new Error("run process reap was aborted");
+    const failures: unknown[] = [];
+    for (const role of ROLES) {
+      if (signal?.aborted) throw new Error("run process reap was aborted");
+      try { await this.reconcileProcessAllocation(runId, role, signal); }
+      catch (error) { failures.push(error); }
+    }
+    if (failures.length > 0) throw new AggregateError(failures, "one or more exact run processes could not be reaped");
+    const snapshot = await this.store.read(runId);
+    if (!snapshot) throw new Error("run not found");
+    if (Object.values(snapshot.processAllocations ?? {}).some(Boolean) || Object.values(snapshot.sessions).some(session => session?.processState === "live" || session?.processState === "launching")) throw new Error("run process reap completed without durable quiescence");
+    for (const [key, handle] of this.allocating) if (handle.runId === runId && handle.process.exitCode === null) throw new Error(`run process remains live: ${key}`);
+    for (const [key, handle] of this.live) if (handle.runId === runId && handle.process.exitCode === null) throw new Error(`run process remains live: ${key}`);
+  }
+
   /**
    * Run-teardown integration for the retained preparation lifecycle. The
    * The durable lifecycle authority fences the run before the materializer
    * performs cleanup; this check prevents this runner from initiating teardown
    * while it still owns a live or unresolved role process.
    */
+  async disposeRunAgentDirectoryUnderTerminalFence(runId: string, fence: RunTerminalFence, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult> {
+    assertRunId(runId);
+    if (!fence || fence.runId !== runId || fence.state !== "held" || !Number.isSafeInteger(fence.fencingToken) || fence.fencingToken <= 0) throw new Error("Pi agent-directory disposal requires the exact held terminal fence");
+    for (const handle of this.allocating.values()) {
+      if (handle.runId === runId) throw new Error("cannot tear down Pi agent directory while a role allocation is unresolved");
+    }
+    for (const handle of this.live.values()) {
+      if (handle.runId === runId && handle.process.exitCode === null) throw new Error("cannot tear down Pi agent directory while a role process is live");
+    }
+    const materializer = this.config.materializer ?? this.#defaultMaterializer;
+    if (!materializer.disposeUnderTerminalFence) throw new Error("Pi agent-directory materializer does not provide fence-aware component teardown");
+    return materializer.disposeUnderTerminalFence(runId, fence, signal);
+  }
+
   async teardownRunAgentDirectory(runId: string, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult> {
     for (const handle of this.allocating.values()) {
       if (handle.runId === runId) throw new Error("cannot tear down Pi agent directory while a role allocation is unresolved");
@@ -506,8 +638,14 @@ export class PiRunner {
     }
     const materializer = this.config.materializer ?? this.#defaultMaterializer;
     if (!materializer.teardown) throw new Error("Pi agent-directory materializer does not provide trusted teardown");
-    await this.#runLifecycleAuthority.acquireRunTerminalFence(runId, `runner-teardown-${randomUUID()}`, this.clock.now());
-    return materializer.teardown(runId, signal);
+    const fence = await this.#runLifecycleAuthority.acquireRunTerminalFence(runId, `runner-teardown-${randomUUID()}`, this.clock.now());
+    if (materializer.disposeUnderTerminalFence) return materializer.disposeUnderTerminalFence(runId, fence, signal);
+    // Legacy materializers own only their component cleanup and do not receive
+    // the already-held fence. Never complete the workflow here: an aggregate
+    // coordinator must still dispose Git, the sandbox, transfers, and secrets.
+    return materializer.teardown
+      ? materializer.teardown(runId, signal)
+      : Promise.reject(new Error("Pi agent-directory materializer has no component teardown operation"));
   }
 }
 

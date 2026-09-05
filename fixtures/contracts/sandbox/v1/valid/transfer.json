@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "squire-sandbox-transfer-manifest",
+  "direction": "export",
+  "runId": "run_example01",
+  "sandboxName": "squire-v1-4ffmztx2tjhdqh5qcfk6n2no2c",
+  "specFingerprint": "2981bb8da3ea2e2a3e0a64ce5be24109f4ab07b0eee37087a13b478d3329485c",
+  "bootId": "boot-fixture",
+  "source": {
+    "logicalPath": "/ticket/artifacts/result.json",
+    "side": "sandbox"
+  },
+  "destination": {
+    "logicalPath": "artifacts/result.json",
+    "side": "host"
+  },
+  "byteLength": 4,
+  "sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+  "transferGeneration": 1,
+  "sourceVerified": true,
+  "destinationVerified": true,
+  "bridgeUsed": false,
+  "createdAt": "2026-09-01T12:00:00.000Z",
+  "fingerprint": "e4338343f5813a9139223aac39e5645230d3214c73c0d1cd9f480e70bb84675c"
+}

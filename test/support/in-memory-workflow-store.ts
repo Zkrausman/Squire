@@ -1,5 +1,7 @@
 import { assertPrecondition, StoreConflictError, type WorkflowStore } from "../../src/control/workflow-store.js";
 import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPreparationLease, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "../../src/control/domain.js";
+import type { RunTeardownRecord } from "../../src/sandbox/domain.js";
+import { assertSandboxRecordMutation } from "../../src/sandbox/sandbox-record-guard.js";
 import type { GitWorkspaceRecord } from "../../src/git/domain.js";
 
 const copy = <T>(value: T): T => structuredClone(value);
@@ -17,12 +19,12 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   async assertRunStartAllowed(runId: string): Promise<void> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
-    if (current.terminalFence) throw new StoreConflictError(current.terminalFence.state === "removed" ? "run has been removed" : "run has a permanent terminal fence");
+    if (current.terminalFence || current.teardown) throw new StoreConflictError(current.terminalFence?.state === "removed" || current.teardown?.state === "completed" ? "run has been removed" : "run has a permanent terminal fence (teardown drain)");
   }
   async acquireRunPreparationLease(runId: string, owner: string, now = Date.now()): Promise<RunPreparationLease> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
-    if (current.terminalFence) throw new StoreConflictError("run has a permanent terminal fence");
+    if (current.terminalFence || current.teardown) throw new StoreConflictError("run has a permanent terminal fence (teardown drain)");
     const lease: RunPreparationLease = { runId, owner, fencingToken: current.version + 1, acquiredAt: new Date(now).toISOString(), state: "held" };
     this.runs.set(runId, copy({ ...current, version: current.version + 1, preparationLeases: [...(current.preparationLeases ?? []), lease] }));
     return copy(lease);
@@ -36,21 +38,62 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     if (owned.runId !== runId || lease.runId !== runId || owned.state !== "held") throw new StoreConflictError("preparation lease identity changed");
     this.runs.set(runId, copy({ ...current, version: current.version + 1, preparationLeases: leases.filter(candidate => candidate !== owned) }));
   }
+  async beginRunTeardown(runId: string, owner: string, reason: RunTeardownRecord["reason"] = "retention", now = Date.now()): Promise<RunTeardownRecord> {
+    const current = this.runs.get(runId);
+    if (!current) throw new StoreConflictError("run not found");
+    if (!/^[A-Za-z0-9._:-]{1,256}$/u.test(owner) || !["retention", "terminal", "operator"].includes(reason) || !Number.isSafeInteger(now)) throw new StoreConflictError("teardown request identity is invalid");
+    if (current.teardown) {
+      if (current.teardown.reason !== reason) throw new StoreConflictError("teardown reason changed for the durable drain");
+      return copy(current.teardown);
+    }
+    if (current.terminalFence?.state === "removed") throw new StoreConflictError("run has been removed");
+    const teardown: RunTeardownRecord = { runId, owner, generation: 1, state: "draining", reason, requestedAt: new Date(now).toISOString() };
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, teardown }));
+    return copy(teardown);
+  }
+  async acquireRunTeardownLease(runId: string, owner: string, now = Date.now(), ttlMs = 30_000): Promise<Lease | undefined> {
+    const snapshot = this.runs.get(runId);
+    if (!snapshot || !snapshot.teardown || snapshot.teardown.state === "blocked" || snapshot.teardown.state === "completed" || snapshot.terminalFence?.state === "removed") return undefined;
+    if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > 300_000 || !/^[A-Za-z0-9._:-]{1,256}$/u.test(owner)) return undefined;
+    const full = `${runId}:teardown`; const current = this.leases.get(full);
+    if (current && current.expiresAt > now) return current.owner === owner ? copy(current) : undefined;
+    const fencingToken = (this.leaseTokens.get(full) ?? 0) + 1; this.leaseTokens.set(full, fencingToken);
+    const lease: Lease = { key: "teardown", owner, fencingToken, expiresAt: now + ttlMs }; this.leases.set(full, lease); return copy(lease);
+  }
+  async renewRunTeardownLease(runId: string, owner: string, fencingToken: number, now = Date.now(), ttlMs = 30_000): Promise<Lease | undefined> {
+    const snapshot = this.runs.get(runId); const full = `${runId}:teardown`; const current = this.leases.get(full);
+    if (!snapshot?.teardown || snapshot.teardown.state === "blocked" || snapshot.teardown.state === "completed" || snapshot.terminalFence?.state === "removed" || !current || current.owner !== owner || current.fencingToken !== fencingToken || current.expiresAt <= now || !Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > 300_000) return undefined;
+    const renewed = { ...current, expiresAt: now + ttlMs }; this.leases.set(full, renewed); return copy(renewed);
+  }
+  async releaseRunTeardownLease(runId: string, owner: string, fencingToken: number): Promise<void> {
+    const full = `${runId}:teardown`; const current = this.leases.get(full); if (current?.owner === owner && current.fencingToken === fencingToken) this.leases.delete(full);
+  }
+  async blockRunTeardown(runId: string, owner: string, error: { readonly code: string; readonly message: string }, now = Date.now()): Promise<RunTeardownRecord> {
+    const current = this.runs.get(runId); if (!current?.teardown) throw new StoreConflictError("teardown intent is absent");
+    if (current.teardown.state === "blocked") return copy(current.teardown);
+    if (current.teardown.state === "completed" || current.teardown.owner !== owner || !error || typeof error.code !== "string" || typeof error.message !== "string" || error.code.length === 0 || error.code.length > 128 || error.message.length === 0 || error.message.length > 1_000 || /[\u0000-\u001f\u007f\r\n]/u.test(`${error.code}${error.message}`)) throw new StoreConflictError("teardown block ownership or error is invalid");
+    const teardown: RunTeardownRecord = { ...current.teardown, state: "blocked", error: { code: error.code, message: error.message, at: new Date(now).toISOString() } };
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, teardown })); return copy(teardown);
+  }
   async acquireRunTerminalFence(runId: string, owner: string, now = Date.now()): Promise<RunTerminalFence> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
+    if (!/^[A-Za-z0-9._:-]{1,256}$/u.test(owner) || !Number.isSafeInteger(now)) throw new StoreConflictError("terminal fence owner or time is invalid");
     if (current.terminalFence?.state === "removed") throw new StoreConflictError("run has been removed");
+    if (current.teardown?.state === "blocked" || current.teardown?.state === "completed") throw new StoreConflictError("teardown is durably blocked or completed");
     this.assertDurablyQuiescent(runId, now, current);
     if (current.terminalFence) return copy(current.terminalFence);
     const fence: RunTerminalFence = { runId, owner, fencingToken: current.version + 1, acquiredAt: new Date(now).toISOString(), state: "held" };
-    this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: fence }));
+    const teardown = current.teardown ?? { runId, owner, generation: 1, state: "draining" as const, reason: "terminal" as const, requestedAt: new Date(now).toISOString() };
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: fence, teardown: { ...teardown, state: "fenced" as const, fence } }));
     return copy(fence);
   }
   async assertRunTeardownQuiescent(runId: string, fence: RunTerminalFence, now = Date.now()): Promise<void> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
     const persisted = current.terminalFence;
-    if (fence.state !== "held" || !persisted || persisted.state !== "held" || persisted.runId !== fence.runId || persisted.owner !== fence.owner || persisted.fencingToken !== fence.fencingToken) throw new StoreConflictError("terminal fence ownership changed");
+    if (current.teardown?.state === "blocked" || current.teardown?.state === "completed") throw new StoreConflictError("teardown is durably blocked or completed");
+    if (fence.runId !== runId || fence.state !== "held" || !persisted || persisted.state !== "held" || persisted.runId !== fence.runId || persisted.owner !== fence.owner || persisted.fencingToken !== fence.fencingToken) throw new StoreConflictError("terminal fence ownership changed");
     this.assertDurablyQuiescent(runId, now, current);
   }
   async completeRunTeardown(runId: string, fence: RunTerminalFence, now = Date.now()): Promise<void> {
@@ -61,27 +104,30 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     if (persisted.state === "removed") return;
     await this.assertRunTeardownQuiescent(runId, fence, now);
     const removed: RunTerminalFence = { ...persisted, state: "removed" };
-    this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: removed }));
+    const teardown = current.teardown ? { ...current.teardown, state: "completed" as const, fence: removed } : undefined;
+    this.runs.set(runId, copy({ ...current, version: current.version + 1, terminalFence: removed, ...(teardown ? { teardown } : {}) }));
   }
   private assertDurablyQuiescent(runId: string, now: number, current: RunSnapshot): void {
     if (Object.values(current.processAllocations ?? {}).some(Boolean)) throw new StoreConflictError("workflow is not durably quiescent: process allocation remains");
     if (Object.values(current.sessions).some(session => session?.processState === "live" || session?.processState === "launching")) throw new StoreConflictError("workflow is not durably quiescent: role process remains");
-    if ([...this.leases.entries()].some(([key, lease]) => key.startsWith(`${runId}:`) && lease.expiresAt > now)) throw new StoreConflictError("workflow is not durably quiescent: lease remains");
+    if ([...this.leases.entries()].some(([key, lease]) => key.startsWith(`${runId}:`) && key !== `${runId}:teardown` && lease.expiresAt > now)) throw new StoreConflictError("workflow is not durably quiescent: lease remains");
     if ((current.preparationLeases ?? []).some(lease => lease.state === "held")) throw new StoreConflictError("workflow is not durably quiescent: preparation lease remains");
   }
   async compareAndSet(runId: string, expected: RunPrecondition, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot> {
     const current = this.runs.get(runId);
     if (!current) throw new StoreConflictError("run not found");
-    if (current.terminalFence) throw new StoreConflictError("run has a permanent terminal fence");
+    if (current.terminalFence) throw new StoreConflictError("run has a permanent terminal fence (teardown drain)");
     assertPrecondition(current, expected);
     const next = mutate(copy(current));
     if (next.runId !== runId || next.version !== current.version + 1) throw new StoreConflictError("mutation must preserve run and increment version exactly once");
+    if (current.teardown && !isQuiescenceCleanupMutation(current, next)) throw new StoreConflictError("only exact process quiescence cleanup may mutate a drained run");
     const attemptKeys = next.attempts.map(a => `${a.phase}:${a.attempt}`);
     const handoffs = next.attempts.map(a => a.handoffId);
     const operations = next.attempts.map(a => a.dispatch.operationKey);
     if (new Set(attemptKeys).size !== attemptKeys.length || new Set(handoffs).size !== handoffs.length || new Set(operations).size !== operations.length) throw new StoreConflictError("duplicate attempt, handoff, or operation");
     if (new Set(next.acceptedResultPaths).size !== next.acceptedResultPaths.length || new Set(next.committedRequestIds).size !== next.committedRequestIds.length) throw new StoreConflictError("duplicate result acceptance or transition request");
     assertGitWorkspaceMutation(current.gitWorkspace, next.gitWorkspace);
+    assertSandboxRecordMutation(current.sandbox, next.sandbox, runId);
     this.runs.set(runId, copy(next));
     return copy(next);
   }
@@ -89,6 +135,18 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     const lease = this.leases.get(`${runId}:${guard.key}`);
     if (!lease || lease.owner !== guard.owner || lease.fencingToken !== guard.fencingToken || lease.expiresAt <= guard.now) throw new StoreConflictError("stale or expired lease fencing token");
     return this.compareAndSet(runId, expected, mutate);
+  }
+  async compareAndSetTeardown(runId: string, expected: RunPrecondition, fence: RunTerminalFence, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot> {
+    const current = this.runs.get(runId); if (!current) throw new StoreConflictError("run not found");
+    const persisted = current.terminalFence;
+    if (!persisted || persisted.state !== "held" || current.teardown?.state !== "fenced" || current.teardown.fence?.owner !== fence.owner || current.teardown.fence?.fencingToken !== fence.fencingToken || fence.state !== "held" || fence.runId !== runId || persisted.owner !== fence.owner || persisted.fencingToken !== fence.fencingToken || persisted.runId !== runId) throw new StoreConflictError("teardown CAS lacks the current terminal fence");
+    assertPrecondition(current, expected);
+    const next = mutate(copy(current));
+    if (next.runId !== runId || next.version !== current.version + 1) throw new StoreConflictError("teardown mutation must preserve run and increment version exactly once");
+    if (!isTeardownMutation(current, next)) throw new StoreConflictError("teardown CAS attempted an unrelated workflow mutation");
+    assertGitWorkspaceMutation(current.gitWorkspace, next.gitWorkspace);
+    assertSandboxRecordMutation(current.sandbox, next.sandbox, runId);
+    this.runs.set(runId, copy(next)); return copy(next);
   }
   async registerSession(runId: string, expected: RunPrecondition, registration: SessionRegistration): Promise<RunSnapshot> {
     return this.compareAndSet(runId, expected, current => this.registrationMutation(current, registration));
@@ -154,7 +212,7 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   }
   async acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined> {
     const snapshot = this.runs.get(runId);
-    if (!snapshot || snapshot.terminalFence) return undefined;
+    if (!snapshot || snapshot.terminalFence || snapshot.teardown) return undefined;
     const full = `${runId}:${key}`; const current = this.leases.get(full);
     if (current && current.expiresAt > now) return current.owner === owner ? copy(current) : undefined;
     const fencingToken = (this.leaseTokens.get(full) ?? 0) + 1; this.leaseTokens.set(full, fencingToken);
@@ -162,7 +220,7 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   }
   async renewLease(runId: string, key: string, owner: string, fencingToken: number, now: number, ttlMs: number): Promise<Lease | undefined> {
     const snapshot = this.runs.get(runId);
-    if (!snapshot || snapshot.terminalFence) return undefined;
+    if (!snapshot || snapshot.terminalFence || snapshot.teardown?.state === "blocked" || snapshot.teardown?.state === "completed") return undefined;
     const full = `${runId}:${key}`; const current = this.leases.get(full);
     if (!current || current.owner !== owner || current.fencingToken !== fencingToken || current.expiresAt <= now) return undefined;
     const renewed = { ...current, expiresAt: now + ttlMs }; this.leases.set(full, renewed); return copy(renewed);
@@ -170,6 +228,46 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   async releaseLease(runId: string, key: string, owner: string, fencingToken: number): Promise<void> {
     const full = `${runId}:${key}`; const current = this.leases.get(full); if (current?.owner === owner && current.fencingToken === fencingToken) this.leases.delete(full);
   }
+}
+
+function isTeardownMutation(previous: RunSnapshot, next: RunSnapshot): boolean {
+  const { version: _previousVersion, gitWorkspace: _previousGit, sandbox: _previousSandbox, ...previousWithoutComponents } = previous;
+  const { version: _nextVersion, gitWorkspace: _nextGit, sandbox: _nextSandbox, ...nextWithoutComponents } = next;
+  const { sessions: _previousSessions, processAllocations: _previousAllocations, ...previousWithoutProcess } = previousWithoutComponents;
+  const { sessions: _nextSessions, processAllocations: _nextAllocations, ...nextWithoutProcess } = nextWithoutComponents;
+  if (JSON.stringify(previousWithoutProcess) !== JSON.stringify(nextWithoutProcess)) return false;
+  const previousProcess = { ...previousWithoutComponents, sessions: _previousSessions, processAllocations: _previousAllocations } as RunSnapshot;
+  const nextProcess = { ...nextWithoutComponents, sessions: _nextSessions, processAllocations: _nextAllocations } as RunSnapshot;
+  return isQuiescenceCleanupMutation(previousProcess, nextProcess);
+}
+
+function isQuiescenceCleanupMutation(previous: RunSnapshot, next: RunSnapshot): boolean {
+  const { version: _previousVersion, sessions: previousSessions, processAllocations: previousAllocations, ...previousRest } = previous;
+  const { version: _nextVersion, sessions: nextSessions, processAllocations: nextAllocations, ...nextRest } = next;
+  if (JSON.stringify(previousRest) !== JSON.stringify(nextRest)) return false;
+  const previousRoles = new Set(Object.keys(previousSessions));
+  if (Object.keys(nextSessions).some(role => !previousRoles.has(role))) return false;
+  for (const role of previousRoles) {
+    const before = previousSessions[role as Role];
+    const after = nextSessions[role as Role];
+    if (!before) { if (after) return false; continue; }
+    if (!after) return false;
+    const { processState: beforeState, processIdentity: beforeIdentity, ...beforeIdentityFields } = before;
+    const { processState: afterState, processIdentity: afterIdentity, ...afterIdentityFields } = after;
+    if (JSON.stringify(beforeIdentityFields) !== JSON.stringify(afterIdentityFields) || beforeIdentity !== undefined && afterIdentity !== beforeIdentity || beforeIdentity === undefined && afterIdentity !== undefined && afterState === beforeState || afterState !== beforeState && !(beforeState === "live" || beforeState === "launching") || afterState !== beforeState && afterState !== "failed" && afterState !== "exited") return false;
+  }
+  const previousAllocationRoles = new Set(Object.keys(previousAllocations ?? {}));
+  if (Object.keys(nextAllocations ?? {}).some(role => !previousAllocationRoles.has(role))) return false;
+  for (const role of previousAllocationRoles) {
+    const before = previousAllocations?.[role as Role];
+    const after = nextAllocations?.[role as Role];
+    if (!before) { if (after) return false; continue; }
+    if (!after) continue;
+    const { state: _beforeState, ...beforeFields } = before;
+    const { state: afterState, ...afterFields } = after;
+    if (JSON.stringify(beforeFields) !== JSON.stringify(afterFields) || afterState !== "failed") return false;
+  }
+  return true;
 }
 
 function assertGitWorkspaceMutation(previous: GitWorkspaceRecord | undefined, next: GitWorkspaceRecord | undefined): void {

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { RunPreparationLease, RunTerminalFence, RuntimeResolution } from "../src/control/domain.js";
+import type { RunTeardownRecord } from "../src/sandbox/domain.js";
 import type { RunQuiescenceAuthority } from "../src/control/workflow-store.js";
 import { PiAgentDirectoryMaterializer as PiAgentDirectoryMaterializerImplementation, type PreparationCaptureBarrier, type PreparationFenceBarrier, type PiAgentDirectoryMaterializerOptions, type RetentionAuthCleanupBarrier, type RetentionPublicationBarrier } from "../src/pi/pi-agent-directory.js";
 import { FileLifecycleAuthority } from "./support/file-lifecycle-authority.js";
@@ -40,13 +41,19 @@ function lifecycleAuthority(
   onTeardownAssertion?: (runId: string) => void | Promise<void>,
 ): RunQuiescenceAuthority {
   const fences = new Map<string, RunTerminalFence>();
+  const teardowns = new Map<string, RunTeardownRecord>();
   const preparationLeases = new Map<string, RunPreparationLease[]>();
   return {
     async assertRunStartAllowed(runId) {
-      if (fences.has(runId)) throw new Error("run has a permanent terminal fence");
+      if (fences.has(runId) || teardowns.has(runId)) throw new Error("run has a permanent terminal fence");
+    },
+    async beginRunTeardown(runId, owner, reason = "retention", now = Date.now()) {
+      const existing = teardowns.get(runId); if (existing) return existing;
+      const teardown: RunTeardownRecord = { runId, owner, generation: 1, state: "draining", reason, requestedAt: new Date(now).toISOString() };
+      teardowns.set(runId, teardown); return teardown;
     },
     async acquireRunPreparationLease(runId, owner, now = Date.now()) {
-      if (fences.has(runId)) throw new Error("run has a permanent terminal fence");
+      if (fences.has(runId) || teardowns.has(runId)) throw new Error("run has a permanent terminal fence");
       const leases = preparationLeases.get(runId) ?? [];
       const lease: RunPreparationLease = { runId, owner, fencingToken: leases.length + 1, acquiredAt: new Date(now).toISOString(), state: "held" };
       preparationLeases.set(runId, [...leases, lease]);
@@ -63,6 +70,7 @@ function lifecycleAuthority(
       if (!quiescent()) throw new Error("role processes/controllers are not quiescent");
       const fence: RunTerminalFence = { runId, owner, fencingToken: 1, acquiredAt: new Date(now).toISOString(), state: "held" };
       fences.set(runId, fence);
+      teardowns.set(runId, { ...(teardowns.get(runId) ?? { runId, owner, generation: 1, reason: "terminal" as const, requestedAt: new Date(now).toISOString() }), state: "fenced" as const, fence });
       await afterAcquire?.();
       return fence;
     },
@@ -77,6 +85,7 @@ function lifecycleAuthority(
       const existing = fences.get(runId);
       if (!existing || existing.owner !== fence.owner || existing.fencingToken !== fence.fencingToken) throw new Error("terminal fence ownership changed");
       if ((preparationLeases.get(runId) ?? []).length > 0) throw new Error("preparation lease remains");
+      teardowns.set(runId, { ...(teardowns.get(runId) ?? { runId, owner: fence.owner, generation: 1, reason: "terminal" as const, requestedAt: fence.acquiredAt }), state: "completed" as const, fence: { ...fence, state: "removed" } });
     },
   };
 }

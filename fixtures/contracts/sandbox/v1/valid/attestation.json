@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "kind": "squire-sandbox-attestation",
+  "runId": "run_example01",
+  "sandboxName": "squire-v1-4ffmztx2tjhdqh5qcfk6n2no2c",
+  "specFingerprint": "2981bb8da3ea2e2a3e0a64ce5be24109f4ab07b0eee37087a13b478d3329485c",
+  "releaseId": "fixture-blocked",
+  "templateDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "observed": {
+    "sandboxId": "sandbox-id-fixture",
+    "sandboxName": "squire-v1-4ffmztx2tjhdqh5qcfk6n2no2c",
+    "vmId": "vm-id-fixture",
+    "templateDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bridgeName": "squire-bridge-v1-ovlrhna7ywf75jisvz3xzrt3di",
+    "bridgeIdentity": {
+      "device": "dev-fixture",
+      "inode": "inode-fixture",
+      "mode": 448,
+      "linkCount": 2,
+      "quotaBytes": 65536
+    }
+  },
+  "bootId": "boot-fixture",
+  "resources": {
+    "requested": {
+      "cpus": 2,
+      "memoryMiB": 512,
+      "disk": {
+        "enforcement": "quota-composed",
+        "ticketQuotaBytes": 1048576,
+        "bridgeQuotaBytes": 65536,
+        "writableTmpfsBytes": 65536,
+        "proof": {
+          "path": "evidence/sandbox/disk-proof.json",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "schemaId": "urn:squire:sandbox:v1:disk-proof"
+        }
+      }
+    },
+    "cpuOnline": 2,
+    "memoryMaxBytes": 536870912,
+    "disk": {
+      "enforcement": "quota-composed",
+      "statfsBytes": 1000000,
+      "quotaBytes": 1179648,
+      "enospcObserved": true,
+      "proofDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "principals": {
+    "controllerUid": 1000,
+    "controllerGid": 1000,
+    "agentUid": 1001,
+    "agentGid": 1001,
+    "distinct": true,
+    "sudoAbsent": true,
+    "rootfulDockerSocketAbsent": true,
+    "supervisorSocketProtected": true
+  },
+  "mounts": {
+    "namespace": "mnt:[123]",
+    "ticketDevice": "dev-ticket",
+    "ticketInode": "inode-ticket",
+    "mountInfoDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "forbiddenMountsAbsent": true,
+    "nestedMountsAbsent": true
+  },
+  "sockets": {
+    "rootlessDocker": "/ticket/docker/run/docker.sock",
+    "controllerSocketsAbsent": true,
+    "hostSocketsAbsent": true
+  },
+  "network": {
+    "profileDigest": "eaf2d7d4d6f5159b028304905892bb7c0ac15b8e35219cb6dd3e2d9a140d52a3",
+    "allowedHttpsCorrelationDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "deniedProbeDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "hostObservation": {
+      "path": "evidence/sandbox/network.json",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "schemaId": "urn:squire:sandbox:v1:host-evidence"
+    }
+  },
+  "credentials": {
+    "effectiveEnvironmentDigest": "2222222222222222222222222222222222222222222222222222222222222222",
+    "forbiddenNamesAbsent": true,
+    "canaryHmacDigest": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "canaries": {
+    "principalDigest": "4444444444444444444444444444444444444444444444444444444444444444",
+    "mountDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+    "dockerDigest": "6666666666666666666666666666666666666666666666666666666666666666",
+    "persistenceDigest": "7777777777777777777777777777777777777777777777777777777777777777",
+    "isolationDigest": "8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "creationGeneration": 3,
+  "attestedAt": "2026-09-01T12:00:00.000Z",
+  "fingerprint": "955876644697f2da927bd07789203c81b5647c90f0a34beb688fb82643d8a2c6"
+}

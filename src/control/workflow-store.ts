@@ -1,4 +1,5 @@
 import type { Lease, LeaseGuard, ProcessAllocationRecovery, ProcessAllocationRetention, Role, RunPreparationLease, RunPrecondition, RunSnapshot, RunTerminalFence, RuntimeResolution, SessionRegistration } from "./domain.js";
+import type { RunTeardownRecord } from "../sandbox/domain.js";
 
 export class StoreConflictError extends Error {
   constructor(message: string) { super(message); this.name = "StoreConflictError"; }
@@ -16,6 +17,14 @@ export interface RunQuiescenceAuthority {
   acquireRunPreparationLease(runId: string, owner: string, now?: number): Promise<RunPreparationLease>;
   /** Release only the exact preparation lease that this operation acquired. */
   releaseRunPreparationLease(runId: string, lease: RunPreparationLease, now?: number): Promise<void>;
+  /** Permanently drain the run before any component attempts terminal cleanup. */
+  beginRunTeardown(runId: string, owner: string, reason?: RunTeardownRecord["reason"], now?: number): Promise<RunTeardownRecord>;
+  /** Acquire a short-lived aggregate cleanup lease after the permanent drain. This is a lease, not a second lifecycle fence. */
+  acquireRunTeardownLease?(runId: string, owner: string, now?: number, ttlMs?: number): Promise<Lease | undefined>;
+  renewRunTeardownLease?(runId: string, owner: string, fencingToken: number, now?: number, ttlMs?: number): Promise<Lease | undefined>;
+  releaseRunTeardownLease?(runId: string, owner: string, fencingToken: number): Promise<void>;
+  /** Record a durable cleanup failure while preserving the drain/fence for a later exact retry. */
+  blockRunTeardown?(runId: string, owner: string, error: { readonly code: string; readonly message: string }, now?: number): Promise<RunTeardownRecord>;
   /** Acquire or resume the permanent terminal fence after durable quiescence. */
   acquireRunTerminalFence(runId: string, owner: string, now?: number): Promise<RunTerminalFence>;
   /**
@@ -52,6 +61,8 @@ export interface WorkflowStore extends RunQuiescenceAuthority {
   retainProcessAllocation(runId: string, precondition: RunPrecondition, retention: ProcessAllocationRetention): Promise<RunSnapshot>;
   /** Idempotent exact-owner/token compensation; valid only after any returned process is observed exited. */
   recoverProcessAllocation(runId: string, precondition: RunPrecondition, recovery: ProcessAllocationRecovery): Promise<RunSnapshot>;
+  /** Controlled CAS surface for component disposal after the permanent fence is held. */
+  compareAndSetTeardown(runId: string, precondition: RunPrecondition, fence: RunTerminalFence, mutate: (current: RunSnapshot) => RunSnapshot): Promise<RunSnapshot>;
   acquireLease(runId: string, key: string, owner: string, now: number, ttlMs: number): Promise<Lease | undefined>;
   renewLease(runId: string, key: string, owner: string, fencingToken: number, now: number, ttlMs: number): Promise<Lease | undefined>;
   releaseLease(runId: string, key: string, owner: string, fencingToken: number): Promise<void>;

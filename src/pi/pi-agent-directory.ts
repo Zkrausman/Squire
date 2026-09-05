@@ -132,6 +132,8 @@ export interface PiAgentDirectoryMaterializerPort {
   verify?(request: PiAgentDirectoryRequest, materialized: MaterializedPiAgentDirectory): Promise<void>;
   /** Destructively remove retained captures only after trusted quiescence. */
   teardown?(runId: string, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult>;
+  /** Component-only disposal under the coordinator's already-held fence. */
+  disposeUnderTerminalFence?(runId: string, fence: RunTerminalFence, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult>;
 }
 
 /** Exact capability evidence returned by the trusted runtime/model registry. */
@@ -564,10 +566,24 @@ export class PiAgentDirectoryMaterializer {
     if (ACTIVE_PREPARATION_RUNS.has(activeKey)) throw new Error("Pi agent-directory teardown found a live preparation controller");
     const authority = this.#options.runLifecycleAuthority;
     if (!authority) throw new Error("durable workflow quiescence authority is required for Pi agent-directory teardown");
+    const fence = await authority.acquireRunTerminalFence(runId, `pi-teardown-${randomUUID()}`, Date.now());
+    return this.disposeUnderTerminalFence(runId, fence, signal);
+  }
+
+  /** Dispose only this component under a fence already acquired by the global
+   * teardown coordinator. This method never completes the workflow fence. */
+  async disposeUnderTerminalFence(runId: string, fence: RunTerminalFence, signal?: AbortSignal): Promise<PiAgentDirectoryTeardownResult> {
+    assertRunId(runId);
+    throwIfAborted(signal);
+    if (this.#inFlight.has(runId)) throw new Error("Pi agent-directory teardown cannot run during materialization");
+    const activeKey = path.resolve(this.#options.runtimeRoot ?? DEFAULT_RUNTIME_ROOT, runId);
+    if (ACTIVE_PREPARATION_RUNS.has(activeKey)) throw new Error("Pi agent-directory teardown found a live preparation controller");
+    const authority = this.#options.runLifecycleAuthority;
+    if (!authority) throw new Error("durable workflow quiescence authority is required for Pi agent-directory teardown");
+    await authority.assertRunTeardownQuiescent(runId, fence, Date.now());
     const runtimeRoot = absoluteDirectory(this.#options.runtimeRoot ?? DEFAULT_RUNTIME_ROOT, "runtime root");
     const runRoot = path.resolve(runtimeRoot, runId);
     await rejectSymlinkedAncestors(runtimeRoot, "runtime root");
-    const fence = await authority.acquireRunTerminalFence(runId, `pi-teardown-${randomUUID()}`, Date.now());
     const assertTrustedTeardown: TeardownAuthorityGuard = () => authority.assertRunTeardownQuiescent(runId, fence, Date.now());
     // Never release this fence. A failed teardown remains retryable only by a
     // trusted controller and continues to reject every new role/controller.
@@ -582,7 +598,6 @@ export class PiAgentDirectoryMaterializer {
       if (published.runId !== fence.runId || published.owner !== fence.owner || published.fencingToken !== fence.fencingToken) throw new PreparationLockRace("Pi agent-directory terminal fence ownership changed during retry");
       const capturesRemoved = await removeRetainedCapturesAfterQuiescence(runtimeRoot, runId, this.#retentionLimits, signal, assertTrustedTeardown);
       await removeTerminalSandboxDisposals(runtimeRoot, runRoot, published, signal, assertTrustedTeardown);
-      await authority.completeRunTeardown(runId, fence, Date.now());
       return { runId, capturesRemoved, fencesRemoved: 0 };
     }
     await ensureBaseRunLayout({
@@ -621,7 +636,6 @@ export class PiAgentDirectoryMaterializer {
     const capturesRemoved = await removeRetainedCapturesAfterQuiescence(runtimeRoot, runId, this.#retentionLimits, signal, assertTrustedTeardown);
     await assertNoLivePreparationState(runRoot);
     await removeRunSandboxAfterTerminalFence(runtimeRoot, runRoot, signal, assertTrustedTeardown);
-    await authority.completeRunTeardown(runId, fence, Date.now());
     return { runId, capturesRemoved, fencesRemoved };
   }
 
@@ -2280,6 +2294,30 @@ async function removeObservedAuthTemporaryAfterHandoff(
 }
 
 async function ensureRetentionAllocationRoot(
+  retainedRoot: string,
+  teardownAuthority?: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
+): Promise<void> {
+  let lastRace: unknown;
+  // A publisher may have created the authenticated key's construction file
+  // immediately before this directory scan.  The final key is already
+  // required by ensureRetentionLocation, so waiting for that exact handoff is
+  // safe; treating a short partial write as permanent corruption made
+  // independent controllers fail nondeterministically under process load.
+  for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
+    try {
+      await ensureRetentionAllocationRootOnce(retainedRoot, teardownAuthority, authCleanupBarrier);
+      return;
+    } catch (error) {
+      if (!isTransientLockRace(error)) throw error;
+      lastRace = error;
+      if (attempt + 1 < PREPARATION_LOCK_RACE_RETRIES) await waitForDelay(PREPARATION_LOCK_RACE_DELAY_MS);
+    }
+  }
+  throw lastRace instanceof Error ? lastRace : new PreparationLockRace("Pi agent-directory retained allocation root publication raced");
+}
+
+async function ensureRetentionAllocationRootOnce(
   retainedRoot: string,
   teardownAuthority?: TeardownAuthorityGuard,
   authCleanupBarrier?: RetentionAuthCleanupBarrier,

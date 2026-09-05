@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:sandbox:v1:sandbox-spec",
+  "title": "Squire restricted sandbox specification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "runId", "ticketIdentifier", "sandboxName", "template", "resources", "network", "bridge", "retention", "creationNonce", "fingerprint"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "squire-sandbox-spec" },
+    "runId": { "type": "string", "pattern": "^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "maxLength": 136 },
+    "ticketIdentifier": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[1-9][0-9]*$", "maxLength": 200 },
+    "sandboxName": { "type": "string", "pattern": "^squire-v1-[a-z2-7]{26}$" },
+    "template": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "digest", "reference"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9.-]+(/[a-z0-9._-]+)?$", "maxLength": 300 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "reference": { "type": "string", "pattern": "^([a-z0-9.-]+/)?[a-z0-9._-]+/[a-z0-9._-]+@sha256:[0-9a-f]{64}$", "maxLength": 1024 }
+      }
+    },
+    "resources": { "$ref": "#/$defs/resources" },
+    "network": { "$ref": "#/$defs/network" },
+    "bridge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "logicalPath", "quotaBytes", "identityReference"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^squire-bridge-v1-[a-z2-7]{26}$" },
+        "logicalPath": { "const": "/ticket/bridge" },
+        "quotaBytes": { "type": "integer", "minimum": 4096, "maximum": 107374182400 },
+        "identityReference": { "type": "string", "pattern": "^bridge-meta-[0-9a-f]{64}$" }
+      }
+    },
+    "retention": {
+      "type": "object", "additionalProperties": false,
+      "required": ["successUntil", "failureUntil", "artifactUntil"],
+      "properties": {
+        "successUntil": { "type": "string", "format": "date-time" },
+        "failureUntil": { "type": "string", "format": "date-time" },
+        "artifactUntil": { "type": "string", "format": "date-time" }
+      }
+    },
+    "creationNonce": { "type": "string", "format": "uuid" },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "schemaId"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^(?:artifacts|evidence|import)(?:/[A-Za-z0-9._-]+)+$", "maxLength": 1024 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "schemaId": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "disk": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "enforcement": { "enum": ["native", "quota-composed", "unsupported"] },
+        "ticketQuotaBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "bridgeQuotaBytes": { "type": "integer", "minimum": 4096, "maximum": 107374182400 },
+        "writableTmpfsBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "nativeLimitBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "proof": { "$ref": "#/$defs/reference" },
+        "unsupportedReason": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\u0000-\\u001f\\u007f]*$" }
+      },
+      "required": ["enforcement"],
+      "oneOf": [
+        { "properties": { "enforcement": { "const": "unsupported" }, "unsupportedReason": { "type": "string" } }, "required": ["enforcement", "unsupportedReason"] },
+        { "properties": { "enforcement": { "const": "native" }, "nativeLimitBytes": { "type": "integer" }, "proof": { "$ref": "#/$defs/reference" } }, "required": ["enforcement", "nativeLimitBytes", "proof"] },
+        { "properties": { "enforcement": { "const": "quota-composed" }, "ticketQuotaBytes": { "type": "integer" }, "bridgeQuotaBytes": { "type": "integer" }, "writableTmpfsBytes": { "type": "integer" }, "proof": { "$ref": "#/$defs/reference" } }, "required": ["enforcement", "ticketQuotaBytes", "bridgeQuotaBytes", "writableTmpfsBytes", "proof"] }
+      ]
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpus", "memoryMiB", "disk"],
+      "properties": {
+        "cpus": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "memoryMiB": { "type": "integer", "minimum": 128, "maximum": 1048576 },
+        "disk": { "$ref": "#/$defs/disk" }
+      }
+    },
+    "network": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "allowedHosts", "profileDigest"],
+      "properties": {
+        "mode": { "enum": ["allow-all", "allowlist", "deny-all"] },
+        "allowedHosts": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^\\u0000-\\u0020/]+$" } },
+        "profileDigest": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

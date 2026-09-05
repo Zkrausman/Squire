@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:sandbox:v1:sandbox-attestation",
+  "title": "Squire restricted sandbox attestation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "runId", "sandboxName", "specFingerprint", "releaseId", "templateDigest", "observed", "bootId", "resources", "principals", "mounts", "sockets", "network", "credentials", "canaries", "creationGeneration", "attestedAt", "fingerprint"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "squire-sandbox-attestation" },
+    "runId": { "type": "string", "pattern": "^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sandboxName": { "type": "string", "pattern": "^squire-v1-[a-z2-7]{26}$" },
+    "specFingerprint": { "$ref": "#/$defs/sha256" },
+    "releaseId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "templateDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "observed": { "$ref": "#/$defs/observed" },
+    "bootId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+    "resources": { "$ref": "#/$defs/resourceObservation" },
+    "principals": {
+      "type": "object", "additionalProperties": false,
+      "required": ["controllerUid", "controllerGid", "agentUid", "agentGid", "distinct", "sudoAbsent", "rootfulDockerSocketAbsent", "supervisorSocketProtected"],
+      "properties": {
+        "controllerUid": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "controllerGid": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "agentUid": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "agentGid": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "distinct": { "const": true },
+        "sudoAbsent": { "const": true },
+        "rootfulDockerSocketAbsent": { "const": true },
+        "supervisorSocketProtected": { "const": true }
+      }
+    },
+    "mounts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["namespace", "ticketDevice", "ticketInode", "mountInfoDigest", "forbiddenMountsAbsent", "nestedMountsAbsent"],
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+        "ticketDevice": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+        "ticketInode": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+        "mountInfoDigest": { "$ref": "#/$defs/sha256" },
+        "forbiddenMountsAbsent": { "const": true },
+        "nestedMountsAbsent": { "const": true }
+      }
+    },
+    "sockets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rootlessDocker", "controllerSocketsAbsent", "hostSocketsAbsent"],
+      "properties": {
+        "rootlessDocker": { "const": "/ticket/docker/run/docker.sock" },
+        "controllerSocketsAbsent": { "const": true },
+        "hostSocketsAbsent": { "const": true }
+      }
+    },
+    "network": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profileDigest", "allowedHttpsCorrelationDigest", "deniedProbeDigest", "hostObservation"],
+      "properties": {
+        "profileDigest": { "$ref": "#/$defs/sha256" },
+        "allowedHttpsCorrelationDigest": { "$ref": "#/$defs/sha256" },
+        "deniedProbeDigest": { "$ref": "#/$defs/sha256" },
+        "hostObservation": { "$ref": "#/$defs/reference" }
+      }
+    },
+    "credentials": {
+      "type": "object", "additionalProperties": false,
+      "required": ["effectiveEnvironmentDigest", "forbiddenNamesAbsent", "canaryHmacDigest"],
+      "properties": {
+        "effectiveEnvironmentDigest": { "$ref": "#/$defs/sha256" },
+        "forbiddenNamesAbsent": { "const": true },
+        "canaryHmacDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "canaries": {
+      "type": "object", "additionalProperties": false,
+      "required": ["principalDigest", "mountDigest", "dockerDigest", "persistenceDigest", "isolationDigest"],
+      "properties": {
+        "principalDigest": { "$ref": "#/$defs/sha256" },
+        "mountDigest": { "$ref": "#/$defs/sha256" },
+        "dockerDigest": { "$ref": "#/$defs/sha256" },
+        "persistenceDigest": { "$ref": "#/$defs/sha256" },
+        "isolationDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "creationGeneration": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "attestedAt": { "type": "string", "format": "date-time" },
+    "fingerprint": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "schemaId"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^(?:artifacts|evidence)(?:/[A-Za-z0-9._-]+)+$", "maxLength": 1024 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "schemaId": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "disk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enforcement", "statfsBytes", "enospcObserved", "proofDigest"],
+      "properties": {
+        "enforcement": { "enum": ["native", "quota-composed", "unsupported"] },
+        "statfsBytes": { "type": "integer", "minimum": 0, "maximum": 1099511627776 },
+        "quotaBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "enospcObserved": { "type": "boolean" },
+        "proofDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "resourceSpec": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpus", "memoryMiB", "disk"],
+      "properties": {
+        "cpus": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "memoryMiB": { "type": "integer", "minimum": 128, "maximum": 1048576 },
+        "disk": { "$ref": "#/$defs/diskBudget" }
+      }
+    },
+    "diskBudget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enforcement"],
+      "properties": {
+        "enforcement": { "enum": ["native", "quota-composed", "unsupported"] },
+        "ticketQuotaBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "bridgeQuotaBytes": { "type": "integer", "minimum": 4096, "maximum": 107374182400 },
+        "writableTmpfsBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "nativeLimitBytes": { "type": "integer", "minimum": 4096, "maximum": 1099511627776 },
+        "proof": { "$ref": "#/$defs/reference" },
+        "unsupportedReason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "observed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sandboxId", "sandboxName", "vmId", "templateDigest", "bridgeName", "bridgeIdentity"],
+      "properties": {
+        "sandboxId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+        "sandboxName": { "type": "string", "pattern": "^squire-v1-[a-z2-7]{26}$" },
+        "vmId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f\\r\\n]+$" },
+        "templateDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "bridgeName": { "type": "string", "pattern": "^squire-bridge-v1-[a-z2-7]{26}$" },
+        "bridgeIdentity": {
+          "type": "object", "additionalProperties": false,
+          "required": ["device", "inode", "mode", "linkCount", "quotaBytes"],
+          "properties": {
+            "device": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "inode": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "mode": { "type": "integer", "minimum": 0, "maximum": 511 },
+            "linkCount": { "type": "integer", "minimum": 2, "maximum": 1048576 },
+            "quotaBytes": { "type": "integer", "minimum": 4096, "maximum": 107374182400 }
+          }
+        }
+      }
+    },
+    "resourceObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requested", "cpuOnline", "memoryMaxBytes", "disk"],
+      "properties": {
+        "requested": { "$ref": "#/$defs/resourceSpec" },
+        "cpuOnline": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "memoryMaxBytes": { "type": "integer", "minimum": 0, "maximum": 1099511627776 },
+        "disk": { "$ref": "#/$defs/disk" }
+      }
+    }
+  }
+}
