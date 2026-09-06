@@ -147,8 +147,10 @@
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
   "sources/aidev-218-fresh-implementation-proof": [],
+  "sources/aidev-218-plan-path-scope-remediation": [],
   "sources/aidev-218-plan-phase-boundary": [
-    "sources/aidev-218-fresh-implementation-proof"
+    "sources/aidev-218-fresh-implementation-proof",
+    "sources/aidev-218-plan-path-scope-remediation"
   ],
   "sources/aidev-222-descriptor-bound-isolation-evidence": [
     "sources/aidev-218-plan-phase-boundary",
@@ -215,6 +217,7 @@
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation",
     "sources/aidev-218-fresh-implementation-proof",
+    "sources/aidev-218-plan-path-scope-remediation",
     "sources/aidev-218-plan-phase-boundary"
   ],
   "sources/post-settlement-lease-loss-compensation": [

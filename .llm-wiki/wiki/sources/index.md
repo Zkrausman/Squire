@@ -13,6 +13,7 @@
 - [AIDEV-216 Review Attempt 5 Findings](SRC-2026-09-02-001.md)
 - [AIDEV-216 Review Attempt 6 Findings](SRC-2026-09-02-002.md)
 - [AIDEV-218 Fresh Implementation Proof](aidev-218-fresh-implementation-proof.md)
+- [AIDEV-218 Plan Path Scope Remediation](aidev-218-plan-path-scope-remediation.md)
 - [AIDEV-218 Plan phase boundary](aidev-218-plan-phase-boundary.md)
 - [AIDEV-222 descriptor-bound isolation evidence](aidev-222-descriptor-bound-isolation-evidence.md)
 - [AIDEV-222 deterministic retention tests](aidev-222-deterministic-retention-tests.md)

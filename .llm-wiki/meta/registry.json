@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-06T19:19:30.442Z",
+  "last_updated": "2026-09-06T20:28:02.592Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -161,6 +161,15 @@
       "category": "architecture",
       "status": "insight",
       "slug": "aidev-218-fresh-implementation-proof",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
+    },
+    "sources/aidev-218-plan-path-scope-remediation": {
+      "type": "source",
+      "title": "AIDEV-218 Plan Path Scope Remediation",
+      "category": "security",
+      "status": "insight",
+      "slug": "aidev-218-plan-path-scope-remediation",
       "created": "2026-09-06",
       "updated": "2026-09-06"
     },
