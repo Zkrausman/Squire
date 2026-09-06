@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { hostPathBasename, isCanonicalHostPath, hostPathPlatform } from "./host-platform.js";
 import type { SandboxResourceSpec } from "./domain.js";
 import { assertCanonicalSandboxPath, assertDigestReference, assertDiskBudget, assertSandboxName, assertSha256, assertTemplateReference, canonicalJson, SHA256_PATTERN, BRIDGE_NAME_PATTERN } from "./identity.js";
 
@@ -71,14 +72,15 @@ export class SbxV039CommandBuilder {
   readonly #environment: Readonly<Record<string, string>>;
   constructor(options: SbxCommandBuilderOptions) {
     if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(key => !["cwd", "environment", "executable", "executableSha256", "maxOutputBytes", "timeoutMs"].includes(key))) throw new SbxCommandError("sbx command builder options are required and closed");
-    if (typeof options.executable !== "string" || !options.executable.startsWith("/") || pathClean(options.executable) === false || options.executable === "/") throw new SbxCommandError("sbx executable must be an absolute clean non-root path");
+    const hostPlatform = hostPathPlatform(typeof options.executable === "string" ? options.executable : "");
+    if (typeof options.executable !== "string" || !isCanonicalHostPath(options.executable, false, hostPlatform)) throw new SbxCommandError("sbx executable must be an absolute clean non-root path");
     assertSha256(options.executableSha256, "sbx executable digest");
-    if (typeof options.cwd !== "string" || !options.cwd.startsWith("/") || pathClean(options.cwd, true) === false) throw new SbxCommandError("sbx command cwd must be an absolute clean path");
+    if (typeof options.cwd !== "string" || !isCanonicalHostPath(options.cwd, true, hostPlatform)) throw new SbxCommandError("sbx command cwd must be an absolute clean path");
     const maxOutputBytes = options.maxOutputBytes ?? SBX_COMMAND_MAX_OUTPUT_BYTES;
     const timeoutMs = options.timeoutMs ?? SBX_COMMAND_TIMEOUT_MS;
     if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0 || maxOutputBytes > SBX_COMMAND_MAX_OUTPUT_BYTES || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new SbxCommandError("sbx command bounds are invalid");
     this.#options = Object.freeze({ ...options, maxOutputBytes, timeoutMs });
-    this.#environment = buildSbxEnvironment(options.environment);
+    this.#environment = buildSbxEnvironment(options.environment, hostPlatform === "win32" ? "win32" : process.platform);
   }
 
   get executable(): string { return this.#options.executable; }
@@ -99,7 +101,7 @@ export class SbxV039CommandBuilder {
     assertSandboxName(input.sandboxName);
     assertTemplateReference(input.templateReference);
     assertHostControllerPath(input.bridgeHostPath, "sandbox bridge host path");
-    if (!BRIDGE_NAME_PATTERN.test(path.basename(input.bridgeHostPath))) throw new SbxCommandError("sandbox bridge host path is not the deterministic bridge identity");
+    if (!BRIDGE_NAME_PATTERN.test(hostPathBasename(input.bridgeHostPath))) throw new SbxCommandError("sandbox bridge host path is not the deterministic bridge identity");
     assertCreateResources(input.resources);
     const argv = [
       "create",
@@ -264,10 +266,11 @@ export function assertSbxCommand(value: unknown): asserts value is SbxCommand {
   const executableSha256 = command["executableSha256"];
   const cwd = command["cwd"];
   const environmentValue = command["environment"];
-  if (typeof executable !== "string" || !executable.startsWith("/") || !pathClean(executable) || typeof executableSha256 !== "string") throw new SbxCommandError("sbx command executable identity is invalid");
+  const hostPlatform = hostPathPlatform(typeof executable === "string" ? executable : "");
+  if (typeof executable !== "string" || !isCanonicalHostPath(executable, false, hostPlatform) || typeof executableSha256 !== "string") throw new SbxCommandError("sbx command executable identity is invalid");
   assertSha256(executableSha256, "sbx executable digest");
-  if (typeof cwd !== "string" || !pathClean(cwd, true) || !isRecord(environmentValue)) throw new SbxCommandError("sbx command cwd or environment is invalid");
-  const environment = buildSbxEnvironment(environmentValue as Record<string, string | undefined>);
+  if (typeof cwd !== "string" || !isCanonicalHostPath(cwd, true, hostPlatform) || !isRecord(environmentValue)) throw new SbxCommandError("sbx command cwd or environment is invalid");
+  const environment = buildSbxEnvironment(environmentValue as Record<string, string | undefined>, hostPlatform === "win32" ? "win32" : process.platform);
   if (canonicalJson(environment) !== canonicalJson(environmentValue)) throw new SbxCommandError("sbx command environment is not the canonical allowlist");
   const argvValue = command["argv"];
   if (!Array.isArray(argvValue)) throw new SbxCommandError("sbx argv is not an array");
@@ -293,7 +296,7 @@ export function assertSbxCommand(value: unknown): asserts value is SbxCommand {
       else { if (!argv[1]!.startsWith(prefix)) throw new SbxCommandError("sbx export source identity is invalid"); assertSandboxExportPath(argv[1]!.slice(prefix.length)); assertHostStagingPath(argv[2]!); }
       break;
     }
-    case "create": if (argv.length !== 12 || argv[0] !== "create" || argv[1] !== "--name" || argv[3] !== "--template" || argv[5] !== "--cpus" || argv[7] !== "--memory" || argv[9] !== "--" || argv[10] !== "shell" || command["targetName"] !== argv[2]) throw new SbxCommandError("sbx create argv is not exact"); assertSandboxName(argv[2]!); assertTemplateReference(argv[4]!); if (!/^\d{1,3}$/u.test(argv[6]!) || String(Number(argv[6])) !== argv[6] || Number(argv[6]) < 1 || Number(argv[6]) > 256 || !/^\d{1,7}m$/u.test(argv[8]!) || String(Number.parseInt(argv[8]!, 10)) !== argv[8]!.slice(0, -1) || Number.parseInt(argv[8]!, 10) < 128 || Number.parseInt(argv[8]!, 10) > 1_048_576 || !pathClean(argv[11]!) || !BRIDGE_NAME_PATTERN.test(path.basename(argv[11]!))) throw new SbxCommandError("sbx create option identity is invalid"); break;
+    case "create": if (argv.length !== 12 || argv[0] !== "create" || argv[1] !== "--name" || argv[3] !== "--template" || argv[5] !== "--cpus" || argv[7] !== "--memory" || argv[9] !== "--" || argv[10] !== "shell" || command["targetName"] !== argv[2]) throw new SbxCommandError("sbx create argv is not exact"); assertSandboxName(argv[2]!); assertTemplateReference(argv[4]!); if (!/^\d{1,3}$/u.test(argv[6]!) || String(Number(argv[6])) !== argv[6] || Number(argv[6]) < 1 || Number(argv[6]) > 256 || !/^\d{1,7}m$/u.test(argv[8]!) || String(Number.parseInt(argv[8]!, 10)) !== argv[8]!.slice(0, -1) || Number.parseInt(argv[8]!, 10) < 128 || Number.parseInt(argv[8]!, 10) > 1_048_576 || !pathClean(argv[11]!) || !BRIDGE_NAME_PATTERN.test(hostPathBasename(argv[11]!))) throw new SbxCommandError("sbx create option identity is invalid"); break;
   }
   if (keys === copyTargetKeys || keys === copyBootTargetKeys) { const target = command["targetName"]; const expected = command["expectedIdentity"]; if (kind !== "cp-import" && kind !== "cp-export") throw new SbxCommandError("copy identity fields are only valid for cp commands"); if (typeof target !== "string") throw new SbxCommandError("sbx target identity is missing"); assertSandboxName(target); if (typeof expected !== "string") throw new SbxCommandError("sbx expected identity is missing"); assertIdentityText(expected); if (keys === copyBootTargetKeys) { if (typeof command["expectedBootId"] !== "string") throw new SbxCommandError("sbx expected boot identity is missing"); assertIdentityText(command["expectedBootId"]); } }
   else if (keys === targetKeys) { const target = command["targetName"]; const expected = command["expectedIdentity"]; if (!["start", "stop", "exec-worker", "remove"].includes(kind)) throw new SbxCommandError("target identity fields are invalid for this sbx command"); if (typeof target !== "string") throw new SbxCommandError("sbx target identity is missing"); assertSandboxName(target); if (typeof expected !== "string") throw new SbxCommandError("sbx expected identity is missing"); assertIdentityText(expected); }
@@ -321,7 +324,7 @@ function assertCreateResources(resources: SandboxResourceSpec): void {
 }
 
 function assertHostControllerPath(value: string, label: string): void {
-  if (!pathClean(value) || value === path.parse(value).root) throw new SbxCommandError(`${label} is not a canonical absolute path`);
+  if (!isCanonicalHostPath(value, false, hostPathPlatform(value))) throw new SbxCommandError(`${label} is not a canonical absolute path`);
 }
 
 function assertHostStagingPath(value: string): void {
@@ -352,7 +355,7 @@ function assertBoundedOutput(output: string): void {
   if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > SBX_COMMAND_MAX_OUTPUT_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(output)) throw new SbxCommandError("sbx output exceeds its bounded limit or contains control data");
 }
 function pathClean(value: unknown, allowRoot = false): value is string {
-  return typeof value === "string" && (value.length > 1 || allowRoot) && value.length <= 4_096 && path.posix.isAbsolute(value) && path.posix.normalize(value) === value && (!value.endsWith("/") || allowRoot && value === "/") && !value.includes("//") && !/[\u0000-\u001f\u007f\\\r\n]/u.test(value) && !value.split("/").some(part => part === "." || part === "..");
+  return isCanonicalHostPath(value, allowRoot, typeof value === "string" ? hostPathPlatform(value) : process.platform);
 }
 
 function assertObservedSandboxValue(value: SbxObservedSandbox): void {

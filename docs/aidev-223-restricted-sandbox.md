@@ -24,7 +24,7 @@ If v0.39.0 cannot prove a disk quota tuple, it must be represented as `unsupport
 
 ## Host-only acceptance
 
-The role sandbox cannot prove host daemon, quota, network-log, sibling, process-topology, Herdr, or exact-removal facts. `scripts/acceptance/sandbox-v039.mjs` is the trusted host lifecycle worker: it authenticates the promoted release, observes the exact v0.39.0 binary, creates one deterministic sandbox and empty bridge, invokes a digest-pinned observer for each host-only probe, writes canonical evidence, and performs exact stop/remove/quarantine cleanup. It fails rather than treating unavailable probes, manual screenshots, free-space output, or guest output as proof. `scripts/acceptance/sandbox-host-observer.mjs` is only a strict adapter for packets produced by an independent host probe; request, result, and evidence packets repeat the physical sandbox/VM/boot/template identity, and a missing or unauthenticated packet fails closed.
+The trusted executable worker is `scripts/acceptance/sandbox-host-worker.mjs` (with `sandbox-v039.mjs` as a compatibility entrypoint). It authenticates the promoted release, observes the exact v0.39.0 binary, creates one deterministic sandbox and empty bridge, invokes all 13 host probes itself, writes request-bound raw packets, publishes only authenticated host-only pass evidence, and performs exact stop/remove/quarantine cleanup. It does not accept `--observer` or pre-manufactured observation packets. Missing host APIs, guest-only claims, free-space observations, manual screenshots, and unverified output remain failures. Windows uses local-volume canonical paths, ACL/reparse-point checks, and explicit PowerShell/Node argv; it does not claim POSIX modes, ownership, `/proc`, or inode guarantees.
 
 The operator supplies the base and OCI identities once per promotion, never a mutable tag. The base must already contain the pinned `dockerd-rootless.sh`, `rootlesskit`, `newuidmap`, `newgidmap`, `dockerd`, `getcap`, Node, and systemd inputs; the Dockerfile fails closed if any is absent or substituted:
 
@@ -36,10 +36,25 @@ node scripts/build-sandbox-template.mjs --base-image registry.example/project/ba
 node scripts/promote-sandbox-release.mjs --template-build /absolute/template-build.json --template-identity /absolute/template-identity.json --template-reference registry.example/project/squire-template@sha256:<64> --sbx-path /absolute/sbx --platform linux --architecture amd64 --release-id release-v039-linux-amd64 --network-policy /absolute/network-policy.json --resources /absolute/resources.json --bridge-quota-bytes 104857600 --request /absolute/host-request.json --conformance-result /absolute/host-result.json --repository-root /ticket/workspace --build-reference artifacts/build/provenance.json --sbom-reference artifacts/build/sbom.json --key-id host-release-key --hmac-key-file /absolute/host-key --output /ticket/workspace/sandbox/releases/release-v039-linux-amd64.json
 ```
 
-Run acceptance from a disposable trusted host worker with a private empty `--state-root`, an external observer script plus its exact SHA-256, a private network-policy input, a private `--observer-input-root`, and an evidence directory beneath the repository. The observer must execute the host-only probes (or validate packets emitted by that trusted host orchestrator) for every `HOST_PROBE_NAMES`; absent or mismatched request-bound packets fail closed.
+Run the worker on a disposable trusted Windows host with a private empty state root, a private network-policy input, host-held signing material, and an evidence directory beneath the repository. The exact PowerShell/Node sequence is:
 
-```text
-node scripts/acceptance/sandbox-v039.mjs --release /ticket/workspace/sandbox/releases/release-v039-linux-amd64.json --output /ticket/workspace/artifacts/acceptance/host-result.json --request /ticket/workspace/artifacts/acceptance/host-request.json --run-id run_<ticket-specific-id> --sandbox-name squire-v1-<26-base32> --ticket-id AIDEV-223 --state-root /disposable/empty/state --repository-root /ticket/workspace --evidence-root /ticket/workspace/evidence/acceptance-v039 --network-policy /disposable/network-policy.json --observer /absolute/trusted-observer.mjs --observer-sha256 <64> --observer-input-root /disposable/observer-input --hmac-key-file /absolute/host-key
+```powershell
+$env:Path = "$env:SystemRoot\System32"
+node scripts/acceptance/sandbox-host-worker.mjs `
+  --release C:\squire\workspace\sandbox\releases\release-v039-windows-amd64.json `
+  --output C:\squire\workspace\artifacts\acceptance\host-result.json `
+  --request C:\squire\workspace\artifacts\acceptance\host-request.json `
+  --run-id run_aidev223win01 `
+  --sandbox-name squire-v1-<derived-26-base32> `
+  --ticket-id AIDEV-223 `
+  --state-root C:\squire\disposable\aidev223win01 `
+  --repository-root C:\squire\workspace `
+  --evidence-root C:\squire\workspace\evidence\acceptance-v039 `
+  --network-policy C:\squire\disposable\network-policy.json `
+  --docker-path 'C:\Program Files\Docker\Docker\resources\bin\docker.exe' `
+  --hmac-key-file C:\squire\keys\host-release.key
 ```
 
-`npm run typecheck`, `npm run validate:all`, and `npm test` are repository checks only. Host acceptance is not satisfied by a manually bootstrapped sandbox or by an unavailable observer; absent authenticated evidence leaves the release blocked.
+The signed release must bind `C:\Users\zkrau\AppData\Local\DockerSandboxes\bin\sbx.exe` and its SHA-256. The worker runs `sbx`, Docker, and Herdr only as absolute argv-only executables with `MSYS_NO_PATHCONV=1` and `MSYS2_ARG_CONV_EXCL=*`; it never fabricates external host probes.
+
+`npm run typecheck`, `npm run validate:all`, and `npm test` are repository checks only. Host acceptance is not satisfied by a manually bootstrapped sandbox or by an unavailable worker capability; absent authenticated evidence leaves the release blocked.

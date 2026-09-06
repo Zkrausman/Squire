@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-06T04:36:17.355Z",
+  "last_updated": "2026-09-06T05:58:52.211Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -384,6 +384,24 @@
       "relevance": "high",
       "observed_at": "2026-09-06T04:36:11.575Z",
       "source_context": "Implement AIDEV-223 restricted sandbox",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
+    },
+    "sources/obs-2026-09-06-aidev-223-windows-worker-wip-checkpoint-committed": {
+      "type": "source",
+      "title": "Observation: AIDEV-223 Windows worker WIP checkpoint committed",
+      "tags": [
+        "aidev-223",
+        "windows",
+        "trusted-host",
+        "checkpoint",
+        "incomplete"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-06-aidev-223-windows-worker-wip-checkpoint-committed",
+      "relevance": "high",
+      "observed_at": "2026-09-06T05:58:52.195Z",
+      "source_context": "Overnight pause checkpoint",
       "created": "2026-09-06",
       "updated": "2026-09-06"
     },

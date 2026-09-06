@@ -38,6 +38,7 @@
 - [[sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated]] — Observation: AIDEV-222 review-2 blockers remediated *(created: 2026-09-04)*
 - [[sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed]] — Observation: AIDEV-222 Review 3 isolation blocker closed *(created: 2026-09-04)*
 - [[sources/obs-2026-09-06-aidev-223-materialization-publication-race-hardened]] — Observation: AIDEV-223 materialization publication race hardened *(created: 2026-09-06)*
+- [[sources/obs-2026-09-06-aidev-223-windows-worker-wip-checkpoint-committed]] — Observation: AIDEV-223 Windows worker WIP checkpoint committed *(created: 2026-09-06)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/pi-allocation-recovery-requires-exact-exit-identity]] — Exact Pi allocation recovery identity *(created: 2026-09-05)*
 - [[sources/post-settlement-lease-loss-compensation]] — Post-settlement lease-loss compensation *(created: 2026-09-01)*
@@ -61,4 +62,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-06T04:36:17.355Z* | *Total pages: 43*
+*Last updated: 2026-09-06T05:58:52.211Z* | *Total pages: 44*

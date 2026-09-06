@@ -215,6 +215,7 @@
     "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/obs-2026-09-06-aidev-223-materialization-publication-race-hardened": [],
+  "sources/obs-2026-09-06-aidev-223-windows-worker-wip-checkpoint-committed": [],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
   ],

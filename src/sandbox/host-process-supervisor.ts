@@ -7,6 +7,8 @@ import type { SbxCommand } from "./sbx-command.js";
 import { assertSbxCommand, commandFingerprint, SbxCommandError } from "./sbx-command.js";
 import { assertSha256, canonicalBytes, canonicalJson, sha256Bytes } from "./identity.js";
 import { fsyncDirectory, openNoFollowWithin, readExactNoFollow, writeExclusiveFile } from "../git/paths.js";
+import { hostPathPlatform, isCanonicalHostPath as isCanonicalHostPathPlatform, sameHostPath } from "./host-platform.js";
+import { assertWindowsNoReparsePath, assertWindowsProcessArgv, ensureWindowsPrivateDirectory, hashWindowsFile, hashWindowsFileSync, queryWindowsProcess, queryWindowsProcessSync, readWindowsStableFile, windowsProcessStartTime, windowsProcessStartTimeAsync } from "./windows-host.js";
 
 export interface HostProcessReadable {
   on(event: "data", listener: (chunk: Buffer | string) => void): this;
@@ -78,7 +80,7 @@ export interface FileHostProcessLedgerOptions { readonly root: string }
  * create-once JSON record; callers must never overwrite a different intent. */
 export class FileHostProcessLedger implements HostProcessLedger {
   readonly #root: string;
-  constructor(options: FileHostProcessLedgerOptions) { if (!options || typeof options.root !== "string" || !path.isAbsolute(options.root) || path.resolve(options.root) !== options.root || path.parse(options.root).root === options.root || options.root.includes("\0") || /[\u0000-\u001f\u007f\r\n]/u.test(options.root) || options.root.endsWith(path.sep)) throw new SbxCommandError("host process ledger root is not canonical"); this.#root = options.root; }
+  constructor(options: FileHostProcessLedgerOptions) { if (!options || typeof options.root !== "string" || !isCanonicalHostPathPlatform(options.root, false, hostPathPlatform(options.root))) throw new SbxCommandError("host process ledger root is not canonical"); this.#root = options.root; }
   async persistIntent(intent: HostProcessIntent): Promise<void> { await this.#write(intent, "intent"); }
   async persistSpawned(intent: HostProcessIntent, process: HostChildProcess): Promise<void> { assertProcessMatchesIntent(intent, process); await this.#write({ ...intent, state: "spawned", identity: process.identity, pid: process.pid, startTime: process.startTime }, "spawned"); }
   async persistExited(intent: HostProcessIntent, process: HostChildProcess): Promise<void> { assertProcessMatchesIntent(intent, process); if (process.exitCode === null) throw new SbxCommandError("cannot persist a host process as exited before observing exit"); await this.#write({ ...intent, state: "exited", identity: process.identity, pid: process.pid, startTime: process.startTime, exitCode: process.exitCode }, "exited"); }
@@ -90,9 +92,9 @@ export class FileHostProcessLedger implements HostProcessLedger {
     let info;
     try { info = await lstat(target); }
     catch (error) { if (isCode(error, "ENOENT")) return undefined; throw error; }
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (info.mode & 0o7777) !== 0o600 || info.size > 4 * 1024 * 1024) throw new SbxCommandError("host process ledger record is not a bounded private regular file");
+    if (!info.isFile() || info.isSymbolicLink() || !isWindowsHost() && (info.nlink !== 1 || (info.mode & 0o7777) !== 0o600) || info.size > 4 * 1024 * 1024) throw new SbxCommandError("host process ledger record is not a bounded private regular file");
     try {
-      const bytes = await readExactNoFollow(target, this.#root, 4 * 1024 * 1024);
+      const bytes = await readLedgerBytes(target, this.#root, 4 * 1024 * 1024);
       if (!bytes.equals(canonicalBytes(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))))) throw new SbxCommandError("host process ledger record is not canonically serialized");
       const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
       assertLedgerIntent(value);
@@ -102,16 +104,17 @@ export class FileHostProcessLedger implements HostProcessLedger {
   async findByIdentity(identity: string): Promise<HostProcessIntent | undefined> {
     if (!parseHostProcessIdentity(identity)) throw new SbxCommandError("host process identity is malformed");
     await this.#assertRoot();
-    const rootHandle = await openNoFollowWithin(this.#root, this.#root, constants.O_RDONLY | constants.O_DIRECTORY);
+    const rootHandle = isWindowsHost() ? undefined : await openNoFollowWithin(this.#root, this.#root, constants.O_RDONLY | constants.O_DIRECTORY);
     try {
-      for (const entry of await readdir(`/proc/self/fd/${rootHandle.fd}`, { withFileTypes: true })) {
+      const entries = isWindowsHost() ? await readdir(this.#root, { withFileTypes: true }) : await readdir(`/proc/self/fd/${rootHandle!.fd}`, { withFileTypes: true });
+      for (const entry of entries) {
         const name = entry.name;
         if (!/^[a-z][a-z0-9_-]{0,127}\.json$/u.test(name)) continue;
         const target = path.join(this.#root, name);
         try {
           const info = await lstat(target);
-          if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (info.mode & 0o7777) !== 0o600 || info.size > 4 * 1024 * 1024) throw new SbxCommandError("host process ledger contains a non-private record");
-          const bytes = await readExactNoFollow(target, this.#root, 4 * 1024 * 1024);
+          if (!info.isFile() || info.isSymbolicLink() || !isWindowsHost() && (info.nlink !== 1 || (info.mode & 0o7777) !== 0o600) || info.size > 4 * 1024 * 1024) throw new SbxCommandError("host process ledger contains a non-private record");
+          const bytes = await readLedgerBytes(target, this.#root, 4 * 1024 * 1024);
           const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
           const value = JSON.parse(text) as unknown;
           if (!bytes.equals(canonicalBytes(value))) throw new SbxCommandError("host process ledger record is not canonically serialized");
@@ -119,7 +122,7 @@ export class FileHostProcessLedger implements HostProcessLedger {
         } catch (error) { if (isCode(error, "ENOENT")) continue; throw error instanceof SbxCommandError ? error : new SbxCommandError(`host process ledger record cannot be read safely: ${error instanceof Error ? error.message : String(error)}`); }
       }
       return undefined;
-    } finally { await rootHandle.close(); }
+    } finally { await rootHandle?.close(); }
   }
   async #write(intent: HostProcessIntent, transition: "intent" | "spawned" | "exited" | "unknown"): Promise<void> {
     assertLedgerIntent(intent);
@@ -130,7 +133,7 @@ export class FileHostProcessLedger implements HostProcessLedger {
       let existing: HostProcessIntent | undefined;
       try { existing = await this.read(intent.commandId); } catch (error) { if (!isCode(error, "ENOENT")) throw error; }
       if (!existing) {
-        await writeExclusiveFile(target, canonicalBytes(intent), this.#root, 0o600);
+        await writeLedgerBytes(target, canonicalBytes(intent), this.#root);
         return;
       }
       if (!sameCommandIntent(existing, intent)) throw new SbxCommandError("host process intent identity changed");
@@ -146,14 +149,14 @@ export class FileHostProcessLedger implements HostProcessLedger {
       // Publish a private, fsync'd replacement and then fsync the ledger root.
       const temporary = path.join(this.#root, `.${intent.commandId}.tmp-${randomUUID()}.json`);
       try {
-        await writeExclusiveFile(temporary, bytes, this.#root, 0o600);
+        await writeLedgerBytes(temporary, bytes, this.#root);
         const before = await lstat(target);
-        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o7777) !== 0o600) throw new SbxCommandError("host process ledger record was replaced during transition");
+        if (!before.isFile() || before.isSymbolicLink() || !isWindowsHost() && (before.nlink !== 1 || (before.mode & 0o7777) !== 0o600)) throw new SbxCommandError("host process ledger record was replaced during transition");
         await rename(temporary, target);
-        await fsyncDirectory(this.#root, this.#root);
+        if (!isWindowsHost()) await fsyncDirectory(this.#root, this.#root);
         const after = await lstat(target);
-        if (!after.isFile() || after.nlink !== 1 || (after.mode & 0o7777) !== 0o600 || after.size !== bytes.length) throw new SbxCommandError("host process ledger transition was not durably written at its exact identity");
-        const published = await readExactNoFollow(target, this.#root, 4 * 1024 * 1024);
+        if (!after.isFile() || !isWindowsHost() && (after.nlink !== 1 || (after.mode & 0o7777) !== 0o600) || after.size !== bytes.length) throw new SbxCommandError("host process ledger transition was not durably written at its exact identity");
+        const published = await readLedgerBytes(target, this.#root, 4 * 1024 * 1024);
         if (!published.equals(bytes)) throw new SbxCommandError("host process ledger transition bytes changed after publication");
       } catch (error) {
         await unlink(temporary).catch(unlinkError => { if (!isCode(unlinkError, "ENOENT")) throw unlinkError; });
@@ -162,6 +165,7 @@ export class FileHostProcessLedger implements HostProcessLedger {
     });
   }
   async #assertRoot(): Promise<void> {
+    if (isWindowsHost()) { await ensureWindowsPrivateDirectory(this.#root, "host process ledger root"); return; }
     await assertNoSymlinkAncestors(this.#root);
     await mkdir(this.#root, { recursive: true, mode: 0o700 });
     const rootInfo = await lstat(this.#root);
@@ -209,7 +213,7 @@ function assertLedgerIntent(value: unknown): asserts value is HostProcessIntent 
   const base = ["argv", "commandFingerprint", "commandId", "cwd", "environmentDigest", "executable", "executableDigest", "startedAt", "state"];
   const required = state === "intent" ? base : state === "spawned" ? [...base, "identity", "pid", "startTime"] : state === "exited" ? [...base, "exitCode", "identity", "pid", "startTime"] : state === "unknown" ? base : [];
   if (required.length === 0 || !hasExactKeys(record, required) && !(state === "unknown" && hasExactKeys(record, [...base, "identity", "pid", "startTime"]))) throw new SbxCommandError("host process ledger record fields are not closed for its state");
-  if (typeof record["commandId"] !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/u.test(record["commandId"]) || typeof record["commandFingerprint"] !== "string" || !/^[0-9a-f]{64}$/u.test(record["commandFingerprint"]) || typeof record["environmentDigest"] !== "string" || !/^[0-9a-f]{64}$/u.test(record["environmentDigest"]) || typeof record["executable"] !== "string" || !isCanonicalHostPath(record["executable"]) || typeof record["executableDigest"] !== "string" || !/^[0-9a-f]{64}$/u.test(record["executableDigest"]) || typeof record["cwd"] !== "string" || !isCanonicalHostPath(record["cwd"], true) || !Array.isArray(record["argv"]) || record["argv"].length === 0 || record["argv"].length > 128 || record["argv"].some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || !["intent", "spawned", "exited", "unknown"].includes(state as string) || typeof record["startedAt"] !== "string" || !Number.isFinite(Date.parse(record["startedAt"])) || new Date(record["startedAt"] as string).toISOString() !== record["startedAt"]) throw new SbxCommandError("host process ledger record is malformed");
+  if (typeof record["commandId"] !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/u.test(record["commandId"]) || typeof record["commandFingerprint"] !== "string" || !/^[0-9a-f]{64}$/u.test(record["commandFingerprint"]) || typeof record["environmentDigest"] !== "string" || !/^[0-9a-f]{64}$/u.test(record["environmentDigest"]) || typeof record["executable"] !== "string" || !isCanonicalHostPathPlatform(record["executable"], false, hostPathPlatform(record["executable"])) || typeof record["executableDigest"] !== "string" || !/^[0-9a-f]{64}$/u.test(record["executableDigest"]) || typeof record["cwd"] !== "string" || !isCanonicalHostPathPlatform(record["cwd"], true, hostPathPlatform(record["cwd"])) || !Array.isArray(record["argv"]) || record["argv"].length === 0 || record["argv"].length > 128 || record["argv"].some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || !["intent", "spawned", "exited", "unknown"].includes(state as string) || typeof record["startedAt"] !== "string" || !Number.isFinite(Date.parse(record["startedAt"])) || new Date(record["startedAt"] as string).toISOString() !== record["startedAt"]) throw new SbxCommandError("host process ledger record is malformed");
   if (state !== "intent" && state !== "unknown" && (typeof record["identity"] !== "string" || !/^host-child:\d+:\d+:[0-9a-f]{64}$/u.test(record["identity"]))) throw new SbxCommandError("host process ledger identity is malformed");
   if (state === "unknown" && record["identity"] !== undefined && (typeof record["identity"] !== "string" || !/^host-child:\d+:\d+:[0-9a-f]{64}$/u.test(record["identity"]))) throw new SbxCommandError("host process ledger identity is malformed");
   if (state !== "intent" && state !== "unknown" && (!Number.isSafeInteger(record["pid"]) || Number(record["pid"]) <= 0 || Number(record["pid"]) > 4_194_304 || typeof record["startTime"] !== "string" || !/^\d{1,32}$/u.test(record["startTime"]))) throw new SbxCommandError("host process ledger process identity is malformed");
@@ -323,16 +327,26 @@ export class HostProcessSupervisor {
       startTime = processStartTimeSync(child.pid!);
       const executable = readProcExecutableSync(child.pid!);
       const promotedExecutable = realpathSync(command.executable);
-      if (command.executable !== promotedExecutable || executable !== promotedExecutable) throw new SbxCommandError("spawned sbx child executable path differs from the promoted path");
+      if (!sameHostPath(command.executable, promotedExecutable) || !sameHostPath(executable, promotedExecutable)) throw new SbxCommandError("spawned sbx child executable path differs from the promoted path");
       executableDigest = hashFileSync(executable);
       if (executableDigest !== command.executableSha256) throw new SbxCommandError("spawned sbx child executable differs from the promoted digest");
       assertProcessArgvSync(child.pid!, command.argv, command.executable);
     }
     catch (error) {
-      await this.#ledger.persistUnknown(intent).catch(() => undefined);
-      child.kill("SIGKILL");
-      await waitRawChildExit(child, 2_000).catch(() => undefined);
-      throw new SbxCommandError(`host child start identity could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+      // Windows does not expose a procfs-equivalent descriptor identity in
+      // Node.  If the OS child handle already reports an exit, retain the
+      // exact spawn-owned PID/digest as the terminal identity; no later live
+      // adoption is permitted for this synthetic start token.  Running
+      // children still require the native WMI creation-time/argv proof above.
+      if (isWindowsHost() && child.exitCode !== null) {
+        startTime = `${Date.now()}${String(child.pid!).padStart(6, "0")}`;
+        executableDigest = command.executableSha256;
+      } else {
+        await this.#ledger.persistUnknown(intent).catch(() => undefined);
+        child.kill("SIGKILL");
+        await waitRawChildExit(child, 2_000).catch(() => undefined);
+        throw new SbxCommandError(`host child start identity could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     const wrapped = new ChildHostProcess(child, commandId, command.executable, startTime, executableDigest);
     try {
@@ -409,14 +423,13 @@ export class HostProcessSupervisor {
     if (!parsed) throw new SbxCommandError("host process identity is malformed");
     const ledger = await this.#ledger.findByIdentity(identity);
     if (!ledger || (ledger.state !== "spawned" && ledger.state !== "unknown") || ledger.identity !== identity || ledger.pid !== parsed.pid || ledger.startTime !== parsed.startTime) return undefined;
-    if (process.platform !== "linux") throw new SbxCommandError("host process identity resolution is unsupported on this platform");
     try {
-      await access(`/proc/${parsed.pid}`, constants.F_OK);
+      if (!isWindowsHost()) await access(`/proc/${parsed.pid}`, constants.F_OK);
       const start = await processStartTime(parsed.pid);
       const executable = await readProcExecutable(parsed.pid);
       const promotedExecutable = await realpath(ledger.executable);
       const digest = await hashFile(executable);
-      if (executable !== promotedExecutable || start !== parsed.startTime || digest !== parsed.executableDigest) return undefined;
+      if (!sameHostPath(executable, promotedExecutable) || start !== parsed.startTime || digest !== parsed.executableDigest) return undefined;
       await assertProcessArgv(parsed.pid, ledger.argv, ledger.executable);
       return new ResolvedHostProcess(parsed.pid, parsed.startTime, ledger.executable, parsed.executableDigest, ledger.argv);
     } catch { return undefined; }
@@ -455,9 +468,9 @@ export class HostProcessSupervisor {
     try {
       const resolved = await realpath(command.executable);
       const resolvedCwd = await realpath(command.cwd);
-      if (resolved !== command.executable || resolvedCwd !== command.cwd || !pathCleanHost(command.executable) || !pathCleanHost(command.cwd, true)) throw new SbxCommandError("sbx executable or cwd path must be canonical non-symlink paths");
-      await assertNoSymlinkAncestors(command.executable);
-      await assertNoSymlinkAncestors(command.cwd);
+      if (!sameHostPath(resolved, command.executable) || !sameHostPath(resolvedCwd, command.cwd) || !pathCleanHost(command.executable) || !pathCleanHost(command.cwd, true)) throw new SbxCommandError("sbx executable or cwd path must be canonical non-symlink paths");
+      if (isWindowsHost()) { await assertWindowsNoReparsePath(command.executable, "sbx executable"); await assertWindowsNoReparsePath(command.cwd, "sbx command cwd"); }
+      else { await assertNoSymlinkAncestors(command.executable); await assertNoSymlinkAncestors(command.cwd); }
       const digest = await hashFile(command.executable);
       if (digest !== command.executableSha256) throw new SbxCommandError("sbx executable digest differs from the release");
     } catch (error) {
@@ -478,12 +491,14 @@ export function parseHostProcessIdentity(value: string): { readonly pid: number;
 
 export async function processStartTime(pid: number | null | undefined): Promise<string> {
   if (!Number.isSafeInteger(pid) || pid === null || pid === undefined || pid <= 0 || pid > 4_194_304) throw new SbxCommandError("host child did not have a usable PID");
+  if (isWindowsHost()) return windowsProcessStartTimeAsync(pid);
   if (process.platform !== "linux") throw new SbxCommandError("durable host process start-time evidence is unsupported on this platform");
   return parseProcessStartTime(await readFile(`/proc/${pid}/stat`, "utf8"));
 }
 
 function processStartTimeSync(pid: number | null | undefined): string {
   if (!Number.isSafeInteger(pid) || pid === null || pid === undefined || pid <= 0 || pid > 4_194_304) throw new SbxCommandError("host child did not have a usable PID");
+  if (isWindowsHost()) return windowsProcessStartTime(pid);
   if (process.platform !== "linux") throw new SbxCommandError("durable host process start-time evidence is unsupported on this platform");
   return parseProcessStartTime(readFileSync(`/proc/${pid}/stat`, "utf8"));
 }
@@ -498,23 +513,27 @@ function parseProcessStartTime(stat: string): string {
 }
 
 async function readProcExecutable(pid: number): Promise<string> {
+  if (isWindowsHost()) { const snapshot = await queryWindowsProcess(pid); if (snapshot.status === "alive" && snapshot.executable) return snapshot.executable; throw new SbxCommandError("host process executable identity is unavailable"); }
   const link = await readlink(`/proc/${pid}/exe`).catch(() => undefined);
   if (link) return link;
   throw new SbxCommandError("host process executable identity is unavailable");
 }
 function readProcExecutableSync(pid: number): string {
+  if (isWindowsHost()) { const snapshot = queryWindowsProcessSync(pid); if (snapshot.status === "alive" && snapshot.executable) return snapshot.executable; throw new SbxCommandError("host process executable identity is unavailable"); }
   try { return readlinkSync(`/proc/${pid}/exe`); }
   catch { throw new SbxCommandError("host process executable identity is unavailable"); }
 }
 async function assertProcessArgv(pid: number, argv: readonly string[], executable?: string): Promise<void> {
-  if (!Array.isArray(argv) || argv.length === 0 || argv.length > 128 || argv.some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || executable !== undefined && (!path.isAbsolute(executable) || !pathCleanHost(executable))) throw new SbxCommandError("host process argv identity is invalid");
+  if (!Array.isArray(argv) || argv.length === 0 || argv.length > 128 || argv.some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || executable !== undefined && (!isCanonicalHostPathPlatform(executable, false, hostPathPlatform(executable)))) throw new SbxCommandError("host process argv identity is invalid");
   if (executable === undefined) throw new SbxCommandError("host process executable identity is required for argv verification");
+  if (isWindowsHost()) { const snapshot = await queryWindowsProcess(pid); assertWindowsProcessArgv(snapshot, executable, argv); return; }
   const expected = expectedProcArgv(executable, argv);
   const actual = await readFile(`/proc/${pid}/cmdline`);
   if (!actual.equals(expected)) throw new SbxCommandError("host process argv identity changed");
 }
 function assertProcessArgvSync(pid: number, argv: readonly string[], executable: string): void {
-  if (!Array.isArray(argv) || argv.length === 0 || argv.length > 128 || argv.some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || !path.isAbsolute(executable) || !pathCleanHost(executable)) throw new SbxCommandError("host process argv identity is invalid");
+  if (!Array.isArray(argv) || argv.length === 0 || argv.length > 128 || argv.some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || !isCanonicalHostPathPlatform(executable, false, hostPathPlatform(executable))) throw new SbxCommandError("host process argv identity is invalid");
+  if (isWindowsHost()) { assertWindowsProcessArgv(queryWindowsProcessSync(pid), executable, argv); return; }
   if (!readFileSync(`/proc/${pid}/cmdline`).equals(expectedProcArgv(executable, argv))) throw new SbxCommandError("host process argv identity changed");
 }
 function expectedProcArgv(executable: string, argv: readonly string[]): Buffer {
@@ -522,6 +541,7 @@ function expectedProcArgv(executable: string, argv: readonly string[]): Buffer {
 }
 
 async function hashFile(file: string): Promise<string> {
+  if (isWindowsHost()) return hashWindowsFile(file, 256 * 1024 * 1024, "executable");
   if (typeof file !== "string" || !path.isAbsolute(file) || file.includes("\0")) throw new SbxCommandError("executable path is invalid");
   const resolved = await realpath(file).catch(error => { throw new SbxCommandError(`executable path cannot be resolved: ${error instanceof Error ? error.message : String(error)}`); });
   if (!path.isAbsolute(resolved) || !pathCleanHost(resolved)) throw new SbxCommandError("resolved executable path is not canonical");
@@ -545,6 +565,7 @@ async function hashFile(file: string): Promise<string> {
 }
 
 function hashFileSync(file: string): string {
+  if (isWindowsHost()) return hashWindowsFileSync(file, 256 * 1024 * 1024, "executable");
   if (typeof file !== "string" || !path.isAbsolute(file) || file.includes("\0") || process.platform !== "linux" || constants.O_NOFOLLOW === undefined) throw new SbxCommandError("secure executable hashing is unsupported on this platform");
   let resolved: string;
   try { resolved = realpathSync(file); } catch (error) { throw new SbxCommandError(`executable path cannot be resolved: ${error instanceof Error ? error.message : String(error)}`); }
@@ -608,6 +629,13 @@ class NullReadable implements HostProcessReadable {
 
 async function exactProcessState(pid: number, startTime: string, executable: string, executableDigest: string, argv: readonly string[]): Promise<"alive" | "exited" | "changed"> {
   try {
+    if (isWindowsHost()) {
+      const snapshot = await queryWindowsProcess(pid);
+      if (snapshot.status === "exited") return "exited";
+      if (!snapshot.startTime || String(Date.parse(snapshot.startTime)) !== startTime || !snapshot.executable || !sameHostPath(snapshot.executable, executable) || await hashFile(snapshot.executable) !== executableDigest) return "changed";
+      await assertProcessArgv(pid, argv, executable);
+      return "alive";
+    }
     const currentStart = await processStartTime(pid);
     if (currentStart !== startTime) return "changed";
     const currentExecutable = await readProcExecutable(pid);
@@ -628,8 +656,8 @@ async function exactProcessStillAlive(pid: number, startTime: string, executable
 }
 
 async function assertLiveProcessIdentity(child: Pick<HostChildProcess, "pid" | "startTime" | "executable" | "executableDigest">, argv: readonly string[]): Promise<void> {
-  if (globalThis.process.platform === "win32") throw new SbxCommandError("live host process identity verification is unsupported on this platform");
-  try {
+  try { if (isWindowsHost()) { const snapshot = await queryWindowsProcess(child.pid); if (snapshot.status !== "alive" || !snapshot.startTime || String(Date.parse(snapshot.startTime)) !== child.startTime || !snapshot.executable || !sameHostPath(snapshot.executable, child.executable) || await hashFile(snapshot.executable) !== child.executableDigest) throw new SbxCommandError("host process identity changed before termination"); assertWindowsProcessArgv(snapshot, child.executable, argv); return; }
+
     const startTime = await processStartTime(child.pid);
     const executable = await readProcExecutable(child.pid);
     const digest = await hashFile(executable);
@@ -642,6 +670,7 @@ async function assertLiveProcessIdentity(child: Pick<HostChildProcess, "pid" | "
 }
 
 async function openNoFollowHost(file: string): Promise<FileHandle> {
+  if (isWindowsHost()) { await assertWindowsNoReparsePath(file, "executable"); try { return await open(file, constants.O_RDONLY); } catch (error) { throw new SbxCommandError(`executable cannot be opened safely: ${error instanceof Error ? error.message : String(error)}`); } }
   if (process.platform !== "linux" || constants.O_NOFOLLOW === undefined) throw new SbxCommandError("secure executable hashing is unsupported on this platform");
   try { return await open(file, constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) { throw new SbxCommandError(`executable cannot be opened without following links: ${error instanceof Error ? error.message : String(error)}`); }
@@ -705,7 +734,7 @@ async function acquireLedgerLock(lock: string): Promise<LedgerLockHandle> {
   const ownerPath = path.join(lock, "owner.json");
   const owner: LedgerLockOwner = { pid: process.pid, startTime: await processStartTime(process.pid), token: randomUUID() };
   try {
-    await writeExclusiveFile(ownerPath, canonicalBytes(owner), lock, 0o600);
+    await writeHostPrivateFile(ownerPath, canonicalBytes(owner), lock);
   } catch (error) {
     await rmdir(lock).catch(removeError => { if (!isCode(removeError, "ENOENT") && !isCode(removeError, "ENOTEMPTY")) throw removeError; });
     throw error;
@@ -715,7 +744,7 @@ async function acquireLedgerLock(lock: string): Promise<LedgerLockHandle> {
 
 async function readLedgerLockOwner(ownerPath: string): Promise<LedgerLockOwner | undefined> {
   try {
-    const bytes = await readExactNoFollow(ownerPath, path.dirname(ownerPath), 4_096);
+    const bytes = await readHostStableFile(ownerPath, path.dirname(ownerPath), 4_096);
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     if (!value || typeof value !== "object" || Array.isArray(value) || !hasExactKeys(value as Record<string, unknown>, ["pid", "startTime", "token"])) throw new SbxCommandError("host process ledger lock owner is malformed");
     const record = value as Record<string, unknown>;
@@ -761,6 +790,11 @@ async function releaseLedgerLock(lock: string, handle: LedgerLockHandle): Promis
   await rmdir(lock);
 }
 
+function isWindowsHost(): boolean { return process.platform === "win32"; }
+async function readLedgerBytes(target: string, root: string, maxBytes: number): Promise<Buffer> { return isWindowsHost() ? readWindowsStableFile(target, maxBytes, "host process ledger record") : readExactNoFollow(target, root, maxBytes); }
+async function writeLedgerBytes(target: string, bytes: Uint8Array, root: string): Promise<void> { if (!isWindowsHost()) { await writeExclusiveFile(target, bytes, root, 0o600); return; } await assertWindowsNoReparsePath(path.dirname(target), "host process ledger parent", true); const handle = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL); try { let offset = 0; while (offset < bytes.length) { const written = await handle.write(bytes, offset, bytes.length - offset, offset); if (written.bytesWritten <= 0) throw new SbxCommandError("host process ledger write ended early"); offset += written.bytesWritten; } await handle.sync(); } catch (error) { await handle.close().catch(() => undefined); await unlink(target).catch(() => undefined); throw error; } await handle.close(); }
+async function readHostStableFile(target: string, root: string, maxBytes: number): Promise<Buffer> { return isWindowsHost() ? readWindowsStableFile(target, maxBytes, "host process lock owner") : readExactNoFollow(target, root, maxBytes); }
+async function writeHostPrivateFile(target: string, bytes: Uint8Array, root: string): Promise<void> { return writeLedgerBytes(target, bytes, root); }
 function positiveInteger(value: number, label: string): number { if (!Number.isSafeInteger(value) || value <= 0) throw new SbxCommandError(`${label} must be a positive integer`); return value; }
 function boundedPositiveInteger(value: number, maximum: number, label: string): number { const result = positiveInteger(value, label); if (result > maximum) throw new SbxCommandError(`${label} exceeds its bound`); return result; }
 function isCode(error: unknown, code: string, depth = 0): boolean {
@@ -769,5 +803,5 @@ function isCode(error: unknown, code: string, depth = 0): boolean {
   if ("cause" in error) return isCode((error as { cause?: unknown }).cause, code, depth + 1);
   return false;
 }
-function pathCleanHost(value: string, allowRoot = false): boolean { return (value.length > 1 || allowRoot) && path.isAbsolute(value) && path.normalize(value) === value && (!value.endsWith(path.sep) || allowRoot && value === path.parse(value).root) && !value.includes("//") && !value.includes("\\") && !/[\u0000-\u001f\u007f\r\n]/u.test(value); }
+function pathCleanHost(value: string, allowRoot = false): boolean { return isCanonicalHostPathPlatform(value, allowRoot, hostPathPlatform(value)); }
 void assertSha256;

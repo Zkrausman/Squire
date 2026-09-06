@@ -3,6 +3,7 @@ import { createHash, createPublicKey, verify as verifySignature } from "node:cry
 import { lstat, open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
+import { assertNoReparsePath, canonicalHostPath, privateRegular, readStableFile } from "./acceptance/trusted-host-runtime.mjs";
 import { assertReleaseSemantics, REQUIRED_LLM_WIKI_RUNTIME_VERSION, REQUIRED_PI_RUNTIME_VERSION } from "../dist/src/sandbox/contracts.js";
 import { canonicalBytes } from "../dist/src/sandbox/identity.js";
 import { releaseSignaturePayload, verifyHmacSignature } from "../dist/src/sandbox/release-resolver.js";
@@ -29,37 +30,11 @@ function parseArgs(argv) {
   return result;
 }
 
-function canonicalFilePath(value, label) {
-  if (typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value || value === path.parse(value).root || value.endsWith(path.sep) || value.includes("\\") || value.includes("//") || /[\u0000-\u001f\u007f\r\n]/u.test(value)) fail(`${label} is not a canonical absolute path`);
-  return value;
-}
+function canonicalFilePath(value, label) { return canonicalHostPath(value, label); }
 
-async function assertNoSymlinkPath(file, label) {
-  canonicalFilePath(file, label);
-  const resolved = await realpath(file).catch(() => undefined);
-  if (resolved !== file) fail(`${label} is a symlink or has a symlink ancestor`);
-  let current = path.parse(file).root;
-  for (const part of file.slice(current.length).split(path.sep).filter(Boolean)) {
-    current = path.join(current, part);
-    const info = await lstat(current).catch(error => { if (error?.code === "ENOENT") return undefined; throw error; });
-    if (info?.isSymbolicLink()) fail(`${label} has a symlink path component`);
-  }
-}
+async function assertNoSymlinkPath(file, label) { await assertNoReparsePath(file, label); }
 
-async function readStable(file, label, maxBytes, privateOnly = false) {
-  if (constants.O_NOFOLLOW === undefined) fail(`${label} requires descriptor no-follow support`);
-  canonicalFilePath(file, label); await assertNoSymlinkPath(file, label);
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const before = await handle.stat();
-    if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes || privateOnly && (before.mode & 0o077) !== 0) fail(`${label} is not a bounded exact regular file`);
-    const bytes = Buffer.allocUnsafe(before.size); let offset = 0;
-    while (offset < before.size) { const result = await handle.read(bytes, offset, before.size - offset, offset); if (result.bytesRead <= 0) fail(`${label} ended during a bounded read`); offset += result.bytesRead; }
-    const after = await handle.stat();
-    if (after.dev !== before.dev || after.ino !== before.ino || after.nlink !== before.nlink || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail(`${label} changed during a bounded read`);
-    return bytes;
-  } finally { await handle.close(); }
-}
+async function readStable(file, label, maxBytes, privateOnly = false) { return readStableFile(file, label, maxBytes, privateOnly); }
 async function readKey(file, kind) {
   const bytes = await readStable(file, "promotion key file", 64 * 1024, kind === "--hmac-key-file");
   if (bytes.length < 1) fail("promotion key file is empty");
@@ -71,8 +46,7 @@ async function verifyReferencedFile(relative, expected, label) {
   const target = path.resolve(REPOSITORY_ROOT, relative);
   if (target !== REPOSITORY_ROOT && !target.startsWith(`${REPOSITORY_ROOT}${path.sep}`)) fail(`${label} escapes the repository root`);
   await assertNoSymlinkPath(target, label);
-  const info = await lstat(target);
-  if (!info.isFile() || info.nlink !== 1 || info.size > 16 * 1024 * 1024) fail(`${label} is not a bounded regular file`);
+  const info = await privateRegular(target, label, 16 * 1024 * 1024, false);
   const bytes = await readStable(target, label, 16 * 1024 * 1024);
   if (digest(bytes) !== expected) fail(`${label} digest differs from the release manifest`);
 }
