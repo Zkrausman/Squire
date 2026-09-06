@@ -284,6 +284,7 @@ async function openFilesystemTarget(parts, expected) {
       if (index < parts.length - 1 && !child.before.isDirectory()) throw new Error("Plan read path has a non-directory ancestor");
       current = child;
     }
+    await testOnlyFilesystemWindow();
     if (expected === "file" && (parts.length === 0 || !current.before.isFile())) throw new Error("Plan read target is not a regular file");
     if (expected === "directory" && !current.before.isDirectory()) throw new Error("Plan read target is not a directory");
     if (expected === "any" && parts.length > 0 && !current.before.isFile() && !current.before.isDirectory()) throw new Error("Plan read target has an unsupported type");
@@ -309,9 +310,7 @@ async function closeFilesystemTarget(target) {
 function validateFilesystemFile(info) {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > FS_MAX_FILE_BYTES) throw new Error("Plan read target is not a bounded single-link regular file");
 }
-async function readFilesystemBytes(target) {
-  const before = await target.handle.stat();
-  validateFilesystemFile(before);
+async function testOnlyFilesystemWindow() {
   // Test-only delay gives the adversarial suite a deterministic mutation window;
   // the controller never supplies this variable and it cannot weaken checks.
   const testDelay = process.env.NODE_ENV === "test" ? process.env.SQUIRE_PLAN_TEST_ONLY_READ_DELAY_MS : undefined;
@@ -319,6 +318,10 @@ async function readFilesystemBytes(target) {
     if (!/^[0-9]{1,4}$/u.test(testDelay)) throw new Error("Plan test-only read delay is invalid");
     await new Promise(resolve => setTimeout(resolve, Number(testDelay)));
   }
+}
+async function readFilesystemBytes(target) {
+  const before = await target.handle.stat();
+  validateFilesystemFile(before);
   const result = Buffer.allocUnsafe(before.size);
   let offset = 0;
   while (offset < result.length) {

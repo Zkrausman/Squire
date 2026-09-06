@@ -144,6 +144,21 @@ test("Plan filesystem tools enforce the project-only descriptor-bound read bound
     await mkdir(path.join(fixture.workspace, "runtime"), { mode: 0o700 });
     await mkdir(path.join(fixture.workspace, "sessions"), { mode: 0o700 });
     await mkdir(path.join(fixture.workspace, "unsafe"), { mode: 0o700 });
+    const runtimeState = path.join(fixture.root, "runtime-state");
+    const sessionState = path.join(fixture.root, "session-state");
+    await mkdir(runtimeState, { mode: 0o700 });
+    await mkdir(sessionState, { mode: 0o700 });
+    const runtimeSentinel = path.join(runtimeState, "auth.json");
+    const sessionSentinel = path.join(sessionState, "other-session.jsonl");
+    const authSentinel = path.join(fixture.root, "auth.json");
+    await writeFile(runtimeSentinel, "RUNTIME_AUTH_SENTINEL\n", { mode: 0o600 });
+    await writeFile(sessionSentinel, "SESSION_SENTINEL\n", { mode: 0o600 });
+    await writeFile(authSentinel, "AUTH_SENTINEL\n", { mode: 0o600 });
+    const sourceBefore = await readFile(path.join(fixture.workspace, "src", "main.ts"));
+    const wikiBefore = await readFile(path.join(fixture.workspace, ".llm-wiki", "wiki", "plan.md"));
+    const runtimeBefore = await readFile(runtimeSentinel);
+    const sessionBefore = await readFile(sessionSentinel);
+    const authBefore = await readFile(authSentinel);
     const symlinkPath = path.join(fixture.workspace, "unsafe", "escape-link.txt");
     const hardlinkPath = path.join(fixture.workspace, "unsafe", "hardlink.txt");
     await symlink(outside, symlinkPath);
@@ -172,6 +187,10 @@ test("Plan filesystem tools enforce the project-only descriptor-bound read bound
       "/ticket/runtime/package.json",
       "/ticket/artifacts/input/phase-input.json",
       "/proc/self/environ",
+      runtimeSentinel,
+      sessionSentinel,
+      authSentinel,
+      path.join(fixture.ticketRoot, "artifacts", "input", "phase-input.json"),
       "artifacts/input/phase-input.json",
       "auth.json",
       ".env",
@@ -201,11 +220,18 @@ test("Plan filesystem tools enforce the project-only descriptor-bound read bound
       void write;
     }, 1);
     try {
-      await assert.rejects(runGeneratedTool(fixture, "squire_plan_read", { path: "race.txt" }, { NODE_ENV: "test", SQUIRE_PLAN_TEST_ONLY_READ_DELAY_MS: "100" }), /changed|stable|single-link|identity/u);
+      for (const [toolName, makeInput] of tools) {
+        await assert.rejects(runGeneratedTool(fixture, toolName, makeInput("race.txt"), { NODE_ENV: "test", SQUIRE_PLAN_TEST_ONLY_READ_DELAY_MS: "100" }), /changed|stable|single-link|identity|directory/u, `${toolName} must reject its race target`);
+      }
     } finally {
       clearInterval(raceTimer);
       await Promise.allSettled(pendingMutations);
     }
+    assert.deepEqual(await readFile(path.join(fixture.workspace, "src", "main.ts")), sourceBefore);
+    assert.deepEqual(await readFile(path.join(fixture.workspace, ".llm-wiki", "wiki", "plan.md")), wikiBefore);
+    assert.deepEqual(await readFile(runtimeSentinel), runtimeBefore);
+    assert.deepEqual(await readFile(sessionSentinel), sessionBefore);
+    assert.deepEqual(await readFile(authSentinel), authBefore);
     assert.equal((await readFile(outside, "utf8")), "HOST_PRIVATE_SENTINEL\n");
   } finally {
     await import("node:fs/promises").then(fs => fs.rm(fixture.root, { recursive: true, force: true }));
