@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { ROLES, type Clock, type LeaseGuard, type Role, type RunPrecondition, type RunSnapshot, type RuntimeResolution, type SessionRegistration } from "../src/control/domain.js";
+import type { ReadyGitWorkspace } from "../src/git/domain.js";
 import type { PiProcess, ProcessIdentityResolver, ProcessLaunch, PiProcessFactory, RuntimeResolver } from "../src/pi/pi-process.js";
 import { validateSessionRegistration } from "../src/pi/session-registry.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
@@ -16,14 +17,46 @@ const roleConfig = Object.fromEntries(ROLES.map(role => [role, { provider: "prov
 const deterministicMaterializer: PiAgentDirectoryMaterializerPort = { materialize: async (request): Promise<MaterializedPiAgentDirectory> => ({ runId: request.runId, agentDir: "/ticket/runtime/test-pi-agent", settingsPath: "/ticket/runtime/test-pi-agent/settings.json", manifestPath: "/ticket/runtime/test-pi-agent/squire-agent-manifest.json", footerExtensionPath: "/ticket/runtime/test-pi-agent/extensions/squire-trusted-wiki-footer.mjs", homeDir: "/ticket/runtime/test-pi-home", wikiHomeDir: "/ticket/runtime/test-wiki-home", trustedExtensionPaths: ["/ticket/runtime/wiki-extension.ts", "/ticket/runtime/test-pi-agent/extensions/squire-trusted-wiki-footer.mjs"], wikiExtensionDigest: "test-wiki-extension-digest", extensionDigest: "test-extension-digest", packageDigest: "test-package-digest" }) };
 const clock: Clock = { now: () => Date.parse("2026-09-01T12:00:00Z"), sleep: () => new Promise<void>(() => undefined) };
 async function session(root: string, role: Role, id: string): Promise<string> { const dir = path.join(root, role); await mkdir(dir, { recursive: true }); const file = path.join(dir, `2026_${id}.jsonl`); await writeFile(file, `${JSON.stringify({ type: "session", id })}\n`); return file; }
-async function settleLaunch(runner: PiRunner, factory: FakePiProcessFactory, runId: string, role: Role, sessionId: string, file: string) { const count = factory.processes.length; const pending = runner.launch(runId, role); for (let tries = 0; tries < 10_000; tries += 1) { const process = factory.processes[count]; if (process?.writes.length) { process.respondToLast("get_state", true, { model: { provider: "provider", id: "model" }, sessionId, sessionFile: file }); return pending; } await new Promise(resolve => setTimeout(resolve, 1)); } throw new Error("Pi process did not request get_state"); }
-async function setup(useDefaultMaterializer = false) { const root = await mkdtemp(path.join(os.tmpdir(), "squire-runner-")); for (const role of ROLES) await mkdir(path.join(root, role), { recursive: true }); const store = new InMemoryWorkflowStore(); await store.create(run()); const factory = new FakePiProcessFactory(); const resolver = new FakeRuntimeResolver(runtime); const runner = new PiRunner(factory, resolver, store, { roles: roleConfig, workspaceReadiness: testWorkspaceReadiness, sessionRoot: root, ...(useDefaultMaterializer ? {} : { materializer: deterministicMaterializer }) }, registration => validateSessionRegistration(registration, root), async () => "trusted role", clock); return { root, store, factory, resolver, runner }; }
+async function settleLaunch(runner: PiRunner, factory: FakePiProcessFactory, runId: string, role: Role, sessionId: string, file: string, launchOptions: Parameters<PiRunner["launch"]>[2] = {}) { const count = factory.processes.length; const pending = runner.launch(runId, role, launchOptions); for (let tries = 0; tries < 10_000; tries += 1) { const process = factory.processes[count]; if (process?.writes.length) { process.respondToLast("get_state", true, { model: { provider: "provider", id: "model" }, sessionId, sessionFile: file }); return pending; } await new Promise(resolve => setTimeout(resolve, 1)); } throw new Error("Pi process did not request get_state"); }
+async function setup(useDefaultMaterializer = false) { const root = await mkdtemp(path.join(os.tmpdir(), "squire-runner-")); const workspace = path.join(root, "workspace"); await mkdir(workspace, { recursive: true }); for (const role of ROLES) await mkdir(path.join(root, role), { recursive: true }); const store = new InMemoryWorkflowStore(); await store.create(run()); const factory = new FakePiProcessFactory(); const resolver = new FakeRuntimeResolver(runtime); const runner = new PiRunner(factory, resolver, store, { roles: roleConfig, workspaceReadiness: testWorkspaceReadiness, workspace, runtimeRoot: path.join(root, "runtime"), sessionRoot: root, ...(useDefaultMaterializer ? {} : { materializer: deterministicMaterializer }) }, registration => validateSessionRegistration(registration, root), async () => "trusted role", clock); return { root, store, factory, resolver, runner }; }
 
 test("five roles register five independent live processes and one run-scoped runtime", async () => {
-  const { root, store, factory, resolver, runner } = await setup(true); const identities = new Set<string>(); const ids = new Set<string>();
-  for (const role of ROLES) { const file = await session(root, role, role); const launched = await settleLaunch(runner, factory, "run_example01", role, role, file); identities.add(launched.process.identity); ids.add(launched.state.sessionId); const launch = factory.launches.at(-1)!; assert.equal(launch.command, runtime.pi.executable); assert.equal(launch.env["PI_CODING_AGENT_DIR"], "/ticket/runtime/run_example01/pi-agent"); assert.equal(launch.env["HOME"], "/ticket/runtime/run_example01/home"); assert.equal(launch.env["WIKI_HOME"], "/ticket/runtime/run_example01/wiki-home"); assert.ok(launch.args.includes("--no-extensions")); assert.equal(launch.args[launch.args.indexOf("--extension") + 1], "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/extensions/llm-wiki/index.ts"); }
-  assert.equal(identities.size, 5); assert.equal(ids.size, 5); assert.equal(runner.live.size, 5); assert.equal(resolver.calls, 1);
-  const persisted = await store.read("run_example01"); for (const role of ROLES) { assert.equal(persisted?.sessions[role]?.processState, "live"); assert.equal(persisted?.sessions[role]?.sessionFile, path.join(root, role, `2026_${role}.jsonl`)); assert.equal(persisted?.processAllocations?.[role], undefined); }
+  const { root, store, factory, resolver, runner } = await setup(true);
+  try {
+    const identities = new Set<string>(); const ids = new Set<string>();
+    for (const role of ROLES) { const file = await session(root, role, role); const launched = await settleLaunch(runner, factory, "run_example01", role, role, file); identities.add(launched.process.identity); ids.add(launched.state.sessionId); const launch = factory.launches.at(-1)!; assert.equal(launch.command, runtime.pi.executable); assert.match(launch.env["PI_CODING_AGENT_DIR"] ?? "", /\/squire-runner-[^/]+\/runtime\/run_example01\/pi-agent$/u); assert.match(launch.env["HOME"] ?? "", /\/squire-runner-[^/]+\/runtime\/run_example01\/home$/u); assert.match(launch.env["WIKI_HOME"] ?? "", /\/squire-runner-[^/]+\/runtime\/run_example01\/wiki-home$/u); assert.ok(launch.args.includes("--no-extensions")); assert.equal(launch.args[launch.args.indexOf("--extension") + 1], "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/extensions/llm-wiki/index.ts"); }
+    assert.equal(identities.size, 5); assert.equal(ids.size, 5); assert.equal(runner.live.size, 5); assert.equal(resolver.calls, 1);
+    const persisted = await store.read("run_example01"); for (const role of ROLES) { assert.equal(persisted?.sessions[role]?.processState, "live"); assert.equal(persisted?.sessions[role]?.sessionFile, path.join(root, role, `2026_${role}.jsonl`)); assert.equal(persisted?.processAllocations?.[role], undefined); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Plan launch selects the digest-bound wiki/Plan/footer extension set", async () => {
+  const { root, factory, runner } = await setup(true);
+  try {
+    runner.config.workspaceReadiness = { verify: async runId => ({ runId, headSha: "a".repeat(40) } as ReadyGitWorkspace) };
+    const file = await session(root, "plan", "plan");
+    const pending = settleLaunch(runner, factory, "run_example01", "plan", "plan", file, { planContext: {
+      runId: "run_example01",
+      handoffId: "handoff_plan_1",
+      attempt: 1,
+      targetSessionId: "plan",
+      inputHead: "a".repeat(40),
+      inputArtifact: { path: "artifacts/input/phase-input.json", sha256: "b".repeat(64), schemaId: "urn:squire:contracts:v1:phase-input" },
+      ticketIdentifier: "AIDEV-218",
+      completedAt: "2026-09-01T12:00:00.000Z",
+      allowedValidationCommandIds: ["contracts"],
+      requiredValidationCommandIds: ["contracts"],
+      ticketRoot: root,
+    } });
+    const launched = await pending;
+    const launch = factory.launches.at(-1)!;
+    const extensions = launch.args.flatMap((value, index) => value === "--extension" ? [launch.args[index + 1]!] : []);
+    assert.deepEqual(extensions, ["/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/extensions/llm-wiki/index.ts", `${launched.agentDir}/extensions/squire-plan.mjs`, `${launched.agentDir}/extensions/squire-trusted-wiki-footer.mjs`]);
+      assert.equal(launch.args[launch.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
+    assert.doesNotMatch(launch.args[launch.args.indexOf("--tools") + 1]!, /(?:^|,)(?:read|grep|find|ls)(?:,|$)/u);
+    assert.ok(launch.args.includes("--offline"));
+    launched.process.kill("SIGTERM");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("same role cannot release or launch while prior process remains live", async () => {

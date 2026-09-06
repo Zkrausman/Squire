@@ -2,13 +2,16 @@ import type { JsonObject, PhaseResultDocument, V1ArtifactValidator } from "../co
 import { isTerminal, type AcceptedPhaseResult, type Clock, type ContractReference, type GitHeadObserver, type LeaseGuard, type RunSnapshot } from "./domain.js";
 import type { AttemptResultPort } from "./attempt-coordinator.js";
 import type { WorkflowStore } from "./workflow-store.js";
+import { validateImplementationPlanDocument } from "../plan/plan-validation.js";
 
 export type TransitiveSemantics = Readonly<Record<string, (document: JsonObject) => readonly string[]>>;
 export type TransitiveSemanticPolicy = (context: { run: RunSnapshot; attempt: RunSnapshot["attempts"][number]; observedOutputHead: string; result: PhaseResultDocument }) => TransitiveSemantics;
+export interface AcceptanceFenceContext { readonly runId: string; readonly handoffId: string; readonly attempt: RunSnapshot["attempts"][number]; readonly expectedHead: string; readonly result: PhaseResultDocument }
+export type AcceptanceFence = (context: AcceptanceFenceContext) => Promise<void>;
 
 /** The only production path from an immutable phase-result artifact to persisted acceptance. */
 export class PhaseResultAcceptanceService {
-  constructor(readonly store: WorkflowStore, readonly git: GitHeadObserver, readonly validator: V1ArtifactValidator, readonly clock: Clock, readonly semanticPolicy: TransitiveSemanticPolicy) {}
+  constructor(readonly store: WorkflowStore, readonly git: GitHeadObserver, readonly validator: V1ArtifactValidator, readonly clock: Clock, readonly semanticPolicy: TransitiveSemanticPolicy, readonly acceptanceFence?: AcceptanceFence) {}
 
   async accept(runId: string, handoffId: string, reference: ContractReference, lease: LeaseGuard): Promise<{ run: RunSnapshot; accepted: AcceptedPhaseResult; result: PhaseResultDocument }> {
     let current = await this.store.read(runId);
@@ -38,6 +41,7 @@ export class PhaseResultAcceptanceService {
     if (!refreshed || refreshed.state !== initial.state || refreshed.currentHead !== initial.currentHead || refreshed.attempts[index]?.handoffId !== handoffId || refreshed.attempts[index]?.accepted) throw new Error("run changed during result acceptance");
     current = refreshed;
     const result = validated.result;
+    await this.acceptanceFence?.({ runId, handoffId, attempt, expectedHead: current.currentHead, result });
     const nextGeneration = result.phase === "implement" && result.status === "pass" ? current.implementGeneration + 1 : current.implementGeneration;
     const accepted: AcceptedPhaseResult = {
       reference,
@@ -74,12 +78,44 @@ export class PersistedPhaseResultPort implements AttemptResultPort {
   async accept(runId: string, handoffId: string, reference: ContractReference, lease: LeaseGuard): Promise<void> { await this.acceptance.accept(runId, handoffId, reference, lease); }
 }
 
-export function createPhaseSemanticPolicy(requiredCommandIds: readonly string[] = []): TransitiveSemanticPolicy {
+export interface PlanSemanticPolicyOptions {
+  readonly ticketIdentifier?: string;
+  readonly allowedCommandIds?: readonly string[];
+  readonly requiredCommandIds?: readonly string[];
+}
+
+export function createPhaseSemanticPolicy(requiredCommandIds: readonly string[] = [], planOptions?: PlanSemanticPolicyOptions): TransitiveSemanticPolicy {
   return ({ run, attempt, observedOutputHead, result }) => ({
     "urn:squire:contracts:v1:implementation-plan": document => {
       const errors: string[] = [];
       if (document["runId"] !== run.runId) errors.push("plan runId mismatch");
       if (document["inputHead"] !== attempt.inputHead) errors.push("plan inputHead mismatch");
+      if (result.phase === "plan" && result.status === "pass" && (result.findings.length > 0 || result.failures.length > 0)) errors.push("passing Plan result must contain no findings or failures");
+      if (result.phase === "plan") {
+        const expectedPlanPath = `artifacts/plan/${attempt.attempt}/plan.json`;
+        const expectedEvidencePath = `evidence/plan/${attempt.attempt}/verification.md`;
+        const planArtifacts = result.artifacts.filter(artifact => artifact.schemaId === "urn:squire:contracts:v1:implementation-plan");
+        const reports = result.evidence.filter(evidence => evidence.path === expectedEvidencePath && evidence.mediaType === "text/markdown" && evidence.kind === "report");
+        if (result.artifacts.length !== 1 || planArtifacts.length !== 1 || planArtifacts[0]?.path !== expectedPlanPath || planArtifacts[0]?.mediaType !== "application/json") errors.push("Plan result does not reference exactly its fixed plan artifact");
+        if (reports.length !== 1 || result.evidence.length !== 1) errors.push("Plan result does not reference exactly its fixed verification report");
+        if (result.status === "failed" && (result.findings.length !== 0 || result.failures.length !== 1 || result.failures[0]?.["id"] !== "PLAN_CONTEXT_BLOCKED" || result.failures[0]?.blocking !== true)) errors.push("failed Plan result must contain exactly one blocking PLAN_CONTEXT_BLOCKED failure");
+        if (result.status === "failed" && (typeof document["summary"] !== "string" || !/\b(?:blocked|must not start|cannot proceed)\b/iu.test(document["summary"]))) errors.push("failed Plan artifact lacks an explicit blocked marker");
+      }
+      if (result.phase === "plan") {
+        try {
+          validateImplementationPlanDocument(document, {
+            expectedRunId: run.runId,
+            ...(planOptions?.ticketIdentifier !== undefined ? { expectedTicketIdentifier: planOptions.ticketIdentifier } : {}),
+            expectedInputHead: attempt.inputHead,
+            ...(planOptions?.allowedCommandIds !== undefined ? { allowedValidationCommandIds: planOptions.allowedCommandIds } : {}),
+            ...(result.status === "pass" ? { requiredValidationCommandIds: planOptions?.requiredCommandIds ?? requiredCommandIds } : {}),
+            allowUnresolvedAssumptions: result.status === "failed",
+            allowBlockedMarker: result.status === "failed",
+          });
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : "Plan document failed trusted validation");
+        }
+      }
       return errors;
     },
     "urn:squire:contracts:v1:review-findings": document => {

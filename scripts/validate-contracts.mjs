@@ -5,6 +5,7 @@ import process from "node:process";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import {
+  validateImplementationPlan,
   validatePhaseInput,
   validatePhaseResult,
   validatePhaseTrigger,
@@ -113,6 +114,10 @@ async function main() {
     sha256: createHash("sha256").update(inputBytes).digest("hex"),
     schemaId: "urn:squire:contracts:v1:phase-input"
   };
+  const planInput = await json(path.join(validRoot, "phase-input/plan.json"));
+  const planTrigger = await json(path.join(validRoot, "phase-trigger/plan.json"));
+  const planResult = await json(path.join(validRoot, "phase-result/plan-pass.json"));
+  const implementationPlan = await json(path.join(validRoot, "implementation-plan/basic.json"));
   const result = await json(path.join(validRoot, "phase-result/implement-pass.json"));
   const testEvidence = await json(path.join(validRoot, "test-evidence/pass.json"));
   const transition = await json(path.join(validRoot, "transition-request/review-to-test.json"));
@@ -121,6 +126,10 @@ async function main() {
   const semanticChecks = [
     ["workflow config", validateWorkflowConfig(config)],
     ["phase input", validatePhaseInput(input, { runId: "run_example01", phase: "implement", targetSessionId: "session-implement-01", attempt: 1, inputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", handoffId: "handoff_implement_1" })],
+    ["Plan phase input", validatePhaseInput(planInput, { runId: "run_example01", phase: "plan", targetSessionId: "session-plan-01", attempt: 1, inputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", handoffId: "handoff_plan_1" })],
+    ["Plan trigger", validatePhaseTrigger(planTrigger, planInput, planTrigger.inputArtifact)],
+    ["implementation plan", validateImplementationPlan(implementationPlan, { runId: "run_example01", ticketIdentifier: "AIDEV-215", inputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", allowedValidationCommandIds: ["contracts", "tests"], requiredValidationCommandIds: ["contracts", "tests"] })],
+    ["Plan result", validatePhaseResult(planResult, { runId: "run_example01", phase: "plan", sessionId: "session-plan-01", inputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", outputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", handoffId: "handoff_plan_1", inputArtifact: planResult.inputArtifact })],
     ["phase trigger", validatePhaseTrigger(trigger, input, inputArtifact)],
     ["phase result", validatePhaseResult(result, { runId: "run_example01", phase: "implement", sessionId: "session-implement-01", inputHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", outputHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", handoffId: "handoff_implement_1", inputArtifact })],
     ["test evidence", validateTestEvidence(testEvidence, config, { runId: "run_example01", sessionId: "session-test-01", headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })],
@@ -172,7 +181,9 @@ async function main() {
     if (gitSemanticErrors(name, data).length === 0) throw new Error(`Git workspace semantic fixture accepted: ${file}`);
   }
 
-  console.log(`Validated ${schemas.length + gitSchemas.length} schemas, ${validFiles.length + gitValidFiles.length} valid fixtures, ${structuralFiles.length + gitStructuralFiles.length} structural rejections, and ${invalidChecks.length + gitSemanticFiles.length} semantic rejections.`);
+  const validFixtureCount = validFiles.length + gitValidFiles.length;
+  const publishedBaselineFixtureCount = validFixtureCount - 3;
+  console.log(`Validated ${schemas.length + gitSchemas.length} schemas, ${validFixtureCount} valid fixtures (${publishedBaselineFixtureCount} valid fixtures in the published baseline), ${structuralFiles.length + gitStructuralFiles.length} structural rejections, and ${invalidChecks.length + gitSemanticFiles.length} semantic rejections.`);
 }
 
 main().catch(error => {

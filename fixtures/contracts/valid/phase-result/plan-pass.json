@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "handoffId": "handoff_plan_1",
+  "inputArtifact": {
+    "path": "artifacts/handoffs/plan-1.json",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "schemaId": "urn:squire:contracts:v1:phase-input"
+  },
+  "runId": "run_example01",
+  "phase": "plan",
+  "sessionId": "session-plan-01",
+  "inputHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "outputHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "status": "pass",
+  "artifacts": [
+    {
+      "path": "artifacts/plan/1/plan.json",
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "mediaType": "application/json",
+      "schemaId": "urn:squire:contracts:v1:implementation-plan"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "evidence/plan/1/verification.md",
+      "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "mediaType": "text/markdown",
+      "kind": "report"
+    }
+  ],
+  "findings": [],
+  "failures": [],
+  "requestedTransition": {
+    "toState": "implementing",
+    "reason": "phase_pass"
+  },
+  "completedAt": "2026-09-01T12:20:00Z"
+}

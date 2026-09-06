@@ -5,11 +5,14 @@ import { normalizeWikiProfile, type PiModelProfile, type PiWikiProfileInput } fr
 import type { RunPreparationLease, RunTerminalFence, RuntimeModelCapability, RuntimeResolution } from "../control/domain.js";
 import type { RunQuiescenceAuthority } from "../control/workflow-store.js";
 import { buildTrustedWikiFooterExtensionSource } from "./wiki-footer.js";
+import { buildTrustedPlanExtensionSource } from "../plan/plan-extension.js";
+import { PLAN_EXTENSION_RELATIVE_PATH } from "../plan/domain.js";
 
 const AGENT_DIRECTORY_KIND = "squire-pi-agent-directory";
 const AGENT_DIRECTORY_SCHEMA_VERSION = 1;
 const WIKI_PACKAGE_NAME = "@zosmaai/pi-llm-wiki";
 const FOOTER_FILE = "extensions/squire-trusted-wiki-footer.mjs";
+const PLAN_FILE = PLAN_EXTENSION_RELATIVE_PATH;
 const SETTINGS_FILE = "settings.json";
 const MANIFEST_FILE = "squire-agent-manifest.json";
 const PREPARATION_LOCK_DIRECTORY = ".pi-agent-lock";
@@ -118,6 +121,11 @@ export interface MaterializedPiAgentDirectory {
   wikiHomeDir: string;
   /** Ordered paths: wiki first, controller footer second. */
   trustedExtensionPaths: readonly [string, string];
+  /** Ordered trusted extension paths for role-specific launches. */
+  trustedExtensionPathsByRole?: Readonly<Partial<Record<"plan" | "implement" | "review" | "test" | "orchestrator", readonly string[]>>>;
+  /** The Plan submission extension is loaded only for the Plan role. */
+  planExtensionPath?: string;
+  planExtensionDigest?: string;
   /** Digests of the exact loaded wiki entrypoint and generated footer. */
   wikiExtensionDigest: string;
   extensionDigest: string;
@@ -222,6 +230,7 @@ interface AgentManifest {
   files: {
     settings: { path: typeof SETTINGS_FILE; sha256: string };
     footerExtension: { path: typeof FOOTER_FILE; sha256: string };
+    planExtension: { path: typeof PLAN_FILE; sha256: string };
     auth?: { path: string; sha256: string };
   };
   piRuntimeFiles: {
@@ -236,6 +245,10 @@ interface AgentManifest {
   };
   trustedExtensions: readonly [string, string];
   trustedExtensionDigests: readonly [string, string];
+  trustedExtensionSets: {
+    readonly default: readonly [string, string];
+    readonly plan: readonly [string, string, string];
+  };
 }
 
 interface MaterializationLayout {
@@ -254,6 +267,7 @@ interface PreparedMaterialization {
   wikiExtensionDigest: string;
   packageDigest: string;
   footerDigest: string;
+  planDigest: string;
   expected: AgentManifest;
   entries: FileSystemEntry[];
 }
@@ -819,6 +833,8 @@ export class PiAgentDirectoryMaterializer {
 
     const footerSource = Buffer.from(buildTrustedWikiFooterExtensionSource(profile), "utf8");
     const footerDigest = sha256(footerSource);
+    const planSource = Buffer.from(buildTrustedPlanExtensionSource(), "utf8");
+    const planDigest = sha256(planSource);
     const settings = buildSettings(wikiRoot, profile);
     const settingsBytes = Buffer.from(`${JSON.stringify(settings, null, 2)}\n`, "utf8");
     const authEntry = await this.#readTrustedAuth(layout.agentDir, layout.workspace, request.signal);
@@ -835,6 +851,7 @@ export class PiAgentDirectoryMaterializer {
       files: {
         settings: { path: SETTINGS_FILE, sha256: sha256(settingsBytes) },
         footerExtension: { path: FOOTER_FILE, sha256: footerDigest },
+        planExtension: { path: PLAN_FILE, sha256: planDigest },
         ...(authEntry ? { auth: { path: authEntry.relativePath, sha256: authEntry.digest } } : {}),
       },
       piRuntimeFiles: {
@@ -849,12 +866,17 @@ export class PiAgentDirectoryMaterializer {
       },
       trustedExtensions: [wikiExtension, footerPath(layout.agentDir)],
       trustedExtensionDigests: [packageSnapshot.entrypointDigest, footerDigest],
+      trustedExtensionSets: {
+        default: [wikiExtension, footerPath(layout.agentDir)],
+        plan: [wikiExtension, path.join(layout.agentDir, PLAN_FILE), footerPath(layout.agentDir)],
+      },
     };
     const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     const authFile = authEntry ? { path: path.resolve(layout.agentDir, authEntry.relativePath), bytes: authEntry.bytes, mode: 0o600 } : undefined;
     const entries: FileSystemEntry[] = [
       { path: SETTINGS_FILE, bytes: settingsBytes, mode: 0o600 },
       { path: FOOTER_FILE, bytes: footerSource, mode: 0o600 },
+      { path: PLAN_FILE, bytes: planSource, mode: 0o600 },
       { path: MANIFEST_FILE, bytes: manifestBytes, mode: 0o600 },
       ...(authFile ? [{ path: authEntry!.relativePath, bytes: authFile.bytes, mode: authFile.mode }] : []),
     ];
@@ -865,6 +887,7 @@ export class PiAgentDirectoryMaterializer {
       wikiExtensionDigest: packageSnapshot.entrypointDigest,
       packageDigest: packageSnapshot.treeDigest,
       footerDigest,
+      planDigest,
       expected: manifest,
       entries,
     };
@@ -887,7 +910,7 @@ export class PiAgentDirectoryMaterializer {
     if (!SAFE_RELATIVE_FILE.test(relativePath) || relativePath.split("/").some(part => part === "." || part === "..")) {
       throw new Error("trusted auth destination must be a safe relative file");
     }
-    if ([SETTINGS_FILE, FOOTER_FILE, MANIFEST_FILE, PI_MODELS_STORE_FILE].includes(relativePath)) {
+    if ([SETTINGS_FILE, FOOTER_FILE, PLAN_FILE, MANIFEST_FILE, PI_MODELS_STORE_FILE].includes(relativePath)) {
       throw new Error("trusted auth destination conflicts with a generated Pi file");
     }
     const source = path.resolve(input.sourcePath);
@@ -969,13 +992,15 @@ export class PiAgentDirectoryMaterializer {
 export function createDefaultPiAgentDirectoryMaterializer(
   workspace: string | undefined,
   runLifecycleAuthority: RunQuiescenceAuthority,
+  runtimeRoot?: string,
 ): PiAgentDirectoryMaterializer {
-  const key = path.resolve(workspace ?? DEFAULT_WORKSPACE);
+  const key = `${path.resolve(runtimeRoot ?? DEFAULT_RUNTIME_ROOT)}\u0000${path.resolve(workspace ?? DEFAULT_WORKSPACE)}`;
   const registry = AUTHORITY_DEFAULT_MATERIALIZERS.get(runLifecycleAuthority) ?? new Map<string, PiAgentDirectoryMaterializer>();
   const existing = registry.get(key);
   if (existing) return existing;
   const created = new PiAgentDirectoryMaterializer({
     ...(workspace ? { workspace } : {}),
+    ...(runtimeRoot ? { runtimeRoot } : {}),
     runLifecycleAuthority,
   });
   registry.set(key, created);
@@ -1064,6 +1089,8 @@ async function verifyAgentDirectory(
   const footerBytes = await readStableFile(path.join(agentDir, FOOTER_FILE), "trusted footer");
   if (sha256(settingsBytes) !== expected.files.settings.sha256) throw new Error("Pi settings digest mismatch");
   if (sha256(footerBytes) !== expected.files.footerExtension.sha256) throw new Error("trusted footer digest mismatch");
+  const planBytes = await readStableFile(path.join(agentDir, expected.files.planExtension.path), "trusted Plan extension");
+  if (sha256(planBytes) !== expected.files.planExtension.sha256) throw new Error("trusted Plan extension digest mismatch");
   if (expected.files.auth) {
     const authBytes = await readStableFile(path.join(agentDir, expected.files.auth.path), "trusted auth");
     if (sha256(authBytes) !== expected.files.auth.sha256) throw new Error("trusted auth digest mismatch");
@@ -4234,6 +4261,15 @@ function materializedResult(runId: string, prepared: PreparedMaterialization): M
     homeDir: layout.homeDir,
     wikiHomeDir: layout.wikiHomeDir,
     trustedExtensionPaths: [prepared.wikiExtension, footerPath(layout.agentDir)],
+    trustedExtensionPathsByRole: {
+      plan: [prepared.wikiExtension, path.join(layout.agentDir, PLAN_FILE), footerPath(layout.agentDir)],
+      implement: [prepared.wikiExtension, footerPath(layout.agentDir)],
+      review: [prepared.wikiExtension, footerPath(layout.agentDir)],
+      test: [prepared.wikiExtension, footerPath(layout.agentDir)],
+      orchestrator: [prepared.wikiExtension, footerPath(layout.agentDir)],
+    },
+    planExtensionPath: path.join(layout.agentDir, PLAN_FILE),
+    planExtensionDigest: prepared.planDigest,
     wikiExtensionDigest: prepared.wikiExtensionDigest,
     extensionDigest: prepared.footerDigest,
     packageDigest: prepared.packageDigest,

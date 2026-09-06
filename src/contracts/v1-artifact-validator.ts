@@ -101,7 +101,7 @@ export interface PhaseResultDocument extends JsonObject {
   handoffId: string; inputArtifact: ContractReference; runId: string; phase: "plan" | "implement" | "review" | "test"; sessionId: string;
   inputHead: string; outputHead: string; status: "pass" | "remediation_required" | "failed";
   artifacts: Array<{ path: string; sha256: string; mediaType: string; schemaId?: string }>; evidence: Array<{ path: string; sha256: string; mediaType: string; kind: string; schemaId?: string; commandId?: string }>;
-  findings: Array<{ blocking: boolean }>; failures: Array<{ blocking: boolean }>; requestedTransition: { toState: string; reason: string }; completedAt: string;
+  findings: Array<{ blocking: boolean; [key: string]: unknown }>; failures: Array<{ blocking: boolean; [key: string]: unknown }>; requestedTransition: { toState: string; reason: string }; completedAt: string;
 }
 export interface PhaseResultContext { runId: string; handoffId: string; phase: PhaseResultDocument["phase"]; sessionId: string; inputHead: string; observedOutputHead: string; inputArtifact: ContractReference }
 export function validatePhaseResultTrusted(result: PhaseResultDocument, context: PhaseResultContext): string[] {
@@ -116,6 +116,7 @@ export function validatePhaseResultTrusted(result: PhaseResultDocument, context:
   else if (!transition || transition[0] !== result.requestedTransition.toState || transition[1] !== result.requestedTransition.reason) errors.push("status contradicts requested transition");
   const blocking = [...result.findings, ...result.failures].some(item => item.blocking);
   if (result.status === "pass" && (blocking || result.failures.length > 0)) errors.push("pass contains findings or failures");
+  if (result.phase === "plan" && result.status === "pass" && result.findings.length > 0) errors.push("pass Plan result must contain no findings");
   if (result.status === "remediation_required" && !blocking) errors.push("remediation requires blocking feedback");
   return errors;
 }

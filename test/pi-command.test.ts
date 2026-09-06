@@ -25,3 +25,43 @@ test("trusted Pi command passes the run agent directory and ordered extensions w
   assert.equal(command.args[first + 2], "--extension");
   assert.equal(command.args[first + 3], "/ticket/runtime/run_test/pi-agent/footer.mjs");
 });
+
+test("Plan command is independently read-only and carries only controller-bound output context", () => {
+  const command = buildPiCommand({
+    piBinary: "/ticket/runtime/pi",
+    instructions: "trusted Plan policy",
+    role: "plan",
+    workspace: "/tmp/plan-workspace",
+    sessionRoot: "/tmp/plan-sessions",
+    agentDir: "/tmp/plan-agent",
+    homeDir: "/tmp/plan-home",
+    wikiHomeDir: "/tmp/plan-wiki-home",
+    trustedExtensionPaths: ["/trusted/wiki/index.ts", "/tmp/plan-agent/extensions/plan.mjs", "/tmp/plan-agent/extensions/footer.mjs"],
+    config: { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "high", instructionsPath: "/ticket/config/plan.md" },
+    planContext: {
+      runId: "run_plan01",
+      handoffId: "handoff_plan_1",
+      attempt: 1,
+      targetSessionId: "plan-session-1",
+      inputHead: "a".repeat(40),
+      inputArtifact: { path: "artifacts/input/phase-input.json", sha256: "b".repeat(64), schemaId: "urn:squire:contracts:v1:phase-input" },
+      ticketIdentifier: "AIDEV-218",
+      completedAt: "2026-09-01T12:00:00.000Z",
+      allowedValidationCommandIds: ["contracts", "tests"],
+      requiredValidationCommandIds: ["contracts", "tests"],
+      ticketRoot: "/tmp/plan-ticket",
+    },
+  });
+  assert.ok(command.args.includes("--offline"));
+  assert.equal(command.args[command.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
+  assert.equal(command.env["SQUIRE_PLAN_FILESYSTEM_POLICY_SHA256"], "e955c149b9e92a504ddb45676c7046a6271094dbc1e71a465d4e4c0cdc21ae2f");
+  assert.equal(command.env["SQUIRE_PLAN_WORKSPACE_ROOT"], "/tmp/plan-workspace");
+  assert.equal(command.env["SQUIRE_PLAN_WIKI_ROOT"], "/tmp/plan-workspace/.llm-wiki");
+  assert.doesNotMatch(command.args[command.args.indexOf("--tools") + 1]!, /(?:^|,)(?:read|grep|find|ls)(?:,|$)/u);
+  assert.ok(command.args.includes("--no-approve"));
+  const extensions = command.args.flatMap((value, index) => value === "--extension" ? [command.args[index + 1]!] : []);
+  assert.deepEqual(extensions, ["/trusted/wiki/index.ts", "/tmp/plan-agent/extensions/plan.mjs", "/tmp/plan-agent/extensions/footer.mjs"]);
+  assert.equal(command.env["SQUIRE_PLAN_RUN_ID"], "run_plan01");
+  assert.equal(command.env["SQUIRE_TICKET_ROOT"], "/tmp/plan-ticket");
+  assert.equal(command.args.includes("--no-tools"), false);
+});

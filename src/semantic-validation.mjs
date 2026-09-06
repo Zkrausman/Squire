@@ -100,6 +100,74 @@ function safeProfilePart(value) {
   return typeof value === "string" && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
+const PLAN_LIMITS = Object.freeze({ summary: 16384, assumption: 2048, assumptions: 32, stepDescription: 8192, steps: 64, path: 1024, pathsPerStep: 128, criterion: 4096, criteriaPerStep: 64, risks: 64, risk: 4096, mitigation: 4096, validationIds: 128 });
+const PLAN_CONTROL = /[\u0000-\u001f\u007f]/u;
+const PLAN_RUN_ID = /^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const PLAN_TICKET_ID = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
+const PLAN_HEAD = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const PLAN_STEP_ID = /^step-[1-9][0-9]*$/u;
+const PLAN_COMMAND_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
+const PLAN_UNRESOLVED = /\b(?:todo|tbd|unknown|unsure|unresolved|figure\s+out|later|not\s+known|pending)\b/iu;
+
+function boundedPlanString(value, max) {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= max && !PLAN_CONTROL.test(value);
+}
+
+function safePlanPath(value) {
+  return boundedPlanString(value, PLAN_LIMITS.path)
+    && !value.startsWith("/")
+    && !value.startsWith("\\")
+    && !/^[A-Za-z]:/u.test(value)
+    && !value.includes("\\")
+    && !value.includes("//")
+    && value !== "."
+    && value.split("/").every(part => part !== ".." && part !== "." && part.length > 0);
+}
+
+/** Trusted semantic checks for the domain artifact emitted by Plan. */
+export function validateImplementationPlan(plan, context = {}) {
+  const errors = [];
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) return ["implementation plan must be an object"];
+  const allowed = new Set(["schemaVersion", "runId", "ticketIdentifier", "inputHead", "summary", "assumptions", "steps", "risks", "validationCommandIds"]);
+  for (const key of Object.keys(plan)) if (!allowed.has(key)) errors.push(`implementation plan contains unknown field: ${key}`);
+  if (plan.schemaVersion !== 1) errors.push("implementation plan schemaVersion must be 1");
+  if (!PLAN_RUN_ID.test(plan.runId ?? "")) errors.push("implementation plan runId is invalid");
+  if (!PLAN_TICKET_ID.test(plan.ticketIdentifier ?? "")) errors.push("implementation plan ticketIdentifier is invalid");
+  if (!PLAN_HEAD.test(plan.inputHead ?? "")) errors.push("implementation plan inputHead is invalid");
+  mismatch(errors, plan.runId, context.runId, "plan runId");
+  mismatch(errors, plan.ticketIdentifier, context.ticketIdentifier, "plan ticketIdentifier");
+  mismatch(errors, plan.inputHead, context.inputHead, "plan inputHead");
+  if (!boundedPlanString(plan.summary, PLAN_LIMITS.summary)) errors.push("implementation plan summary is empty or unbounded");
+  if (!Array.isArray(plan.assumptions) || plan.assumptions.length > PLAN_LIMITS.assumptions || plan.assumptions.some(value => !boundedPlanString(value, PLAN_LIMITS.assumption) || (!context.allowBlocked && PLAN_UNRESOLVED.test(value)))) errors.push("implementation plan assumptions are invalid, unresolved, or unbounded");
+  if (!Array.isArray(plan.steps) || plan.steps.length === 0 || plan.steps.length > PLAN_LIMITS.steps) errors.push("implementation plan steps are invalid or unbounded");
+  else {
+    const ids = plan.steps.map(step => step?.id);
+    if (ids.some(id => typeof id !== "string" || !PLAN_STEP_ID.test(id))) errors.push("implementation plan step ids are invalid");
+    if (new Set(ids).size !== ids.length) errors.push("implementation plan step ids must be unique");
+    if (ids.some((id, index) => id !== `step-${index + 1}`)) errors.push("implementation plan steps must be ordered");
+    for (const [index, step] of plan.steps.entries()) {
+      if (!step || typeof step !== "object" || Array.isArray(step)) { errors.push(`implementation plan step ${index} is invalid`); continue; }
+      const stepKeys = Object.keys(step);
+      if (stepKeys.some(key => !["id", "description", "affectedPaths", "acceptanceCriteria"].includes(key))) errors.push(`implementation plan step ${index} contains an unknown field`);
+      if (!boundedPlanString(step.id, 128) || !PLAN_STEP_ID.test(step.id ?? "")) errors.push(`implementation plan step ${index} has an invalid id`);
+      if (!boundedPlanString(step.description, PLAN_LIMITS.stepDescription)) errors.push(`implementation plan step ${index} has no bounded description`);
+      if (!Array.isArray(step.affectedPaths) || step.affectedPaths.length === 0 || step.affectedPaths.length > PLAN_LIMITS.pathsPerStep || step.affectedPaths.some(value => !safePlanPath(value))) errors.push(`implementation plan step ${index} has an unsafe affected path`);
+      else if (new Set(step.affectedPaths).size !== step.affectedPaths.length) errors.push(`implementation plan step ${index} has duplicate affected paths`);
+      if (!Array.isArray(step.acceptanceCriteria) || step.acceptanceCriteria.length === 0 || step.acceptanceCriteria.length > PLAN_LIMITS.criteriaPerStep || step.acceptanceCriteria.some(value => !boundedPlanString(value, PLAN_LIMITS.criterion) || PLAN_UNRESOLVED.test(value))) errors.push(`implementation plan step ${index} lacks actionable acceptance criteria`);
+    }
+  }
+  if (!Array.isArray(plan.risks) || plan.risks.length > PLAN_LIMITS.risks || plan.risks.some(risk => !risk || typeof risk !== "object" || Array.isArray(risk) || Object.keys(risk).some(key => !["risk", "mitigation"].includes(key)) || !boundedPlanString(risk.risk, PLAN_LIMITS.risk) || !boundedPlanString(risk.mitigation, PLAN_LIMITS.mitigation))) errors.push("implementation plan risks are invalid or unbounded");
+  if (!Array.isArray(plan.validationCommandIds) || plan.validationCommandIds.length === 0 || plan.validationCommandIds.length > PLAN_LIMITS.validationIds || plan.validationCommandIds.some(id => typeof id !== "string" || !PLAN_COMMAND_ID.test(id)) || new Set(plan.validationCommandIds).size !== plan.validationCommandIds.length) errors.push("implementation plan validation command ids are invalid");
+  else {
+    const allowedCommands = context.allowedValidationCommandIds;
+    if (Array.isArray(allowedCommands) && plan.validationCommandIds.some(id => !allowedCommands.includes(id))) errors.push("implementation plan references an unknown validation command");
+    const requiredCommands = context.requiredValidationCommandIds ?? [];
+    if (!context.allowBlocked && requiredCommands.some(id => !plan.validationCommandIds.includes(id))) errors.push("implementation plan omits a required validation command");
+  }
+  if (!context.allowBlocked && typeof plan.summary === "string" && /\b(?:blocked|must not start|cannot proceed)\b/iu.test(plan.summary)) errors.push("pass implementation plan contains a blocked disposition");
+  return errors;
+}
+
 export function validatePhaseInput(input, context = {}) {
   const errors = [];
   mismatch(errors, input.runId, context.runId, "runId");
@@ -111,6 +179,9 @@ export function validatePhaseInput(input, context = {}) {
 
   if (input.ticket.schemaId !== "urn:squire:contracts:v1:normalized-ticket") errors.push("ticket must reference a normalized-ticket v1 artifact");
   if (input.configuration.schemaId !== "urn:squire:contracts:v1:workflow-config") errors.push("configuration must reference a workflow-config v1 artifact");
+  if ([...(input.artifacts ?? []), ...(input.feedback ?? [])].some(reference => reference.schemaId === "urn:squire:contracts:v1:normalized-ticket" || reference.schemaId === "urn:squire:contracts:v1:workflow-config")) errors.push("phase input hides a duplicate ticket or configuration reference");
+  const nestedKeys = [input.ticket, input.configuration, ...(input.artifacts ?? []), ...(input.feedback ?? [])].map(reference => `${reference.path}:${reference.sha256}:${reference.schemaId}`);
+  if (new Set(nestedKeys).size !== nestedKeys.length) errors.push("phase input contains duplicate contract references");
   if (input.phase === "implement" && !input.artifacts.some(({ schemaId }) => schemaId === "urn:squire:contracts:v1:implementation-plan")) {
     errors.push("implement input requires an implementation-plan artifact");
   }
@@ -198,6 +269,7 @@ export function validatePhaseResult(result, context = {}) {
   if (result.status === "pass" && (blockingFindings.length || blockingFailures.length || result.failures.length)) {
     errors.push("pass result contains unresolved findings or failures");
   }
+  if (result.phase === "plan" && result.status === "pass" && result.findings.length > 0) errors.push("pass Plan result must contain no findings");
   if (result.status === "remediation_required" && blockingFindings.length + blockingFailures.length === 0) {
     errors.push("remediation_required result needs a blocking finding or failure");
   }

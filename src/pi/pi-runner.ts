@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
 import type { GitWorkspaceReadiness } from "../git/domain.js";
 import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
-import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
+import { buildPiCommand, assertSafeResumeArgs, type PlanLaunchContext } from "./pi-command.js";
+import { PLAN_EXTENSION_RELATIVE_PATH } from "../plan/domain.js";
+import { buildPlanSystemPrompt } from "../plan/plan-instructions.js";
 import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
 import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest, type PiAgentDirectoryTeardownResult } from "./pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
@@ -21,6 +24,8 @@ export interface RunnerConfig {
   /** Every production and test composition must supply AIDEV-222 readiness. */
   workspaceReadiness: GitWorkspaceReadiness;
   workspace?: string;
+  /** Runtime root for the default trusted materializer; production defaults to /ticket/runtime. */
+  runtimeRoot?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
   processLeaseMs?: number;
@@ -30,7 +35,7 @@ export interface RunnerConfig {
 }
 export type RegistrationValidator = (registration: SessionRegistration, signal?: AbortSignal) => Promise<void>;
 export type RoleInstructionReader = (canonicalPath: string, signal?: AbortSignal) => Promise<string>;
-interface LiveHandle { process: PiProcess; client: PiRpcClient; runId: string; role: Role; generation: number }
+interface LiveHandle { process: PiProcess; client: PiRpcClient; runId: string; role: Role; generation: number; planContextFingerprint?: string }
 interface AllocatingHandle { process: PiProcess; runId: string; role: Role; generation: number; owner: string; fencingToken: number }
 interface AllocationLease extends Lease { runId: string; deadlineAt: number; ttlMs: number; stepTimeoutMs: number }
 
@@ -51,10 +56,17 @@ export class PiRunner {
   constructor(readonly factory: PiProcessFactory, readonly resolver: RuntimeResolver, readonly store: WorkflowStore, readonly config: RunnerConfig, readonly validateRegistration: RegistrationValidator, readonly readRoleInstructions: RoleInstructionReader, readonly clock: Clock, readonly processIdentities?: ProcessIdentityResolver) {
     if (!config.workspaceReadiness) throw new Error("PiRunner requires Git workspace readiness");
     this.#runLifecycleAuthority = config.runLifecycleAuthority ?? store;
-    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace, this.#runLifecycleAuthority);
+    this.#defaultMaterializer = createDefaultPiAgentDirectoryMaterializer(config.workspace, this.#runLifecycleAuthority, config.runtimeRoot);
   }
 
   resolveRuntime(runId: string): Promise<RuntimeResolution> { return this.#getOrResolveRuntime(runId); }
+
+  /** Fail closed when a retry would attach to a Plan process bound to another context. */
+  assertPlanContext(runId: string, role: Role, context: PlanLaunchContext): void {
+    if (role !== "plan" || context.runId !== runId) throw new Error("Plan process context identity mismatch");
+    const live = this.live.get(`${runId}:${role}`);
+    if (live && live.planContextFingerprint !== JSON.stringify(context)) throw new Error("live Plan process has a different controller-bound context");
+  }
 
   async #getOrMaterialize(runId: string, runtime: RuntimeResolution, wikiProfile: PiWikiProfileInput, signal?: AbortSignal): Promise<MaterializedPiAgentDirectory> {
     const materializer = this.config.materializer ?? (runtime.llmWiki.root ? this.#defaultMaterializer : undefined);
@@ -136,9 +148,12 @@ export class PiRunner {
     if (!allocation) await this.#verifyRegisteredProcessCleaned(runId, role, generation, process.identity);
   }
 
-  async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
+  async launch(runId: string, role: Role, launchOptions: { readonly planContext?: PlanLaunchContext } = {}): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
+    if (role !== "plan" && launchOptions.planContext) throw new Error("Plan launch context cannot be used for another role");
     await this.#runLifecycleAuthority.assertRunStartAllowed(runId, this.clock.now());
-    await this.config.workspaceReadiness.verify(runId);
+    const expectedPlanHead = role === "plan" && launchOptions.planContext ? launchOptions.planContext.inputHead : undefined;
+    const launchReadiness = await this.config.workspaceReadiness.verify(runId, expectedPlanHead);
+    if (expectedPlanHead !== undefined && launchReadiness.headSha !== expectedPlanHead) throw new Error("Plan workspace readiness head changed before launch");
     const key = `${runId}:${role}`;
     const pending = this.allocating.get(key);
     if (pending) throw new Error("role already has an unresolved allocating process");
@@ -183,10 +198,13 @@ export class PiRunner {
         lease,
         signal => this.#verifyMaterialization(runId, runtime, wikiProfile, materialized, signal),
       ).then(() => materialized);
+      const trustedExtensionPaths = role === "plan" && launchOptions.planContext
+        ? this.#planExtensionPaths(verifiedMaterialized)
+        : verifiedMaterialized.trustedExtensionPaths;
       const spec = buildPiCommand({
         role,
         config: roleConfig,
-        instructions,
+        instructions: role === "plan" ? buildPlanSystemPrompt(instructions) : instructions,
         piBinary: runtime.pi.executable,
         ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
         ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}),
@@ -194,7 +212,8 @@ export class PiRunner {
         agentDir: verifiedMaterialized.agentDir,
         homeDir: verifiedMaterialized.homeDir,
         wikiHomeDir: verifiedMaterialized.wikiHomeDir,
-        trustedExtensionPaths: verifiedMaterialized.trustedExtensionPaths,
+        trustedExtensionPaths,
+        ...(launchOptions.planContext ? { planContext: launchOptions.planContext } : {}),
       });
       if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
       const ownProcess = (value: PiProcess): void => {
@@ -206,12 +225,13 @@ export class PiRunner {
         // Recheck inside the final bounded spawn step, after all potentially
         // mutable materialization/instruction work and immediately before the
         // child factory is allowed to create a process.
-        await this.config.workspaceReadiness.verify(runId);
+        const spawnReadiness = await this.config.workspaceReadiness.verify(runId, expectedPlanHead);
+        if (expectedPlanHead !== undefined && spawnReadiness.headSha !== expectedPlanHead) throw new Error("Plan workspace readiness head changed before spawn");
         return this.factory.spawn(spec, signal, ownProcess);
       }, ownProcess);
       await this.#step("spawn ownership claim", lease, () => this.#setAllocation(runId, role, lease, "spawned", process!.identity));
       const client = new PiRpcClient(process, { commandTimeoutMs: this.config.commandTimeoutMs ?? 5_000 });
-      this.live.set(key, { process, client, runId, role, generation });
+      this.live.set(key, { process, client, runId, role, generation, ...(launchOptions.planContext ? { planContextFingerprint: JSON.stringify(launchOptions.planContext) } : {}) });
       if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
       client.on("protocol_error", () => { void this.#markProcess(runId, role, generation!, process!.identity, "failed"); });
       const state = await this.#step("Pi handshake", lease, () => client.getState());
@@ -482,6 +502,18 @@ export class PiRunner {
   }
 
   #guard(lease: AllocationLease): LeaseGuard { return { key: lease.key, owner: lease.owner, fencingToken: lease.fencingToken, now: this.clock.now() }; }
+
+  #planExtensionPaths(materialized: MaterializedPiAgentDirectory): readonly string[] {
+    const paths = materialized.trustedExtensionPathsByRole?.plan;
+    const wiki = materialized.trustedExtensionPaths[0];
+    const footer = materialized.trustedExtensionPaths[1];
+    const plan = materialized.planExtensionPath;
+    const expectedPlan = path.join(materialized.agentDir, PLAN_EXTENSION_RELATIVE_PATH);
+    if (!paths || paths.length !== 3 || materialized.trustedExtensionPaths.length !== 2 || !wiki || !footer || !plan || paths[0] !== wiki || paths[1] !== plan || paths[2] !== footer || plan !== expectedPlan || !paths.every(value => typeof value === "string" && path.isAbsolute(value)) || !path.isAbsolute(plan) || !materialized.planExtensionDigest || !/^[0-9a-f]{64}$/u.test(materialized.planExtensionDigest)) {
+      throw new Error("materialized Plan extension set is not the exact trusted wiki/Plan/footer ordering");
+    }
+    return paths;
+  }
 
   release(runId: string, role: Role): void {
     const key = `${runId}:${role}`;
