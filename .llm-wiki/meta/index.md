@@ -26,6 +26,7 @@
 - [[sources/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 - [[sources/aidev-222-review-2-remediation-complete]] — AIDEV-222 review-2 remediation complete *(created: 2026-09-04)*
 - [[sources/aidev-222-review-3-isolation-authentication]] — AIDEV-222 runtime isolation authentication *(created: 2026-09-04)*
+- [[sources/aidev-224-single-ticket-intake-ledger]] — Single-ticket intake and durable workflow ledger *(created: 2026-09-06)*
 - [[sources/durable-noncooperative-process-ownership]] — Durable non-cooperative process ownership *(created: 2026-09-02)*
 - [[sources/fenced-first-session-allocation]] — Fenced first-session allocation *(created: 2026-09-01)*
 - [[sources/obs-2026-09-01-fenced-dispatch-authority-invariant]] — Observation: Fenced dispatch authority invariant *(created: 2026-09-01)*
@@ -35,6 +36,7 @@
 - [[sources/obs-2026-09-04-aidev-222-retention-flake-removed]] — Observation: AIDEV-222 retention flake removed *(created: 2026-09-04)*
 - [[sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated]] — Observation: AIDEV-222 review-2 blockers remediated *(created: 2026-09-04)*
 - [[sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed]] — Observation: AIDEV-222 Review 3 isolation blocker closed *(created: 2026-09-04)*
+- [[sources/obs-2026-09-06-aidev-224-implementation-committed-and-verified]] — Observation: AIDEV-224 implementation committed and verified *(created: 2026-09-06)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/post-settlement-lease-loss-compensation]] — Post-settlement lease-loss compensation *(created: 2026-09-01)*
 - [[sources/registered-session-process-recovery]] — Registered-session process recovery *(created: 2026-09-02)*
@@ -57,4 +59,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-04T04:17:56.247Z* | *Total pages: 39*
+*Last updated: 2026-09-06T05:23:50.568Z* | *Total pages: 41*
