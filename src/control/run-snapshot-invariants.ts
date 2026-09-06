@@ -1,6 +1,6 @@
 import type { GitWorkspaceRecord } from "../git/domain.js";
 import { StoreConflictError } from "./workflow-store.js";
-import { isTerminal, type PhaseAttempt, type RunSnapshot, type WorkflowState } from "./domain.js";
+import { isTerminal, type PhaseAttempt, type ReconciliationStatus, type RunSnapshot, type WorkflowState } from "./domain.js";
 
 /**
  * The in-memory adapter used by the AIDEV-216 tests and the durable adapter
@@ -59,7 +59,23 @@ export function assertRunSnapshotShape(snapshot: RunSnapshot): void {
   assertGitWorkspaceShape(snapshot.gitWorkspace);
 }
 
-export function assertRunSnapshotMutation(previous: RunSnapshot, next: RunSnapshot): void {
+export type SnapshotMutationKind =
+  | "generic"
+  | "session_registration"
+  | "process_recovery"
+  | "preparation_acquire"
+  | "preparation_release"
+  | "terminal_fence_acquire"
+  | "teardown_complete"
+  | "cleanup_resource";
+
+/**
+ * Validate the complete mutation, not only scalar counters.  A snapshot is a
+ * compact projection of append-only authority; accepting a caller supplied
+ * snapshot that drops a session, attempt, gate, allocation, lease, or error
+ * would let a valid CAS rewrite the durable history underneath a live owner.
+ */
+export function assertRunSnapshotMutation(previous: RunSnapshot, next: RunSnapshot, kind: SnapshotMutationKind = "generic"): void {
   assertRunSnapshotShape(previous);
   assertRunSnapshotShape(next);
   if (next.runId !== previous.runId) fail("mutation changed run identity");
@@ -71,24 +87,112 @@ export function assertRunSnapshotMutation(previous: RunSnapshot, next: RunSnapsh
   if (JSON.stringify(previous.identity) !== JSON.stringify(next.identity)) fail("immutable run identity changed");
   assertDeliveryMutation(previous.delivery, next.delivery);
   if (previous.timestamps?.createdAt !== undefined && next.timestamps?.createdAt !== previous.timestamps.createdAt) fail("run creation timestamp changed");
+  if (previous.timestamps?.terminalAt !== undefined && next.timestamps?.terminalAt !== previous.timestamps.terminalAt) fail("terminal timestamp was rewritten");
   if (isTerminal(previous.state) && next.state !== previous.state) fail("terminal state was reopened or changed");
+  if (previous.runtimeResolution && JSON.stringify(previous.runtimeResolution) !== JSON.stringify(next.runtimeResolution)) fail("runtime resolution changed");
+  assertSessionMutation(previous, next, kind);
+  assertAttemptMutation(previous, next);
+  assertGateMutation(previous, next);
+  assertAllocationMutation(previous, next, kind);
+  assertPreparationLeaseMutation(previous, next, kind);
+  assertTerminalErrorMutation(previous, next);
+  assertReconciliationMutation(previous, next);
   if (previous.terminalFence && JSON.stringify(previous.terminalFence) !== JSON.stringify(next.terminalFence)) {
-    // The only permitted terminal-fence mutation is the exact held -> removed
-    // teardown record. No unrelated state may be smuggled through that path.
-    if (!(previous.terminalFence.state === "held" && next.terminalFence?.state === "removed")) fail("terminal fence identity changed");
+    if (!(previous.terminalFence.state === "held" && next.terminalFence?.state === "removed") || kind !== "teardown_complete") fail("terminal fence identity changed");
     const before = structuredClone(previous) as unknown as { [key: string]: unknown }; const after = structuredClone(next) as unknown as { [key: string]: unknown }; delete before["terminalFence"]; delete after["terminalFence"]; before["version"] = 0; after["version"] = 0;
     if (JSON.stringify(before) !== JSON.stringify(after)) fail("terminal fence teardown changed unrelated workflow state");
+  } else if (previous.terminalFence && JSON.stringify(previous.terminalFence) === JSON.stringify(next.terminalFence) && kind !== "cleanup_resource" && next.state !== previous.state && isTerminal(previous.state)) {
+    fail("terminal fence mutation used an unrelated workflow path");
   }
-  if (previous.runtimeResolution && JSON.stringify(previous.runtimeResolution) !== JSON.stringify(next.runtimeResolution)) fail("runtime resolution changed");
-  assertResourceMutation(previous.resources, next.resources);
+  if (!previous.terminalFence && next.terminalFence && kind !== "terminal_fence_acquire") fail("terminal fence may only be acquired by the quiescence authority");
+  assertResourceMutation(previous.resources, next.resources, kind);
   assertGitWorkspaceMutation(previous.gitWorkspace, next.gitWorkspace);
   if (previous.state !== next.state && !isLegalStateTransition(previous.state, next.state)) fail(`illegal workflow transition ${previous.state}->${next.state}`);
   if (next.state === "approved" && previous.state !== "awaiting_approval") fail("approved requires awaiting_approval");
-  if (next.state === "failed" || next.state === "cancelled" || next.state === "expired") {
-    if (!next.timestamps?.terminalAt && !previous.timestamps?.terminalAt) {
-      // Legacy AIDEV-216 snapshots predate timestamps; do not make those
-      // callers non-source-compatible. Intake-created snapshots always carry it.
+}
+
+function assertSessionMutation(previous: RunSnapshot, next: RunSnapshot, kind: SnapshotMutationKind): void {
+  for (const role of Object.keys(previous.sessions) as Array<keyof RunSnapshot["sessions"]>) {
+    const before = previous.sessions[role]; const after = next.sessions[role];
+    if (!before) continue;
+    if (!after) fail("registered session authority cannot be deleted");
+    if (before.runId !== after!.runId || before.role !== after!.role || before.sessionId !== after!.sessionId || before.sessionFile !== after!.sessionFile || before.registeredAt !== after!.registeredAt) fail("registered session identity was rewritten");
+    if (after!.processGeneration < before.processGeneration || after!.processGeneration > before.processGeneration + 1) fail("session generation changed illegally");
+    if (after!.processGeneration > before.processGeneration) {
+      if (kind !== "generic" && kind !== "process_recovery") fail("session generation changed outside process recovery");
+      if (before!.processState === "live" || before!.processState === "launching" || after!.processState !== "launching" || after!.processIdentity !== undefined) fail("session generation claim is not an exact stopped-to-launching transition");
+    } else if (before!.processIdentity !== undefined && after!.processIdentity !== before!.processIdentity) fail("process identity was rewritten");
+    if (!validSessionStateTransition(before!.processState, after!.processState)) fail("session process state transitioned illegally");
+  }
+  for (const role of Object.keys(next.sessions) as Array<keyof RunSnapshot["sessions"]>) if (!previous.sessions[role] && next.sessions[role] && kind !== "session_registration") fail("new session authority must use the registration path");
+}
+function validSessionStateTransition(from: string | undefined, to: string | undefined): boolean {
+  if (from === to) return true;
+  if (from === undefined) return to === "registered" || to === "launching" || to === "live" || to === "failed" || to === "exited";
+  if (from === "registered") return to === "launching" || to === "live" || to === "failed" || to === "exited";
+  if (from === "launching") return to === "live" || to === "failed" || to === "exited";
+  if (from === "live") return to === "failed" || to === "exited";
+  return false;
+}
+function assertAttemptMutation(previous: RunSnapshot, next: RunSnapshot): void {
+  if (next.attempts.length < previous.attempts.length) fail("phase attempt history was shortened");
+  for (let index = 0; index < previous.attempts.length; index += 1) {
+    const before = previous.attempts[index]!; const after = next.attempts[index];
+    if (!after) fail("phase attempt history was truncated");
+    if (before.phase !== after.phase || before.attempt !== after.attempt || before.handoffId !== after.handoffId || before.targetSessionId !== after.targetSessionId || before.inputHead !== after.inputHead || JSON.stringify(before.input) !== JSON.stringify(after.input) || JSON.stringify(before.feedback) !== JSON.stringify(after.feedback)) fail("phase attempt identity or immutable input was rewritten");
+    if (before.acceptedResult && JSON.stringify(before.acceptedResult) !== JSON.stringify(after.acceptedResult)) fail("accepted phase-result identity was rewritten");
+    if (before.accepted && JSON.stringify(before.accepted) !== JSON.stringify(after.accepted)) fail("accepted phase-result authority was rewritten");
+    assertDispatchMutation(before.dispatch, after.dispatch);
+  }
+}
+function assertDispatchMutation(before: PhaseAttempt["dispatch"], after: PhaseAttempt["dispatch"]): void {
+  if (before.operationKey !== after.operationKey || before.handoffId !== after.handoffId || before.targetSessionId !== after.targetSessionId || before.marker !== after.marker) fail("dispatch identity was rewritten");
+  if (after.generation < before.generation || after.recoveryPrompts < before.recoveryPrompts || (before.launchCount !== undefined && (after.launchCount ?? -1) < before.launchCount)) fail("dispatch counter decreased");
+  if (before.deadlineAt !== undefined && after.deadlineAt !== before.deadlineAt) fail("dispatch deadline was rewritten");
+  const order: Record<PhaseAttempt["dispatch"]["state"], number> = { prepared: 0, sent: 1, accepted: 2, settled: 3, result_accepted: 4 };
+  if (order[after.state] < order[before.state]) fail("dispatch state regressed");
+}
+function assertGateMutation(previous: RunSnapshot, next: RunSnapshot): void {
+  const implementAdvanced = next.implementGeneration > previous.implementGeneration;
+  for (const phase of ["review", "test"] as const) {
+    const before = previous.gates[phase]; const after = next.gates[phase];
+    if (before && !after && !implementAdvanced) fail("gate authority was deleted without a new Implement generation");
+    if (before && after && JSON.stringify(before) !== JSON.stringify(after)) fail("gate authority was rewritten");
+  }
+}
+function assertAllocationMutation(previous: RunSnapshot, next: RunSnapshot, kind: SnapshotMutationKind): void {
+  for (const role of Object.keys(previous.processAllocations ?? {}) as Array<keyof NonNullable<RunSnapshot["processAllocations"]>>) {
+    const before = previous.processAllocations?.[role]; const after = next.processAllocations?.[role];
+    if (!before) continue;
+    if (!after) {
+      if (kind !== "process_recovery" && kind !== "session_registration") fail("process allocation authority cannot be deleted by a generic CAS");
+      continue;
     }
+    if (before!.role !== after!.role || before!.owner !== after!.owner || before!.fencingToken !== after!.fencingToken || before!.generation !== after!.generation || before!.allocatedAt !== after!.allocatedAt || before!.sessionId !== after!.sessionId || before!.sessionFile !== after!.sessionFile) fail("process allocation identity was rewritten");
+    if (before!.processIdentity !== undefined && after!.processIdentity !== before!.processIdentity) fail("process allocation process identity was rewritten");
+    const order: Record<string, number> = { reserved: 0, spawning: 1, spawned: 2, termination_failed: 3, failed: 4 };
+    if ((order[after!.state] ?? -1) < (order[before!.state] ?? -1)) fail("process allocation state regressed");
+  }
+}
+function assertPreparationLeaseMutation(previous: RunSnapshot, next: RunSnapshot, kind: SnapshotMutationKind): void {
+  const before = previous.preparationLeases ?? []; const after = next.preparationLeases ?? [];
+  for (const lease of before) {
+    const match = after.find(candidate => candidate.owner === lease.owner && candidate.fencingToken === lease.fencingToken);
+    if (!match && kind !== "preparation_release") fail("preparation lease authority cannot be deleted by a generic CAS");
+    if (match && JSON.stringify(match) !== JSON.stringify(lease)) fail("preparation lease identity was rewritten");
+  }
+  if (after.length > before.length && kind !== "preparation_acquire") fail("preparation lease may only be acquired by the quiescence authority");
+}
+function assertTerminalErrorMutation(previous: RunSnapshot, next: RunSnapshot): void {
+  if (previous.terminalError && JSON.stringify(previous.terminalError) !== JSON.stringify(next.terminalError)) fail("terminal error authority was rewritten");
+}
+function assertReconciliationMutation(previous: RunSnapshot, next: RunSnapshot): void {
+  const before = previous.reconciliation; const after = next.reconciliation;
+  if (!before || !after) return;
+  if (after.generation < before.generation || (after.generation === before.generation && (after.controllerOwner !== before.controllerOwner || after.fencingToken !== before.fencingToken || after.startedAt !== before.startedAt))) fail("reconciliation authority was rewritten");
+  if (after.generation === before.generation) {
+    const order: Record<ReconciliationStatus["status"], number> = { observing: 0, recovering: 1, ready: 2, blocked: 3 };
+    if (order[after.status] < order[before.status]) fail("reconciliation status regressed");
   }
 }
 
@@ -143,15 +247,15 @@ function assertResources(resources: readonly NonNullable<RunSnapshot["resources"
     if (!["linear_issue", "sandbox", "herdr_workspace", "herdr_tab", "herdr_root_pane", "herdr_runner", "git_branch", "git_workspace", "git_bundle", "pi_session", "github_pr"].includes(resource.kind) || !["planned", "creating", "bound", "retained", "deleted", "blocked"].includes(resource.state) || !resource.scope || !resource.deterministicKey || !resource.deterministicName || resource.scope.length > 512 || resource.deterministicKey.length > 512 || resource.deterministicName.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(`${resource.scope}${resource.deterministicKey}${resource.deterministicName}`) || !Number.isSafeInteger(resource.generation) || resource.generation < 0 || typeof resource.observedAt !== "string" || !Number.isFinite(Date.parse(resource.observedAt)) || (resource.externalId !== undefined && (resource.externalId.length < 1 || resource.externalId.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(resource.externalId))) || (resource.role !== undefined && !["orchestrator", "plan", "implement", "review", "test"].includes(resource.role))) fail("invalid resource binding");
   }
 }
-function assertResourceMutation(previous: RunSnapshot["resources"], next: RunSnapshot["resources"]): void {
+function assertResourceMutation(previous: RunSnapshot["resources"], next: RunSnapshot["resources"], kind: SnapshotMutationKind = "generic"): void {
   if (!previous) return;
   if (!next || next.length < previous.length) fail("resource binding history was shortened");
   for (const before of previous) {
     const after = next.find(candidate => candidate.kind === before.kind && candidate.scope === before.scope && candidate.role === before.role);
-    if (!after || after.deterministicKey !== before.deterministicKey || after.deterministicName !== before.deterministicName || after.scope !== before.scope || (before.externalId !== undefined && after.externalId !== before.externalId) || (before.metadata !== undefined && JSON.stringify(before.metadata) !== JSON.stringify(after.metadata)) || after.generation < before.generation || !resourceStateTransition(before.state, after.state)) fail("resource binding identity or lifecycle changed illegally");
+    if (!after || after.deterministicKey !== before.deterministicKey || after.deterministicName !== before.deterministicName || after.scope !== before.scope || (before.externalId !== undefined && after.externalId !== before.externalId) || (before.metadata !== undefined && JSON.stringify(before.metadata) !== JSON.stringify(after.metadata)) || after.generation < before.generation || !resourceStateTransition(before.state, after.state, kind)) fail("resource binding identity or lifecycle changed illegally");
   }
 }
-function resourceStateTransition(from: NonNullable<RunSnapshot["resources"]>[number]["state"], to: NonNullable<RunSnapshot["resources"]>[number]["state"]): boolean { const allowed: Record<typeof from, readonly typeof to[]> = { planned: ["planned", "creating", "bound", "blocked"], creating: ["creating", "bound", "blocked"], bound: ["bound", "retained", "blocked"], retained: ["retained", "deleted", "blocked"], deleted: ["deleted"], blocked: ["blocked"] }; return allowed[from].includes(to); }
+function resourceStateTransition(from: NonNullable<RunSnapshot["resources"]>[number]["state"], to: NonNullable<RunSnapshot["resources"]>[number]["state"], kind: SnapshotMutationKind = "generic"): boolean { const allowed: Record<typeof from, readonly typeof to[]> = { planned: ["planned", "creating", "bound", "blocked"], creating: ["creating", "bound", "blocked"], bound: kind === "cleanup_resource" ? ["bound", "retained", "deleted", "blocked"] : ["bound", "retained", "blocked"], retained: ["retained", "deleted", "blocked"], deleted: ["deleted"], blocked: ["blocked"] }; return allowed[from].includes(to); }
 
 function assertUnique(values: readonly string[], label: string): void {
   if (new Set(values).size !== values.length) fail(`duplicate ${label}`);

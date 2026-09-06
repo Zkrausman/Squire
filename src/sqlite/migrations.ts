@@ -294,6 +294,68 @@ CREATE TABLE IF NOT EXISTS intake_artifact_intents (
   status TEXT NOT NULL CHECK (status IN ('intent','published','committed','quarantined'))
 );
 `;
+const UP_2 = `
+CREATE TABLE IF NOT EXISTS webhook_claim_leases (
+  provider TEXT NOT NULL,
+  delivery_id TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL CHECK (claimed_at >= 0),
+  PRIMARY KEY(provider, delivery_id),
+  FOREIGN KEY(provider, delivery_id) REFERENCES webhook_receipts(provider, delivery_id) ON DELETE CASCADE
+);
+INSERT OR IGNORE INTO webhook_claim_leases(provider, delivery_id, claimed_at)
+  SELECT provider, delivery_id, CAST(received_at AS INTEGER) FROM webhook_receipts;
+CREATE TABLE IF NOT EXISTS reconciliation_decisions (
+  generation INTEGER NOT NULL REFERENCES reconciliation_cycles(generation),
+  run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),
+  provider TEXT NOT NULL,
+  resource_kind TEXT NOT NULL,
+  resource_scope TEXT NOT NULL,
+  role_key TEXT NOT NULL DEFAULT '',
+  deterministic_key TEXT NOT NULL,
+  deterministic_name TEXT NOT NULL,
+  planned_external_id TEXT,
+  observed_external_id TEXT,
+  action TEXT NOT NULL CHECK (action IN ('observe','adopt','create','recover','block','ignore')),
+  reason TEXT NOT NULL,
+  decision_json TEXT NOT NULL,
+  decided_at TEXT NOT NULL,
+  PRIMARY KEY(generation, run_id, provider, resource_kind, resource_scope, role_key, deterministic_key)
+);
+CREATE TABLE IF NOT EXISTS reconciliation_actions (
+  generation INTEGER NOT NULL REFERENCES reconciliation_cycles(generation),
+  run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),
+  provider TEXT NOT NULL,
+  action_key TEXT NOT NULL,
+  action TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('planned','running','completed','failed')),
+  owner TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 0),
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  error_message TEXT,
+  PRIMARY KEY(generation, run_id, provider, action_key)
+);
+CREATE TABLE IF NOT EXISTS cleanup_resource_journal (
+  run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),
+  resource_kind TEXT NOT NULL,
+  resource_scope TEXT NOT NULL,
+  role_key TEXT NOT NULL DEFAULT '',
+  deterministic_key TEXT NOT NULL,
+  deterministic_name TEXT NOT NULL,
+  external_id TEXT,
+  binding_generation INTEGER NOT NULL CHECK (binding_generation >= 0),
+  operation TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('planned','running','completed','failed')),
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  owner TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL CHECK (fencing_token >= 0),
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  error_message TEXT,
+  PRIMARY KEY(run_id, resource_kind, resource_scope, role_key, deterministic_key, operation)
+);
+`;
+
 const DOWN_1 = `
 DROP TABLE IF EXISTS intake_artifact_intents;
 DROP TABLE IF EXISTS cleanup_journal;
@@ -318,10 +380,18 @@ DROP TABLE IF EXISTS ticket_run_locks;
 DROP TABLE IF EXISTS workflow_runs;
 `;
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const SQLITE_APPLICATION_ID = 0x53515245;
+const DOWN_2 = `
+DROP TABLE IF EXISTS cleanup_resource_journal;
+DROP TABLE IF EXISTS reconciliation_actions;
+DROP TABLE IF EXISTS reconciliation_decisions;
+DROP TABLE IF EXISTS webhook_claim_leases;
+`;
+
 export const MIGRATIONS: readonly SqliteMigration[] = Object.freeze([
   { version: 1, name: "initial-workflow-ledger", up: UP_1, down: DOWN_1, checksum: createHash("sha256").update(`1\ninitial-workflow-ledger\n${UP_1}\n${DOWN_1}`, "utf8").digest("hex") },
+  { version: 2, name: "reconciliation-and-exact-cleanup", up: UP_2, down: DOWN_2, checksum: createHash("sha256").update(`2\nreconciliation-and-exact-cleanup\n${UP_2}\n${DOWN_2}`, "utf8").digest("hex") },
 ]);
 
 export class MigrationError extends Error { constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = "MigrationError"; } }
