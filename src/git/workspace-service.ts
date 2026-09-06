@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { Clock, ContractReference, Lease, LeaseGuard, RunPreparationLease, RunSnapshot, RunTerminalFence } from "../control/domain.js";
+import type { Clock, ContractReference, Lease, LeaseGuard, RunPreparationLease, RunSideEffectGuard, RunSnapshot, RunTerminalFence } from "../control/domain.js";
 import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
 import { SafeArtifactReader, type ImmutableArtifactReader } from "../control/safe-artifact-reader.js";
 import { buildBundleManifest, buildWorkspaceManifest, buildWorkspaceSpec, canonicalJson, FileGitContractWriter, GitWorkspaceContractError, GitWorkspaceContractValidator, serializeCanonical, sha256Bytes, type GitContractArtifactWriter } from "./contracts.js";
@@ -58,6 +58,8 @@ export interface GitWorkspaceServiceOptions {
   readonly allowLocalTransport?: boolean;
   /** The publisher boundary is strict by default. */
   readonly requirePublishingGates?: boolean;
+  /** Reconciled permit required immediately before a Git child is spawned. */
+  readonly sideEffectGuard?: RunSideEffectGuard;
 }
 
 interface GitLeaseContext {
@@ -184,6 +186,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   readonly #verifierVersion: string;
   readonly #allowLocalTransport: boolean;
   readonly #requirePublishingGates: boolean;
+  readonly #sideEffectGuard: RunSideEffectGuard | undefined;
 
   constructor(options: GitWorkspaceServiceOptions) {
     this.#store = options.store;
@@ -214,6 +217,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     if (!/^aidev-222-git-verifier-v1(?:\.[0-9]+)*$/u.test(this.#verifierVersion)) throw new Error("invalid Git verifier version");
     this.#allowLocalTransport = options.allowLocalTransport === true;
     this.#requirePublishingGates = options.requirePublishingGates !== false;
+    this.#sideEffectGuard = options.sideEffectGuard;
   }
 
   async createSpec(input: import("./domain.js").GitWorkspaceSpecInput): Promise<ContractReference> {
@@ -1365,6 +1369,9 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     };
     try {
       await this.#assertFilesystemIsolation(options.signal);
+      const guard = this.#sideEffectGuard;
+      const permit = guard?.require(context.runId);
+      if (permit && guard) guard.assertValid(context.runId, permit);
       const result = await this.#command.run(args, options);
       await spawnPersist;
       if (spawnFailure) throw spawnFailure;

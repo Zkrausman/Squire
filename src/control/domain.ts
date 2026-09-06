@@ -138,6 +138,117 @@ export interface RunPreparationLease {
   state: "held";
 }
 
+/** Durable identity projections owned by the intake/ledger boundary.  These
+ * values are observations of immutable external authority; they do not
+ * replace the immutable artifact they reference. */
+export interface RunIdentity {
+  linearIssueId: string;
+  linearIdentifier: string;
+  linearTeamId: string;
+  linearStateId: string;
+  repositoryOwner: string;
+  repositoryName: string;
+  baseBranch: string;
+  baseSha: string;
+  objectFormat: "sha1" | "sha256";
+  normalizedTicket: ContractReference;
+  normalizedTicketDigest: string;
+  /** The spelling published by normalized-ticket v1. */
+  contractFeatureBranch: string;
+  /** The spelling accepted by AIDEV-222 for physical Git operations. */
+  physicalFeatureBranch: string;
+  intakeIdempotencyKey: string;
+}
+
+export interface RunTimestamps {
+  createdAt: string;
+  updatedAt: string;
+  terminalAt?: string;
+  expiresAt?: string;
+  successRetentionUntil?: string;
+  failureRetentionUntil?: string;
+}
+
+export type ExternalResourceKind =
+  | "linear_issue" | "sandbox" | "herdr_workspace" | "herdr_tab"
+  | "herdr_root_pane" | "herdr_runner" | "git_branch" | "git_workspace"
+  | "git_bundle" | "pi_session" | "github_pr";
+export type ExternalResourceLifecycle = "planned" | "creating" | "bound" | "retained" | "deleted" | "blocked";
+export interface ExternalResourceBinding {
+  kind: ExternalResourceKind;
+  scope: string;
+  role?: Role;
+  deterministicKey: string;
+  deterministicName: string;
+  externalId?: string;
+  generation: number;
+  state: ExternalResourceLifecycle;
+  metadata?: Readonly<Record<string, unknown>>;
+  observedAt: string;
+}
+
+export interface DeliveryIdentifiers {
+  repositoryOwner?: string;
+  repositoryName?: string;
+  featureBranch?: string;
+  bundlePath?: string;
+  bundleDigest?: string;
+  githubRepositoryId?: string;
+  githubNodeId?: string;
+  pullRequestNumber?: number;
+  pullRequestNodeId?: string;
+  pullRequestUrl?: string;
+  observedHead?: string;
+  approvalObservationId?: string;
+  checksObservationId?: string;
+}
+
+export interface OperatorErrorRecord {
+  errorId: string;
+  runId?: string;
+  code: string;
+  message: string;
+  component: string;
+  retryable: boolean;
+  operatorActionRequired: boolean;
+  evidence: readonly ArtifactReference[];
+  fingerprint: string;
+  firstOccurredAt: string;
+  lastOccurredAt: string;
+  occurrenceCount: number;
+  resolvedAt?: string;
+}
+export type OperatorErrorSummary = Pick<OperatorErrorRecord, "errorId" | "code" | "message" | "component" | "retryable" | "operatorActionRequired" | "occurrenceCount" | "lastOccurredAt">;
+
+export interface ReconciliationStatus {
+  generation: number;
+  status: "observing" | "recovering" | "ready" | "blocked";
+  controllerOwner: string;
+  fencingToken: number;
+  startedAt: string;
+  completedAt?: string;
+  blockingErrorId?: string;
+}
+
+/** A permit is intentionally a branded, non-serializable value.  External
+ * adapters must receive a permit from the reconciled gate immediately before
+ * a side effect; a database row or a caller-supplied object is not enough. */
+export interface SideEffectPermit {
+  readonly runId: string;
+  readonly databaseIdentity: string;
+  readonly reconciliationGeneration: number;
+  readonly controllerOwner: string;
+  readonly fencingToken: number;
+  readonly issuedAt: number;
+  readonly [SIDE_EFFECT_PERMIT_BRAND]: true;
+}
+export const SIDE_EFFECT_PERMIT_BRAND: unique symbol = Symbol("squire.side-effect-permit");
+export interface RunSideEffectGuard {
+  require(runId: string): SideEffectPermit;
+  assertValid(runId: string, permit: SideEffectPermit): void;
+  invalidate(): void;
+}
+
 import type { GitWorkspaceRecord } from "../git/domain.js";
 
 export interface RunSnapshot {
@@ -163,6 +274,14 @@ export interface RunSnapshot {
   preparationLeases?: readonly RunPreparationLease[];
   /** AIDEV-222's operation state; RunQuiescenceAuthority remains the only lifecycle authority. */
   gitWorkspace?: GitWorkspaceRecord;
+  /** Additive AIDEV-224 projections. Existing AIDEV-216 callers may omit them. */
+  identity?: RunIdentity;
+  timestamps?: RunTimestamps;
+  resources?: readonly ExternalResourceBinding[];
+  delivery?: DeliveryIdentifiers;
+  lastError?: OperatorErrorSummary;
+  operatorBlocked?: boolean;
+  reconciliation?: ReconciliationStatus;
 }
 export interface RunPrecondition { version: number; state?: WorkflowState; currentHead?: string }
 export interface Lease { key: string; owner: string; fencingToken: number; expiresAt: number }

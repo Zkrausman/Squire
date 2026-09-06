@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
+import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RunSideEffectGuard, RuntimeResolution, SessionRegistration } from "../control/domain.js";
 import type { GitWorkspaceReadiness } from "../git/domain.js";
 import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
 import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
@@ -20,6 +20,8 @@ export interface RunnerConfig {
   runLifecycleAuthority?: RunQuiescenceAuthority;
   /** Every production and test composition must supply AIDEV-222 readiness. */
   workspaceReadiness: GitWorkspaceReadiness;
+  /** Optional until the startup reconciler is composed; when present it gates the final spawn boundary. */
+  sideEffectGuard?: RunSideEffectGuard;
   workspace?: string;
   sessionRoot?: string;
   commandTimeoutMs?: number;
@@ -207,6 +209,8 @@ export class PiRunner {
         // mutable materialization/instruction work and immediately before the
         // child factory is allowed to create a process.
         await this.config.workspaceReadiness.verify(runId);
+        const permit = this.config.sideEffectGuard?.require(runId);
+        if (permit) this.config.sideEffectGuard?.assertValid(runId, permit);
         return this.factory.spawn(spec, signal, ownProcess);
       }, ownProcess);
       await this.#step("spawn ownership claim", lease, () => this.#setAllocation(runId, role, lease, "spawned", process!.identity));

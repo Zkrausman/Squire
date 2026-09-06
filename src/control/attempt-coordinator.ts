@@ -1,4 +1,4 @@
-import { isTerminal, type Clock, type ContractReference, type DispatchRecord, type Lease, type LeaseGuard, type PhaseAttempt, type Role, type RunSnapshot } from "./domain.js";
+import { isTerminal, type Clock, type ContractReference, type DispatchRecord, type Lease, type LeaseGuard, type PhaseAttempt, type Role, type RunSideEffectGuard, type RunSnapshot } from "./domain.js";
 import type { WorkflowStore } from "./workflow-store.js";
 import { StoreConflictError } from "./workflow-store.js";
 import { triggerPrompt } from "./handoff-dispatcher.js";
@@ -22,6 +22,7 @@ export interface AttemptExecution {
   handoffId: string;
   triggerPath: string;
   owner: string;
+  sideEffectPermit?: import("./domain.js").SideEffectPermit;
   signal?: AbortSignal;
   crashAfter?: "before_spawn" | "after_spawn" | "send_intent" | "prompt_write" | "acceptance" | "tool_work" | "result_write" | "result_acceptance";
 }
@@ -32,7 +33,7 @@ export class FencedLeaseError extends Error { constructor() { super("dispatch le
 
 /** Integrated persisted dispatch/recovery/lifecycle coordinator. */
 export class AttemptCoordinator {
-  constructor(readonly store: WorkflowStore, readonly runtime: AttemptRuntime, readonly results: AttemptResultPort, readonly clock: Clock, readonly maxLaunches = 2, readonly leaseMs = 30_000, readonly maxRecoveryPrompts = 1) {}
+  constructor(readonly store: WorkflowStore, readonly runtime: AttemptRuntime, readonly results: AttemptResultPort, readonly clock: Clock, readonly maxLaunches = 2, readonly leaseMs = 30_000, readonly maxRecoveryPrompts = 1, readonly sideEffectGuard?: RunSideEffectGuard) {}
 
   async execute(options: AttemptExecution): Promise<"result_accepted"> {
     const initial = await this.#attempt(options.runId, options.handoffId);
@@ -58,6 +59,7 @@ export class AttemptCoordinator {
       attempt = await this.#prepareAttempt(lease, options, attempt, roleTimeoutMs);
       const launches = attempt.attempt.dispatch.launchCount ?? 0;
       await this.#fence(lease);
+      this.sideEffectGuard?.assertValid(options.runId, options.sideEffectPermit ?? this.sideEffectGuard.require(options.runId));
       const ensured = await this.runtime.ensureProcess(options.runId, attempt.attempt.phase, launches < this.maxLaunches);
       await this.#fence(lease);
       if (ensured.launched) attempt = await this.#updateDispatch(lease, options.handoffId, dispatch => ({ ...dispatch, launchCount: launches + 1, generation: dispatch.generation + 1 }));
@@ -135,7 +137,7 @@ export class AttemptCoordinator {
     const markerObserved = second.entries.some(entry => JSON.stringify(entry).includes(marker));
     return { markerObserved, stableAbsence: !markerObserved && first.complete && second.complete && first.cursor === second.cursor && JSON.stringify(first.entries) === JSON.stringify(second.entries), cursor: second.cursor };
   }
-  async #prompt(lease: LeaseContext, message: string): Promise<void> { await this.#fence(lease); await this.runtime.prompt(message); await this.#fence(lease); }
+  async #prompt(lease: LeaseContext, message: string): Promise<void> { await this.#fence(lease); if (this.sideEffectGuard) this.sideEffectGuard.assertValid(lease.runId, this.sideEffectGuard.require(lease.runId)); await this.runtime.prompt(message); await this.#fence(lease); }
   async #waitForSettled(lease: LeaseContext, deadlineAt: number, signal: AbortSignal | undefined): Promise<void> {
     await this.#fence(lease); await this.#withDeadline(this.runtime.waitForSettled(Math.max(0, deadlineAt - this.clock.now())), deadlineAt, signal); await this.#fence(lease);
   }

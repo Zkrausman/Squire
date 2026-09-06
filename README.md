@@ -2,7 +2,7 @@
 
 Squire is an AI delivery platform designed to take one software ticket through a controlled **Plan → Implement → Review → Test** workflow and produce a merge-ready pull request for a human to merge.
 
-The project is currently building its MVP. The foundation includes strict workflow contracts, durable orchestration state, isolated top-level Pi sessions, and run-scoped model and wiki configuration.
+The project is currently building its MVP. The foundation includes strict workflow contracts, durable orchestration state, isolated top-level Pi sessions, and run-scoped model and wiki configuration. Single-ticket Linear intake, the file-backed SQLite workflow ledger, startup reconciliation barrier, lifecycle retention, and integration ports are documented in [AIDEV-224 intake and ledger](docs/aidev-224-intake-ledger-reconciliation.md).
 
 ## What’s coming
 
@@ -10,7 +10,7 @@ The remaining MVP work will connect those foundations into a complete delivery p
 
 - a ticket-private Git repository and worktree;
 - a persistent Docker Sandbox for each ticket;
-- ticket intake, scheduling, and crash recovery;
+- concrete Sandbox/Herdr scheduling and crash recovery adapters;
 - verified bundle export, branch publication, and pull-request creation;
 - approval policy with a human-only merge boundary;
 - an end-to-end workflow validation; and

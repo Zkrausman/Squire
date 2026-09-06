@@ -12,9 +12,14 @@
     "test": "npm run build && node --test test/contracts.test.mjs dist/test/*.test.js"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
     "@types/node": "^24.3.0",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@linear/sdk": "93.0.1",
+    "better-sqlite3": "12.4.1"
   }
 }
