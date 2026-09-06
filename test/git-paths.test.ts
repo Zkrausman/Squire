@@ -19,6 +19,21 @@ test("creates fixed run-scoped paths and rejects symlinked ancestors", async t =
   await assert.rejects(() => assertSafeAncestors(path.join(ticketRoot, "safe", "one.json", "child"), ticketRoot, false), GitPathSecurityError);
 });
 
+test("concurrent private-directory initialization preserves directory identity", async t => {
+  const root = await mkdtemp(path.join("/tmp", "squire-path-concurrent-directory-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const artifacts = path.join(root, "artifacts");
+  const intake = path.join(artifacts, "intake");
+  const target = path.join(intake, "run");
+  await ensurePrivateDirectory(artifacts, root);
+  await ensurePrivateDirectory(intake, root);
+  const results = await Promise.allSettled(Array.from({ length: 64 }, () => ensurePrivateDirectory(target, root)));
+  assert.equal(results.every(result => result.status === "fulfilled"), true);
+  const identity = await inspectResource(target, "directory", true, root);
+  assert.equal(identity.kind, "directory");
+  assert.equal(identity.mode, 0o700);
+});
+
 test("rejects symlinks and hardlinked sensitive files without following them", async t => {
   const fs = await import("node:fs/promises");
   const ticketRoot = await fs.mkdtemp(path.join("/tmp", "squire-path-negative-"));

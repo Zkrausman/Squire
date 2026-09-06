@@ -46,3 +46,5 @@
 {"slug":"obs-2026-09-04-aidev-222-retention-flake-removed","title":"AIDEV-222 retention flake removed","relevance":"high","timestamp":"2026-09-04T04:17:51.240Z","kind":"observe"}
 {"slug":"obs-2026-09-06-aidev-224-implementation-committed-and-verified","title":"AIDEV-224 implementation committed and verified","relevance":"high","timestamp":"2026-09-06T05:23:06.444Z","kind":"observe"}
 {"slug":"aidev-224-single-ticket-intake-ledger","title":"Single-ticket intake and durable workflow ledger","category":"architecture","timestamp":"2026-09-06T05:23:27.623Z","kind":"retro"}
+{"slug":"obs-2026-09-06-directory-identity-race-fixed-in-intake-artifact-setup","title":"Directory identity race fixed in intake artifact setup","relevance":"high","timestamp":"2026-09-06T05:29:52.729Z","kind":"observe"}
+{"slug":"directory-identity-race-concurrent-intake","title":"Concurrent directory identity race","category":"bugfix","timestamp":"2026-09-06T05:29:57.635Z","kind":"retro"}

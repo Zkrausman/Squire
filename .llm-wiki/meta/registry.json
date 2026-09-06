@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-06T05:23:50.568Z",
+  "last_updated": "2026-09-06T05:29:57.656Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -218,6 +218,15 @@
       "created": "2026-09-06",
       "updated": "2026-09-06"
     },
+    "sources/directory-identity-race-concurrent-intake": {
+      "type": "source",
+      "title": "Concurrent directory identity race",
+      "category": "bugfix",
+      "status": "insight",
+      "slug": "directory-identity-race-concurrent-intake",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
+    },
     "sources/durable-noncooperative-process-ownership": {
       "type": "source",
       "title": "Durable non-cooperative process ownership",
@@ -378,6 +387,24 @@
       "relevance": "high",
       "observed_at": "2026-09-06T05:23:06.434Z",
       "source_context": "Implement phase completion",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
+    },
+    "sources/obs-2026-09-06-directory-identity-race-fixed-in-intake-artifact-setup": {
+      "type": "source",
+      "title": "Observation: Directory identity race fixed in intake artifact setup",
+      "tags": [
+        "AIDEV-224",
+        "intake",
+        "filesystem",
+        "race",
+        "security"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-06-directory-identity-race-fixed-in-intake-artifact-setup",
+      "relevance": "high",
+      "observed_at": "2026-09-06T05:29:52.725Z",
+      "source_context": "Fixing concurrent immutable normalized-ticket artifact publication",
       "created": "2026-09-06",
       "updated": "2026-09-06"
     },

@@ -174,7 +174,10 @@
     "sources/aidev-222-isolated-git-workspace",
     "syntheses/aidev-222-isolated-git-workspace"
   ],
-  "sources/aidev-224-single-ticket-intake-ledger": [],
+  "sources/aidev-224-single-ticket-intake-ledger": [
+    "sources/directory-identity-race-concurrent-intake"
+  ],
+  "sources/directory-identity-race-concurrent-intake": [],
   "sources/durable-noncooperative-process-ownership": [
     "sources/SRC-2026-09-02-002",
     "sources/fenced-first-session-allocation",
@@ -208,6 +211,7 @@
     "syntheses/aidev-222-isolated-git-workspace"
   ],
   "sources/obs-2026-09-06-aidev-224-implementation-committed-and-verified": [],
+  "sources/obs-2026-09-06-directory-identity-race-fixed-in-intake-artifact-setup": [],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
   ],

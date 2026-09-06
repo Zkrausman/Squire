@@ -283,14 +283,15 @@ export async function inspectResource(
     const descriptor = await openNoFollowWithin(absolute, containmentRoot, flags);
     try {
       const descriptorInfo = await descriptor.stat();
-      if (!sameStat(before, descriptorInfo)) throw new GitPathSecurityError(`resource changed during descriptor identity inspection: ${absolute}`);
+      const sameIdentity = kind === "directory" ? sameStatExceptSizeAndTime : sameStat;
+      if (!sameIdentity(before, descriptorInfo)) throw new GitPathSecurityError(`resource changed during descriptor identity inspection: ${absolute}`);
       const after = await lstat(absolute);
-      if (!sameStat(descriptorInfo, after)) throw new GitPathSecurityError(`resource changed during identity inspection: ${absolute}`);
+      if (!sameIdentity(descriptorInfo, after)) throw new GitPathSecurityError(`resource changed during identity inspection: ${absolute}`);
       return resourceIdentity(absolute, kind, descriptorInfo);
     } finally { await descriptor.close(); }
   }
   const after = await lstat(absolute);
-  if (!sameStat(before, after)) throw new GitPathSecurityError(`resource changed during identity inspection: ${absolute}`);
+  if (!(expectedKind === "directory" ? sameStatExceptSizeAndTime(before, after) : sameStat(before, after))) throw new GitPathSecurityError(`resource changed during identity inspection: ${absolute}`);
   return resourceIdentity(absolute, kind, after);
 }
 
