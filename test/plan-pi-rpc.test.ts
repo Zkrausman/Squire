@@ -102,13 +102,14 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
     const baseSpec = launchSpec(root, materialized.agentDir, materialized.homeDir, materialized.wikiHomeDir, planExtensions!);
     const spec: ProcessLaunch = { ...baseSpec, args: [...baseSpec.args, "--extension", probePath] };
     assert.ok(spec.args.includes("--offline"));
-    assert.equal(spec.args[spec.args.indexOf("--tools") + 1], "read,grep,find,ls,wiki_recall,squire_submit_plan");
+    assert.equal(spec.args[spec.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
     const probe = await probeRpc(spec);
     assert.equal((probe.state["model"] as Record<string, unknown>)["provider"], "openai-codex");
     assert.equal((probe.state["model"] as Record<string, unknown>)["id"], "gpt-5.6-luna");
     assert.equal(probe.state["thinkingLevel"], "high");
     assert.doesNotMatch(`${probe.output}\n${probe.errors}`, /extension_error|failed to load extension|cannot find module|syntaxerror/iu);
-    assert.match(probe.output, /ACTIVE_TOOLS:read,grep,find,ls,wiki_recall,squire_submit_plan/u);
+    assert.match(probe.output, /ACTIVE_TOOLS:squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan/u);
+    assert.doesNotMatch(probe.output, /ACTIVE_TOOLS:.*(?:^|,)(?:read|grep|find|ls)(?:,|$)/u);
     assert.doesNotMatch(probe.output, /wiki_(?:capture_source|ingest|ensure_page|lint|observe|retro|bootstrap|watch|log_event|rebuild_meta|reindex_embeddings|search|status)/u);
     assert.equal(probe.errors, "");
     assert.match(String(probe.state["sessionFile"]), /sessions/u);

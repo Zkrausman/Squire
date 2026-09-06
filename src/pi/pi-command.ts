@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ContractReference, Role, SessionRegistration } from "../control/domain.js";
-import { PLAN_ALLOWED_BUILTIN_TOOLS, PLAN_ALLOWED_WIKI_TOOLS, PLAN_TOOL_NAME } from "../plan/domain.js";
+import { PLAN_ALLOWED_TOOLS, PLAN_FILESYSTEM_POLICY_SHA256 } from "../plan/domain.js";
 import type { ProcessLaunch } from "./pi-process.js";
 import { normalizeRoleConfig, type PiRoleConfig } from "./pi-configuration.js";
 
@@ -64,8 +64,10 @@ export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
 
   if (options.role === "plan") {
     // AIDEV-223 is not merged at this base: this is a Pi tool allowlist, not
-    // an OS sandbox. No shell, edit, write, or privileged Git tool is exposed.
-    args.push("--offline", "--tools", [...PLAN_ALLOWED_BUILTIN_TOOLS, ...PLAN_ALLOWED_WIKI_TOOLS, PLAN_TOOL_NAME].join(","));
+    // an OS sandbox. The stock read/grep/find/ls tools are deliberately not
+    // enabled because they accept unrestricted absolute paths. The trusted
+    // Plan extension owns the replacement path-scoped tools.
+    args.push("--offline", "--tools", PLAN_ALLOWED_TOOLS.join(","));
   } else if (options.planContext) {
     throw new Error("Plan launch context cannot be used for another role");
   }
@@ -81,6 +83,14 @@ export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
   if (options.homeDir !== undefined && options.wikiHomeDir !== undefined) {
     env["HOME"] = options.homeDir;
     env["WIKI_HOME"] = options.wikiHomeDir;
+  }
+  if (options.role === "plan") {
+    // These roots are controller-derived, not model-supplied. The generated
+    // Plan filesystem tools reject every path outside this exact workspace
+    // root and use the wiki root only to label the project-only scope.
+    env["SQUIRE_PLAN_FILESYSTEM_POLICY_SHA256"] = PLAN_FILESYSTEM_POLICY_SHA256;
+    env["SQUIRE_PLAN_WORKSPACE_ROOT"] = path.resolve(workspace);
+    env["SQUIRE_PLAN_WIKI_ROOT"] = path.resolve(workspace, ".llm-wiki");
   }
   if (options.role === "plan" && options.planContext) {
     const plan = options.planContext;

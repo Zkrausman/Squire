@@ -53,7 +53,11 @@ test("Plan command is independently read-only and carries only controller-bound 
     },
   });
   assert.ok(command.args.includes("--offline"));
-  assert.equal(command.args[command.args.indexOf("--tools") + 1], "read,grep,find,ls,wiki_recall,squire_submit_plan");
+  assert.equal(command.args[command.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
+  assert.equal(command.env["SQUIRE_PLAN_FILESYSTEM_POLICY_SHA256"], "e955c149b9e92a504ddb45676c7046a6271094dbc1e71a465d4e4c0cdc21ae2f");
+  assert.equal(command.env["SQUIRE_PLAN_WORKSPACE_ROOT"], "/tmp/plan-workspace");
+  assert.equal(command.env["SQUIRE_PLAN_WIKI_ROOT"], "/tmp/plan-workspace/.llm-wiki");
+  assert.doesNotMatch(command.args[command.args.indexOf("--tools") + 1]!, /(?:^|,)(?:read|grep|find|ls)(?:,|$)/u);
   assert.ok(command.args.includes("--no-approve"));
   const extensions = command.args.flatMap((value, index) => value === "--extension" ? [command.args[index + 1]!] : []);
   assert.deepEqual(extensions, ["/trusted/wiki/index.ts", "/tmp/plan-agent/extensions/plan.mjs", "/tmp/plan-agent/extensions/footer.mjs"]);

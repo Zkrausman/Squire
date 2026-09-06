@@ -1,32 +1,42 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { buildTrustedPlanExtensionSource, createPlanSubmissionTool, PLAN_TOOL_PARAMETERS } from "../src/plan/plan-extension.js";
+import { PLAN_FILESYSTEM_POLICY_SHA256 } from "../src/plan/domain.js";
 import { PlanResultDiscovery } from "../src/plan/plan-result-discovery.js";
 import { createPlanFixture, type PlanFixture } from "./support/plan-fixtures.js";
 
 const execFile = promisify(execFileCallback);
 
-async function runGeneratedExtension(fixture: PlanFixture, submission: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function runGeneratedTool(fixture: PlanFixture, toolName: string, input: Record<string, unknown>, extraEnv: Record<string, string> = {}): Promise<Record<string, unknown>> {
   const extension = path.join(fixture.root, `plan-extension-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`);
   const driver = path.join(fixture.root, "invoke-plan-extension.mjs");
   await writeFile(extension, buildTrustedPlanExtensionSource(), { mode: 0o600 });
   await writeFile(driver, `
-    let tool;
+    const tools = new Map();
     const module = await import(${JSON.stringify(new URL(`file://${extension}`).href)});
-    module.default({ registerTool(value) { tool = value; } });
-    if (!tool) throw new Error("Plan tool was not registered");
-    const input = JSON.parse(Buffer.from(process.env.PLAN_SUBMISSION_B64, "base64").toString("utf8"));
-    const result = await tool.execute("test-call", input);
-    process.stdout.write(JSON.stringify(result));
+    module.default({ registerTool(value) { tools.set(value.name, value); } });
+    const tool = tools.get(process.env.PLAN_TOOL_NAME);
+    if (!tool) throw new Error("requested Plan tool was not registered: " + process.env.PLAN_TOOL_NAME);
+    const input = JSON.parse(Buffer.from(process.env.PLAN_TOOL_INPUT_B64, "base64").toString("utf8"));
+    try {
+      const result = await tool.execute("test-call", input);
+      process.stdout.write(JSON.stringify({ ok: true, result }));
+    } catch (error) {
+      process.stdout.write(JSON.stringify({ ok: false, error: String(error && error.message || error) }));
+    }
   `, { mode: 0o600 });
   const env = {
     ...process.env,
+    ...extraEnv,
     SQUIRE_TICKET_ROOT: fixture.ticketRoot,
+    SQUIRE_PLAN_FILESYSTEM_POLICY_SHA256: PLAN_FILESYSTEM_POLICY_SHA256,
+    SQUIRE_PLAN_WORKSPACE_ROOT: fixture.workspace,
+    SQUIRE_PLAN_WIKI_ROOT: path.join(fixture.workspace, ".llm-wiki"),
     SQUIRE_PLAN_INPUT_PATH: fixture.phaseInput.path,
     SQUIRE_PLAN_INPUT_SHA256: fixture.phaseInput.sha256,
     SQUIRE_PLAN_RUN_ID: "run_planfixture01",
@@ -38,10 +48,21 @@ async function runGeneratedExtension(fixture: PlanFixture, submission: Record<st
     SQUIRE_PLAN_COMPLETED_AT: "2026-09-01T12:13:00.000Z",
     SQUIRE_PLAN_ALLOWED_VALIDATION_COMMAND_IDS: JSON.stringify(["contracts", "tests"]),
     SQUIRE_PLAN_REQUIRED_VALIDATION_COMMAND_IDS: JSON.stringify(["contracts", "tests"]),
-    PLAN_SUBMISSION_B64: Buffer.from(JSON.stringify(submission), "utf8").toString("base64"),
+    PLAN_TOOL_NAME: toolName,
+    PLAN_TOOL_INPUT_B64: Buffer.from(JSON.stringify(input), "utf8").toString("base64"),
   };
   const { stdout } = await execFile(process.execPath, [driver], { cwd: fixture.workspace, env });
-  return JSON.parse(stdout) as Record<string, unknown>;
+  const envelope = JSON.parse(stdout) as { ok: boolean; result?: Record<string, unknown>; error?: string };
+  if (!envelope.ok) throw new Error(envelope.error ?? "generated Plan tool failed");
+  return envelope.result!;
+}
+
+async function assertGeneratedToolRejects(fixture: PlanFixture, toolName: string, input: Record<string, unknown>, expected: RegExp): Promise<void> {
+  await assert.rejects(runGeneratedTool(fixture, toolName, input), expected);
+}
+
+async function runGeneratedExtension(fixture: PlanFixture, submission: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return runGeneratedTool(fixture, "squire_submit_plan", submission);
 }
 
 function submission(): Record<string, unknown> {
@@ -79,7 +100,7 @@ test("Plan submission boundary exposes no mutating tools and permits one bounded
   } finally { await import("node:fs/promises").then(fs => fs.rm(fixture.root, { recursive: true, force: true })); }
 });
 
-test("generated Plan extension is dependency-free, registers one terminating tool, and publishes exact outputs", async () => {
+test("generated Plan extension is dependency-free, registers trusted read tools plus one terminating publisher, and publishes exact outputs", async () => {
   const fixture = await createPlanFixture();
   try {
     const source = buildTrustedPlanExtensionSource();
@@ -102,6 +123,90 @@ test("generated Plan extension is dependency-free, registers one terminating too
     changed["summary"] = "A different immutable plan.";
     await assert.rejects(runGeneratedExtension(fixture, changed), /immutable Plan output conflict/iu);
     assert.equal((await new PlanResultDiscovery(fixture.ticketRoot).discover(1))!.sha256, discovered!.sha256);
+  } finally {
+    await import("node:fs/promises").then(fs => fs.rm(fixture.root, { recursive: true, force: true }));
+  }
+});
+
+test("Plan filesystem tools enforce the project-only descriptor-bound read boundary against forbidden paths and races", async () => {
+  const fixture = await createPlanFixture();
+  try {
+    await mkdir(path.join(fixture.workspace, "src"), { recursive: true, mode: 0o700 });
+    await mkdir(path.join(fixture.workspace, ".llm-wiki", "wiki"), { recursive: true, mode: 0o700 });
+    await writeFile(path.join(fixture.workspace, "src", "main.ts"), "export const planSentinel = true;\n", { mode: 0o600 });
+    await writeFile(path.join(fixture.workspace, "src", "other.ts"), "export const other = planSentinel;\n", { mode: 0o600 });
+    await writeFile(path.join(fixture.workspace, ".llm-wiki", "wiki", "plan.md"), "# Project-only Plan context\n", { mode: 0o600 });
+    const outside = path.join(fixture.root, "host-private-sentinel.txt");
+    await writeFile(outside, "HOST_PRIVATE_SENTINEL\n", { mode: 0o600 });
+    await writeFile(path.join(fixture.workspace, "auth.json"), "HOST_AUTH_SENTINEL\n", { mode: 0o600 });
+    await writeFile(path.join(fixture.workspace, ".env"), "HOST_ENV_SENTINEL\n", { mode: 0o600 });
+    await mkdir(path.join(fixture.workspace, "artifacts"), { mode: 0o700 });
+    await mkdir(path.join(fixture.workspace, "runtime"), { mode: 0o700 });
+    await mkdir(path.join(fixture.workspace, "sessions"), { mode: 0o700 });
+    await mkdir(path.join(fixture.workspace, "unsafe"), { mode: 0o700 });
+    const symlinkPath = path.join(fixture.workspace, "unsafe", "escape-link.txt");
+    const hardlinkPath = path.join(fixture.workspace, "unsafe", "hardlink.txt");
+    await symlink(outside, symlinkPath);
+    await link(outside, hardlinkPath);
+
+    const read = await runGeneratedTool(fixture, "squire_plan_read", { path: "src/main.ts" });
+    assert.match(String((read["content"] as Array<Record<string, unknown>>)[0]!['text']), /planSentinel/u);
+    assert.equal((read["details"] as Record<string, unknown>)["scope"], "repository");
+    const wikiRead = await runGeneratedTool(fixture, "squire_plan_read", { path: ".llm-wiki/wiki/plan.md" });
+    assert.equal((wikiRead["details"] as Record<string, unknown>)["scope"], "project-wiki");
+    const grep = await runGeneratedTool(fixture, "squire_plan_grep", { path: "src", pattern: "planSentinel" });
+    assert.match(String((grep["content"] as Array<Record<string, unknown>>)[0]!['text']), /main\.ts:1/u);
+    const find = await runGeneratedTool(fixture, "squire_plan_find", { path: "src", pattern: "**/*.ts" });
+    assert.match(String((find["content"] as Array<Record<string, unknown>>)[0]!['text']), /src\/main\.ts/u);
+    const list = await runGeneratedTool(fixture, "squire_plan_ls", { path: "src" });
+    assert.match(String((list["content"] as Array<Record<string, unknown>>)[0]!['text']), /main\.ts/u);
+    const rootList = await runGeneratedTool(fixture, "squire_plan_ls", { path: "." });
+    const rootListText = String((rootList["content"] as Array<Record<string, unknown>>)[0]!['text']);
+    assert.doesNotMatch(rootListText, /(?:auth\.json|\.env|artifacts|runtime|sessions)/u);
+
+    const forbiddenPaths = [
+      "/ticket/artifacts/implement/3/result.json",
+      "../host-private-sentinel.txt",
+      "/ticket/sessions/plan/session.jsonl",
+      "/ticket/runtime/auth.json",
+      "/ticket/runtime/package.json",
+      "/ticket/artifacts/input/phase-input.json",
+      "/proc/self/environ",
+      "artifacts/input/phase-input.json",
+      "auth.json",
+      ".env",
+      "runtime/package.json",
+      "sessions/plan/session.jsonl",
+      "unsafe/escape-link.txt",
+      "unsafe/hardlink.txt",
+    ];
+    const tools: readonly [string, (target: string) => Record<string, unknown>][] = [
+      ["squire_plan_read", target => ({ path: target })],
+      ["squire_plan_grep", target => ({ path: target, pattern: "HOST_PRIVATE_SENTINEL" })],
+      ["squire_plan_find", target => ({ path: target })],
+      ["squire_plan_ls", target => ({ path: target })],
+    ];
+    for (const [toolName, makeInput] of tools) {
+      for (const target of forbiddenPaths) await assert.rejects(runGeneratedTool(fixture, toolName, makeInput(target)), /repository-relative|outside|symbolic|single-link|regular|directory|allowlist|changed|filesystem/u, `${toolName} must reject ${target}`);
+    }
+
+    const racePath = path.join(fixture.workspace, "race.txt");
+    const raceBytes = Buffer.alloc(4 * 1024 * 1024, "r");
+    await writeFile(racePath, raceBytes, { mode: 0o600 });
+    let mutation = 0;
+    const pendingMutations: Promise<void>[] = [];
+    const raceTimer = setInterval(() => {
+      const write = writeFile(racePath, Buffer.alloc(raceBytes.length, mutation++ % 2 === 0 ? "a" : "b"), { mode: 0o600 });
+      pendingMutations.push(write);
+      void write;
+    }, 1);
+    try {
+      await assert.rejects(runGeneratedTool(fixture, "squire_plan_read", { path: "race.txt" }, { NODE_ENV: "test", SQUIRE_PLAN_TEST_ONLY_READ_DELAY_MS: "100" }), /changed|stable|single-link|identity/u);
+    } finally {
+      clearInterval(raceTimer);
+      await Promise.allSettled(pendingMutations);
+    }
+    assert.equal((await readFile(outside, "utf8")), "HOST_PRIVATE_SENTINEL\n");
   } finally {
     await import("node:fs/promises").then(fs => fs.rm(fixture.root, { recursive: true, force: true }));
   }

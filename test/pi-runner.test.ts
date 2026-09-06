@@ -52,7 +52,8 @@ test("Plan launch selects the digest-bound wiki/Plan/footer extension set", asyn
     const launch = factory.launches.at(-1)!;
     const extensions = launch.args.flatMap((value, index) => value === "--extension" ? [launch.args[index + 1]!] : []);
     assert.deepEqual(extensions, ["/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/extensions/llm-wiki/index.ts", `${launched.agentDir}/extensions/squire-plan.mjs`, `${launched.agentDir}/extensions/squire-trusted-wiki-footer.mjs`]);
-    assert.equal(launch.args[launch.args.indexOf("--tools") + 1], "read,grep,find,ls,wiki_recall,squire_submit_plan");
+      assert.equal(launch.args[launch.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
+    assert.doesNotMatch(launch.args[launch.args.indexOf("--tools") + 1]!, /(?:^|,)(?:read|grep|find|ls)(?:,|$)/u);
     assert.ok(launch.args.includes("--offline"));
     launched.process.kill("SIGTERM");
   } finally { await rm(root, { recursive: true, force: true }); }

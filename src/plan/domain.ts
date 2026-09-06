@@ -204,8 +204,19 @@ export interface PlanPublicationResult {
 
 export const PLAN_TOOL_NAME = "squire_submit_plan" as const;
 export const PLAN_EXTENSION_RELATIVE_PATH = "extensions/squire-plan.mjs" as const;
-export const PLAN_ALLOWED_BUILTIN_TOOLS = ["read", "grep", "find", "ls"] as const;
+/**
+ * Pi's stock filesystem tools accept absolute paths. They are deliberately
+ * not enabled for Plan; the empty tuple is an explicit compatibility seam for
+ * callers that used the old constant name.
+ */
+export const PLAN_ALLOWED_BUILTIN_TOOLS = [] as const;
+/** Controller-owned filesystem tools. Every path is resolved relative to the
+ * trusted workspace and checked against the run-bound allowlist. */
+export const PLAN_ALLOWED_PATH_TOOLS = ["squire_plan_read", "squire_plan_grep", "squire_plan_find", "squire_plan_ls"] as const;
+export const PLAN_FILESYSTEM_POLICY_ID = "squire-plan-filesystem-v1" as const;
+export const PLAN_FILESYSTEM_POLICY_SHA256 = "e955c149b9e92a504ddb45676c7046a6271094dbc1e71a465d4e4c0cdc21ae2f" as const;
 export const PLAN_ALLOWED_WIKI_TOOLS = ["wiki_recall"] as const;
+export const PLAN_ALLOWED_TOOLS = [...PLAN_ALLOWED_PATH_TOOLS, ...PLAN_ALLOWED_WIKI_TOOLS, PLAN_TOOL_NAME] as const;
 export const PLAN_TOOL_MAX = Object.freeze({
   summary: 16_384,
   assumption: 2_048,
