@@ -45,3 +45,4 @@
 {"slug":"aidev-222-deterministic-retention-tests","title":"AIDEV-222 deterministic retention tests","category":"testing","timestamp":"2026-09-04T04:17:35.279Z","kind":"retro"}
 {"slug":"obs-2026-09-04-aidev-222-retention-flake-removed","title":"AIDEV-222 retention flake removed","relevance":"high","timestamp":"2026-09-04T04:17:51.240Z","kind":"observe"}
 {"slug":"obs-2026-09-06-aidev-218-plan-phase-implementation-committed","title":"AIDEV-218 Plan phase implementation committed","relevance":"high","timestamp":"2026-09-06T18:52:27.989Z","kind":"observe"}
+{"slug":"aidev-218-plan-phase-boundary","title":"AIDEV-218 Plan phase boundary","category":"architecture","timestamp":"2026-09-06T18:54:40.691Z","kind":"retro"}

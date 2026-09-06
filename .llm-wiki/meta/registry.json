@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-06T18:52:28.008Z",
+  "last_updated": "2026-09-06T18:55:35.829Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -154,6 +154,15 @@
       "source_id": "SRC-2026-09-02-002",
       "format": "json",
       "captured": "2026-09-02"
+    },
+    "sources/aidev-218-plan-phase-boundary": {
+      "type": "source",
+      "title": "AIDEV-218 Plan phase boundary",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "aidev-218-plan-phase-boundary",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
     },
     "sources/aidev-222-descriptor-bound-isolation-evidence": {
       "type": "source",

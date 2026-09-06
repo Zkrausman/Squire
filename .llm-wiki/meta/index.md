@@ -20,6 +20,7 @@
 
 ## Sources
 
+- [[sources/aidev-218-plan-phase-boundary]] — AIDEV-218 Plan phase boundary *(created: 2026-09-06)*
 - [[sources/aidev-222-descriptor-bound-isolation-evidence]] — AIDEV-222 descriptor-bound isolation evidence *(created: 2026-09-04)*
 - [[sources/aidev-222-deterministic-retention-tests]] — AIDEV-222 deterministic retention tests *(created: 2026-09-04)*
 - [[sources/aidev-222-hardened-git-workspace-remediation]] — AIDEV-222 hardened Git workspace remediation *(created: 2026-09-03)*
@@ -58,4 +59,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-06T18:52:28.008Z* | *Total pages: 40*
+*Last updated: 2026-09-06T18:55:35.829Z* | *Total pages: 41*
