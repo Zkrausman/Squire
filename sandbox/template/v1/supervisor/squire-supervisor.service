@@ -1,18 +1,25 @@
 [Unit]
-Description=Squire ticket rootless Docker and guest supervisor
-After=network.target
+Description=Squire fixed role supervisor
+After=network.target squire-principals.service
+Requires=squire-principals.service
 
 [Service]
 Type=simple
-User=squireagent
-Group=squireagent
+User=root
+Group=root
+SupplementaryGroups=
 NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_KILL
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_KILL
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/ticket/docker /ticket/runtime /ticket/sessions /ticket/artifacts /ticket/evidence /ticket/workspace
-ExecStart=/opt/squire/build/rootless-docker.sh
-Restart=no
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/ticket/control /ticket/runtime /ticket/sessions /ticket/artifacts /ticket/evidence /ticket/workspace /ticket/tmp
+ExecStart=/opt/squire/bin/squire-supervisor
+Restart=on-failure
+RestartSec=1
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

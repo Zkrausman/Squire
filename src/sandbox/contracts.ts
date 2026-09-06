@@ -3,6 +3,8 @@ import path from "node:path";
 import Ajv2020Import, { type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsImport from "ajv-formats";
 import type { ContractReference } from "../control/domain.js";
+import { validateHostConformanceEvidence } from "./host-conformance.js";
+import type { HostConformanceEvidence } from "./host-conformance.js";
 import {
   assertArchitecture,
   assertBridgeName,
@@ -39,7 +41,9 @@ import type {
   SandboxTransferManifestDocument,
 } from "./domain.js";
 
-export const SANDBOX_SCHEMA_NAMES = ["sandbox-spec", "sandbox-release-manifest", "sandbox-attestation", "sandbox-transfer-manifest"] as const;
+export const REQUIRED_PI_RUNTIME_VERSION = "0.84.4" as const;
+export const REQUIRED_LLM_WIKI_RUNTIME_VERSION = "0.11.8" as const;
+export const SANDBOX_SCHEMA_NAMES = ["sandbox-spec", "sandbox-release-manifest", "sandbox-attestation", "sandbox-transfer-manifest", "host-conformance"] as const;
 export type SandboxSchemaName = (typeof SANDBOX_SCHEMA_NAMES)[number];
 export type SandboxSchemaId = `urn:squire:sandbox:v1:${SandboxSchemaName}`;
 export const SANDBOX_SCHEMA_IDS = new Set<SandboxSchemaId>(SANDBOX_SCHEMA_NAMES.map(name => `urn:squire:sandbox:v1:${name}` as SandboxSchemaId));
@@ -69,7 +73,9 @@ export class SandboxContractValidator {
     const addFormats = addFormatsImport as unknown as (ajv: AjvLike) => AjvLike;
     const ajv = new Ajv2020({ allErrors: true, strict: true });
     addFormats(ajv);
-    for (const name of SANDBOX_SCHEMA_NAMES) ajv.addSchema(JSON.parse(await readFile(path.join(schemaDir, `${name}.schema.json`), "utf8")));
+    const commonSchemaPath = path.resolve(schemaDir, "../../v1/common.schema.json");
+    ajv.addSchema(JSON.parse(await readFile(commonSchemaPath, "utf8")));
+    for (const name of SANDBOX_SCHEMA_NAMES) { const fileName = name === "host-conformance" ? "sandbox-host-conformance" : name; ajv.addSchema(JSON.parse(await readFile(path.join(schemaDir, `${fileName}.schema.json`), "utf8"))); }
     const validators = new Map<SandboxSchemaId, ValidateFunction>();
     for (const schemaId of SANDBOX_SCHEMA_IDS) {
       const validator = ajv.getSchema(schemaId);
@@ -106,9 +112,10 @@ export class SandboxContractValidator {
   validateRelease(document: unknown): SandboxReleaseManifestDocument { return this.validateDocument("urn:squire:sandbox:v1:sandbox-release-manifest", document); }
   validateAttestation(document: unknown): SandboxAttestationDocument { return this.validateDocument("urn:squire:sandbox:v1:sandbox-attestation", document); }
   validateTransfer(document: unknown): SandboxTransferManifestDocument { return this.validateDocument("urn:squire:sandbox:v1:sandbox-transfer-manifest", document); }
+  validateHostConformance(document: unknown): HostConformanceEvidence { return this.validateDocument("urn:squire:sandbox:v1:host-conformance", document) as HostConformanceEvidence; }
 }
 
-export type SandboxDocument = SandboxSpecDocument | SandboxReleaseManifestDocument | SandboxAttestationDocument | SandboxTransferManifestDocument;
+export type SandboxDocument = SandboxSpecDocument | SandboxReleaseManifestDocument | SandboxAttestationDocument | SandboxTransferManifestDocument | HostConformanceEvidence;
 
 export function assertSandboxSemantics(schemaId: SandboxSchemaId, document: SandboxDocument): void {
   const errors = sandboxSemanticErrors(schemaId, document);
@@ -122,6 +129,7 @@ export function sandboxSemanticErrors(schemaId: SandboxSchemaId, document: unkno
       case "urn:squire:sandbox:v1:sandbox-release-manifest": assertReleaseSemantics(document as SandboxReleaseManifestDocument); break;
       case "urn:squire:sandbox:v1:sandbox-attestation": assertAttestationSemantics(document as SandboxAttestationDocument); break;
       case "urn:squire:sandbox:v1:sandbox-transfer-manifest": assertTransferSemantics(document as SandboxTransferManifestDocument); break;
+      case "urn:squire:sandbox:v1:host-conformance": validateHostConformanceEvidence(document); break;
       default: return ["unsupported sandbox schema identity"];
     }
     return [];
@@ -168,6 +176,7 @@ export function assertReleaseSemantics(document: SandboxReleaseManifestDocument)
   assertVersionRange(document.runtimeCompatibility.pi.maximum, "Pi maximum version");
   assertVersionRange(document.runtimeCompatibility.llmWiki.minimum, "pi-llm-wiki minimum version");
   assertVersionRange(document.runtimeCompatibility.llmWiki.maximum, "pi-llm-wiki maximum version");
+  if (document.runtimeCompatibility.pi.minimum !== REQUIRED_PI_RUNTIME_VERSION || document.runtimeCompatibility.pi.maximum !== REQUIRED_PI_RUNTIME_VERSION || document.runtimeCompatibility.llmWiki.minimum !== REQUIRED_LLM_WIKI_RUNTIME_VERSION || document.runtimeCompatibility.llmWiki.maximum !== REQUIRED_LLM_WIKI_RUNTIME_VERSION) throw new SandboxContractError("release runtime compatibility must select Pi 0.84.4 and pi-llm-wiki 0.11.8 exactly");
   if (compareVersions(document.runtimeCompatibility.pi.minimum, document.runtimeCompatibility.pi.maximum) > 0 || compareVersions(document.runtimeCompatibility.llmWiki.minimum, document.runtimeCompatibility.llmWiki.maximum) > 0) throw new SandboxContractError("runtime compatibility range is inverted");
   if (!Array.isArray(document.supportedResources) || document.supportedResources.length === 0 || document.supportedResources.length > 64) throw new SandboxContractError("release must contain at least one supported resource tuple");
   if (!Number.isSafeInteger(document.bridgeQuotaBytes) || document.bridgeQuotaBytes < 4096 || document.bridgeQuotaBytes > 107_374_182_400) throw new SandboxContractError("release bridge quota is invalid");
@@ -230,11 +239,12 @@ export function assertAttestationSemantics(document: SandboxAttestationDocument)
 }
 
 export function assertTransferSemantics(document: SandboxTransferManifestDocument): void {
-  if (!isRecord(document) || !hasExactKeys(document, ["bootId", "bridgeUsed", "byteLength", "createdAt", "destination", "direction", "fingerprint", "kind", "runId", "sandboxName", "schemaVersion", "sha256", "source", "sourceVerified", "specFingerprint", "transferGeneration", "destinationVerified", ...(isRecord(document) && Object.hasOwn(document, "expectedGit") ? ["expectedGit"] : [])]) || document.schemaVersion !== 1 || document.kind !== "squire-sandbox-transfer-manifest" || !isRecord(document.source) || !hasExactKeys(document.source, ["logicalPath", "side"]) || !isRecord(document.destination) || !hasExactKeys(document.destination, ["logicalPath", "side"])) throw new SandboxContractError("sandbox transfer fields are not closed");
+  if (!isRecord(document) || !hasExactKeys(document, ["bootId", "bridgeUsed", "byteLength", "createdAt", "destination", "direction", "fingerprint", "kind", "runId", "sandboxId", "sandboxName", "schemaVersion", "sha256", "source", "sourceVerified", "specFingerprint", "transferGeneration", "destinationVerified", ...(isRecord(document) && Object.hasOwn(document, "expectedGit") ? ["expectedGit"] : [])]) || document.schemaVersion !== 1 || document.kind !== "squire-sandbox-transfer-manifest" || !isRecord(document.source) || !hasExactKeys(document.source, ["logicalPath", "side"]) || !isRecord(document.destination) || !hasExactKeys(document.destination, ["logicalPath", "side"])) throw new SandboxContractError("sandbox transfer fields are not closed");
   assertSandboxRunId(document.runId);
   assertSandboxName(document.sandboxName);
   if (document.direction !== "import" && document.direction !== "export") throw new SandboxContractError("transfer direction is invalid");
   if (document.sandboxName !== deriveSandboxName(document.runId)) throw new SandboxContractError("transfer sandbox name is not derived from run");
+  if (typeof document.sandboxId !== "string" || document.sandboxId.length === 0 || document.sandboxId.length > 512 || /[\u0000-\u001f\u007f\r\n:]/u.test(document.sandboxId)) throw new SandboxContractError("transfer sandbox identity is invalid");
   assertSha256(document.specFingerprint, "transfer spec fingerprint");
   if (!document.bootId || document.bootId.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(document.bootId)) throw new SandboxContractError("transfer boot identity is invalid");
   assertTransferLocation(document.source.logicalPath, document.source.side);

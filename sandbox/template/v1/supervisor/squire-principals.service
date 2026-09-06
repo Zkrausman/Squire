@@ -1,0 +1,13 @@
+[Unit]
+Description=Squire fixed principals and ticket surfaces
+Before=squire-supervisor.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/squire/build/principals-and-mounts.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

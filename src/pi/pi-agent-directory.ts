@@ -5,6 +5,7 @@ import { normalizeWikiProfile, type PiModelProfile, type PiWikiProfileInput } fr
 import type { RunPreparationLease, RunTerminalFence, RuntimeModelCapability, RuntimeResolution } from "../control/domain.js";
 import type { RunQuiescenceAuthority } from "../control/workflow-store.js";
 import { buildTrustedWikiFooterExtensionSource } from "./wiki-footer.js";
+import { REQUIRED_LLM_WIKI_RUNTIME_VERSION, REQUIRED_PI_RUNTIME_VERSION } from "../sandbox/contracts.js";
 
 const AGENT_DIRECTORY_KIND = "squire-pi-agent-directory";
 const AGENT_DIRECTORY_SCHEMA_VERSION = 1;
@@ -807,6 +808,7 @@ export class PiAgentDirectoryMaterializer {
   async #prepare(request: PiAgentDirectoryRequest, profile: PiModelProfile): Promise<PreparedMaterialization> {
     throwIfAborted(request.signal);
     if (request.runtime.runId !== request.runId) throw new Error("runtime resolution belongs to a different run");
+    if (request.runtime.pi.version !== REQUIRED_PI_RUNTIME_VERSION || request.runtime.llmWiki.version !== REQUIRED_LLM_WIKI_RUNTIME_VERSION) throw new Error(`run runtime must resolve Pi ${REQUIRED_PI_RUNTIME_VERSION} and pi-llm-wiki ${REQUIRED_LLM_WIKI_RUNTIME_VERSION} exactly`);
     const layout = await resolveMaterializationLayout(request, this.#options);
     await ensureProjectWikiOverrideIsNotConflicting(layout.workspace, profile, request.signal);
 
@@ -1706,7 +1708,7 @@ async function recoverPrivatePublicationHandoff(
       let currentTemporaryInfo: Awaited<ReturnType<typeof lstat>> | undefined;
       if (temporaryKind === "file") {
         currentTemporaryInfo = await lstatRequired(temporaryPath, "private publication temporary file during handoff");
-        assertPrivateFile(currentTemporaryInfo, "private publication temporary file during handoff");
+        assertPrivatePublicationCandidate(currentTemporaryInfo, "private publication temporary file during handoff");
         if (currentTemporaryInfo.dev !== temporaryInfo.dev || currentTemporaryInfo.ino !== temporaryInfo.ino) {
           throw new PreparationLockRace("private publication temporary file identity changed during handoff");
         }
@@ -1715,7 +1717,8 @@ async function recoverPrivatePublicationHandoff(
       }
 
       const finalInfo = await lstatRequired(finalPath, "private publication recovered final file");
-      assertPrivateFile(finalInfo, "private publication recovered final file");
+      if (currentTemporaryInfo && currentTemporaryInfo.dev === finalInfo.dev && currentTemporaryInfo.ino === finalInfo.ino) assertPrivatePublicationLink(finalInfo, "private publication recovered final file", currentTemporaryInfo);
+      else assertPrivatePublicationCandidate(finalInfo, "private publication recovered final file");
       const finalBytes = await readStablePublicationFile(finalPath, "private publication recovered final file");
       if (!finalBytes.equals(expectedBytes)) {
         throw new PreparationLockRace("private publication recovered final file contains conflicting bytes");
@@ -1804,7 +1807,7 @@ async function publishPrivateFile(
     let existingInfo: Awaited<ReturnType<typeof lstat>>;
     try { existingInfo = await lstatRequired(finalPath, "private publication existing final file"); }
     catch (existingError) { if (isNotFound(existingError)) throw error; throw existingError; }
-    assertPrivateFile(existingInfo, "private publication existing final file");
+    assertPrivatePublicationCandidate(existingInfo, "private publication existing final file");
     const existingBytes = await readStablePublicationFile(finalPath, "private publication existing final file");
     if (!existingBytes.equals(bytes)) throw new PreparationLockRace("private publication final file contains conflicting bytes");
     try { await removeConstructionFile(temporaryPath, temporaryInfo, teardownAuthority); }
@@ -1814,11 +1817,11 @@ async function publishPrivateFile(
     return false;
   }
   const finalInfo = await lstatRequired(finalPath, "private publication final file");
-  assertPrivateFile(finalInfo, "private publication final file");
+  assertPrivatePublicationLink(finalInfo, "private publication final file", temporaryInfo);
   const finalBytes = await readStablePublicationFile(finalPath, "private publication final file");
   if (!finalBytes.equals(bytes)) throw new PreparationLockRace("private publication final file contains conflicting bytes");
   const publishedTemporaryInfo = await lstatRequired(temporaryPath, "private publication temporary file after publication");
-  assertPrivateFile(publishedTemporaryInfo, "private publication temporary file after publication");
+  assertPrivatePublicationLink(publishedTemporaryInfo, "private publication temporary file after publication", finalInfo);
   if (publishedTemporaryInfo.dev !== temporaryInfo.dev || publishedTemporaryInfo.ino !== temporaryInfo.ino) throw new PreparationLockRace("private publication temporary file changed during publication");
   try { await removeConstructionFile(temporaryPath, publishedTemporaryInfo, teardownAuthority); }
   catch (error) {
@@ -1832,6 +1835,8 @@ async function publishPrivateFile(
     const recoveredFinalBytes = await readStablePublicationFile(finalPath, "private publication recovered final file");
     if (!recoveredFinalBytes.equals(bytes)) throw new PreparationLockRace("private publication recovered final file contains conflicting bytes");
   }
+  const settledFinalInfo = await lstatRequired(finalPath, "private publication settled final file");
+  assertPrivateFile(settledFinalInfo, "private publication settled final file");
   await barrier?.({ kind, stage: "final-published", temporaryPath, finalPath });
   return true;
 }
@@ -1909,7 +1914,8 @@ async function readCaptureAuthTemporaries(retainedRoot: string): Promise<{ valid
     if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("Pi agent-directory retained capture authentication temporary file is invalid");
     const temporary = path.join(retainedRoot, entry.name);
     const info = await lstatRequired(temporary, "Pi agent-directory retained capture authentication temporary file");
-    assertPrivateFile(info, "Pi agent-directory retained capture authentication temporary file");
+    try { assertPrivatePublicationCandidate(info, "Pi agent-directory retained capture authentication temporary file"); }
+    catch (error) { throw new PreparationLockRace("Pi agent-directory retained capture authentication temporary file changed during handoff", error); }
     let bytes: Buffer;
     try { bytes = await readStableFile(temporary, "Pi agent-directory retained capture authentication temporary file"); }
     catch (error) { throw new PreparationLockRace("Pi agent-directory retained capture authentication temporary file changed while being read", error); }
@@ -1932,7 +1938,8 @@ async function removeStaleCaptureAuthTemporaries(
     if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("Pi agent-directory retained capture authentication temporary file is invalid");
     const temporary = path.join(retainedRoot, entry.name);
     const info = await lstatRequired(temporary, "Pi agent-directory retained capture authentication temporary file");
-    assertPrivateFile(info, "Pi agent-directory retained capture authentication temporary file");
+    try { assertPrivatePublicationCandidate(info, "Pi agent-directory retained capture authentication temporary file"); }
+    catch (error) { throw new PreparationLockRace("Pi agent-directory retained capture authentication temporary file changed during handoff", error); }
     let bytes: Buffer;
     try { bytes = await readStableFile(temporary, "Pi agent-directory retained capture authentication temporary file"); }
     catch (error) { throw new PreparationLockRace("Pi agent-directory retained capture authentication temporary file changed while being read", error); }
@@ -2344,7 +2351,7 @@ async function ensureRetentionAllocationRootOnce(
         if (isNotFound(error)) continue;
         throw error;
       }
-      assertPrivateFile(temporaryInfo, "Pi agent-directory retained capture authentication temporary file");
+      assertPrivatePublicationCandidate(temporaryInfo, "Pi agent-directory retained capture authentication temporary file");
       let temporary: Buffer;
       try { temporary = await readStableFile(temporaryPath, "Pi agent-directory retained capture authentication temporary file"); }
       catch (error) {
@@ -2357,7 +2364,7 @@ async function ensureRetentionAllocationRootOnce(
       if (temporary.byteLength !== 32) throw new PreparationLockRace("Pi agent-directory retained capture authentication key publication is incomplete");
       const finalPath = path.join(retainedRoot, PREPARATION_RETAINED_AUTH_FILE);
       const finalInfo = await lstatRequired(finalPath, "Pi agent-directory retained capture authentication key");
-      assertPrivateFile(finalInfo, "Pi agent-directory retained capture authentication key");
+      assertPrivatePublicationCandidate(finalInfo, "Pi agent-directory retained capture authentication key");
       await authCleanupBarrier?.({ stage: "after-observation-before-cleanup", temporaryPath, finalPath });
       await removeObservedAuthTemporaryAfterHandoff(temporaryPath, temporaryInfo, finalPath, temporary, teardownAuthority);
       continue;
@@ -2586,7 +2593,21 @@ async function acquireRetentionAllocationLock(
       assertPrivateDirectory(claimedInfo, "Pi agent-directory retained allocation lock after claim");
       if (!sameDirectoryIdentity(directoryIdentityOf(info), directoryIdentityOf(claimedInfo))) throw new PreparationLockRace("Pi agent-directory retained allocation lock changed during acquisition");
       const claimedOwner = await readRetentionAllocationOwner(canonical);
-      if (!claimedOwner || claimedOwner.state !== "held" || claimedOwner.token !== activeOwner.token || claimedOwner.runId !== runId) throw new PreparationLockRace("Pi agent-directory retained allocation lock owner changed during acquisition");
+      if (!claimedOwner || claimedOwner.state !== "held" || claimedOwner.token !== activeOwner.token || claimedOwner.runId !== runId) {
+        // Another controller may have observed the same free directory and
+        // published its held owner between our write and this verification.
+        // The directory identity is still the exact one we
+        // inspected above, so this is a lock-contention retry—not permission
+        // to adopt a replacement.  A persistent replacement still fails at
+        // the identity/shape checks or at the bounded acquisition timeout.
+        if (claimedOwner?.state === "held") {
+          const elapsed = monotonicMilliseconds() - startedAt;
+          if (elapsed >= timeoutMs) throw new Error("Pi agent-directory retained allocation lock acquisition timed out; trusted teardown is required");
+          await waitForDelay(Math.min(PREPARATION_LOCK_POLL_MS, timeoutMs - elapsed), signal);
+          continue;
+        }
+        throw new PreparationLockRace("Pi agent-directory retained allocation lock owner changed during acquisition");
+      }
       const heldPath = path.join(retainedRoot, `${PREPARATION_RETAINED_ALLOCATION_LOCK}-held-${randomUUID()}`);
       try {
         await rename(canonical, heldPath);
@@ -2734,7 +2755,7 @@ function parseRetainedCaptureRecord(bytes: Buffer, key: Buffer): RetainedCapture
   return value;
 }
 
-async function readRetainedCaptureRecord(recordPath: string, runtimeRoot: string, teardownAuthority?: TeardownAuthorityGuard): Promise<RetainedCaptureRecord> {
+async function readRetainedCaptureRecord(recordPath: string, runtimeRoot: string, teardownAuthority?: TeardownAuthorityGuard, publicationPeer?: Awaited<ReturnType<typeof lstat>>): Promise<RetainedCaptureRecord> {
   const retainedRoot = path.join(runtimeRoot, PREPARATION_RETAINED_DIRECTORY);
   const key = await ensureCaptureAuthKey(retainedRoot, undefined, false, teardownAuthority);
   let lastError: unknown;
@@ -2746,7 +2767,13 @@ async function readRetainedCaptureRecord(recordPath: string, runtimeRoot: string
   for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
     try {
       const info = await lstatRequired(recordPath, "Pi agent-directory retained capture record");
-      assertPrivateFile(info, "Pi agent-directory retained capture record");
+      if (publicationPeer && publicationPeer.dev === info.dev && publicationPeer.ino === info.ino) {
+        // The publisher may have removed the temporary hard-link between the
+        // observer's lstat and this read.  The exact inode identity still
+        // proves the authenticated handoff; its link count may therefore be
+        // one (settled final) or two (handoff still visible).
+        assertPrivatePublicationCandidate(info, "Pi agent-directory retained capture record");
+      } else assertPrivateFile(info, "Pi agent-directory retained capture record");
       const bytes = await readStableFile(recordPath, "Pi agent-directory retained capture record");
       return parseRetainedCaptureRecord(bytes, key);
     } catch (error) {
@@ -2871,7 +2898,7 @@ async function recoverRetainedRecordTemporary(
     if (finalKindBefore !== "missing" && finalKindBefore !== "file") throw new Error("Pi agent-directory retained capture record final path is not a regular file");
     try {
       const info = await lstatRequired(temporaryPath, "Pi agent-directory retained capture record temporary file");
-      assertPrivateFile(info, "Pi agent-directory retained capture record temporary file");
+      assertPrivatePublicationCandidate(info, "Pi agent-directory retained capture record temporary file");
       const bytes = await readStableFile(temporaryPath, "Pi agent-directory retained capture record temporary file");
       const key = await ensureCaptureAuthKey(location.retainedRoot, undefined, false, teardownAuthority);
       const parsed = parseRetainedCaptureRecord(bytes, key);
@@ -2904,10 +2931,10 @@ async function recoverRetainedRecordTemporary(
   for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
     try {
       const finalInfo = await lstatRequired(recordPath, "Pi agent-directory retained capture record");
-      assertPrivateFile(finalInfo, "Pi agent-directory retained capture record");
+      assertPrivatePublicationCandidate(finalInfo, "Pi agent-directory retained capture record");
       const finalBytes = await readStableFile(recordPath, "Pi agent-directory retained capture record");
       if (!finalBytes.equals(temporaryBytes)) throw new PreparationLockRace("Pi agent-directory retained capture record final bytes conflict with its temporary publication");
-      record = await readRetainedCaptureRecord(recordPath, location.runtimeRoot, teardownAuthority);
+      record = await readRetainedCaptureRecord(recordPath, location.runtimeRoot, teardownAuthority, temporaryInfo);
       validateRetainedRecordPaths(record, recordPath, location);
       break;
     } catch (error) {
@@ -2952,7 +2979,7 @@ async function reconcileRetainedCaptures(
       if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("Pi agent-directory retained capture authentication temporary file is invalid");
       try {
         const temporaryInfo = await lstatRequired(path.join(location.retainedRoot, entry.name), "Pi agent-directory retained capture authentication temporary file");
-        assertPrivateFile(temporaryInfo, "Pi agent-directory retained capture authentication temporary file");
+        assertPrivatePublicationCandidate(temporaryInfo, "Pi agent-directory retained capture authentication temporary file");
       } catch (error) {
         if (!isTransientLockRace(error)) throw error;
       }
@@ -3836,6 +3863,11 @@ async function ensureRunLayout(layout: MaterializationLayout, signal?: AbortSign
   const agentKind = await pathKind(layout.agentDir);
   if (agentKind === "symlink") throw new Error("Pi agent directory may not be symlinked");
   if (agentKind !== "missing" && agentKind !== "directory") throw new Error("Pi agent directory is not a regular directory");
+  // Do not leave the existing agent directory's mode/owner check to the
+  // later publication/verification phase.  This function runs before any
+  // materializer decision and must reject a substituted private root at the
+  // same boundary as HOME and WIKI_HOME.
+  if (agentKind === "directory") await ensureSecureDirectory(layout.agentDir, "Pi agent directory", true);
   await verifyRunRootChildren(layout, agentKind === "directory", "required");
 }
 
@@ -4561,25 +4593,37 @@ function assertOwned(info: Awaited<ReturnType<typeof lstat>>, name: string): voi
 }
 
 function assertPrivateDirectory(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`${name} is not a regular directory`);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.nlink < 2) throw new Error(`${name} is not a regular directory`);
   assertOwned(info, name);
   if ((modeBits(info) & 0o777) !== 0o700) throw new Error(`${name} has unsafe permissions; expected 0700`);
 }
 
 function assertPrivateFile(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${name} is not a regular file`);
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error(`${name} is not a regular file`);
+  assertOwned(info, name);
+  if ((modeBits(info) & 0o777) !== 0o600) throw new Error(`${name} has unsafe permissions; expected 0600`);
+}
+
+function assertPrivatePublicationLink(info: Awaited<ReturnType<typeof lstat>>, name: string, peer: Awaited<ReturnType<typeof lstat>>): void {
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 2 || info.dev !== peer.dev || info.ino !== peer.ino) throw new Error(`${name} is not the exact two-link publication inode`);
+  assertOwned(info, name);
+  if ((modeBits(info) & 0o777) !== 0o600) throw new Error(`${name} has unsafe permissions; expected 0600`);
+}
+
+function assertPrivatePublicationCandidate(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
+  if (!info.isFile() || info.isSymbolicLink() || (info.nlink !== 1 && info.nlink !== 2)) throw new Error(`${name} is not a regular publication file`);
   assertOwned(info, name);
   if ((modeBits(info) & 0o777) !== 0o600) throw new Error(`${name} has unsafe permissions; expected 0600`);
 }
 
 function assertSecureInstallationDirectory(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`${name} is not a regular directory`);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.nlink < 2) throw new Error(`${name} is not a regular directory`);
   assertOwned(info, name);
   if ((modeBits(info) & 0o022) !== 0) throw new Error(`${name} has unsafe permissions`);
 }
 
 function assertSecureInstallationFile(info: Awaited<ReturnType<typeof lstat>>, name: string): void {
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${name} is not a regular file`);
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error(`${name} is not a regular file`);
   assertOwned(info, name);
   if ((modeBits(info) & 0o022) !== 0) throw new Error(`${name} has unsafe permissions`);
 }

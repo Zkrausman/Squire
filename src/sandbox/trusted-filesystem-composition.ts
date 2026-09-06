@@ -32,6 +32,17 @@ export class TrustedFilesystemCompositionError extends Error {
   constructor(message: string) { super(message); this.name = "TrustedFilesystemCompositionError"; }
 }
 
+// The guest proof reports directory roots, not arbitrary descendants.  Keep
+// this inventory closed so a forged proof cannot expand the role's writable
+// surface by naming a controller subtree below an otherwise permitted root.
+const ROLE_WRITABLE_ROOTS = new Set([
+  "/ticket/workspace",
+  "/ticket/sessions",
+  "/ticket/runtime",
+  "/ticket/docker",
+  "/ticket/tmp",
+]);
+
 /** Composes, rather than reimplements, AIDEV-222's descriptor-backed
  * authority. The worker must return measured proof before the authority is
  * issued; a role-provided token or boolean cannot satisfy this API. */
@@ -70,12 +81,11 @@ export function validateGuestFilesystemProof(value: unknown, ticketRoot = "/tick
   if (Object.keys(record).sort().join("\0") !== expectedKeys.join("\0") || record["ticketRoot"] !== ticketRoot || !Number.isSafeInteger(record["controllerUid"]) || !Number.isSafeInteger(record["controllerGid"]) || !Number.isSafeInteger(record["agentUid"]) || !Number.isSafeInteger(record["agentGid"]) || typeof record["mountNamespace"] !== "string" || typeof record["ticketDevice"] !== "string" || typeof record["ticketInode"] !== "string" || record["nestedMounts"] !== 0 || record["forbiddenMounts"] !== 0 || !Array.isArray(record["retainedDescriptors"]) || JSON.stringify(record["retainedDescriptors"]) !== JSON.stringify(["proc", "namespace", "mountinfo"]) || !Array.isArray(record["roleCapabilities"]) || !Array.isArray(record["roleWritablePaths"]) || record["roleCapabilities"].length !== 0) throw new TrustedFilesystemCompositionError("guest filesystem proof is not the closed measured tuple");
   if (typeof record["mountInfoDigest"] !== "string") throw new TrustedFilesystemCompositionError("guest mount evidence digest is not a string");
   assertSha256(record["mountInfoDigest"], "guest mount evidence digest");
-  if (record["controllerUid"] !== 1000 || record["controllerGid"] !== 1000 || record["agentUid"] !== 1001 || record["agentGid"] !== 1001 || record["mountNamespace"] === "" || record["ticketDevice"] === "" || record["ticketInode"] === "" || [record["mountNamespace"], record["ticketDevice"], record["ticketInode"]].some(item => typeof item !== "string" || item.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(item))) throw new TrustedFilesystemCompositionError("guest filesystem proof does not separate controller and role identities");
+  if (record["controllerUid"] !== 1000 || record["controllerGid"] !== 1000 || record["agentUid"] !== 1001 || record["agentGid"] !== 1001 || record["mountNamespace"] === "" || record["ticketDevice"] === "" || record["ticketInode"] === "" || [record["mountNamespace"], record["ticketDevice"], record["ticketInode"]].some(item => typeof item !== "string" || item.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || !/^mnt:\[\d+\]$/u.test(record["mountNamespace"] as string) || !/^\d+:\d+$/u.test(record["ticketDevice"] as string) || !/^\d+$/u.test(record["ticketInode"] as string)) throw new TrustedFilesystemCompositionError("guest filesystem proof does not separate controller and role identities");
   if (expectedRunId !== undefined && !/^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(expectedRunId)) throw new TrustedFilesystemCompositionError("guest filesystem proof expected run identity is invalid");
-  const writable = record["roleWritablePaths"];
-  const allowedWritable = (item: string): boolean => item === "/ticket/workspace" || item === "/ticket/sessions" || item.startsWith("/ticket/sessions/") || item === "/ticket/runtime" || item.startsWith("/ticket/runtime/") || item === "/ticket/artifacts" || item.startsWith("/ticket/artifacts/") || item === "/ticket/evidence" || item.startsWith("/ticket/evidence/") || item === "/ticket/docker" || item.startsWith("/ticket/docker/") || item === "/ticket/tmp" || item.startsWith("/ticket/tmp/");
-  if (writable.length > 32 || new Set(writable).size !== writable.length || writable.some(item => typeof item !== "string" || item.length > 512 || !item.startsWith("/ticket/") || !allowedWritable(item) || /(?:control|import|git\/repo\.git|\.ssh|\.docker\/config)/u.test(item) || !isCanonicalPath(item)) || (record["roleCapabilities"] as unknown[]).some(item => typeof item !== "string" || item.length > 256 || /[\u0000-\u001f\u007f\r\n]/u.test(item))) throw new TrustedFilesystemCompositionError("guest role writable path inventory includes a protected or non-canonical path");
-  if (expectedRunId !== undefined && writable.some(item => item === "/ticket/runtime" || item.startsWith("/ticket/runtime/") && !item.startsWith(`/ticket/runtime/${expectedRunId}/`))) throw new TrustedFilesystemCompositionError("guest role writable runtime path is bound to a different run");
+  const writable = record["roleWritablePaths"] as unknown[];
+  const expectedWritable = [...ROLE_WRITABLE_ROOTS].sort();
+  if (writable.length !== expectedWritable.length || new Set(writable).size !== writable.length || writable.some(item => typeof item !== "string" || !ROLE_WRITABLE_ROOTS.has(item) || !isCanonicalPath(item)) || [...writable].sort().join("\0") !== expectedWritable.join("\0") || (record["roleCapabilities"] as unknown[]).some(item => typeof item !== "string" || item.length > 256 || /[\u0000-\u001f\u007f\r\n]/u.test(item))) throw new TrustedFilesystemCompositionError("guest role writable path inventory includes a protected or non-canonical path");
   return Object.freeze({ ...record, retainedDescriptors: Object.freeze([...(record["retainedDescriptors"] as string[])]), roleCapabilities: Object.freeze([...(record["roleCapabilities"] as string[])]), roleWritablePaths: Object.freeze([...(record["roleWritablePaths"] as string[])]) }) as unknown as GuestFilesystemProof;
 }
 

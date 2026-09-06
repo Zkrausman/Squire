@@ -228,6 +228,7 @@ export interface SandboxTransferManifestDocument {
   readonly direction: SandboxTransferDirection;
   readonly runId: string;
   readonly sandboxName: string;
+  readonly sandboxId: string;
   readonly specFingerprint: string;
   readonly bootId: string;
   readonly source: { readonly logicalPath: string; readonly side: "host" | "sandbox" };

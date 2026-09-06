@@ -4,6 +4,7 @@
   "direction": "export",
   "runId": "run_example01",
   "sandboxName": "squire-v1-4ffmztx2tjhdqh5qcfk6n2no2c",
+  "sandboxId": "sandbox-1",
   "specFingerprint": "2981bb8da3ea2e2a3e0a64ce5be24109f4ab07b0eee37087a13b478d3329485c",
   "bootId": "boot-fixture",
   "source": {
@@ -21,5 +22,5 @@
   "destinationVerified": true,
   "bridgeUsed": false,
   "createdAt": "2026-09-01T12:00:00.000Z",
-  "fingerprint": "e4338343f5813a9139223aac39e5645230d3214c73c0d1cd9f480e70bb84675c"
+  "fingerprint": "5a16ffcd2e5f3387286b617c515bede08123a707a85e3f79088c7ce54faac241"
 }

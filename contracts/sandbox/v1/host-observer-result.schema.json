@@ -1,0 +1,12 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"urn:squire:sandbox:v1:host-observer-result",
+  "type":"object","additionalProperties":false,
+  "required":["schemaVersion","kind","requestId","parentRequestId","runId","sandboxName","releaseId","platform","architecture","probe","phase","identity","status","hostOnly","observations","completedAt"],
+  "properties":{
+    "schemaVersion":{"const":1},"kind":{"const":"squire-sandbox-host-observer-result"},"requestId":{"type":"string","format":"uuid"},"parentRequestId":{"type":"string","format":"uuid"},
+    "runId":{"$ref":"urn:squire:contracts:v1:common#/$defs/runId"},"sandboxName":{"type":"string","pattern":"^squire-v1-[a-z2-7]{26}$"},"releaseId":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,127}$"},"platform":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,63}$"},"architecture":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,31}$"},
+    "identity":{"type":"object","additionalProperties":false,"required":["sandboxId","vmId","bootId","templateDigest"],"properties":{"sandboxId":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$"},"vmId":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$"},"bootId":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$"},"templateDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}}},
+    "probe":{"enum":["sbx-identity","resource-enforcement","disk-quota","bridge-isolation","mount-isolation","principal-separation","rootless-docker","persistence","network-audit","credential-absence","process-topology","herdr-topology","exact-removal"]},"phase":{"enum":["created","running","restarted","removed"]},"status":{"const":"pass"},"hostOnly":{"const":true},"observations":{"type":"object","maxProperties":512},"completedAt":{"type":"string","format":"date-time"}
+  }
+}

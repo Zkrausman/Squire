@@ -3,6 +3,9 @@
     "sources/SRC-2026-09-01-002",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
+  "concepts/aidev-223-restricted-sandbox": [
+    "sources/aidev-223-restricted-sandbox-implementation"
+  ],
   "concepts/five-session-pi-rpc-topology": [
     "concepts/immutable-handoff-validation",
     "concepts/run-scoped-pi-profiles-and-trusted-footer",
@@ -21,6 +24,7 @@
     "sources/run-scoped-agent-runtime-resolution"
   ],
   "concepts/immutable-handoff-validation": [
+    "concepts/aidev-223-restricted-sandbox",
     "concepts/five-session-pi-rpc-topology",
     "concepts/transition-remediation-and-fresh-gates",
     "entities/squire",
@@ -32,6 +36,7 @@
     "sources/stable-history-trigger-resend-proof"
   ],
   "concepts/run-scoped-pi-profiles-and-trusted-footer": [
+    "concepts/aidev-223-restricted-sandbox",
     "sources/run-scoped-agent-runtime-resolution"
   ],
   "concepts/transition-remediation-and-fresh-gates": [
@@ -45,6 +50,7 @@
   ],
   "concepts/trusted-controller-boundary": [
     "analyses/epic-boundary-project-wiki-maintenance",
+    "concepts/aidev-223-restricted-sandbox",
     "concepts/five-session-pi-rpc-topology",
     "concepts/run-scoped-pi-profiles-and-trusted-footer",
     "concepts/transition-remediation-and-fresh-gates",
@@ -174,6 +180,7 @@
     "sources/aidev-222-isolated-git-workspace",
     "syntheses/aidev-222-isolated-git-workspace"
   ],
+  "sources/aidev-223-restricted-sandbox-implementation": [],
   "sources/durable-noncooperative-process-ownership": [
     "sources/SRC-2026-09-02-002",
     "sources/fenced-first-session-allocation",
@@ -207,6 +214,7 @@
   "sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed": [
     "syntheses/aidev-222-isolated-git-workspace"
   ],
+  "sources/obs-2026-09-06-aidev-223-materialization-publication-race-hardened": [],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
   ],

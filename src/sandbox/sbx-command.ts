@@ -73,7 +73,7 @@ export class SbxV039CommandBuilder {
     if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(key => !["cwd", "environment", "executable", "executableSha256", "maxOutputBytes", "timeoutMs"].includes(key))) throw new SbxCommandError("sbx command builder options are required and closed");
     if (typeof options.executable !== "string" || !options.executable.startsWith("/") || pathClean(options.executable) === false || options.executable === "/") throw new SbxCommandError("sbx executable must be an absolute clean non-root path");
     assertSha256(options.executableSha256, "sbx executable digest");
-    if (typeof options.cwd !== "string" || !options.cwd.startsWith("/") || pathClean(options.cwd) === false) throw new SbxCommandError("sbx command cwd must be an absolute clean path");
+    if (typeof options.cwd !== "string" || !options.cwd.startsWith("/") || pathClean(options.cwd, true) === false) throw new SbxCommandError("sbx command cwd must be an absolute clean path");
     const maxOutputBytes = options.maxOutputBytes ?? SBX_COMMAND_MAX_OUTPUT_BYTES;
     const timeoutMs = options.timeoutMs ?? SBX_COMMAND_TIMEOUT_MS;
     if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0 || maxOutputBytes > SBX_COMMAND_MAX_OUTPUT_BYTES || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new SbxCommandError("sbx command bounds are invalid");
@@ -266,7 +266,7 @@ export function assertSbxCommand(value: unknown): asserts value is SbxCommand {
   const environmentValue = command["environment"];
   if (typeof executable !== "string" || !executable.startsWith("/") || !pathClean(executable) || typeof executableSha256 !== "string") throw new SbxCommandError("sbx command executable identity is invalid");
   assertSha256(executableSha256, "sbx executable digest");
-  if (typeof cwd !== "string" || !pathClean(cwd) || !isRecord(environmentValue)) throw new SbxCommandError("sbx command cwd or environment is invalid");
+  if (typeof cwd !== "string" || !pathClean(cwd, true) || !isRecord(environmentValue)) throw new SbxCommandError("sbx command cwd or environment is invalid");
   const environment = buildSbxEnvironment(environmentValue as Record<string, string | undefined>);
   if (canonicalJson(environment) !== canonicalJson(environmentValue)) throw new SbxCommandError("sbx command environment is not the canonical allowlist");
   const argvValue = command["argv"];
@@ -351,8 +351,8 @@ function assertIdentityText(value: string): void {
 function assertBoundedOutput(output: string): void {
   if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > SBX_COMMAND_MAX_OUTPUT_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(output)) throw new SbxCommandError("sbx output exceeds its bounded limit or contains control data");
 }
-function pathClean(value: unknown): value is string {
-  return typeof value === "string" && value.length > 1 && value.length <= 4_096 && path.posix.isAbsolute(value) && path.posix.normalize(value) === value && !value.endsWith("/") && !value.includes("//") && !/[\u0000-\u001f\u007f\\\r\n]/u.test(value) && !value.split("/").some(part => part === "." || part === "..");
+function pathClean(value: unknown, allowRoot = false): value is string {
+  return typeof value === "string" && (value.length > 1 || allowRoot) && value.length <= 4_096 && path.posix.isAbsolute(value) && path.posix.normalize(value) === value && (!value.endsWith("/") || allowRoot && value === "/") && !value.includes("//") && !/[\u0000-\u001f\u007f\\\r\n]/u.test(value) && !value.split("/").some(part => part === "." || part === "..");
 }
 
 function assertObservedSandboxValue(value: SbxObservedSandbox): void {

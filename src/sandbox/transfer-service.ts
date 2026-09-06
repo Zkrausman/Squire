@@ -10,7 +10,8 @@ import { buildTransferFingerprint, assertTransferSemantics } from "./contracts.j
 import type { SandboxTransferManifestDocument } from "./domain.js";
 import { assertCanonicalSandboxPath, assertDigestReference, assertSandboxName, assertSandboxRunId, assertSha256, canonicalBytes, deriveSandboxName, sha256Bytes } from "./identity.js";
 import type { GuestOperationClient } from "./guest-protocol.js";
-import { ensurePrivateDirectory, openNoFollowWithin, readExactNoFollow, removeTreeNoFollow, renameWithIdentity, resourceIdentity, writeExclusiveFile } from "../git/paths.js";
+import type { SandboxLifecyclePort, SandboxTransferReservation } from "./lifecycle-service.js";
+import { ensurePrivateDirectory, openNoFollowWithin, readExactNoFollow, removeTreeNoFollow, renameWithIdentity, resourceIdentity, sameResourceIdentity, writeExclusiveFile } from "../git/paths.js";
 
 export const MAX_TRANSFER_BYTES = 512 * 1024 * 1024;
 
@@ -47,6 +48,9 @@ export interface SandboxTransferServiceOptions {
   readonly retention?: TrustedRetentionStore;
   /** Source acquisition remains a trusted controller port. */
   readonly seed?: RepositorySeedArtifactPort;
+  /** Every transfer call allocates its durable reservation before touching
+   * staging, sbx, or the guest. */
+  readonly lifecycle: SandboxLifecyclePort;
 }
 
 export class SandboxTransferError extends Error {
@@ -62,6 +66,7 @@ export class SandboxTransferService {
   readonly #maxBytes: number;
   readonly #retention: TrustedRetentionStore | undefined;
   readonly #seed: RepositorySeedArtifactPort | undefined;
+  readonly #lifecycle: SandboxLifecyclePort;
   get retentionConfigured(): boolean { return this.#retention !== undefined; }
   constructor(options: SandboxTransferServiceOptions) {
     if (!options || typeof options !== "object" || Array.isArray(options)) throw new SandboxTransferError("transfer service options are required");
@@ -69,12 +74,17 @@ export class SandboxTransferService {
     if (!path.isAbsolute(options.controllerDataRoot) || options.controllerDataRoot.includes("\0") || path.resolve(options.controllerDataRoot) !== options.controllerDataRoot || path.parse(options.controllerDataRoot).root === options.controllerDataRoot || options.controllerDataRoot.endsWith(path.sep)) throw new SandboxTransferError("transfer root must be canonical absolute host storage");
     if (!options.guest || typeof options.guest.invoke !== "function") throw new SandboxTransferError("transfer guest operation client is required");
     if (options.retention && (typeof options.retention.put !== "function" || typeof options.retention.acknowledge !== "function")) throw new SandboxTransferError("transfer retention store is not closed");
-    this.#root = options.controllerDataRoot; this.#driver = options.driver; this.#guest = options.guest; this.#maxBytes = options.maxBytes ?? MAX_TRANSFER_BYTES; this.#retention = options.retention; this.#seed = options.seed;
+    if (!options.lifecycle || typeof options.lifecycle.withTransfer !== "function") throw new SandboxTransferError("transfer lifecycle reservation authority is required");
+    this.#root = options.controllerDataRoot; this.#driver = options.driver; this.#guest = options.guest; this.#maxBytes = options.maxBytes ?? MAX_TRANSFER_BYTES; this.#retention = options.retention; this.#seed = options.seed; this.#lifecycle = options.lifecycle;
     if (!Number.isSafeInteger(this.#maxBytes) || this.#maxBytes <= 0 || this.#maxBytes > MAX_TRANSFER_BYTES) throw new SandboxTransferError("transfer byte limit is invalid");
   }
 
   async importSeed(context: SandboxTransferContext, signal?: AbortSignal): Promise<TransferResult> {
     assertContext(context);
+    return this.#withReservation(context, "import", signal, (reserved, operationSignal) => this.#importSeed(reserved, operationSignal));
+  }
+
+  async #importSeed(context: SandboxTransferContext, signal?: AbortSignal): Promise<TransferResult> {
     throwIfAborted(signal);
     assertDriverContext(this.#driver, context);
     assertGuestContext(this.#guest, context, this.#driver);
@@ -82,13 +92,15 @@ export class SandboxTransferService {
     const bytes = boundedBytes(seed.bytes, this.#maxBytes);
     const digest = sha256Bytes(bytes);
     const safeName = safeTransferName(seed.logicalName, "seed");
+    if (safeName !== "repository-seed.bundle") throw new SandboxTransferError("repository import is restricted to the fixed repository-seed.bundle artifact");
     assertExpectedGit(seed.expectedGit, context.runId);
     const hostPath = await this.#stage(context, "import", safeName, bytes, digest);
     const sandboxPath = `/ticket/import/${safeName}`;
-    const command = await this.#driver.cpImport({ sandboxName: context.sandboxName, expectedSandboxId: context.sandboxId, expectedTemplateDigest: context.templateDigest, expectedBootId: context.bootId, hostPath, sandboxPath }, signal);
+    const sandboxStagingPath = `/ticket/import/.repository-seed-${context.transferGeneration}-${randomUUID()}.incoming`;
+    const command = await this.#driver.cpImport({ sandboxName: context.sandboxName, expectedSandboxId: context.sandboxId, expectedTemplateDigest: context.templateDigest, expectedBootId: context.bootId, hostPath, sandboxPath: sandboxStagingPath }, signal);
     const stagedAfterCopy = await readExactFile(hostPath, this.#maxBytes, this.#root);
     if (stagedAfterCopy.length !== bytes.length || sha256Bytes(stagedAfterCopy) !== digest) throw new SandboxTransferError("import staging bytes changed during controller-mediated copy");
-    const guestProof = await this.#guest.invoke("import", { path: sandboxPath, byteLength: bytes.length, sha256: digest, transferGeneration: context.transferGeneration }, signal);
+    const guestProof = await this.#guest.invoke("import", { path: sandboxStagingPath, publishPath: sandboxPath, byteLength: bytes.length, sha256: digest, transferGeneration: context.transferGeneration }, signal);
     assertGuestProof(guestProof, bytes.length, digest, sandboxPath, context.transferGeneration);
     const manifest = makeManifest({ context, direction: "import", source: { logicalPath: `import/${safeName}`, side: "host" }, destination: { logicalPath: sandboxPath, side: "sandbox" }, bytes, expectedGit: seed.expectedGit });
     await this.#persistManifest(context, manifest);
@@ -96,6 +108,11 @@ export class SandboxTransferService {
   }
 
   async exportFile(context: SandboxTransferContext, sourcePath: string, name: string, expected: { readonly byteLength: number; readonly sha256: string; readonly expectedGit?: SandboxTransferManifestDocument["expectedGit"] }, signal?: AbortSignal): Promise<TransferResult> {
+    assertContext(context);
+    return this.#withReservation(context, "export", signal, (reserved, operationSignal) => this.#exportFile(reserved, sourcePath, name, expected, operationSignal));
+  }
+
+  async #exportFile(context: SandboxTransferContext, sourcePath: string, name: string, expected: { readonly byteLength: number; readonly sha256: string; readonly expectedGit?: SandboxTransferManifestDocument["expectedGit"] }, signal?: AbortSignal): Promise<TransferResult> {
     assertContext(context);
     throwIfAborted(signal);
     assertDriverContext(this.#driver, context);
@@ -115,6 +132,7 @@ export class SandboxTransferService {
     await ensurePrivateDirectory(path.join(this.#root, "sandbox-transfer"), this.#root);
     await ensurePrivateDirectory(path.dirname(destination), this.#root);
     let stagingIdentity: ReturnType<typeof resourceIdentity> | undefined;
+    let publicationIdentity: ReturnType<typeof resourceIdentity> | undefined;
     let command: SbxCommandResult;
     let copied: Buffer;
     try {
@@ -136,6 +154,9 @@ export class SandboxTransferService {
         await renameWithIdentity(staging, destination, this.#root, stagingIdentity);
         stagingIdentity = undefined;
       }
+      const destinationInfo = await lstat(destination);
+      if (!destinationInfo.isFile() || destinationInfo.isSymbolicLink() || destinationInfo.nlink !== 1 || !isPrivateFileMode(destinationInfo.mode)) throw new SandboxTransferError("published export destination is not a private regular file");
+      publicationIdentity = resourceIdentity(destination, "file", destinationInfo);
       copied = await readExactFile(destination, this.#maxBytes, this.#root);
       if (copied.length !== expected.byteLength || sha256Bytes(copied) !== expected.sha256) throw new SandboxTransferError("published export bytes do not match the guest-bound digest and length");
     } catch (error) {
@@ -148,7 +169,9 @@ export class SandboxTransferService {
       retentionReference = await this.#retention.put(context.runId, safeName, copied, manifest, signal);
       assertContractReference(retentionReference);
       await this.#retention.acknowledge(retentionReference, signal);
+      await assertPublishedDestination(destination, publicationIdentity, expected, this.#maxBytes, this.#root);
     }
+    await assertPublishedDestination(destination, publicationIdentity, expected, this.#maxBytes, this.#root);
     await this.#persistManifest(context, manifest);
     return { manifest, hostPath: destination, command, ...(retentionReference ? { retentionReference } : {}) };
   }
@@ -171,8 +194,9 @@ export class SandboxTransferService {
           const manifestBytes = await readExactFile(target, 4 * 1024 * 1024, this.#root);
           let manifest: unknown;
           try { manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)); } catch (error) { throw new SandboxTransferError(`transfer manifest is not valid UTF-8 JSON: ${error instanceof Error ? error.message : String(error)}`); }
+          if (!manifestBytes.equals(canonicalBytes(manifest))) throw new SandboxTransferError("transfer manifest is not canonically serialized");
           const manifestMatch = /^manifest-(import|export)-([1-9][0-9]*)\.json$/u.exec(entry.name);
-          if (!isRecord(manifest) || !manifestMatch || manifest["runId"] !== context.runId || manifest["sandboxName"] !== context.sandboxName || manifest["specFingerprint"] !== context.specFingerprint || manifest["bootId"] !== context.bootId || manifest["transferGeneration"] !== Number(manifestMatch[2]) || (manifest["transferGeneration"] as number) < 1 || (manifest["transferGeneration"] as number) > context.transferGeneration || manifest["direction"] !== manifestMatch[1]) throw new SandboxTransferError("transfer manifest is bound to a different context");
+          if (!isRecord(manifest) || !manifestMatch || manifest["runId"] !== context.runId || manifest["sandboxName"] !== context.sandboxName || manifest["sandboxId"] !== context.sandboxId || manifest["specFingerprint"] !== context.specFingerprint || manifest["bootId"] !== context.bootId || manifest["transferGeneration"] !== Number(manifestMatch[2]) || (manifest["transferGeneration"] as number) < 1 || (manifest["transferGeneration"] as number) > context.transferGeneration || manifest["direction"] !== manifestMatch[1]) throw new SandboxTransferError("transfer manifest is bound to a different context");
           assertTransferSemantics(manifest as unknown as SandboxTransferManifestDocument);
           continue;
         }
@@ -187,6 +211,15 @@ export class SandboxTransferService {
         await removeTreeNoFollow(root, resourceIdentity(root, "directory", rootInfo), this.#root);
       }
     } finally { await rootHandle.close(); }
+  }
+
+  async #withReservation<T>(context: SandboxTransferContext, direction: "import" | "export", callerSignal: AbortSignal | undefined, action: (context: SandboxTransferContext, signal?: AbortSignal) => Promise<T>): Promise<T> {
+    return this.#lifecycle.withTransfer(context.runId, direction, async (reservation: SandboxTransferReservation, operationSignal) => {
+      assertReservationContext(context, reservation);
+      if (this.#guest.binding.operationGeneration !== reservation.operationGeneration) throw new SandboxTransferError("transfer guest channel is bound to a different lifecycle operation generation");
+      const reservedContext: SandboxTransferContext = { ...context, sandboxName: reservation.sandboxName, sandboxId: reservation.sandboxId, bootId: reservation.bootId, templateDigest: reservation.templateDigest, specFingerprint: reservation.specFingerprint, transferGeneration: reservation.transferGeneration };
+      return action(reservedContext, operationSignal);
+    }, callerSignal, context.transferGeneration);
   }
 
   async #requireSeed(runId: string, signal?: AbortSignal): Promise<RepositorySeedArtifact> {
@@ -237,14 +270,15 @@ export class SandboxTransferService {
 export function createSandboxTransferService(options: SandboxTransferServiceOptions): SandboxTransferService { return new SandboxTransferService(options); }
 
 function makeManifest(input: { readonly context: SandboxTransferContext; readonly direction: "import" | "export"; readonly source: SandboxTransferManifestDocument["source"]; readonly destination: SandboxTransferManifestDocument["destination"]; readonly bytes: Uint8Array; readonly expectedGit?: SandboxTransferManifestDocument["expectedGit"] }): SandboxTransferManifestDocument {
-  const withoutFingerprint = { schemaVersion: 1 as const, kind: "squire-sandbox-transfer-manifest" as const, direction: input.direction, runId: input.context.runId, sandboxName: input.context.sandboxName, specFingerprint: input.context.specFingerprint, bootId: input.context.bootId, source: input.source, destination: input.destination, byteLength: input.bytes.byteLength, sha256: sha256Bytes(input.bytes), ...(input.expectedGit ? { expectedGit: input.expectedGit } : {}), transferGeneration: input.context.transferGeneration, sourceVerified: true as const, destinationVerified: true as const, bridgeUsed: false as const, createdAt: new Date().toISOString() };
+  const withoutFingerprint = { schemaVersion: 1 as const, kind: "squire-sandbox-transfer-manifest" as const, direction: input.direction, runId: input.context.runId, sandboxName: input.context.sandboxName, sandboxId: input.context.sandboxId, specFingerprint: input.context.specFingerprint, bootId: input.context.bootId, source: input.source, destination: input.destination, byteLength: input.bytes.byteLength, sha256: sha256Bytes(input.bytes), ...(input.expectedGit ? { expectedGit: input.expectedGit } : {}), transferGeneration: input.context.transferGeneration, sourceVerified: true as const, destinationVerified: true as const, bridgeUsed: false as const, createdAt: new Date().toISOString() };
   const manifest: SandboxTransferManifestDocument = { ...withoutFingerprint, fingerprint: buildTransferFingerprint(withoutFingerprint) };
   assertTransferSemantics(manifest);
   return deepFreeze(manifest);
 }
 
-function assertContext(context: SandboxTransferContext): void { if (!context || typeof context !== "object" || Array.isArray(context) || Object.keys(context as unknown as Record<string, unknown>).sort().join("\0") !== ["bootId", "runId", "sandboxId", "sandboxName", "specFingerprint", "templateDigest", "transferGeneration"].sort().join("\0")) throw new SandboxTransferError("transfer context is not closed"); assertSandboxRunId(context.runId); assertSandboxName(context.sandboxName); if (context.sandboxName !== deriveSandboxName(context.runId)) throw new SandboxTransferError("transfer sandbox name is not derived from the run"); if (!context.sandboxId || context.sandboxId.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(context.sandboxId)) throw new SandboxTransferError("transfer sandbox ID is invalid"); assertDigestReference(context.templateDigest, "transfer template digest"); assertSha256(context.specFingerprint, "transfer spec fingerprint"); if (!context.bootId || context.bootId.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(context.bootId) || !Number.isSafeInteger(context.transferGeneration) || context.transferGeneration < 1 || context.transferGeneration > 2_147_483_647) throw new SandboxTransferError("transfer context is invalid"); }
-function assertGuestContext(guest: GuestOperationClient, context: SandboxTransferContext, driver: SandboxDriver): void { const binding = guest.binding; if (!binding || binding.runId !== context.runId || binding.sandboxName !== context.sandboxName || binding.bootId !== context.bootId || binding.releaseId !== driver.release.release.releaseId || !driver.release.release.template.helperDigests.includes(binding.helperDigest)) throw new SandboxTransferError("transfer guest channel is bound to a different run, boot, helper, or release"); }
+function assertContext(context: SandboxTransferContext): void { if (!context || typeof context !== "object" || Array.isArray(context) || Object.keys(context as unknown as Record<string, unknown>).sort().join("\0") !== ["bootId", "runId", "sandboxId", "sandboxName", "specFingerprint", "templateDigest", "transferGeneration"].sort().join("\0")) throw new SandboxTransferError("transfer context is not closed"); assertSandboxRunId(context.runId); assertSandboxName(context.sandboxName); if (context.sandboxName !== deriveSandboxName(context.runId)) throw new SandboxTransferError("transfer sandbox name is not derived from the run"); if (!context.sandboxId || context.sandboxId.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(context.sandboxId)) throw new SandboxTransferError("transfer sandbox ID is invalid"); assertDigestReference(context.templateDigest, "transfer template digest"); assertSha256(context.specFingerprint, "transfer spec fingerprint"); if (!context.bootId || context.bootId.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(context.bootId) || !Number.isSafeInteger(context.transferGeneration) || context.transferGeneration < 0 || context.transferGeneration > 2_147_483_647) throw new SandboxTransferError("transfer context is invalid"); }
+function assertGuestContext(guest: GuestOperationClient, context: SandboxTransferContext, driver: SandboxDriver): void { const binding = guest.binding; const runtimeHelperDigest = driver.release.release.template.helperDigests.at(-1); if (!binding || !runtimeHelperDigest || binding.runId !== context.runId || binding.sandboxName !== context.sandboxName || binding.sandboxId !== context.sandboxId || binding.bootId !== context.bootId || binding.releaseId !== driver.release.release.releaseId || binding.helperDigest !== runtimeHelperDigest) throw new SandboxTransferError("transfer guest channel is bound to a different sandbox, run, boot, helper, or release"); }
+function assertReservationContext(context: SandboxTransferContext, reservation: SandboxTransferReservation): void { if (!reservation || reservation.runId !== context.runId || reservation.direction !== "import" && reservation.direction !== "export" || reservation.sandboxName !== context.sandboxName || reservation.sandboxId !== context.sandboxId || reservation.bootId !== context.bootId || reservation.templateDigest !== context.templateDigest || reservation.specFingerprint !== context.specFingerprint || !Number.isSafeInteger(context.transferGeneration) || !Number.isSafeInteger(reservation.transferGeneration) || reservation.transferGeneration < 1 || context.transferGeneration !== reservation.transferGeneration - 1 || !Number.isSafeInteger(reservation.operationGeneration) || reservation.operationGeneration < 1) throw new SandboxTransferError("sandbox transfer reservation is bound to a different lifecycle identity"); }
 function assertDriverContext(driver: SandboxDriver, context: SandboxTransferContext): void { if (!isResolvedSandboxRelease(driver.release)) throw new SandboxTransferError("transfer driver release is not resolver-verified"); const at = driver.release.release.template.reference.lastIndexOf("@"); const expectedReference = at > 0 ? `${driver.release.release.template.reference.slice(0, at)}@${context.templateDigest}` : ""; if (driver.release.release.template.digest !== context.templateDigest || driver.release.templateReference !== expectedReference || driver.release.release.template.reference !== expectedReference) throw new SandboxTransferError("transfer driver is bound to a different template identity"); }
 function safeTransferName(name: string, prefix: string): string { if (typeof name !== "string" || name.length < 1 || name.length > 128 || !/^[A-Za-z0-9._-]+$/u.test(name) || name === "." || name === ".." || name.startsWith(".")) throw new SandboxTransferError(`${prefix} transfer name is unsafe`); return name; }
 function assertExpectedGit(value: SandboxTransferManifestDocument["expectedGit"] | undefined, runId: string): void { if (value === undefined) return; if (!isRecord(value)) throw new SandboxTransferError("transfer Git binding is not closed"); const keys = Object.keys(value).sort().join("\0"); if (!["baseSha\0objectFormat", "baseSha\0bundle\0objectFormat", "baseSha\0objectFormat\0repository", "baseSha\0bundle\0objectFormat\0repository"].includes(keys)) throw new SandboxTransferError("transfer Git binding is not closed"); if (value.objectFormat !== "sha1" && value.objectFormat !== "sha256") throw new SandboxTransferError("transfer Git object format is invalid"); const length = value.objectFormat === "sha1" ? 40 : 64; if (typeof value.baseSha !== "string" || !new RegExp(`^[0-9a-f]{${length}}$`, "u").test(value.baseSha)) throw new SandboxTransferError("transfer Git base identity is invalid"); if (value.repository !== undefined && value.repository !== "/ticket/git/repo.git") throw new SandboxTransferError("transfer Git repository identity is not fixed"); if (value.bundle !== undefined && (!value.bundle.startsWith(`artifacts/git/${runId}/`) || !new RegExp(`^[0-9a-f]{${length}}\\.bundle$`, "u").test(value.bundle.slice(`artifacts/git/${runId}/`.length)))) throw new SandboxTransferError("transfer Git bundle path is not bound to the run"); }
@@ -252,6 +286,12 @@ function boundedBytes(bytes: Uint8Array, max: number): Buffer { const result = B
 async function readExactFile(target: string, max: number, root: string): Promise<Buffer> { const info = await lstat(target); if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !isPrivateFileMode(info.mode) || info.size > max) throw new SandboxTransferError("transfer staging target is not a bounded private regular file"); try { return await readExactNoFollow(target, root, max); } catch (error) { throw new SandboxTransferError(error instanceof Error ? error.message : String(error)); } }
 async function assertPrivateRoot(target: string): Promise<void> {
   if (!path.isAbsolute(target) || target.endsWith(path.sep) || target.includes("\0") || path.resolve(target) !== target || path.parse(target).root === target) throw new SandboxTransferError("transfer staging root is not canonical");
+  const root = path.parse(target).root; let current = root;
+  for (const part of target.slice(root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const ancestor = await lstat(current).catch(error => { if (isCode(error, "ENOENT")) return undefined; throw error; });
+    if (!ancestor || ancestor.isSymbolicLink() || !ancestor.isDirectory()) throw new SandboxTransferError("transfer staging root has an unsafe ancestor");
+  }
   const info = await lstat(target);
   if (!info.isDirectory() || info.isSymbolicLink() || info.nlink < 2 || (info.mode & 0o777) !== 0o700) throw new SandboxTransferError("transfer staging root is not a private directory");
 }
@@ -263,3 +303,12 @@ function throwIfAborted(signal?: AbortSignal): void { if (signal?.aborted) throw
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function isCode(value: unknown, code: string): boolean { return isRecord(value) && value["code"] === code; }
 function isPrivateFileMode(mode: number): boolean { return Number.isSafeInteger(mode) && (mode & 0o077) === 0 && (mode & 0o111) === 0 && (mode & 0o600) !== 0; }
+async function assertPublishedDestination(target: string, expectedIdentity: ReturnType<typeof resourceIdentity> | undefined, expected: { readonly byteLength: number; readonly sha256: string }, maxBytes: number, root: string): Promise<void> {
+  if (!expectedIdentity) throw new SandboxTransferError("published export identity was not captured");
+  const info = await lstat(target).catch(error => { throw new SandboxTransferError(`published export destination disappeared: ${error instanceof Error ? error.message : String(error)}`); });
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !isPrivateFileMode(info.mode)) throw new SandboxTransferError("published export destination identity changed");
+  const current = resourceIdentity(target, "file", info);
+  if (!sameResourceIdentity(current, expectedIdentity)) throw new SandboxTransferError("published export destination was replaced before publication");
+  const bytes = await readExactFile(target, maxBytes, root);
+  if (bytes.length !== expected.byteLength || sha256Bytes(bytes) !== expected.sha256) throw new SandboxTransferError("published export destination changed before publication");
+}

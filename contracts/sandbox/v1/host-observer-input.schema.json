@@ -1,0 +1,15 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"urn:squire:sandbox:v1:host-observer-input",
+  "type":"object","additionalProperties":false,
+  "required":["schemaVersion","kind","requestId","parentRequestId","runId","sandboxName","releaseId","platform","architecture","probe","phase","identity","context","observations","evidence","completedAt"],
+  "properties":{
+    "schemaVersion":{"const":1},"kind":{"const":"squire-sandbox-host-observer-input"},
+    "requestId":{"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},"parentRequestId":{"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "runId":{"type":"string","pattern":"^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},"sandboxName":{"type":"string","pattern":"^squire-v1-[a-z2-7]{26}$"},"releaseId":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,127}$"},"platform":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,31}$"},"architecture":{"type":"string","pattern":"^[a-z0-9][a-z0-9._-]{0,31}$"},
+    "probe":{"enum":["sbx-identity","resource-enforcement","disk-quota","bridge-isolation","mount-isolation","principal-separation","rootless-docker","persistence","network-audit","credential-absence","process-topology","herdr-topology","exact-removal"]},"phase":{"enum":["created","running","restarted","removed"]},
+    "identity":{"type":"object","additionalProperties":false,"required":["sandboxId","vmId","bootId","templateDigest"],"properties":{"sandboxId":{"type":"string","minLength":1,"maxLength":512},"vmId":{"type":"string","minLength":1,"maxLength":512},"bootId":{"type":"string","minLength":1,"maxLength":512},"templateDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}}},
+    "context":{"type":"object","additionalProperties":false,"required":["releaseId","templateDigest","networkProfileDigest","resourceTupleId","bridgeQuotaBytes"],"properties":{"releaseId":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,127}$"},"templateDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"networkProfileDigest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"resourceTupleId":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,63}$"},"bridgeQuotaBytes":{"type":"integer","minimum":4096,"maximum":107374182400}}},
+    "observations":{"type":"object","maxProperties":512},"evidence":{"type":"object","additionalProperties":false,"required":["path","sha256"],"properties":{"path":{"type":"string","pattern":"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}},"completedAt":{"type":"string","format":"date-time"}
+  }
+}

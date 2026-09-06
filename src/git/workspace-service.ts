@@ -7,18 +7,20 @@ import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } f
 import { SafeArtifactReader, type ImmutableArtifactReader } from "../control/safe-artifact-reader.js";
 import { buildBundleManifest, buildWorkspaceManifest, buildWorkspaceSpec, canonicalJson, FileGitContractWriter, GitWorkspaceContractError, GitWorkspaceContractValidator, serializeCanonical, sha256Bytes, type GitContractArtifactWriter } from "./contracts.js";
 import { descriptorPathForGit, digestDescriptor, openImmutableFile, copyDescriptorToExclusive, type DescriptorDigest } from "./bundle-reader.js";
-import { assertBaseBranch, assertCredentialFreeHttpsCloneUrl, assertFullObjectId, assertGitRefFormat, assertValidInternalRefName, assertRepositoryPart, assertRunId, assertTicketIdentifier, branchRef, deriveFeatureBranch, objectIdLength, zeroObjectId } from "./identity.js";
+import { assertBaseBranch, assertCredentialFreeHttpsCloneUrl, assertFullObjectId, assertGitRefFormat, assertValidInternalRefName, assertRepositoryPart, assertRunId, assertSha256, assertTicketIdentifier, branchRef, deriveFeatureBranch, objectIdLength, zeroObjectId } from "./identity.js";
 import { assertSafeAncestors, assertTicketRoot, chmodDirectoryNoFollow, chmodFileNoFollow, createGitWorkspaceFilesystemPaths, descriptorChildPath, ensurePrivateDirectory, entryKind, fsyncDirectory, GitPathSecurityError, inspectResource, isAlreadyExists, isMissing, logicalGitWorkspacePaths, openNoFollow, openNoFollowAt, readExactNoFollow, removeEmptyDirectoryNoFollow, removeTreeNoFollow, renameWithIdentity, sameResourceIdentity, sameStat, writeExclusiveFile, type GitWorkspaceFilesystemPaths, type RemovalChildIdentity } from "./paths.js";
 import { GitCommandError, GitCommandRunner, GitCommandUncertainError, type GitChildProcess, type GitCommandOptions, type GitCommandResult, type GitCommandRunnerOptions } from "./git-command.js";
 import { RejectingRepositorySourceAuthorizer, buildGitHttpsResolveConfig } from "./source-authorizer.js";
 import { assertTrustedFilesystemOperation, authenticateTrustedFilesystemAuthority, type TrustedFilesystemIsolationAuthority } from "./trusted-isolation.js";
-import type { GitBundleManifestDocument, GitBundleRecord, GitDisposalAuthorization, GitDisposalResult, GitObjectFormat, GitOperationStep, GitRepositoryIdentity, GitWorkspaceManifestDocument, GitWorkspaceReadiness, GitWorkspaceRecord, GitWorkspaceRetention, GitWorkspaceServicePort, GitWorkspaceSpecDocument, GitWorkspaceStatus, GitWorkspaceCommit, ReadyGitWorkspace, ResourceIdentity } from "./domain.js";
+import type { GitBundleManifestDocument, GitBundleRecord, GitDisposalAuthorization, GitDisposalResult, GitImmutableBundleImportDescriptor, GitObjectFormat, GitOperationStep, GitRepositoryIdentity, GitWorkspaceManifestDocument, GitWorkspaceReadiness, GitWorkspaceRecord, GitWorkspaceRetention, GitWorkspaceServicePort, GitWorkspaceSpecDocument, GitWorkspaceStatus, GitWorkspaceCommit, ReadyGitWorkspace, ResourceIdentity } from "./domain.js";
 
 export interface GitSourceAuthorization {
   /** The URL is normally the same credential-free HTTPS URL in the spec. */
   readonly cloneUrl: string;
   /** A test-only local transport may be supplied by an explicitly trusted test authorizer. */
   readonly localTransport?: boolean;
+  /** A controller-only immutable bundle transport; never accepted from a role/source authorizer. */
+  readonly immutableBundle?: true;
   /** The exact public address set authorized for this HTTPS connection. */
   readonly resolvedAddresses?: readonly string[];
   /** Only non-secret, command-specific values may be supplied by a source adapter. */
@@ -263,6 +265,48 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
         return await this.#finishProvisioning(context, document, record);
       } catch (error) {
         await this.#block(context, runId, error, "provision_failed");
+        throw error;
+      }
+    } finally { await this.#release(context); }
+  }
+
+  /** Provision from the controller-published, digest-bound bundle packet. This
+   * is deliberately an additive seam: normal HTTPS source authorization is
+   * unchanged, while the bundle path is accepted only after the transfer
+   * worker has authenticated its exact bytes. Git remains the sole owner of
+   * object closure, ref/base verification, repository creation, and manifests. */
+  async importImmutableBundle(descriptor: GitImmutableBundleImportDescriptor, owner: string, signal?: AbortSignal): Promise<ReadyGitWorkspace> {
+    assertBundleImportDescriptor(descriptor);
+    if (signal?.aborted) throw new GitWorkspaceContractError("Git bundle import was aborted");
+    assertRunId(descriptor.runId);
+    if (!/^squire-v1-[a-z2-7]{26}$/u.test(descriptor.sandboxName)) throw new GitWorkspaceContractError("Git bundle import sandbox name is malformed");
+    if (!descriptor.sandboxId || descriptor.sandboxId.length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(descriptor.sandboxId)) throw new GitWorkspaceContractError("Git bundle import sandbox identity is invalid");
+    const context = await this.#acquire(descriptor.runId, owner);
+    try {
+      await this.#assertFilesystemIsolation(signal);
+      const validator = await this.#validatorPromise;
+      const validated = await validator.validateSpec(descriptor.spec, { runId: descriptor.runId });
+      const document = validated.document;
+      if (descriptor.spec.path !== `artifacts/git/${descriptor.runId}/workspace-spec.json` || document.baseBranch !== descriptor.baseBranch || document.baseSha !== descriptor.baseSha || document.objectFormat !== descriptor.objectFormat || document.paths.repository !== descriptor.repository) throw new GitWorkspaceContractError("Git bundle import descriptor is not bound to the exact workspace spec");
+      await this.#authority.assertRunStartAllowed(descriptor.runId, this.#clock.now());
+      const current = await this.#store.read(descriptor.runId);
+      if (!current) throw new Error("run not found");
+      this.#assertExistingRecord(current.gitWorkspace, document, descriptor.spec, descriptor.runId);
+      let record = await this.#beginProvisioning(context, document, descriptor.spec, current.gitWorkspace);
+      if (record.stage === "blocked") throw new Error(`Git workspace is blocked: ${record.error.code}: ${record.error.message}`);
+      if (record.stage === "retained") throw new Error("Git workspace is retained and cannot be provisioned");
+      if (record.stage === "ready") return await this.#verifyReady(context, document, record, undefined);
+      if (record.stage !== "provisioning") throw new Error("Git workspace has an unsupported lifecycle stage");
+      await assertImportBundleFile(this.#ticketRoot, descriptor);
+      const source: GitSourceAuthorization = { cloneUrl: descriptor.importPath, immutableBundle: true };
+      try {
+        // The local flag is intentionally scoped to this fixed, controller-only
+        // bundle path. It is not the general test/local source switch.
+        await this.#provisionFilesystem(context, document, record, source, []);
+        await assertImportBundleFile(this.#ticketRoot, descriptor);
+        return await this.#finishProvisioning(context, document, record);
+      } catch (error) {
+        await this.#block(context, descriptor.runId, error, "bundle_import_failed");
         throw error;
       }
     } finally { await this.#release(context); }
@@ -773,9 +817,9 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     const imported = await this.#readRef(context, fs.repository, baseRef, spec.objectFormat, record.operation?.operationId ?? context.operationId);
     if (!imported) {
       const operationId = record.operation?.operationId ?? context.operationId;
-      if (!source.localTransport) await this.#assertHttpsResolveSupport(context, operationId);
-      const transportArgs = transportResolve.flatMap(value => ["-c", value]);
-      await this.#git(context, operationId, "fetch", [...transportArgs, "-c", "http.followRedirects=false", "--git-dir", fs.repository, "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-gc", "--no-write-fetch-head", source.cloneUrl, `refs/heads/${spec.baseBranch}:${baseRef}`], { allowNetwork: source.localTransport !== true, ...(source.localTransport ? { extraEnv: { GIT_ALLOW_PROTOCOL: "file" } } : source.environment ? { extraEnv: source.environment } : {}) });
+      if (!source.localTransport && !source.immutableBundle) await this.#assertHttpsResolveSupport(context, operationId);
+      const transportArgs = source.immutableBundle ? [] : transportResolve.flatMap(value => ["-c", value]);
+      await this.#git(context, operationId, "fetch", [...transportArgs, "-c", "http.followRedirects=false", "--git-dir", fs.repository, "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-gc", "--no-write-fetch-head", source.cloneUrl, `refs/heads/${spec.baseBranch}:${baseRef}`], { allowNetwork: source.localTransport !== true && source.immutableBundle !== true, ...(source.localTransport || source.immutableBundle ? { extraEnv: { GIT_ALLOW_PROTOCOL: "file" } } : source.environment ? { extraEnv: source.environment } : {}) });
     }
     await this.#verifyFetchedBase(context, spec, record);
     const featureRef = branchRef(spec.featureBranch);
@@ -1461,6 +1505,8 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
   #assertAuthorizedTransport(repository: GitRepositoryIdentity, authorization: GitSourceAuthorization): readonly string[] {
     if (!authorization || typeof authorization.cloneUrl !== "string" || authorization.cloneUrl.length === 0 || authorization.cloneUrl.length > 2048 || /[\u0000-\u001f\u007f\r\n]/u.test(authorization.cloneUrl)) throw new Error("approved Git source URL is malformed");
     if (authorization.localTransport !== undefined && typeof authorization.localTransport !== "boolean") throw new Error("approved Git source transport flag is malformed");
+    if (authorization.immutableBundle !== undefined && authorization.immutableBundle !== true) throw new Error("immutable bundle transport flag is malformed");
+    if (authorization.immutableBundle && (authorization.cloneUrl !== "/ticket/import/repository-seed.bundle" || authorization.localTransport !== undefined || authorization.resolvedAddresses !== undefined || authorization.environment !== undefined)) throw new Error("immutable bundle transport is not the fixed controller path");
     if (authorization.resolvedAddresses !== undefined && !Array.isArray(authorization.resolvedAddresses)) throw new Error("approved Git source address set is malformed");
     if (authorization.environment !== undefined && (!authorization.environment || typeof authorization.environment !== "object" || Array.isArray(authorization.environment))) throw new Error("approved Git source environment is malformed");
     if (authorization.release !== undefined && typeof authorization.release !== "function") throw new Error("approved Git source release hook is malformed");
@@ -2013,6 +2059,33 @@ function gitConfigValue(value: string): string {
   if (!/[\s#;"\\]/u.test(value)) return value;
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
+async function assertImportBundleFile(ticketRoot: string, descriptor: GitImmutableBundleImportDescriptor, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new GitWorkspaceContractError("Git bundle import was aborted");
+  const absolute = path.join(ticketRoot, "import/repository-seed.bundle");
+  const opened = await openImmutableFile(absolute, DEFAULT_MAX_BUNDLE_BYTES, ticketRoot);
+  try {
+    if (opened.path !== absolute || (opened.identity.mode & 0o7777) !== 0o400 && (opened.identity.mode & 0o7777) !== 0o600 || (opened.identity.mode & 0o077) !== 0 || opened.identity.linkCount !== 1) throw new GitWorkspaceContractError("Git bundle import packet permissions or identity are not exact");
+    const digest = await digestDescriptor(opened.handle, DEFAULT_MAX_BUNDLE_BYTES, signal);
+    if (digest.byteLength !== descriptor.byteLength || digest.sha256 !== descriptor.sha256) throw new GitWorkspaceContractError("Git bundle import packet digest or identity changed");
+  } finally { await opened.handle.close(); }
+}
+
+function assertBundleImportDescriptor(value: GitImmutableBundleImportDescriptor): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new GitWorkspaceContractError("Git bundle import descriptor is required");
+  const record = value as unknown as Record<string, unknown>;
+  const keys = ["baseBranch", "baseSha", "byteLength", "controllerOnly", "importPath", "localTransport", "objectFormat", "repository", "runId", "sandboxId", "sandboxName", "sha256", "spec", "transferGeneration"];
+  if (Object.keys(record).sort().join("\0") !== keys.sort().join("\0") || record["controllerOnly"] !== true || record["localTransport"] !== false || record["importPath"] !== "/ticket/import/repository-seed.bundle" || record["repository"] !== "/ticket/git/repo.git") throw new GitWorkspaceContractError("Git bundle import descriptor is not closed or controller-only");
+  if (typeof record["runId"] !== "string" || typeof record["sandboxName"] !== "string" || !/^squire-v1-[a-z2-7]{26}$/u.test(record["sandboxName"]) || typeof record["sandboxId"] !== "string" || typeof record["baseBranch"] !== "string" || typeof record["baseSha"] !== "string" || typeof record["objectFormat"] !== "string" || typeof record["sha256"] !== "string" || !Number.isSafeInteger(record["byteLength"]) || (record["byteLength"] as number) <= 0 || (record["byteLength"] as number) > DEFAULT_MAX_BUNDLE_BYTES || !Number.isSafeInteger(record["transferGeneration"]) || (record["transferGeneration"] as number) < 1 || record["sandboxId"].length === 0 || record["sandboxId"].length > 512 || /[\u0000-\u001f\u007f\r\n]/u.test(record["sandboxId"])) throw new GitWorkspaceContractError("Git bundle import descriptor identity is malformed");
+  assertBaseBranch(record["baseBranch"]);
+  const format = record["objectFormat"];
+  if (format !== "sha1" && format !== "sha256") throw new GitWorkspaceContractError("Git bundle import object format is invalid");
+  assertFullObjectId(record["baseSha"], format);
+  assertSha256(record["sha256"], "Git bundle import digest");
+  const spec = record["spec"];
+  if (!spec || typeof spec !== "object" || Array.isArray(spec) || Object.keys(spec).sort().join("\0") !== ["path", "schemaId", "sha256"].sort().join("\0") || (spec as Record<string, unknown>)["schemaId"] !== "urn:squire:git-workspace:v1:workspace-spec" || (spec as Record<string, unknown>)["path"] !== `artifacts/git/${record["runId"]}/workspace-spec.json` || typeof (spec as Record<string, unknown>)["sha256"] !== "string") throw new GitWorkspaceContractError("Git bundle import spec reference is malformed");
+  assertSha256((spec as Record<string, unknown>)["sha256"] as string, "Git bundle import spec digest");
+}
+
 function positiveInteger(value: number, label: string): number { if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} must be a positive integer`); return value; }
 function matchesCleanupIdentity(actual: ResourceIdentity, expected: ResourceIdentity): boolean { return actual.kind === expected.kind && actual.device === expected.device && actual.inode === expected.inode && actual.mode === expected.mode && (actual.kind === "file" ? actual.linkCount === expected.linkCount : true); }
 function isBundleResourceShape(resource: ResourceIdentity | undefined, relativePath: string): resource is ResourceIdentity { return Boolean(resource && typeof resource.path === "string" && resource.path === `/ticket/${relativePath}` && resource.kind === "file" && typeof resource.device === "string" && resource.device.length > 0 && typeof resource.inode === "string" && resource.inode.length > 0 && Number.isSafeInteger(resource.mode) && resource.mode === 0o400 && Number.isSafeInteger(resource.linkCount) && resource.linkCount === 1); }

@@ -45,3 +45,6 @@
 {"slug":"aidev-222-deterministic-retention-tests","title":"AIDEV-222 deterministic retention tests","category":"testing","timestamp":"2026-09-04T04:17:35.279Z","kind":"retro"}
 {"slug":"obs-2026-09-04-aidev-222-retention-flake-removed","title":"AIDEV-222 retention flake removed","relevance":"high","timestamp":"2026-09-04T04:17:51.240Z","kind":"observe"}
 {"slug":"pi-allocation-recovery-requires-exact-exit-identity","title":"Exact Pi allocation recovery identity","category":"bugfix","timestamp":"2026-09-05T20:05:35.821Z","kind":"retro"}
+{"page_type":"concept","title":"AIDEV-223 restricted sandbox","path":"concepts/aidev-223-restricted-sandbox","timestamp":"2026-09-06T00:55:28.065Z","kind":"ensure_page"}
+{"slug":"obs-2026-09-06-aidev-223-materialization-publication-race-hardened","title":"AIDEV-223 materialization publication race hardened","relevance":"high","timestamp":"2026-09-06T04:36:11.582Z","kind":"observe"}
+{"slug":"aidev-223-restricted-sandbox-implementation","title":"Restricted sandbox controller implementation","category":"architecture","timestamp":"2026-09-06T04:36:17.339Z","kind":"retro"}

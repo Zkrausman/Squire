@@ -62,14 +62,15 @@ export function assertSandboxRecordMutation(previous: SandboxRecord | undefined,
   if (next.retention !== undefined) assertRetention(next.retention);
   if (next.retention !== undefined && !["retained", "removing", "removed", "blocked"].includes(next.lifecycle)) throw new SandboxContractError("sandbox retention was published outside a retention state");
   if (next.operation !== undefined) assertOperation(next.operation, next.operationGeneration);
+  const transferActive = next.lifecycle === "ready" && next.operation?.kind === "transfer";
   if (ACTIVE_OPERATION_STATES.has(next.lifecycle) && !next.operation) throw new SandboxContractError(`sandbox ${next.lifecycle} state lacks an active operation`);
   if (!SANDBOX_LIFECYCLE_STATES.includes(next.lifecycle)) throw new SandboxContractError("sandbox lifecycle state is invalid");
-  if (next.lifecycle === "ready" && (!next.identity || !next.attestation || !next.attestationDigest || !next.bootId || next.operation)) throw new SandboxContractError("ready sandbox lacks complete immutable attestation identity");
+  if (next.lifecycle === "ready" && (!next.identity || !next.attestation || !next.attestationDigest || !next.bootId || next.operation && !transferActive)) throw new SandboxContractError("ready sandbox lacks complete immutable attestation identity");
   if (next.lifecycle === "retained" && !next.retention) throw new SandboxContractError("retained sandbox lacks its immutable retention deadline");
   if (next.lifecycle === "removed" && next.operation) throw new SandboxContractError("removed sandbox retains an active operation");
-  if (!ACTIVE_OPERATION_STATES.has(next.lifecycle) && next.operation) throw new SandboxContractError(`sandbox ${next.lifecycle} state retains an active operation`);
-  if (ACTIVE_OPERATION_STATES.has(next.lifecycle) && next.operation) {
-    const allowedKinds: Record<SandboxRecord["lifecycle"], readonly SandboxOperation["kind"][]> = { reserving: [], creating: ["create"], created: [], starting: ["start"], attesting: ["attest"], ready: [], stopping: ["stop"], stopped: [], retained: [], removing: ["remove"], removed: [], blocked: [] };
+  if (!ACTIVE_OPERATION_STATES.has(next.lifecycle) && !transferActive && next.operation) throw new SandboxContractError(`sandbox ${next.lifecycle} state retains an active operation`);
+  if (ACTIVE_OPERATION_STATES.has(next.lifecycle) && next.operation || transferActive) {
+    const allowedKinds: Record<SandboxRecord["lifecycle"], readonly SandboxOperation["kind"][]> = { reserving: [], creating: ["create"], created: [], starting: ["start"], attesting: ["attest"], ready: ["transfer"], stopping: ["stop"], stopped: [], retained: [], removing: ["remove"], removed: [], blocked: [] };
     if (!allowedKinds[next.lifecycle]?.includes(next.operation.kind)) throw new SandboxContractError(`sandbox ${next.lifecycle} state has an incompatible operation`);
   }
   if (!previous) {
@@ -91,6 +92,9 @@ export function assertSandboxRecordMutation(previous: SandboxRecord | undefined,
   if (next.identity?.bootId !== next.bootId) throw new SandboxContractError("sandbox physical identity boot binding changed");
   if (next.operationGeneration < previous.operationGeneration || next.operationGeneration > previous.operationGeneration + 1) throw new SandboxContractError("sandbox operation generation is not monotonic");
   if (next.transferGeneration < previous.transferGeneration) throw new SandboxContractError("sandbox transfer generation regressed");
+  if (next.transferGeneration !== previous.transferGeneration && !(next.lifecycle === "ready" && next.operation?.kind === "transfer" && next.transferGeneration === previous.transferGeneration + 1) || next.operation?.kind === "transfer" && previous.operation?.kind !== "transfer" && next.transferGeneration !== previous.transferGeneration + 1) throw new SandboxContractError("sandbox transfer generation changed without a persisted transfer operation");
+  if (previous.operation?.kind === "transfer" && !(next.lifecycle === "ready" && (!next.operation || next.operation.kind === "transfer") || next.lifecycle === "blocked")) throw new SandboxContractError("sandbox transfer operation was replaced before completion");
+  if (previous.operation?.kind === "transfer" && next.operation?.kind === "transfer" && (previous.operation.owner !== next.operation.owner || previous.operation.fencingToken !== next.operation.fencingToken || previous.operation.generation !== next.operation.generation || previous.operation.intent !== next.operation.intent)) throw new SandboxContractError("sandbox transfer reservation identity changed before completion");
   if (!ALLOWED[previous.lifecycle]?.includes(next.lifecycle)) throw new SandboxContractError(`illegal sandbox lifecycle transition ${previous.lifecycle}->${next.lifecycle}`);
   if (previous.lifecycle === next.lifecycle && next.operationGeneration !== previous.operationGeneration) throw new SandboxContractError("sandbox generation changed without a lifecycle transition");
   if (previous.lifecycle !== next.lifecycle && next.operationGeneration !== previous.operationGeneration + 1) throw new SandboxContractError("sandbox lifecycle transition did not allocate one operation generation");

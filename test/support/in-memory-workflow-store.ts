@@ -110,6 +110,7 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   private assertDurablyQuiescent(runId: string, now: number, current: RunSnapshot): void {
     if (Object.values(current.processAllocations ?? {}).some(Boolean)) throw new StoreConflictError("workflow is not durably quiescent: process allocation remains");
     if (Object.values(current.sessions).some(session => session?.processState === "live" || session?.processState === "launching")) throw new StoreConflictError("workflow is not durably quiescent: role process remains");
+    if (current.sandbox?.operation) throw new StoreConflictError("workflow is not durably quiescent: sandbox operation remains");
     if ([...this.leases.entries()].some(([key, lease]) => key.startsWith(`${runId}:`) && key !== `${runId}:teardown` && lease.expiresAt > now)) throw new StoreConflictError("workflow is not durably quiescent: lease remains");
     if ((current.preparationLeases ?? []).some(lease => lease.state === "held")) throw new StoreConflictError("workflow is not durably quiescent: preparation lease remains");
   }

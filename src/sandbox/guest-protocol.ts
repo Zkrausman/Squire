@@ -13,6 +13,9 @@ export type GuestOperation = (typeof GUEST_OPERATIONS)[number];
 export interface GuestBinding {
   readonly runId: string;
   readonly sandboxName: string;
+  /** Physical sandbox identity is part of every request binding; a derived
+   * name alone is never sufficient to authorize a guest operation. */
+  readonly sandboxId: string;
   readonly bootId: string;
   readonly operationGeneration: number;
   readonly releaseId: string;
@@ -39,11 +42,24 @@ export interface GuestOperationResponse {
   readonly error?: string;
 }
 
+/** A narrowly scoped reverse-direction request handler. The guest may issue
+ * only the operation explicitly wired by the host composition; ordinary guest
+ * operations remain host-request/guest-response only. */
+export type GuestOperationRequestHandler = (request: GuestOperationRequest) => unknown | Promise<unknown>;
+
 export interface GuestProtocolLimits {
   readonly maxFrameBytes?: number;
   readonly maxOutputBytes?: number;
   readonly maxPendingOperations?: number;
   readonly operationTimeoutMs?: number;
+}
+
+export interface GuestOperationProcess {
+  readonly stdin: HostProcessWritable;
+  readonly stdout: HostProcessReadable;
+  readonly exitCode: number | null;
+  readonly kill?: (signal: "SIGTERM" | "SIGKILL") => boolean;
+  readonly on?: (event: "exit", listener: (code: number | null, signal: string | null) => void) => unknown;
 }
 
 export class GuestProtocolError extends Error {
@@ -121,14 +137,17 @@ export class GuestOperationClient {
   readonly #binding: GuestBinding;
   readonly #process: { readonly kill?: (signal: "SIGTERM" | "SIGKILL") => boolean };
   readonly #pending = new Map<string, { operation: GuestOperation; resolve: (response: GuestOperationResponse) => void; reject: (error: Error) => void; cleanup: () => void }>();
+  readonly #incoming = new Set<string>();
+  readonly #requestHandler: GuestOperationRequestHandler | undefined;
   #closed = false;
   #failure: Error | undefined;
   readonly #maxPending: number;
   readonly #operationTimeoutMs: number;
-  constructor(process: { readonly stdin: HostProcessWritable; readonly stdout: HostProcessReadable; readonly exitCode: number | null; readonly kill?: (signal: "SIGTERM" | "SIGKILL") => boolean; readonly on?: (event: "exit", listener: (code: number | null, signal: string | null) => void) => unknown }, binding: GuestBinding, limits: GuestProtocolLimits = {}) {
+  constructor(process: GuestOperationProcess, binding: GuestBinding, limits: GuestProtocolLimits & { readonly requestHandler?: GuestOperationRequestHandler } = {}) {
     assertBinding(binding);
     if (!process || !process.stdin || typeof process.stdin.write !== "function" || !process.stdout || typeof process.stdout.on !== "function" || (process.on !== undefined && typeof process.on !== "function") || (process.exitCode !== null && !Number.isSafeInteger(process.exitCode))) throw new GuestProtocolError("guest worker process does not expose the required bounded stdio");
-    this.#process = process; this.#stdin = process.stdin; this.#binding = Object.freeze({ ...binding }); this.#decoder = new GuestFrameDecoder(limits); this.#maxPending = boundedPositiveInteger(limits.maxPendingOperations ?? 64, MAX_GUEST_PENDING_OPERATIONS, "guest pending operation limit"); this.#operationTimeoutMs = boundedPositiveInteger(limits.operationTimeoutMs ?? 30_000, MAX_GUEST_OPERATION_TIMEOUT_MS, "guest operation timeout");
+    this.#process = process; this.#stdin = process.stdin; this.#binding = Object.freeze({ ...binding }); this.#requestHandler = limits.requestHandler; this.#decoder = new GuestFrameDecoder(limits); this.#maxPending = boundedPositiveInteger(limits.maxPendingOperations ?? 64, MAX_GUEST_PENDING_OPERATIONS, "guest pending operation limit"); this.#operationTimeoutMs = boundedPositiveInteger(limits.operationTimeoutMs ?? 30_000, MAX_GUEST_OPERATION_TIMEOUT_MS, "guest operation timeout");
+    if (this.#requestHandler !== undefined && typeof this.#requestHandler !== "function") throw new GuestProtocolError("guest reverse request handler is invalid");
     process.stdout.on("data", chunk => this.#consume(chunk));
     process.stdout.on("end", () => { try { this.#decoder.end(); this.#fail(new GuestProtocolError("guest worker ended")); } catch (error) { this.#fail(asError(error)); } });
     process.on?.("exit", () => this.#fail(new GuestProtocolError("guest worker exited before operation completion")));
@@ -174,13 +193,40 @@ export class GuestOperationClient {
   }
 
   #message(message: GuestOperationRequest | GuestOperationResponse): void {
-    if (message.kind !== "squire-guest-operation-response") { this.#fail(new GuestProtocolError("guest worker emitted a request frame")); return; }
+    if (message.kind === "squire-guest-operation-request") {
+      if (!this.#requestHandler || message.operation !== "workflow-store" || !sameBinding(message.binding, this.#binding) || this.#pending.has(message.requestId) || this.#incoming.has(message.requestId)) { this.#fail(new GuestProtocolError("guest reverse request is not allowlisted or bound")); return; }
+      if (this.#incoming.size >= this.#maxPending) { this.#fail(new GuestProtocolError("guest reverse request limit exceeded")); return; }
+      this.#incoming.add(message.requestId);
+      void this.#handleReverseRequest(message);
+      return;
+    }
     if (!sameBinding(message.binding, this.#binding)) { this.#fail(new GuestProtocolError("guest response binding changed")); return; }
     const pending = this.#pending.get(message.requestId);
     if (!pending || pending.operation !== message.operation) { this.#fail(new GuestProtocolError("guest response is uncorrelated or has a mismatched operation")); return; }
     this.#pending.delete(message.requestId);
     if (message.success) pending.resolve(message);
     else pending.reject(new GuestProtocolError(message.error ?? "guest operation failed"));
+  }
+
+  async #handleReverseRequest(request: GuestOperationRequest): Promise<void> {
+    try {
+      const data = await this.#requestHandler!(request);
+      if (this.#closed) return;
+      const response: GuestOperationResponse = { schemaVersion: 1, kind: "squire-guest-operation-response", requestId: request.requestId, binding: this.#binding, operation: request.operation, success: true, ...(data === undefined ? {} : { data }) };
+      this.#send(encodeGuestFrame(response));
+    } catch (error) {
+      if (this.#closed) return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.length === 0 || message.length > 1_000 || /[\u0000-\u001f\u007f\r\n]/u.test(message)) { this.#fail(new GuestProtocolError("guest reverse request failed with an unsafe error")); return; }
+      const response: GuestOperationResponse = { schemaVersion: 1, kind: "squire-guest-operation-response", requestId: request.requestId, binding: this.#binding, operation: request.operation, success: false, error: message };
+      this.#send(encodeGuestFrame(response));
+    } finally { this.#incoming.delete(request.requestId); }
+  }
+
+  #send(frame: Buffer): void {
+    if (this.#closed) return;
+    try { this.#stdin.write(frame); }
+    catch (error) { this.#fail(asError(error)); }
   }
 
   #fail(error: Error): void {
@@ -194,15 +240,15 @@ export class GuestOperationClient {
 
 export function validateBinding(value: unknown): GuestBinding {
   if (!isRecord(value)) throw new GuestProtocolError("guest binding is not an object");
-  const expected = ["bootId", "helperDigest", "operationGeneration", "releaseId", "runId", "sandboxName"].sort();
-  if (Object.keys(value).sort().join("\0") !== expected.join("\0") || typeof value["runId"] !== "string" || typeof value["sandboxName"] !== "string" || typeof value["bootId"] !== "string" || typeof value["releaseId"] !== "string" || typeof value["helperDigest"] !== "string" || typeof value["operationGeneration"] !== "number") throw new GuestProtocolError("guest binding fields are not closed");
-  const binding: GuestBinding = { runId: value["runId"], sandboxName: value["sandboxName"], bootId: value["bootId"], operationGeneration: value["operationGeneration"], releaseId: value["releaseId"], helperDigest: value["helperDigest"] };
+  const expected = ["bootId", "helperDigest", "operationGeneration", "releaseId", "runId", "sandboxId", "sandboxName"].sort();
+  if (Object.keys(value).sort().join("\0") !== expected.join("\0") || typeof value["runId"] !== "string" || typeof value["sandboxName"] !== "string" || typeof value["sandboxId"] !== "string" || typeof value["bootId"] !== "string" || typeof value["releaseId"] !== "string" || typeof value["helperDigest"] !== "string" || typeof value["operationGeneration"] !== "number") throw new GuestProtocolError("guest binding fields are not closed");
+  const binding: GuestBinding = { runId: value["runId"], sandboxName: value["sandboxName"], sandboxId: value["sandboxId"], bootId: value["bootId"], operationGeneration: value["operationGeneration"], releaseId: value["releaseId"], helperDigest: value["helperDigest"] };
   assertBinding(binding);
   return binding;
 }
 
 export function sameBinding(left: GuestBinding, right: GuestBinding): boolean {
-  return left.runId === right.runId && left.sandboxName === right.sandboxName && left.bootId === right.bootId && left.operationGeneration === right.operationGeneration && left.releaseId === right.releaseId && left.helperDigest === right.helperDigest;
+  return left.runId === right.runId && left.sandboxName === right.sandboxName && left.sandboxId === right.sandboxId && left.bootId === right.bootId && left.operationGeneration === right.operationGeneration && left.releaseId === right.releaseId && left.helperDigest === right.helperDigest;
 }
 
 function validateRequest(value: Record<string, unknown>): GuestOperationRequest {
@@ -224,7 +270,7 @@ function validateResponse(value: Record<string, unknown>): GuestOperationRespons
 }
 
 export function assertBinding(binding: GuestBinding): void {
-  if (!binding || typeof binding.runId !== "string" || typeof binding.sandboxName !== "string" || typeof binding.bootId !== "string" || typeof binding.releaseId !== "string" || typeof binding.helperDigest !== "string" || !Number.isSafeInteger(binding.operationGeneration) || binding.operationGeneration < 1 || [binding.runId, binding.sandboxName, binding.bootId, binding.releaseId].some(value => value.length === 0 || value.length > 512 || /[\u0000-\u001f\u007f\r\n:]/u.test(value)) || !SHA256_PATTERN.test(binding.helperDigest)) throw new GuestProtocolError("guest binding is invalid");
+  if (!binding || typeof binding.runId !== "string" || typeof binding.sandboxName !== "string" || typeof binding.sandboxId !== "string" || typeof binding.bootId !== "string" || typeof binding.releaseId !== "string" || typeof binding.helperDigest !== "string" || !Number.isSafeInteger(binding.operationGeneration) || binding.operationGeneration < 1 || [binding.runId, binding.sandboxName, binding.sandboxId, binding.bootId, binding.releaseId].some(value => value.length === 0 || value.length > 512 || /[\u0000-\u001f\u007f\r\n:]/u.test(value)) || !SHA256_PATTERN.test(binding.helperDigest)) throw new GuestProtocolError("guest binding is invalid");
   try { assertSandboxRunId(binding.runId); assertSandboxName(binding.sandboxName); assertReleaseId(binding.releaseId); }
   catch (error) { throw new GuestProtocolError(error instanceof Error ? error.message : "guest binding identity is invalid"); }
   if (binding.sandboxName !== deriveSandboxName(binding.runId)) throw new GuestProtocolError("guest binding sandbox name is not derived from the run");

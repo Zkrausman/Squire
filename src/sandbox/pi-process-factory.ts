@@ -7,6 +7,7 @@ import { isResolvedSandboxRelease, type ResolvedSandboxRelease } from "./release
 import { assertReleaseSemantics } from "./contracts.js";
 import type { SbxObservedSandbox } from "./sbx-command.js";
 import { GuestOperationClient, type GuestBinding } from "./guest-protocol.js";
+import { createWorkflowStoreRpcMediator, type WorkflowStoreRpcAuthority, type WorkflowStoreRpcMediator } from "./workflow-store-rpc.js";
 import { assertCanonicalSandboxPath, assertSandboxName, assertSandboxRunId, assertSha256, canonicalJson, deriveSandboxName, sha256Bytes } from "./identity.js";
 import type { SandboxProcessIdentity } from "./domain.js";
 
@@ -27,6 +28,10 @@ export interface SandboxPiProcessFactoryOptions {
    * different interpreter or runtime payload. */
   readonly piExecutable: string;
   readonly operationTimeoutMs?: number;
+  /** Narrow controller authority for the reverse guest workflow-store
+   * channel. It is never copied into the guest launch environment and is
+   * required so a late spawn cannot bypass the durable drain/fence gate. */
+  readonly workflowStore: WorkflowStoreRpcAuthority;
 }
 
 export interface SandboxPiProcessFactoryPort extends PiProcessFactory {
@@ -43,11 +48,12 @@ export class SandboxPiProcessError extends Error {
  * worker. Pi stdin/stdout are never host process pipes and an outer worker exit
  * never counts as inner Pi exit. */
 export class SandboxPiProcessFactory implements SandboxPiProcessFactoryPort {
-  readonly #options: SandboxPiProcessFactoryOptions;
+  readonly #options: Omit<SandboxPiProcessFactoryOptions, "workflowStore">;
+  readonly #workflowStore: WorkflowStoreRpcAuthority;
   constructor(options: SandboxPiProcessFactoryOptions) {
     if (!options || typeof options !== "object" || Array.isArray(options) || !options.driver || typeof options.driver.execWorker !== "function" || !options.sandbox || typeof options.sandbox !== "object" || !options.release || typeof options.release !== "object") throw new SandboxPiProcessError("sandbox Pi factory options are required");
     assertSandboxRunId(options.runId); assertSandboxObservation(options.sandbox); if (!ROLES.includes(options.role)) throw new SandboxPiProcessError("sandbox Pi role is not allowlisted"); assertSandboxName(options.sandbox.name); assertSha256(options.helperDigest, "guest helper digest"); if (!isResolvedSandboxRelease(options.release) || !isResolvedSandboxRelease(options.driver.release)) throw new SandboxPiProcessError("sandbox Pi factory requires resolver-verified driver and release identities");
-    if (!options.release.release.template.helperDigests.includes(options.helperDigest)) throw new SandboxPiProcessError("guest helper digest is not in the promoted template identity");
+    if (options.helperDigest !== options.release.release.template.helperDigests.at(-1)) throw new SandboxPiProcessError("guest helper digest is not the promoted squirectl runtime identity");
     if (options.sandbox.name !== deriveSandboxName(options.runId) || typeof options.sandbox.id !== "string" || typeof options.sandbox.vmId !== "string" || !safeIdentity(options.sandbox.id) || !safeIdentity(options.sandbox.vmId) || assertDigestReferenceSafe(options.sandbox.templateDigest) === false) throw new SandboxPiProcessError("sandbox Pi factory sandbox identity is invalid");
     try { assertCanonicalSandboxPath(options.piExecutable, "sandbox Pi executable"); } catch (error) { throw new SandboxPiProcessError(error instanceof Error ? error.message : "sandbox Pi executable is not a canonical ticket path"); }
     if (!options.piExecutable.startsWith("/ticket/runtime/")) throw new SandboxPiProcessError("sandbox Pi executable is outside the fixed runtime root");
@@ -56,7 +62,10 @@ export class SandboxPiProcessFactory implements SandboxPiProcessFactoryPort {
     if (options.release.release.promotion.state !== "validated") throw new SandboxPiProcessError("sandbox Pi factory cannot use a blocked sandbox release");
     if (options.release.templateReference !== options.driver.release.templateReference || options.release.sbxExecutable !== options.driver.release.sbxExecutable || options.release.release.sbxBinary.sha256 !== options.driver.release.release.sbxBinary.sha256 || options.release.release.releaseId !== options.driver.release.release.releaseId || canonicalJson(options.release.resourceTuple) !== canonicalJson(options.driver.release.resourceTuple) || options.release.release.template.digest !== options.sandbox.templateDigest || options.release.release.template.reference !== options.release.templateReference) throw new SandboxPiProcessError("sandbox Pi factory release identity is substituted");
     if (options.generation < 1 || options.generation > 2_147_483_647 || !Number.isSafeInteger(options.generation)) throw new SandboxPiProcessError("sandbox Pi generation is invalid");
-    this.#options = deepFreeze({ ...options, sandbox: { ...options.sandbox } });
+    if (!options.workflowStore || typeof options.workflowStore.read !== "function" || typeof options.workflowStore.assertRunStartAllowed !== "function") throw new SandboxPiProcessError("sandbox Pi factory requires the narrow workflow-store lifecycle authority");
+    this.#workflowStore = options.workflowStore;
+    const { workflowStore: _workflowStore, ...frozenOptions } = options;
+    this.#options = deepFreeze({ ...frozenOptions, sandbox: { ...options.sandbox } });
   }
   get sandbox(): SbxObservedSandbox { return this.#options.sandbox; }
   get role(): Role { return this.#options.role; }
@@ -68,16 +77,23 @@ export class SandboxPiProcessFactory implements SandboxPiProcessFactoryPort {
     if (signal?.aborted) throw new SandboxPiProcessError("sandbox Pi spawn was aborted");
     let worker: SbxExecHandle | undefined;
     let channel: GuestOperationClient | undefined;
+    let workflowMediator: WorkflowStoreRpcMediator | undefined;
     let process: SandboxPiProcess | undefined;
     let allocation: SandboxProcessIdentity | undefined;
     try {
       worker = await this.#options.driver.execWorker(this.#options.sandbox, signal);
       const binding = this.#binding(worker);
-      channel = new GuestOperationClient(worker, binding, { maxFrameBytes: 256 * 1024, maxOutputBytes: 8 * 1024 * 1024 });
+      workflowMediator = createWorkflowStoreRpcMediator(worker, this.#workflowStore, binding, { maxFrameBytes: 256 * 1024, maxOutputBytes: 8 * 1024 * 1024 });
+      channel = workflowMediator.channel;
       if (channel.binding.releaseId !== this.#options.release.release.releaseId || channel.binding.helperDigest !== this.#options.helperDigest) throw new SandboxPiProcessError("guest worker channel release or helper identity is substituted");
-      const rawAllocation = await channel!.invoke("spawn-process", {
+      // PiRunner's host-side check can race durable teardown. Repeat the
+      // admission check through the bound reverse channel immediately before
+      // creating the role allocation; the guest never receives the store.
+      await workflowMediator!.client.assertRunStartAllowed();
+      const rawAllocation = await channel.invoke("spawn-process", {
         role: this.#options.role,
         generation: this.#options.generation,
+        sandboxId: this.#options.sandbox.id,
         command: launch.command,
         args: launch.args,
         cwd: launch.cwd,
@@ -106,7 +122,7 @@ export class SandboxPiProcessFactory implements SandboxPiProcessFactoryPort {
 
   #binding(worker: SbxExecHandle): GuestBinding {
     if (worker.sandboxName !== this.#options.sandbox.name || worker.expectedSandboxId !== this.#options.sandbox.id || !this.#options.sandbox.bootId) throw new SandboxPiProcessError("guest worker sandbox identity differs from the factory identity");
-    return { runId: this.#options.runId, sandboxName: this.#options.sandbox.name, bootId: this.#options.sandbox.bootId, operationGeneration: this.#options.generation, releaseId: this.#options.release.release.releaseId, helperDigest: this.#options.helperDigest };
+    return { runId: this.#options.runId, sandboxName: this.#options.sandbox.name, sandboxId: this.#options.sandbox.id, bootId: this.#options.sandbox.bootId, operationGeneration: this.#options.generation, releaseId: this.#options.release.release.releaseId, helperDigest: this.#options.helperDigest };
   }
 }
 
@@ -132,7 +148,7 @@ export class SandboxPiProcess extends EventEmitter implements PiProcess {
     assertSandboxRunId(runId);
     if (!worker || typeof worker !== "object" || typeof worker.on !== "function" || typeof worker.kill !== "function" || worker.sandboxName !== allocation.sandboxName || worker.expectedSandboxId !== allocation.sandboxId || worker.exitCode !== null && !Number.isSafeInteger(worker.exitCode) || worker.exitCode !== null) throw new SandboxPiProcessError("Pi process worker identity is not exact");
     const binding = channel && channel.binding;
-    if (!channel || typeof channel.invoke !== "function" || !binding || binding.runId !== runId || binding.sandboxName !== allocation.sandboxName || binding.bootId !== allocation.bootId || binding.operationGeneration !== allocation.generation || binding.releaseId !== expectedReleaseId || binding.helperDigest !== expectedHelperDigest) throw new SandboxPiProcessError("Pi process guest channel identity is not exact");
+    if (!channel || typeof channel.invoke !== "function" || !binding || binding.runId !== runId || binding.sandboxName !== allocation.sandboxName || binding.sandboxId !== allocation.sandboxId || binding.bootId !== allocation.bootId || binding.operationGeneration !== allocation.generation || binding.releaseId !== expectedReleaseId || binding.helperDigest !== expectedHelperDigest) throw new SandboxPiProcessError("Pi process guest channel identity is not exact");
     assertAllocationIdentity(allocation);
     if (!sameAllocation(allocation as unknown as Record<string, unknown>, allocation) || allocation.uid !== ROLE_UID) throw new SandboxPiProcessError("Pi process allocation identity is malformed");
     this.#worker = worker; this.#channel = channel; this.runId = runId; this.allocation = deepFreeze({ ...allocation }); this.#timeoutMs = bounded(timeoutMs, 300_000, "Pi operation timeout");
@@ -182,9 +198,11 @@ export class SandboxPiProcess extends EventEmitter implements PiProcess {
   async #rpcLine(line: string): Promise<void> {
     if (Buffer.byteLength(line, "utf8") > MAX_RPC_LINE_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(line)) throw new SandboxPiProcessError("Pi RPC line is malformed or unbounded");
     let request: unknown; try { request = JSON.parse(line); } catch { throw new SandboxPiProcessError("Pi RPC line is not JSON"); }
+    if (canonicalJson(request) !== line) throw new SandboxPiProcessError("Pi RPC line is not canonically serialized");
     validateRpcRequest(request);
     const result = await this.#channel.invoke("pi-rpc", { allocation: this.#identityPayload(), request });
-    if (!isRecord(result) || !Object.hasOwn(result, "lines") || Object.keys(result).some(key => key !== "lines" && key !== "stderr") || !Array.isArray(result["lines"]) || result["lines"].length > 4096 || result["lines"].some(item => typeof item !== "string" || Buffer.byteLength(item, "utf8") > MAX_RPC_LINE_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(item))) throw new SandboxPiProcessError("guest Pi RPC bridge response is malformed");
+    if (!isRecord(result) || !Object.hasOwn(result, "lines") || Object.keys(result).some(key => key !== "lines" && key !== "stderr") || !Array.isArray(result["lines"]) || result["lines"].length > 4096 || result["lines"].some(item => typeof item !== "string" || Buffer.byteLength(item, "utf8") > MAX_RPC_LINE_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\r]/u.test(item))) throw new SandboxPiProcessError("guest Pi RPC bridge response is malformed");
+    for (const output of result["lines"]) assertCanonicalRpcResponse(output);
     const outputBytes = result["lines"].reduce((total, output) => total + Buffer.byteLength(`${output}\n`, "utf8"), 0) + (result["stderr"] === undefined ? 0 : typeof result["stderr"] === "string" ? Buffer.byteLength(result["stderr"], "utf8") : Number.POSITIVE_INFINITY);
     if (!Number.isSafeInteger(outputBytes) || outputBytes > 8 * 1024 * 1024 || this.#outputBytes > 8 * 1024 * 1024 - outputBytes) throw new SandboxPiProcessError("guest Pi RPC output exceeded its bounded limit");
     this.#outputBytes += outputBytes;
@@ -208,8 +226,12 @@ export class SandboxPiProcess extends EventEmitter implements PiProcess {
 }
 
 export class SandboxProcessIdentityResolver implements ProcessIdentityResolver {
-  readonly #options: Omit<SandboxPiProcessFactoryOptions, "generation" | "role">;
-  constructor(options: Omit<SandboxPiProcessFactoryOptions, "generation" | "role">) { if (!options || typeof options !== "object" || Array.isArray(options) || !options.driver || !options.sandbox || typeof options.sandbox !== "object" || !options.release || typeof options.release !== "object") throw new SandboxPiProcessError("sandbox process identity resolver options are required"); assertSandboxRunId(options.runId); assertSandboxObservation(options.sandbox); assertSandboxName(options.sandbox.name); assertSha256(options.helperDigest, "guest helper digest"); if (!isResolvedSandboxRelease(options.release) || !options.release.release.template.helperDigests.includes(options.helperDigest) || options.release.release.promotion.state !== "validated" || options.release.templateReference !== options.driver.release.templateReference || options.release.sbxExecutable !== options.driver.release.sbxExecutable || options.release.release.sbxBinary.sha256 !== options.driver.release.release.sbxBinary.sha256 || options.release.release.releaseId !== options.driver.release.release.releaseId || canonicalJson(options.release.resourceTuple) !== canonicalJson(options.driver.release.resourceTuple) || options.release.release.template.digest !== options.sandbox.templateDigest || !options.sandbox.bootId) throw new SandboxPiProcessError("process identity resolver release or boot identity is substituted"); this.#options = deepFreeze({ ...options, sandbox: { ...options.sandbox } }); }
+  readonly #options: Omit<SandboxPiProcessFactoryOptions, "generation" | "role" | "workflowStore">;
+  readonly #workflowStore: WorkflowStoreRpcAuthority;
+  constructor(options: Omit<SandboxPiProcessFactoryOptions, "generation" | "role">) { if (!options || typeof options !== "object" || Array.isArray(options) || !options.driver || !options.sandbox || typeof options.sandbox !== "object" || !options.release || typeof options.release !== "object") throw new SandboxPiProcessError("sandbox process identity resolver options are required"); assertSandboxRunId(options.runId); assertSandboxObservation(options.sandbox); assertSandboxName(options.sandbox.name); assertSha256(options.helperDigest, "guest helper digest"); if (!isResolvedSandboxRelease(options.release) || options.helperDigest !== options.release.release.template.helperDigests.at(-1) || options.release.release.promotion.state !== "validated" || options.release.templateReference !== options.driver.release.templateReference || options.release.sbxExecutable !== options.driver.release.sbxExecutable || options.release.release.sbxBinary.sha256 !== options.driver.release.release.sbxBinary.sha256 || options.release.release.releaseId !== options.driver.release.release.releaseId || canonicalJson(options.release.resourceTuple) !== canonicalJson(options.driver.release.resourceTuple) || options.release.release.template.digest !== options.sandbox.templateDigest || !options.sandbox.bootId) throw new SandboxPiProcessError("process identity resolver release or boot identity is substituted");
+    if (!options.workflowStore || typeof options.workflowStore.read !== "function" || typeof options.workflowStore.assertRunStartAllowed !== "function") throw new SandboxPiProcessError("sandbox process identity resolver requires the narrow workflow-store lifecycle authority"); this.#workflowStore = options.workflowStore;
+    const { workflowStore: _workflowStore, ...frozenOptions } = options;
+    this.#options = deepFreeze({ ...frozenOptions, sandbox: { ...options.sandbox } }); }
   async resolve(processIdentity: string, signal?: AbortSignal): Promise<PiProcess | undefined> {
     let allocation: SandboxProcessIdentity;
     try { allocation = parsePublicIdentity(processIdentity); }
@@ -220,8 +242,8 @@ export class SandboxProcessIdentityResolver implements ProcessIdentityResolver {
     try {
       worker = await this.#options.driver.execWorker(this.#options.sandbox, signal);
       if (worker.sandboxName !== this.#options.sandbox.name || worker.expectedSandboxId !== this.#options.sandbox.id) throw new SandboxPiProcessError("resolved guest worker identity differs from the sandbox boot");
-      const binding: GuestBinding = { runId: this.#options.runId, sandboxName: this.#options.sandbox.name, bootId: this.#options.sandbox.bootId!, operationGeneration: allocation.generation, releaseId: this.#options.release.release.releaseId, helperDigest: this.#options.helperDigest };
-      channel = new GuestOperationClient(worker, binding);
+      const binding: GuestBinding = { runId: this.#options.runId, sandboxName: this.#options.sandbox.name, sandboxId: this.#options.sandbox.id, bootId: this.#options.sandbox.bootId!, operationGeneration: allocation.generation, releaseId: this.#options.release.release.releaseId, helperDigest: this.#options.helperDigest };
+      channel = this.#workflowStore ? createWorkflowStoreRpcMediator(worker, this.#workflowStore, binding).channel : new GuestOperationClient(worker, binding);
       const result = await channel.invoke("reap-process", { allocation, mode: "resolve" }, signal);
       if (!isRecord(result)) throw new SandboxPiProcessError("process identity resolution response is malformed");
       if (result["state"] === "absent") { channel.close(); if (worker.exitCode === null) worker.kill("SIGTERM"); return undefined; }
@@ -251,9 +273,9 @@ export function roleAttachmentDescriptor(input: RoleAttachmentDescriptorInput) {
 
 function validatePiLaunch(spec: ProcessLaunch, role: Role, expectedPiExecutable: string, runId: string): void {
   if (!ROLES.includes(role)) throw new SandboxPiProcessError("Pi role is not allowlisted");
-  if (!spec || typeof spec !== "object" || Array.isArray(spec) || Object.keys(spec).sort().join("\0") !== "args\0command\0cwd\0env" || typeof spec.command !== "string" || spec.command !== expectedPiExecutable || spec.cwd !== "/ticket/workspace" || !Array.isArray(spec.args) || spec.args.length === 0 || spec.args.length > 128 || spec.args.some(arg => typeof arg !== "string" || Buffer.byteLength(arg, "utf8") > 4096 || /[\u0000\u007f]/u.test(arg))) throw new SandboxPiProcessError("Pi launch is outside the fixed sandbox path/argv contract");
+  if (!spec || typeof spec !== "object" || Array.isArray(spec) || Object.keys(spec).sort().join("\0") !== "args\0command\0cwd\0env" || typeof spec.command !== "string" || spec.command !== expectedPiExecutable || spec.cwd !== "/ticket/workspace" || !Array.isArray(spec.args) || spec.args.length === 0 || spec.args.length > 128 || spec.args.some((arg, index) => typeof arg !== "string" || Buffer.byteLength(arg, "utf8") > 4096 || (index === 9 ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(arg) : /[\u0000-\u001f\u007f]/u.test(arg)))) throw new SandboxPiProcessError("Pi launch is outside the fixed sandbox path/argv contract");
   const args = spec.args;
-  if (args.length < 22 || args[0] !== "--mode" || args[1] !== "rpc" || args[2] !== "--provider" || args[4] !== "--model" || args[6] !== "--thinking" || args[8] !== "--append-system-prompt" || args[10] !== "--name" || args[11] !== `Squire ${role}` || args.some(item => ["--continue", "--resume", "--fork", "--clone"].some(forbidden => item === forbidden || item.startsWith(`${forbidden}=`))) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(args[3]!) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(args[5]!) || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(args[7]!) || typeof args[9] !== "string" || Buffer.byteLength(args[9], "utf8") > 64 * 1024 || /[\u0000\u007f]/u.test(args[9])) throw new SandboxPiProcessError("Pi launch arguments are not the exact trusted RPC form");
+  if (args.length < 22 || args[0] !== "--mode" || args[1] !== "rpc" || args[2] !== "--provider" || args[4] !== "--model" || args[6] !== "--thinking" || args[8] !== "--append-system-prompt" || args[10] !== "--name" || args[11] !== `Squire ${role}` || args.some(item => ["--continue", "--resume", "--fork", "--clone"].some(forbidden => item === forbidden || item.startsWith(`${forbidden}=`))) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(args[3]!) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(args[5]!) || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(args[7]!) || typeof args[9] !== "string" || Buffer.byteLength(args[9], "utf8") > 64 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(args[9])) throw new SandboxPiProcessError("Pi launch arguments are not the exact trusted RPC form");
   const sessionFlag = args[12]; const sessionValue = args[13];
   if (sessionFlag === "--session" ? !isCanonicalSessionFile(sessionValue!, role) : sessionFlag === "--session-dir" ? sessionValue !== `/ticket/sessions/${role}` : false) throw new SandboxPiProcessError("Pi session path is not exact and role-bound");
   const tail = args.slice(14);
@@ -265,7 +287,7 @@ function validatePiLaunch(spec: ProcessLaunch, role: Role, expectedPiExecutable:
   if (!spec.env || Object.keys(spec.env).some(key => !ALLOWED_ENVIRONMENT.has(key) || key.startsWith("SSH_") || /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|GITHUB|LINEAR|NPM|AWS|REGISTRY|DELIVERY)/iu.test(key)) || Object.values(spec.env).some(value => typeof value !== "string" || value.length > 4096 || /[\u0000-\u001f\u007f\r\n]/u.test(value)) || !Object.hasOwn(spec.env, "PI_SKIP_VERSION_CHECK") || !Object.hasOwn(spec.env, "DOCKER_HOST") || !Object.hasOwn(spec.env, "TMPDIR") || !Object.hasOwn(spec.env, "HOME") || !Object.hasOwn(spec.env, "WIKI_HOME") || !Object.hasOwn(spec.env, "PI_CODING_AGENT_DIR") || spec.env["PI_SKIP_VERSION_CHECK"] !== "1" || spec.env["DOCKER_HOST"] !== "unix:///ticket/docker/run/docker.sock" || spec.env["TMPDIR"] !== "/ticket/tmp" || spec.env["HOME"] !== `/ticket/runtime/${runId}/home` || spec.env["WIKI_HOME"] !== `/ticket/runtime/${runId}/wiki-home` || spec.env["PI_CODING_AGENT_DIR"] !== `/ticket/runtime/${runId}/pi-agent` || ["HTTP_PROXY", "HTTPS_PROXY"].some(key => Object.hasOwn(spec.env, key) && !/^squire-proxy:\/\/[a-z0-9._-]{1,128}$/u.test(spec.env[key]!)) || (Object.hasOwn(spec.env, "NO_PROXY") && !/^squire-no-proxy:\/\/[a-z0-9._-]{1,128}$/u.test(spec.env["NO_PROXY"]!))) throw new SandboxPiProcessError("Pi role environment is not the closed ticket-scoped allowlist");
 }
 
-function parseAllocation(value: unknown, options: SandboxPiProcessFactoryOptions, spec: ProcessLaunch): SandboxProcessIdentity {
+function parseAllocation(value: unknown, options: Omit<SandboxPiProcessFactoryOptions, "workflowStore">, spec: ProcessLaunch): SandboxProcessIdentity {
   if (!isRecord(value) || Object.keys(value).sort().join("\0") !== ["allocationId", "argvDigest", "bootId", "generation", "pid", "procStartTime", "sandboxId", "sandboxName", "uid"].sort().join("\0") || typeof value["sandboxName"] !== "string" || typeof value["sandboxId"] !== "string" || typeof value["bootId"] !== "string" || typeof value["allocationId"] !== "string" || typeof value["generation"] !== "number" || typeof value["pid"] !== "number" || typeof value["procStartTime"] !== "string" || typeof value["uid"] !== "number" || typeof value["argvDigest"] !== "string" || !Number.isSafeInteger(value["generation"]) || value["generation"] !== options.generation || !Number.isSafeInteger(value["pid"]) || value["pid"] <= 0 || value["pid"] > 4_194_304 || value["uid"] !== ROLE_UID || value["sandboxName"] !== options.sandbox.name || value["sandboxId"] !== options.sandbox.id || value["bootId"] !== options.sandbox.bootId || value["argvDigest"] !== argvDigest(spec)) throw new SandboxPiProcessError("guest process allocation identity is malformed or substituted");
   assertSha256(value["argvDigest"], "Pi argv digest");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value["allocationId"]) || !/^\d{1,32}$/u.test(value["procStartTime"]) || !/^[^\u0000-\u001f\u007f:]{1,512}$/u.test(value["sandboxId"]) || !/^[^\u0000-\u001f\u007f:]{1,512}$/u.test(value["bootId"])) throw new SandboxPiProcessError("guest process allocation token is invalid");
@@ -293,7 +315,8 @@ function argvDigest(spec: ProcessLaunch): string { return sha256Bytes(Buffer.fro
 function withSandboxEnvironment(spec: ProcessLaunch): ProcessLaunch { if (!spec || typeof spec !== "object" || Array.isArray(spec) || !spec.env || typeof spec.env !== "object" || Array.isArray(spec.env)) throw new SandboxPiProcessError("Pi launch is malformed"); if (Object.hasOwn(spec.env, "DOCKER_HOST") && spec.env["DOCKER_HOST"] !== "unix:///ticket/docker/run/docker.sock") throw new SandboxPiProcessError("Pi launch attempted to substitute the private Docker socket"); if (Object.hasOwn(spec.env, "TMPDIR") && spec.env["TMPDIR"] !== "/ticket/tmp") throw new SandboxPiProcessError("Pi launch attempted to substitute its temporary filesystem"); return { ...spec, env: { ...spec.env, TMPDIR: "/ticket/tmp", DOCKER_HOST: "unix:///ticket/docker/run/docker.sock" } }; }
 function sameAllocation(value: Record<string, unknown>, expected: SandboxProcessIdentity): boolean { if (Object.keys(value).sort().join("\0") !== ["allocationId", "argvDigest", "bootId", "generation", "pid", "procStartTime", "sandboxId", "sandboxName", "uid"].sort().join("\0")) return false; return value["sandboxName"] === expected.sandboxName && value["sandboxId"] === expected.sandboxId && value["bootId"] === expected.bootId && value["allocationId"] === expected.allocationId && value["generation"] === expected.generation && value["pid"] === expected.pid && value["procStartTime"] === expected.procStartTime && value["uid"] === expected.uid && value["argvDigest"] === expected.argvDigest; }
 function assertAllocationIdentity(value: SandboxProcessIdentity): void { if (!value || typeof value !== "object" || !safeIdentity(value.sandboxName) || !safeIdentity(value.sandboxId) || !safeIdentity(value.bootId) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.allocationId) || !Number.isSafeInteger(value.generation) || value.generation < 1 || value.generation > 2_147_483_647 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || value.pid > 4_194_304 || !/^\d{1,32}$/u.test(value.procStartTime) || value.uid !== ROLE_UID || !/^[0-9a-f]{64}$/u.test(value.argvDigest)) throw new SandboxPiProcessError("Pi process allocation identity is malformed"); }
-function validateRpcRequest(value: unknown): asserts value is Record<string, unknown> { if (!isRecord(value) || typeof value["id"] !== "string" || value["id"].length === 0 || value["id"].length > 128 || /[\u0000-\u001f\u007f\r\n]/u.test(value["id"]) || typeof value["type"] !== "string" || !SUPPORTED_RPC_TYPES.has(value["type"])) throw new SandboxPiProcessError("Pi RPC request is not allowlisted"); const type = value["type"]; const expected: Record<string, readonly string[]> = { get_state: ["id", "type"], get_entries: ["id", "type"], prompt: ["id", "message", "type"], clear_queue: ["id", "type"], abort_retry: ["id", "type"], abort: ["id", "type"] }; const keys = Object.keys(value).sort(); const acceptedKeys = type === "get_entries" && Object.hasOwn(value, "since") ? ["id", "since", "type"].sort() : [...expected[type]!].sort(); if (keys.join("\0") !== acceptedKeys.join("\0") || Object.keys(value).some(key => /[\u0000-\u001f\u007f]/u.test(key)) || (type === "get_entries" && (typeof value["since"] !== "string" || value["since"].length === 0 || value["since"].length > 256 || /[\u0000-\u001f\u007f\r\n]/u.test(value["since"]))) || (type === "prompt" && (typeof value["message"] !== "string" || Buffer.byteLength(value["message"], "utf8") > MAX_RPC_LINE_BYTES || /[\u0000-\u001f\u007f\r\n]/u.test(value["message"])))) throw new SandboxPiProcessError("Pi RPC request is not closed or allowlisted"); }
+function assertCanonicalRpcResponse(value: string): void { let parsed: unknown; try { parsed = JSON.parse(value); } catch { throw new SandboxPiProcessError("Pi RPC response is not JSON"); } if (!isRecord(parsed) || canonicalJson(parsed) !== value) throw new SandboxPiProcessError("Pi RPC response is not canonically serialized"); }
+function validateRpcRequest(value: unknown): asserts value is Record<string, unknown> { if (!isRecord(value) || typeof value["id"] !== "string" || value["id"].length === 0 || value["id"].length > 128 || /[\u0000-\u001f\u007f\r\n]/u.test(value["id"]) || typeof value["type"] !== "string" || !SUPPORTED_RPC_TYPES.has(value["type"])) throw new SandboxPiProcessError("Pi RPC request is not allowlisted"); const type = value["type"]; const expected: Record<string, readonly string[]> = { get_state: ["id", "type"], get_entries: ["id", "type"], prompt: ["id", "message", "type"], clear_queue: ["id", "type"], abort_retry: ["id", "type"], abort: ["id", "type"] }; const keys = Object.keys(value).sort(); const acceptedKeys = type === "get_entries" && Object.hasOwn(value, "since") ? ["id", "since", "type"].sort() : [...expected[type]!].sort(); if (keys.join("\0") !== acceptedKeys.join("\0") || Object.keys(value).some(key => /[\u0000-\u001f\u007f]/u.test(key)) || (type === "get_entries" && (typeof value["since"] !== "string" || value["since"].length === 0 || value["since"].length > 256 || /[\u0000-\u001f\u007f\r\n]/u.test(value["since"]))) || (type === "prompt" && (typeof value["message"] !== "string" || Buffer.byteLength(value["message"], "utf8") > MAX_RPC_LINE_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value["message"])))) throw new SandboxPiProcessError("Pi RPC request is not closed or allowlisted"); }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function safeIdentity(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\u0000-\u001f\u007f\r\n:]/u.test(value); }
 function assertDigestReferenceSafe(value: unknown): boolean { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value); }

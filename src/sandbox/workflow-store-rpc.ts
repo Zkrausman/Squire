@@ -1,7 +1,27 @@
 import { ACTIVE_STATES, TERMINAL_STATES, type RunSnapshot } from "../control/domain.js";
-import type { RunQuiescenceAuthority, WorkflowStore } from "../control/workflow-store.js";
-import { assertBinding, sameBinding, type GuestBinding, type GuestOperationClient, type GuestOperationRequest } from "./guest-protocol.js";
+import type { WorkflowStore } from "../control/workflow-store.js";
+import { assertBinding, GuestOperationClient, sameBinding, validateBinding, type GuestBinding, type GuestOperationProcess, type GuestOperationRequest, type GuestProtocolLimits } from "./guest-protocol.js";
 import { assertSandboxRunId, UUID_PATTERN } from "./identity.js";
+
+export type WorkflowStoreRpcAuthority = Pick<WorkflowStore, "read" | "assertRunStartAllowed">;
+
+export interface WorkflowStoreRpcMediator {
+  readonly channel: GuestOperationClient;
+  readonly server: WorkflowStoreRpcServer;
+  readonly client: WorkflowStoreRpcClient;
+  close(): void;
+}
+
+/** Build the one host/guest bridge that is allowed to answer reverse
+ * workflow-store requests. The guest operation channel remains bound to the
+ * exact boot and sandbox identity; no generic store object or callback is
+ * placed in a guest payload. */
+export function createWorkflowStoreRpcMediator(process: GuestOperationProcess, store: WorkflowStoreRpcAuthority, binding: GuestBinding, limits: GuestProtocolLimits = {}): WorkflowStoreRpcMediator {
+  const server = new WorkflowStoreRpcServer(store, binding);
+  const channel = new GuestOperationClient(process, binding, { ...limits, requestHandler: request => server.handle(request) });
+  const client = new WorkflowStoreRpcClient(channel);
+  return { channel, server, client, close: () => channel.close() };
+}
 
 const METHODS = ["read", "assertRunStartAllowed"] as const;
 type WorkflowStoreRpcMethod = (typeof METHODS)[number];
@@ -13,12 +33,16 @@ export class WorkflowStoreRpcError extends Error {
 /** Controller-side dispatcher. It exposes no CAS callback, SQL, filesystem,
  * lease token minting, or generic method invocation to a guest. */
 export class WorkflowStoreRpcServer {
-  readonly #store: WorkflowStore;
+  readonly #store: WorkflowStoreRpcAuthority;
   readonly #runId: string;
   readonly #binding: GuestBinding;
-  constructor(store: WorkflowStore, binding: GuestBinding) { if (!store || typeof store.read !== "function" || typeof store.assertRunStartAllowed !== "function") throw new WorkflowStoreRpcError("workflow store RPC requires its read/start authority"); this.#store = store; assertBinding(binding); this.#binding = Object.freeze({ ...binding }); this.#runId = assertSandboxRunId(binding.runId); }
+  constructor(store: WorkflowStoreRpcAuthority, binding: GuestBinding) { if (!store || typeof store.read !== "function" || typeof store.assertRunStartAllowed !== "function") throw new WorkflowStoreRpcError("workflow store RPC requires its read/start authority"); this.#store = store; assertBinding(binding); this.#binding = Object.freeze({ ...binding }); this.#runId = assertSandboxRunId(binding.runId); }
   async handle(request: GuestOperationRequest): Promise<unknown> {
-    if (!isRecord(request) || Object.keys(request).sort().join("\0") !== ["binding", "kind", "operation", "payload", "requestId", "schemaVersion"].sort().join("\0") || request.schemaVersion !== 1 || request.kind !== "squire-guest-operation-request" || typeof request.requestId !== "string" || !UUID_PATTERN.test(request.requestId) || !isRecord(request.binding) || !isRecord(request.payload) || !sameBinding(request.binding as GuestBinding, this.#binding) || request.operation !== "workflow-store") throw new WorkflowStoreRpcError("workflow store RPC identity or operation binding mismatch");
+    if (!isRecord(request) || Object.keys(request).sort().join("\0") !== ["binding", "kind", "operation", "payload", "requestId", "schemaVersion"].sort().join("\0") || request.schemaVersion !== 1 || request.kind !== "squire-guest-operation-request" || typeof request.requestId !== "string" || !UUID_PATTERN.test(request.requestId) || !isRecord(request.binding) || !isRecord(request.payload) || request.operation !== "workflow-store") throw new WorkflowStoreRpcError("workflow store RPC identity or operation binding mismatch");
+    let requestBinding: GuestBinding;
+    try { requestBinding = validateBinding(request.binding); }
+    catch (error) { throw new WorkflowStoreRpcError(error instanceof Error ? error.message : "workflow store request binding is invalid"); }
+    if (!sameBinding(requestBinding, this.#binding)) throw new WorkflowStoreRpcError("workflow store RPC identity or operation binding mismatch");
     const payload = request.payload;
     if (Object.keys(payload).some(key => key !== "method" && key !== "args") || typeof payload["method"] !== "string" || !METHODS.includes(payload["method"] as WorkflowStoreRpcMethod) || !isRecord(payload["args"])) throw new WorkflowStoreRpcError("workflow store RPC envelope is not closed");
     const method = payload["method"] as WorkflowStoreRpcMethod;
@@ -33,7 +57,12 @@ export class WorkflowStoreRpcServer {
 
 /** Guest-side typed client. A guest never sees the underlying WorkflowStore;
  * all calls are bound to the worker's run/sandbox/boot generation. */
-export class WorkflowStoreRpcClient {
+export interface WorkflowStoreRpcPort {
+  read(): Promise<GuestWorkflowSnapshot | undefined>;
+  assertRunStartAllowed(now?: number): Promise<void>;
+}
+
+export class WorkflowStoreRpcClient implements WorkflowStoreRpcPort {
   readonly #channel: GuestOperationClient;
   constructor(channel: GuestOperationClient) { if (!channel || typeof channel.invoke !== "function") throw new WorkflowStoreRpcError("workflow store RPC client requires a guest channel"); this.#channel = channel; }
   async read(): Promise<GuestWorkflowSnapshot | undefined> { return validateGuestWorkflowSnapshot(await this.#channel.invoke("workflow-store", { method: "read", args: {} })); }

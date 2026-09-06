@@ -17,7 +17,7 @@ async function fixture() {
   const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "squire-agent-dir-"));
   const wiki = path.join(root, "resolved-wiki");
   await mkdir(path.join(wiki, "extensions", "llm-wiki"), { recursive: true });
-  await writeFile(path.join(wiki, "package.json"), JSON.stringify({ name: "@zosmaai/pi-llm-wiki", version: "9.9.9" }));
+  await writeFile(path.join(wiki, "package.json"), JSON.stringify({ name: "@zosmaai/pi-llm-wiki", version: "0.11.8" }));
   await writeFile(path.join(wiki, "extensions", "llm-wiki", "index.ts"), "export default function wiki() {}\n");
   const workspace = path.join(root, "workspace");
   await mkdir(workspace);
@@ -25,7 +25,7 @@ async function fixture() {
     schemaVersion: 1,
     runId: "run_materializer01",
     pi: { version: "0.84.4", executable: "/ticket/runtime/pi", installationId: "pi-install-exact" },
-    llmWiki: { version: "9.9.9", installationId: "wiki-install-exact", root: wiki },
+    llmWiki: { version: "0.11.8", installationId: "wiki-install-exact", root: wiki },
     modelCapabilities: [{ provider: "openai-codex", model: "gpt-5.6-luna", reasoningCapable: true, piInstallationId: "pi-install-exact", wikiInstallationId: "wiki-install-exact" }],
     resolvedAt: "2026-09-01T12:00:00.000Z",
   };

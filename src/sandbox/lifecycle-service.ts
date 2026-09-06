@@ -10,7 +10,7 @@ import type { ResolvedSandboxRelease, SandboxReleaseResolver } from "./release-r
 import type { SandboxDriver } from "./sbx-v039-driver.js";
 import type { SbxObservedSandbox } from "./sbx-command.js";
 import { assertSandboxRecordMutation } from "./sandbox-record-guard.js";
-import type { SandboxIdentityManifest, SandboxLifecycleResult, SandboxNetworkSpec, SandboxRecord, SandboxResourceSpec, SandboxRetentionSpec, SandboxSpecDocument, SandboxOperation, SandboxOperationKind, SandboxOperationIntent } from "./domain.js";
+import type { SandboxIdentityManifest, SandboxLifecycleResult, SandboxNetworkSpec, SandboxRecord, SandboxResourceSpec, SandboxRetentionSpec, SandboxSpecDocument, SandboxOperation, SandboxOperationKind, SandboxOperationIntent, SandboxTransferDirection } from "./domain.js";
 import { assertDigestReference, assertSandboxName, assertSandboxRunId, assertSha256, buildSandboxSpec, canonicalBytes, canonicalJson, deriveBridgeName, deriveSandboxName, sha256Bytes } from "./identity.js";
 import { readExactNoFollow, writeExclusiveFile } from "../git/paths.js";
 
@@ -41,7 +41,18 @@ export interface SandboxLifecycleOptions {
   readonly operationTimeoutMs?: number;
 }
 export interface SandboxRemovalOptions { readonly fence: RunTerminalFence; readonly writersStopped: boolean; readonly signal?: AbortSignal }
-export type SandboxLifecyclePort = Pick<SandboxLifecycleService, "create" | "start" | "stop" | "reconcile" | "retain" | "remove">;
+export interface SandboxTransferReservation {
+  readonly runId: string;
+  readonly direction: SandboxTransferDirection;
+  readonly sandboxName: string;
+  readonly sandboxId: string;
+  readonly bootId: string;
+  readonly templateDigest: string;
+  readonly specFingerprint: string;
+  readonly transferGeneration: number;
+  readonly operationGeneration: number;
+}
+export type SandboxLifecyclePort = Pick<SandboxLifecycleService, "create" | "start" | "stop" | "reconcile" | "retain" | "remove" | "withTransfer">;
 
 export class SandboxLifecycleError extends Error {
   constructor(message: string) { super(message); this.name = "SandboxLifecycleError"; }
@@ -64,7 +75,7 @@ export class SandboxLifecycleService {
   constructor(options: SandboxLifecycleOptions) {
     if (!options || typeof options !== "object" || Array.isArray(options)) throw new SandboxLifecycleError("sandbox lifecycle options are required");
     if (!path.isAbsolute(options.controllerDataRoot) || path.resolve(options.controllerDataRoot) !== options.controllerDataRoot || options.controllerDataRoot.includes("\0") || options.controllerDataRoot.endsWith(path.sep) || path.parse(options.controllerDataRoot).root === options.controllerDataRoot) throw new SandboxLifecycleError("sandbox controller data root is not canonical");
-    if (!options.store || typeof options.store.read !== "function" || typeof options.store.acquireLease !== "function" || typeof options.store.renewLease !== "function" || typeof options.store.releaseLease !== "function" || typeof options.store.compareAndSetFenced !== "function" || !options.releaseResolver || typeof options.releaseResolver.resolve !== "function" || !options.driver || typeof options.driver.inspect !== "function" || typeof options.driver.create !== "function" || typeof options.driver.start !== "function" || typeof options.driver.stop !== "function" || typeof options.driver.remove !== "function" || !options.bridge || typeof options.bridge.read !== "function" || typeof options.bridge.create !== "function" || typeof options.bridge.assertEmpty !== "function" || typeof options.bridge.quarantineAndRemove !== "function" || !options.attestor || typeof options.attestor.attest !== "function" || typeof options.evidence !== "function" || !options.clock || typeof options.clock.now !== "function") throw new SandboxLifecycleError("sandbox lifecycle requires every trusted authority and a resolver-verified release");
+    if (!options.store || typeof options.store.read !== "function" || typeof options.store.acquireLease !== "function" || typeof options.store.renewLease !== "function" || typeof options.store.releaseLease !== "function" || typeof options.store.compareAndSetFenced !== "function" || !options.releaseResolver || typeof options.releaseResolver.resolve !== "function" || !options.driver || typeof options.driver.inspect !== "function" || typeof options.driver.create !== "function" || typeof options.driver.start !== "function" || typeof options.driver.stop !== "function" || typeof options.driver.remove !== "function" || typeof options.driver.policy !== "function" || !options.bridge || typeof options.bridge.read !== "function" || typeof options.bridge.create !== "function" || typeof options.bridge.assertEmpty !== "function" || typeof options.bridge.quarantineAndRemove !== "function" || !options.attestor || typeof options.attestor.attest !== "function" || typeof options.evidence !== "function" || !options.clock || typeof options.clock.now !== "function") throw new SandboxLifecycleError("sandbox lifecycle requires every trusted authority and a resolver-verified release");
     this.#store = options.store; this.#resolver = options.releaseResolver; this.#driver = options.driver; this.#bridge = options.bridge; this.#attestor = options.attestor; this.#evidence = options.evidence; this.#clock = options.clock; this.#root = options.controllerDataRoot; this.#leaseMs = positive(options.operationLeaseMs ?? 30_000, "sandbox operation lease"); this.#timeoutMs = positive(options.operationTimeoutMs ?? 30_000, "sandbox operation timeout");
   }
 
@@ -113,6 +124,7 @@ export class SandboxLifecycleService {
       let record: SandboxRecord | undefined;
       try {
         record = await this.#requireRecord(runId);
+        if (record.operation?.kind === "transfer") throw new SandboxLifecycleError("sandbox stop cannot replace an unresolved transfer operation");
         if (record.lifecycle === "stopped" || record.lifecycle === "created" || record.lifecycle === "retained") return { runId, sandbox: record };
         if (record.lifecycle !== "ready") throw new SandboxLifecycleError(`sandbox cannot stop from ${record.lifecycle}`);
         record = await this.#transition(runId, record, "stopping", this.#operation(owner, lease.fencingToken, "stop", "stop", record.operationGeneration + 1), {}, lease);
@@ -131,6 +143,7 @@ export class SandboxLifecycleService {
       let record: SandboxRecord | undefined;
       try {
       record = await this.#requireRecord(runId);
+      if (record.operation?.kind === "transfer") throw new SandboxLifecycleError("sandbox reconciliation cannot replace an unresolved transfer operation");
       if (record.lifecycle === "removed") return { runId, sandbox: record };
       if (record.lifecycle === "blocked") throw new SandboxLifecycleError("blocked sandbox requires operator identity review");
       const observed = await this.#driver.inspect(record.sandboxName, operationSignal);
@@ -175,6 +188,7 @@ export class SandboxLifecycleService {
       try {
         if (operationSignal.aborted) throw new SandboxLifecycleError("sandbox retention was aborted");
         current = await this.#requireRecord(runId);
+        if (current.operation?.kind === "transfer") throw new SandboxLifecycleError("sandbox retention cannot replace an unresolved transfer operation");
         if (current.lifecycle === "retained") return { runId, sandbox: current };
         if (current.lifecycle !== "ready" && current.lifecycle !== "stopped" && current.lifecycle !== "created") throw new SandboxLifecycleError(`sandbox cannot enter retention from ${current.lifecycle}`);
         const spec = await this.#readSpec(current);
@@ -186,14 +200,47 @@ export class SandboxLifecycleService {
     }, signal);
   }
 
+  /** Reserve and complete one controller-mediated transfer under the same
+   * durable sandbox lease as lifecycle operations. The reservation is persisted
+   * before the callback can touch either side, so a crash leaves a specific
+   * generation for recovery rather than allowing a replay at generation zero. */
+  async withTransfer<T>(runId: string, direction: SandboxTransferDirection, action: (reservation: SandboxTransferReservation, signal: AbortSignal) => Promise<T>, callerSignal?: AbortSignal, expectedTransferGeneration?: number): Promise<T> {
+    assertSandboxRunId(runId);
+    if (direction !== "import" && direction !== "export") throw new SandboxLifecycleError("sandbox transfer direction is not allowlisted");
+    if (typeof action !== "function") throw new SandboxLifecycleError("sandbox transfer action is required");
+    return this.#withLease(runId, async (owner, lease, operationSignal) => {
+      if (operationSignal.aborted) throw new SandboxLifecycleError("sandbox transfer was aborted");
+      const current = await this.#requireRecord(runId);
+      if (current.lifecycle !== "ready" || current.operation) throw new SandboxLifecycleError("sandbox transfer requires an idle ready sandbox");
+      if (!current.identity || !current.bootId || current.identity.sandboxId.length === 0 || current.identity.bootId !== current.bootId) throw new SandboxLifecycleError("sandbox transfer lacks the exact running sandbox identity");
+      if (!Number.isSafeInteger(current.transferGeneration) || current.transferGeneration >= 2_147_483_647) throw new SandboxLifecycleError("sandbox transfer generation is exhausted");
+      if (expectedTransferGeneration !== undefined && (!Number.isSafeInteger(expectedTransferGeneration) || expectedTransferGeneration < 0 || expectedTransferGeneration !== current.transferGeneration)) throw new SandboxLifecycleError("sandbox transfer context is stale or replayed");
+      const transferGeneration = current.transferGeneration + 1;
+      const active = await this.#transition(runId, current, "ready", this.#operation(owner, lease.fencingToken, "transfer", direction === "import" ? "cp-import" : "cp-export", current.operationGeneration), { transferGeneration }, lease);
+      if (operationSignal.aborted) throw new SandboxLifecycleError("sandbox transfer was aborted");
+      const reservation: SandboxTransferReservation = Object.freeze({ runId, direction, sandboxName: active.sandboxName, sandboxId: active.identity!.sandboxId, bootId: active.bootId!, templateDigest: active.templateDigest, specFingerprint: active.specFingerprint, transferGeneration, operationGeneration: active.operationGeneration });
+      const result = await action(reservation, operationSignal);
+      if (operationSignal.aborted) throw new SandboxLifecycleError("sandbox transfer was aborted");
+      const latest = await this.#requireRecord(runId);
+      if (latest.lifecycle !== "ready" || latest.operation?.kind !== "transfer" || latest.operation.owner !== owner || latest.transferGeneration !== transferGeneration) throw new SandboxLifecycleError("sandbox transfer reservation changed before completion");
+      await this.#transition(runId, latest, "ready", undefined, {}, lease);
+      return result;
+    }, callerSignal);
+  }
+
   /** Removal is a component step, not the global completion operation. The
    * caller must already own the one terminal fence and must prove writers are
    * stopped; this method never calls completeRunTeardown. */
   async remove(runId: string, options: SandboxRemovalOptions): Promise<SandboxLifecycleResult> {
     assertSandboxRunId(runId);
     if (!options || typeof options !== "object" || Array.isArray(options) || !options.fence || typeof options.fence !== "object" || options.writersStopped !== true || options.fence.state !== "held") throw new SandboxLifecycleError("sandbox removal requires the held terminal fence and stopped writers");
+    // Removal runs after the permanent terminal fence. It intentionally does
+    // not acquire the ordinary run lease or call assertRunStartAllowed: both
+    // authorities reject all new work once the durable drain begins. The
+    // fence-owned CAS below is the sole mutation authority for this step.
     await this.#store.assertRunTeardownQuiescent(runId, options.fence, this.#clock.now());
     let record = await this.#requireRecord(runId);
+    if (record.operation?.kind === "transfer") throw new SandboxLifecycleError("sandbox removal cannot replace an unresolved transfer operation");
     if (record.lifecycle === "removed") return { runId, sandbox: record };
     if (record.lifecycle === "blocked") throw new SandboxLifecycleError("blocked sandbox identity cannot be destructively removed");
     const removalWasAlreadyAttempted = record.lifecycle === "removing" && record.operation?.kind === "remove";
@@ -209,9 +256,7 @@ export class SandboxLifecycleService {
         const residual = await this.#observeRemovalTarget(record.sandboxName, options.signal);
         if (residual) throw new SandboxLifecycleError("sandbox removal was not observed at the exact identity boundary");
       }
-      await this.#store.assertRunTeardownQuiescent(runId, options.fence, this.#clock.now());
       await this.#bridge.quarantineAndRemove(runId, { writersStopped: true, ...(options.signal ? { signal: options.signal } : {}) });
-      await this.#store.assertRunTeardownQuiescent(runId, options.fence, this.#clock.now());
       record = await this.#transitionTeardown(runId, record, options.fence, "removed", undefined);
       return { runId, sandbox: record };
     } catch (error) {
@@ -223,6 +268,7 @@ export class SandboxLifecycleService {
   async #createUnderLease(spec: SandboxSpecDocument, specReference: { path: string; sha256: string; schemaId: string }, release: ResolvedSandboxRelease, owner: string, lease: Lease, signal?: AbortSignal): Promise<SandboxLifecycleResult> {
     const existing = await this.#store.read(spec.runId);
     if (existing?.sandbox) {
+      if (existing.sandbox.operation?.kind === "transfer") throw new SandboxLifecycleError("sandbox create cannot replace an unresolved transfer operation");
       this.#assertRecordSpec(existing.sandbox, spec, release);
       if (existing.sandbox.lifecycle === "ready" || existing.sandbox.lifecycle === "created" || existing.sandbox.lifecycle === "stopped" || existing.sandbox.lifecycle === "retained") return { runId: spec.runId, sandbox: existing.sandbox };
       if (existing.sandbox.lifecycle === "blocked" || existing.sandbox.lifecycle === "removing" || existing.sandbox.lifecycle === "removed") throw new SandboxLifecycleError(`sandbox create cannot continue from ${existing.sandbox.lifecycle}`);
@@ -255,6 +301,7 @@ export class SandboxLifecycleService {
 
   async #startUnderLease(runId: string, owner: string, lease: Lease, signal?: AbortSignal): Promise<SandboxLifecycleResult> {
     const record = await this.#requireRecord(runId);
+    if (record.operation?.kind === "transfer") throw new SandboxLifecycleError("sandbox start cannot replace an unresolved transfer operation");
     if (record.lifecycle === "ready") {
       const observed = await this.#driver.inspect(record.sandboxName, signal); if (!observed) throw new SandboxLifecycleError("ready sandbox disappeared"); this.#assertObserved(record, observed); if (observed.status === "running" && observed.bootId === record.bootId) return this.#startFromObserved(runId, record, observed, owner, lease, signal); if (observed.status !== "running") return this.#startFromObserved(runId, record, observed, owner, lease, signal);
     }
@@ -332,7 +379,10 @@ export class SandboxLifecycleService {
     heartbeat.unref?.();
     let timeout: NodeJS.Timeout | undefined;
     let operationPromise: Promise<T>;
-    try { operationPromise = Promise.resolve(operation(owner, acquired, operationController.signal)); }
+    try {
+      if (operationController.signal.aborted) throw abortFailure ?? new SandboxLifecycleError("sandbox lifecycle operation was aborted");
+      operationPromise = Promise.resolve(operation(owner, acquired, operationController.signal));
+    }
     catch (error) { operationPromise = Promise.reject(error); }
     // A timed-out/non-cooperative operation may still be executing. Keep its
     // lease until settlement so a late filesystem/driver mutation cannot run
@@ -405,6 +455,7 @@ export class SandboxLifecycleService {
     const expectedPath = `artifacts/sandbox/${record.runId}/spec.json`;
     if (record.spec.path !== expectedPath || record.spec.schemaId !== "urn:squire:sandbox:v1:sandbox-spec") throw new SandboxLifecycleError("sandbox spec ledger reference is not the fixed immutable path");
     const target = path.join(this.#root, "sandbox-ledger", record.runId, "spec.json");
+    await ensurePrivateDirectory(this.#root);
     await ensurePrivateDirectory(path.dirname(target));
     const info = await lstat(target).catch(error => { throw new SandboxLifecycleError(`sandbox spec ledger is unavailable: ${error instanceof Error ? error.message : String(error)}`); });
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (info.mode & 0o777) !== 0o600 || info.size > 4 * 1024 * 1024) throw new SandboxLifecycleError("sandbox spec ledger is not a bounded private regular file");
@@ -503,7 +554,7 @@ async function ensurePrivateDirectory(target: string): Promise<void> {
     if (!info.isDirectory() || info.isSymbolicLink()) throw new SandboxLifecycleError("sandbox ledger directory contains a symbolic-link ancestor");
   }
   const info = await lstat(target);
-  if ((info.mode & 0o777) !== 0o700 || info.nlink < 2) throw new SandboxLifecycleError("sandbox ledger directory is not private");
+  if ((info.mode & 0o7777) !== 0o700 || info.nlink < 2) throw new SandboxLifecycleError("sandbox ledger directory is not private");
 }
 void assertSandboxName;
 void assertSandboxRecordMutation;

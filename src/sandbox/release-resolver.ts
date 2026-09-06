@@ -1,6 +1,6 @@
 import { createHmac, createPublicKey, timingSafeEqual, verify as verifySignatureBytes } from "node:crypto";
 import type { RuntimeResolution } from "../control/domain.js";
-import { SandboxContractError, assertReleaseSemantics } from "./contracts.js";
+import { REQUIRED_LLM_WIKI_RUNTIME_VERSION, REQUIRED_PI_RUNTIME_VERSION, SandboxContractError, assertReleaseSemantics } from "./contracts.js";
 import { assertArchitecture, assertDigestReference, assertPlatform, assertSandboxRunId, assertTemplateReference, assertVersionRange, canonicalJson, sha256Bytes } from "./identity.js";
 import type { SandboxReleaseManifestDocument, SandboxResourceSpec, SandboxResourceTuple } from "./domain.js";
 import path from "node:path";
@@ -169,6 +169,7 @@ export function assertRuntimeCompatibility(release: SandboxReleaseManifestDocume
   assertRuntimeShape(runtime);
   assertVersionRange(runtime.pi.version, "resolved Pi version");
   assertVersionRange(runtime.llmWiki.version, "resolved pi-llm-wiki version");
+  if (runtime.pi.version !== REQUIRED_PI_RUNTIME_VERSION || runtime.llmWiki.version !== REQUIRED_LLM_WIKI_RUNTIME_VERSION) throw new SandboxContractError(`run runtime must resolve Pi ${REQUIRED_PI_RUNTIME_VERSION} and pi-llm-wiki ${REQUIRED_LLM_WIKI_RUNTIME_VERSION} exactly`);
   if (!versionInRange(runtime.pi.version, release.runtimeCompatibility.pi.minimum, release.runtimeCompatibility.pi.maximum)) throw new SandboxContractError(`resolved Pi ${runtime.pi.version} is outside the promoted release compatibility range`);
   if (!versionInRange(runtime.llmWiki.version, release.runtimeCompatibility.llmWiki.minimum, release.runtimeCompatibility.llmWiki.maximum)) throw new SandboxContractError(`resolved pi-llm-wiki ${runtime.llmWiki.version} is outside the promoted release compatibility range`);
 }

@@ -1,0 +1,25 @@
+[Unit]
+Description=Squire ticket-private rootless Docker
+After=network.target squire-principals.service
+Requires=squire-principals.service
+
+[Service]
+Type=simple
+User=squireagent
+Group=squireagent
+SupplementaryGroups=
+# rootlesskit may invoke only the root-owned newuidmap/newgidmap helpers
+# retained by the image; NoNewPrivileges would silently disable those
+# narrowly scoped mappings. The daemon still runs as the unprivileged
+# squireagent principal and has no rootful socket or host path.
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/ticket/docker /ticket/runtime /ticket/tmp
+ExecStart=/opt/squire/build/rootless-docker.sh
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

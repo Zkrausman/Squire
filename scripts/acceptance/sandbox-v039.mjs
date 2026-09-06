@@ -1,119 +1,192 @@
 #!/usr/bin/env node
+/*
+ * Trusted host-side AIDEV-223 conformance worker.
+ *
+ * Run this only from a disposable trusted host worker. It owns one exact
+ * deterministic sandbox and bridge, invokes an explicitly supplied signed
+ * observer adapter for host-only facts, writes canonical digest-bound evidence,
+ * and removes only the identities it created. It never accepts guest output as
+ * host proof and never receives controller credentials from the role VM.
+ */
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync } from "node:fs";
+import { mkdir, lstat, open, realpath, readdir, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertReleaseSemantics } from "../../dist/src/sandbox/contracts.js";
-import { assertSandboxName, assertSandboxRunId, assertReleaseId, canonicalBytes, deriveSandboxName } from "../../dist/src/sandbox/identity.js";
-import { HOST_PROBE_NAMES, validateHostProbeRequest, validateHostProbeResult } from "../../dist/src/sandbox/host-acceptance.js";
+import { buildSandboxSpec } from "../../dist/src/sandbox/identity.js";
+import { assertSandboxName, assertSandboxRunId, assertReleaseId, canonicalBytes, canonicalJson, deriveBridgeName, deriveSandboxName, sha256Bytes } from "../../dist/src/sandbox/identity.js";
+import { GuestOperationClient } from "../../dist/src/sandbox/guest-protocol.js";
+import { buildHostProbeRequest, buildHostConformanceEvidence, hostConformanceEvidenceDigest, validateHostObserverResult, validateHostObserverRequest, HOST_CONFORMANCE_SCHEMA_ID } from "../../dist/src/sandbox/host-conformance.js";
+import { HOST_PROBE_NAMES, buildHostProbeRequest as buildAcceptanceRequest, validateHostProbeRequest, validateHostProbeResult } from "../../dist/src/sandbox/host-acceptance.js";
+import { SandboxReleaseResolver, selectResourceTuple, verifyEd25519Signature, verifyHmacSignature } from "../../dist/src/sandbox/release-resolver.js";
+import { SbxV039CommandBuilder } from "../../dist/src/sandbox/sbx-command.js";
+import { SbxV039Driver } from "../../dist/src/sandbox/sbx-v039-driver.js";
+import { FileHostProcessLedger, HostProcessSupervisor } from "../../dist/src/sandbox/host-process-supervisor.js";
 
 const MAX_OUTPUT = 4 * 1024 * 1024;
-const TIMEOUT_MS = 5_000;
-const usage = "usage: sandbox-v039.mjs --release FILE --output FILE --request FILE --run-id RUN_ID --sandbox-name NAME";
+let ownedStateRoot;
+const COMMAND_TIMEOUT_MS = 120_000;
+const OBSERVER_TIMEOUT_MS = 300_000;
+const usage = "usage: sandbox-v039.mjs --release FILE --output FILE --request FILE --run-id RUN_ID --sandbox-name NAME --ticket-id TICKET_ID --state-root DIR --repository-root DIR --evidence-root DIR --network-policy FILE --observer FILE --observer-sha256 SHA256 --observer-input-root DIR [--tuple-id ID] [--hmac-key-file FILE|--ed25519-public-key FILE]";
 
-function parseArgs(argv) {
-  const result = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const key = argv[index];
-    if (!["--release", "--output", "--request", "--run-id", "--sandbox-name"].includes(key) || typeof argv[index + 1] !== "string" || argv[index + 1].startsWith("--") || Object.hasOwn(result, key.slice(2))) throw new Error(usage);
-    result[key.slice(2)] = argv[++index];
-  }
-  if (Object.keys(result).length !== 5 || Object.values(result).some(value => !value)) throw new Error(usage);
-  return result;
-}
-
-function digest(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 function fail(message) { const error = new Error(message); error.code = "HOST_CONFORMANCE_FAILED"; throw error; }
-async function canonicalFilePath(value, label, mustExist = true) {
+function isRecord(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
+function digest(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
+function stableDigestSync(file, label, maxBytes) { if (constants.O_NOFOLLOW === undefined) fail(`${label} requires descriptor no-follow support`); let fd; try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW); const before = fstatSync(fd); if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes) fail(`${label} is not a bounded regular file`); const bytes = Buffer.allocUnsafe(before.size); let offset = 0; while (offset < before.size) { const count = readSync(fd, bytes, 0, before.size - offset, offset); if (count <= 0) fail(`${label} ended during a bounded read`); offset += count; } const after = fstatSync(fd); if (after.dev !== before.dev || after.ino !== before.ino || after.nlink !== before.nlink || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail(`${label} changed during a bounded read`); return digest(bytes); } finally { if (fd !== undefined) closeSync(fd); } }
+function canonicalPath(value, label, allowMissing = false) {
   if (typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value || value === path.parse(value).root || value.endsWith(path.sep) || value.includes("\\") || value.includes("//") || /[\u0000-\u001f\u007f\r\n]/u.test(value)) fail(`${label} is not a canonical absolute path`);
-  const resolved = await realpath(value).catch(error => { if (error?.code === "ENOENT") return undefined; throw error; });
-  if (mustExist && !resolved) fail(`${label} does not exist`);
-  if (resolved && resolved !== value) fail(`${label} is a symlink or has a symlink ancestor`);
-  let current = path.parse(value).root;
-  const parts = value.slice(current.length).split(path.sep).filter(Boolean);
-  for (let index = 0; index < parts.length; index += 1) {
-    current = path.join(current, parts[index]);
-    const info = await lstat(current).catch(error => { if (error?.code === "ENOENT") return undefined; throw error; });
-    if (info?.isSymbolicLink()) fail(`${label} has a symlink path component`);
-    if (!info && index < parts.length - 1) fail(`${label} has a missing parent directory`);
-  }
+  if (!allowMissing) return value;
   return value;
 }
-async function validateRelease(release, releaseBytes) {
-  if (!release || typeof release !== "object" || Array.isArray(release)) fail("release is not an object");
-  if (!releaseBytes.equals(canonicalBytes(release))) fail("release is not deterministically serialized");
-  try { assertReleaseSemantics(release); } catch (error) { fail(error instanceof Error ? error.message : "release semantic validation failed"); }
-  if (release.promotion.state !== "validated") fail("release is blocked: no external conformance may be inferred from this harness");
-  await canonicalFilePath(release.sbxBinary.path, "release sbx binary");
-  if (!/^sha256:[0-9a-f]{64}$/u.test(release.template.digest) || release.template.reference !== `${release.template.reference.split("@")[0]}@${release.template.digest}`) fail("release lacks an immutable template identity");
+function safeRelative(value, label) { if (typeof value !== "string" || !/^[A-Za-z0-9._-]+$/u.test(value)) fail(`${label} is not a safe relative identity`); return value; }
+function parseArgs(argv) {
+  const result = {};
+  const optional = ["--tuple-id", "--hmac-key-file", "--ed25519-public-key"];
+  const required = ["--release", "--output", "--request", "--run-id", "--sandbox-name", "--ticket-id", "--state-root", "--repository-root", "--evidence-root", "--network-policy", "--observer", "--observer-sha256", "--observer-input-root"];
+  const allowed = new Set([...required, ...optional]);
+  for (let index = 0; index < argv.length; index += 1) {
+    const key = argv[index];
+    if (!allowed.has(key) || typeof argv[index + 1] !== "string" || argv[index + 1].startsWith("--") || Object.hasOwn(result, key.slice(2))) throw new Error(usage);
+    result[key.slice(2)] = argv[++index];
+  }
+  if (required.some(key => !result[key.slice(2)]) || Boolean(result["hmac-key-file"]) === Boolean(result["ed25519-public-key"]) || result["tuple-id"] && !/^[a-z][a-z0-9._-]{0,63}$/u.test(result["tuple-id"])) throw new Error(usage);
+  for (const key of ["release", "output", "request", "state-root", "repository-root", "evidence-root", "network-policy", "observer", "observer-input-root", "hmac-key-file", "ed25519-public-key"]) if (result[key]) canonicalPath(result[key], key, key !== "release" && key !== "network-policy");
+  if (!/^[0-9a-f]{64}$/u.test(result["observer-sha256"])) throw new Error("observer SHA-256 must be lowercase hex");
+  return result;
 }
-function makeRequest(options, release) {
-  assertSandboxRunId(options["run-id"]); assertSandboxName(options["sandbox-name"]); assertReleaseId(release.releaseId);
-  if (options["sandbox-name"] !== deriveSandboxName(options["run-id"])) fail("sandbox name is not derived from the complete run ID");
-  const request = { schemaVersion: 1, kind: "squire-sandbox-host-probe-request", requestId: randomUUID(), runId: options["run-id"], sandboxName: options["sandbox-name"], releaseId: release.releaseId, platform: release.platform, architecture: release.architecture, probes: [...HOST_PROBE_NAMES], requestedAt: new Date().toISOString() };
-  try { return validateHostProbeRequest(request); } catch (error) { fail(error instanceof Error ? error.message : "host probe request is invalid"); }
+async function noSymlinkPath(file, label, allowMissing = false) {
+  canonicalPath(file, label, allowMissing);
+  let current = path.parse(file).root;
+  for (const part of file.slice(current.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const info = await lstat(current).catch(error => { if (error?.code === "ENOENT") return undefined; throw error; });
+    if (!info) { if (allowMissing) return; fail(`${label} has a missing path component`); }
+    if (info.isSymbolicLink()) fail(`${label} contains a symlink path component`);
+  }
 }
-async function writeExclusive(file, value) {
-  await canonicalFilePath(file, "acceptance artifact", false);
-  await writeFile(file, canonicalBytes(value), { flag: "wx", mode: 0o600 });
+async function privateRegular(file, label, maxBytes = 4 * 1024 * 1024, requirePrivate = true) {
+  await noSymlinkPath(file, label);
   const info = await lstat(file);
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (info.mode & 0o077) !== 0) fail("acceptance artifact was not a private regular file");
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || requirePrivate && (info.mode & 0o077) !== 0 || info.size > maxBytes) fail(`${label} is not a bounded regular file with the required mode`);
+  return info;
 }
-async function run(executable, argv) {
-  if (!path.isAbsolute(executable) || argv.some(value => typeof value !== "string" || value.length === 0 || /[\u0000-\u001f\u007f\r\n]/u.test(value))) fail("host harness command is not a clean argv-only invocation");
-  await canonicalFilePath(executable, "host harness executable");
-  const environment = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" };
-  return await new Promise((resolve, reject) => {
-    const child = spawn(executable, argv, { cwd: path.dirname(executable), env: environment, shell: false, stdio: ["ignore", "pipe", "pipe"] });
-    const stdoutChunks = []; const stderrChunks = []; let outputBytes = 0; let settled = false;
-    const finish = (callback, value) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(hardTimer); callback(value); };
-    const timer = setTimeout(() => { child.kill("SIGTERM"); }, TIMEOUT_MS);
-    const hardTimer = setTimeout(() => { child.kill("SIGKILL"); finish(reject, new Error("host harness command did not exit after timeout")); }, TIMEOUT_MS + 1_000);
-    const collect = target => chunk => {
-      const bytes = Buffer.from(chunk); outputBytes += bytes.length;
-      if (outputBytes > MAX_OUTPUT) { child.kill("SIGTERM"); finish(reject, new Error("host harness output exceeded its bound")); return; }
-      (target === "stdout" ? stdoutChunks : stderrChunks).push(bytes);
-    };
-    child.stdout.on("data", collect("stdout")); child.stderr.on("data", collect("stderr"));
-    child.once("error", error => finish(reject, error));
-    child.once("exit", (code, signal) => {
-      try {
-        const stdout = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(stdoutChunks));
-        const stderr = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(stderrChunks));
-        finish(resolve, { code, signal, stdout, stderr });
-      } catch (error) { finish(reject, new Error(`host harness output was not UTF-8: ${error instanceof Error ? error.message : String(error)}`)); }
-    });
+async function writeExclusive(file, value, label) {
+  await noSymlinkPath(file, label, true); const parent = path.dirname(file); await noSymlinkPath(parent, `${label} parent`, true); await mkdir(parent, { recursive: true, mode: 0o700 }); await noSymlinkPath(parent, `${label} parent`);
+  const bytes = Buffer.isBuffer(value) ? value : canonicalBytes(value);
+  if (bytes.length > 4 * 1024 * 1024) fail(`${label} exceeds its bounded publication size`);
+  const handle = await open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { let offset = 0; while (offset < bytes.length) { const result = await handle.write(bytes, offset, bytes.length - offset, offset); if (result.bytesWritten <= 0) fail(`${label} write ended early`); offset += result.bytesWritten; } await handle.chmod(0o600); await handle.sync(); } catch (error) { await handle.close().catch(() => undefined); await unlink(file).catch(() => undefined); throw error; } await handle.close();
+  await privateRegular(file, label, Math.max(bytes.length, 4 * 1024 * 1024));
+}
+async function ensurePrivateEmpty(directory, label) {
+  await noSymlinkPath(directory, label, true);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink() || info.nlink < 2 || (info.mode & 0o077) !== 0) fail(`${label} is not a private directory`);
+  if ((await readdir(directory)).length !== 0) fail(`${label} must be empty before the worker starts`);
+}
+async function readStableBytes(file, label, maxBytes, requirePrivate = true) { if (constants.O_NOFOLLOW === undefined) fail(`${label} requires descriptor no-follow support`); const expected = await privateRegular(file, label, maxBytes, requirePrivate); const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW); try { const before = await handle.stat(); if (!before.isFile() || before.dev !== expected.dev || before.ino !== expected.ino || before.nlink !== 1 || before.size > maxBytes) fail(`${label} identity changed before the bounded read`); const bytes = Buffer.allocUnsafe(before.size); let offset = 0; while (offset < before.size) { const result = await handle.read(bytes, offset, before.size - offset, offset); if (result.bytesRead <= 0) fail(`${label} ended during a bounded read`); offset += result.bytesRead; } const after = await handle.stat(); if (after.dev !== before.dev || after.ino !== before.ino || after.nlink !== before.nlink || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail(`${label} changed during a bounded read`); return bytes; } finally { await handle.close(); } }
+async function readCanonicalJson(file, label) { const bytes = await readStableBytes(file, label, 4 * 1024 * 1024, true); let value; try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch (error) { fail(`${label} is not JSON: ${error instanceof Error ? error.message : String(error)}`); } if (!bytes.equals(canonicalBytes(value))) fail(`${label} is not canonically serialized`); return value; }
+async function readPrivateKey(file, label, privateMode) { return readStableBytes(file, label, 64 * 1024, privateMode); }
+async function observeBinary(release) {
+  await privateRegular(release.sbxBinary.path, "promoted sbx binary", 256 * 1024 * 1024, false);
+  const bytes = await readStableBytes(release.sbxBinary.path, "promoted sbx binary", 256 * 1024 * 1024, false); if (digest(bytes) !== release.sbxBinary.sha256) fail("promoted sbx binary digest differs");
+  const version = await runFixed(release.sbxBinary.path, ["--version"], COMMAND_TIMEOUT_MS); const versionOutput = version.stdout.trim();
+  if (version.code !== 0 || versionOutput !== release.sbxBinary.versionOutput) fail("sbx version output differs from the release");
+  const help = await runFixed(release.sbxBinary.path, ["--help"], COMMAND_TIMEOUT_MS); if (help.code !== 0 || digest(Buffer.from(help.stdout, "utf8")) !== release.sbxBinary.helpDigest) fail("sbx help digest differs from the release");
+  return { path: release.sbxBinary.path, versionOutput, sha256: digest(bytes), helpDigest: digest(Buffer.from(help.stdout, "utf8")) };
+}
+function startIdentity(pid, executable, expectedDigest) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) fail("trusted observer PID is invalid");
+  // Read /proc synchronously before the event loop can reap a short-lived
+  // version/help command. The caller still records the exact pinned digest and
+  // rejects any path or byte substitution.
+  const statText = readFileSync(`/proc/${pid}/stat`, "utf8"); const end = statText.lastIndexOf(")"); if (end < 0) fail("trusted observer process stat is malformed"); const fields = statText.slice(end + 2).trim().split(/\s+/u); const startTime = fields[19]; if (!/^\d+$/u.test(startTime ?? "")) fail("trusted observer process start identity is unavailable");
+  const actualExecutable = readlinkSync(`/proc/${pid}/exe`); if (actualExecutable !== executable) fail("trusted observer executable path changed"); const actualDigest = stableDigestSync(actualExecutable, "trusted observer executable", 256 * 1024 * 1024); if (actualDigest !== expectedDigest) fail("trusted observer executable digest changed"); return { pid, startTime, executable: actualExecutable, executableDigest: actualDigest };
+}
+function runFixed(executable, argv, timeoutMs) {
+  if (!Array.isArray(argv) || argv.length === 0 || argv.length > 64 || argv.some(value => typeof value !== "string" || value.length === 0 || value.length > 4096 || /[\u0000-\u001f\u007f\r\n]/u.test(value))) return Promise.reject(new Error("trusted command argv is not a bounded argv-only vector"));
+  return new Promise(async (resolve, reject) => {
+    let child; let timer; let killTimer; let settled = false;
+    const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(killTimer); fn(value); };
+    try { await noSymlinkPath(executable, "trusted executable"); const info = await privateRegular(executable, "trusted executable", 256 * 1024 * 1024, false); if ((info.mode & 0o022) !== 0) throw new Error("trusted executable is writable by group/other"); const executableDigest = digest(await readStableBytes(executable, "trusted executable", 256 * 1024 * 1024, false)); child = spawn(executable, argv, { cwd: path.dirname(executable), env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, shell: false, stdio: ["ignore", "pipe", "pipe"] }); child.once("error", () => undefined); if (!child.pid) throw new Error("trusted executable did not expose a PID"); const identity = await startIdentity(child.pid, executable, executableDigest); const stdout = []; const stderr = []; let bytes = 0; const collect = target => chunk => { bytes += chunk.length; if (bytes > MAX_OUTPUT) { child.kill("SIGTERM"); finish(reject, new Error("trusted command output exceeded its bound")); return; } (target === "stdout" ? stdout : stderr).push(Buffer.from(chunk)); }; child.stdout.on("data", collect("stdout")); child.stderr.on("data", collect("stderr")); child.once("error", error => finish(reject, error)); timer = setTimeout(() => { child.kill("SIGTERM"); }, timeoutMs); killTimer = setTimeout(() => { child.kill("SIGKILL"); finish(reject, new Error("trusted command did not exit after timeout")); }, timeoutMs + 5_000); child.once("exit", (code, signal) => { try { const decoder = new TextDecoder("utf-8", { fatal: true }); finish(resolve, { code, signal, stdout: decoder.decode(Buffer.concat(stdout)), stderr: decoder.decode(Buffer.concat(stderr)), identity }); } catch (error) { finish(reject, new Error(`trusted command output was not UTF-8: ${error instanceof Error ? error.message : String(error)}`)); } });
+    } catch (error) { if (child) { try { child.kill("SIGKILL"); } catch {} } finish(reject, error); }
   });
 }
-
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
-  const releaseFile = path.resolve(options.release);
-  await canonicalFilePath(releaseFile, "release manifest");
-  const releaseBytes = await readFile(releaseFile);
-  let release; try { release = JSON.parse(releaseBytes.toString("utf8")); } catch { fail("release is not JSON"); }
-  await validateRelease(release, releaseBytes);
-  const request = makeRequest(options, release);
-  await writeExclusive(options.request, request);
-  const result = { schemaVersion: 1, kind: "squire-sandbox-host-probe-result", requestId: request.requestId, runId: request.runId, sandboxName: request.sandboxName, releaseId: request.releaseId, platform: request.platform, architecture: request.architecture, status: "fail", hostOnly: true, evidence: [], completedAt: new Date().toISOString() };
-  try {
-    const executableBytes = await readFile(release.sbxBinary.path);
-    if (digest(executableBytes) !== release.sbxBinary.sha256) fail("installed sbx binary differs from the promoted digest");
-    const version = await run(release.sbxBinary.path, ["--version"]);
-    const versionOutput = version.stdout.trim();
-    if (version.code !== 0 || !/^sbx(?: version)? 0\.39\.0$/u.test(versionOutput) && versionOutput !== "0.39.0") fail("installed sbx version is not exact v0.39.0");
-    const help = await run(release.sbxBinary.path, ["--help"]);
-    if (help.code !== 0 || digest(Buffer.from(help.stdout, "utf8")) !== release.sbxBinary.helpDigest) fail("installed sbx help surface differs from the promoted identity");
-  } catch (error) {
-    await writeExclusive(options.output, result);
-    throw error;
-  }
-  // This command deliberately does not execute destructive VM, quota, network,
-  // process-topology, Herdr, or removal probes. A trusted external worker must
-  // consume the request and publish a separately authenticated result.
-  try { validateHostProbeResult(result, request); } catch (error) { fail(error instanceof Error ? error.message : "host probe result is invalid"); }
-  await writeExclusive(options.output, result);
-  fail("host conformance destructive probes require the external orchestrator; no acceptance claim was emitted");
+async function runNodeScript(script, argv, timeoutMs) {
+  await privateRegular(script, "trusted observer script", 256 * 1024 * 1024, false);
+  const node = await realpath(process.execPath);
+  await privateRegular(node, "trusted observer Node executable", 256 * 1024 * 1024, false);
+  return runFixed(node, [script, ...argv], timeoutMs);
 }
-
-main().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+async function verifyObserverOutput(file, request) { await privateRegular(file, "observer result", 4 * 1024 * 1024); const value = await readCanonicalJson(file, "observer result"); const result = validateHostObserverResult(value, request); if (!isRecord(result.observations) || typeof result.observations.externalEvidenceSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(result.observations.externalEvidenceSha256)) fail("trusted observer result lacks its immutable raw-evidence digest"); const required = { "resource-enforcement": ["cpuEnforced", "memoryEnforced", "identityBound"], "disk-quota": ["quotaEnforced", "enospcObserved", "growthWithinLimit"], "bridge-isolation": ["bridgeIdentityVerified", "siblingIsolationVerified"], "mount-isolation": ["mountAllowlistVerified", "forbiddenMountsAbsent"], "principal-separation": ["principalSeparationVerified"], "rootless-docker": ["rootlessDockerVerified", "rootfulSocketAbsent"], "persistence": ["identityStable", "bootRecreated"], "network-audit": ["allowedHttpsObserved", "deniedProbeObserved", "attributionVerified"], "credential-absence": ["forbiddenCredentialsAbsent"], "process-topology": ["fiveProcesses", "independentProcesses"], "herdr-topology": ["topologyVerified"], "exact-removal": ["exactRemovalVerified", "bridgeAbsent"] }[request.probe] ?? ["verified"]; if (result.observations.verified !== true || required.some(key => result.observations[key] !== true)) fail(`trusted observer did not prove the complete ${request.probe} probe`); return result; }
+async function runObserver(options, parentRequest, identity, stateRoot, evidenceRoot, repositoryRoot) {
+  const observerRequest = buildHostObserverRequest({ parentRequestId: parentRequest.requestId, runId: parentRequest.runId, sandboxName: parentRequest.sandboxName, releaseId: parentRequest.releaseId, platform: parentRequest.platform, architecture: parentRequest.architecture, probe: parentRequest._probe, phase: parentRequest._phase, identity, paths: { stateRoot, bridgePath: parentRequest._bridgePath, evidenceRoot } });
+  const requestPath = path.join(stateRoot, `observer-request-${observerRequest.requestId}.json`); const resultPath = path.join(stateRoot, `observer-result-${observerRequest.requestId}.json`); await writeExclusive(requestPath, observerRequest, "observer request");
+  const observerArgs = ["--request", requestPath, "--output", resultPath, "--release", parentRequest._releasePath, "--resource-tuple", parentRequest._resourcePath, "--network-policy", parentRequest._networkPolicyPath, "--input-root", options["observer-input-root"]]; const observer = await runNodeScript(options.observer, observerArgs, OBSERVER_TIMEOUT_MS); if (observer.code !== 0 || observer.signal) fail(`trusted observer failed for ${parentRequest._probe}/${parentRequest._phase}: ${observer.stderr.slice(0, 500)}`);
+  const result = await verifyObserverOutput(resultPath, observerRequest); const evidence = buildHostConformanceEvidence(result); const name = `host-${observerRequest.probe}-${observerRequest.phase}-${observerRequest.requestId}.json`; const evidenceFile = path.join(evidenceRoot, name); await writeExclusive(evidenceFile, evidence, "host evidence"); const bytes = await readStableBytes(evidenceFile, "host evidence", 4 * 1024 * 1024, true); const evidenceDigest = hostConformanceEvidenceDigest(evidence); if (digest(bytes) !== evidenceDigest) fail("host evidence digest changed after publication"); return { path: evidenceReferencePath(evidenceFile, repositoryRoot), sha256: evidenceDigest, schemaId: HOST_CONFORMANCE_SCHEMA_ID };
+}
+function evidenceReferencePath(file, repositoryRoot) { const relative = path.relative(repositoryRoot, file).split(path.sep).join("/"); if (!/^(?:artifacts|evidence)(?:\/[A-Za-z0-9._-]+)+$/u.test(relative) || relative.includes("..")) fail("published host evidence is outside the repository evidence roots"); return relative; }
+function identityFor(observed, expectedTemplateDigest) { if (!observed?.id || !observed.vmId || !observed.bootId || observed.templateDigest !== expectedTemplateDigest) fail("running sandbox observation lacks the exact promoted template identity"); return { sandboxId: observed.id, vmId: observed.vmId, bootId: observed.bootId, templateDigest: observed.templateDigest }; }
+async function removeTreeNoFollow(target, root) { canonicalPath(target, "quarantine path"); canonicalPath(root, "quarantine root"); if (target !== root && !target.startsWith(`${root}${path.sep}`)) fail("quarantine path escapes its root"); const info = await lstat(target).catch(error => { if (error?.code === "ENOENT") return undefined; throw error; }); if (!info) return; if (info.isSymbolicLink() || !info.isDirectory()) { await unlink(target); return; } for (const entry of await readdir(target)) await removeTreeNoFollow(path.join(target, entry), root); await rmdir(target); }
+async function quarantineBridge(bridgePath, stateRoot) { const info = await lstat(bridgePath).catch(error => { if (error?.code === "ENOENT") return undefined; throw error; }); if (!info) return; if (!info.isDirectory() || info.isSymbolicLink() || info.nlink !== 2) fail("bridge identity changed before quarantine"); const quarantine = path.join(stateRoot, `bridge-quarantine-${randomUUID()}`); await rename(bridgePath, quarantine); await removeTreeNoFollow(quarantine, stateRoot); }
+async function verifyReleaseEvidence(release, repositoryRoot) {
+  canonicalPath(repositoryRoot, "repository root");
+  for (const reference of release.conformanceEvidence ?? []) {
+    if (!reference || typeof reference.path !== "string" || reference.path.includes("..") || !/^(?:artifacts|evidence)(?:\/[A-Za-z0-9._-]+)+$/u.test(reference.path)) fail("release evidence reference is not a safe repository-relative path");
+    const target = path.join(repositoryRoot, reference.path);
+    await noSymlinkPath(target, "release evidence");
+    const info = await lstat(target); if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 4 * 1024 * 1024) fail("release evidence is not a bounded regular file");
+    const bytes = await readStableBytes(target, "release evidence", 4 * 1024 * 1024, true); if (digest(bytes) !== reference.sha256) fail("release evidence digest differs from the signed manifest");
+    const value = await readCanonicalJson(target, "release evidence"); if (value.hostOnly !== true || value.status !== "pass") fail("release evidence is not authenticated host-only pass evidence");
+    if (reference.schemaId === HOST_CONFORMANCE_SCHEMA_ID && hostConformanceEvidenceDigest(value) !== reference.sha256) fail("host conformance evidence identity differs from the signed manifest");
+  }
+}
+async function verifyNetworkPolicy(file, expectedDigest) { await privateRegular(file, "network policy"); const value = await readCanonicalJson(file, "network policy"); if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== "allowedHosts\0mode" || !["allow-all", "allowlist", "deny-all"].includes(value.mode) || !Array.isArray(value.allowedHosts) || value.allowedHosts.some(host => typeof host !== "string" || /[\u0000-\u001f\u007f\r\n]/u.test(host)) || value.mode !== "allowlist" && value.allowedHosts.length !== 0) fail("network policy is not closed"); const digestValue = sha256Bytes(Buffer.from(canonicalJson(value), "utf8")); if (digestValue !== expectedDigest) fail("network policy digest differs from promoted release"); return { ...value, profileDigest: digestValue }; }
+async function guestAttest(driver, running, release, request, bridgePath) { const worker = await driver.execWorker(running); const helperDigest = release.template.helperDigests.at(-1); if (!helperDigest) fail("promoted release has no measured runtime helper digest"); const client = new GuestOperationClient(worker, { runId: request.runId, sandboxName: request.sandboxName, sandboxId: running.id, bootId: running.bootId, operationGeneration: 1, releaseId: release.releaseId, helperDigest }); const canaryPath = `/ticket/bridge/.squire-canary-${request.requestId}`; try { const attest = await client.invoke("attest"); assertGuestAttestation(attest); const written = await client.invoke("canary", { action: "write", marker: request.requestId, path: canaryPath }); const hostMarkerPath = path.join(bridgePath, path.basename(canaryPath)); const markerInfo = await lstat(hostMarkerPath); if (!markerInfo.isFile() || markerInfo.isSymbolicLink() || markerInfo.nlink !== 1 || (markerInfo.mode & 0o7777) !== 0o600) fail("host bridge canary identity is not exact"); const markerBytes = await readStableBytes(hostMarkerPath, "host bridge canary", 4096, true); if (digest(markerBytes) !== written?.markerDigest || markerBytes.toString("utf8") !== request.requestId) fail("host bridge canary did not match the guest marker"); const removed = await client.invoke("canary", { action: "remove", marker: request.requestId, path: canaryPath }); if (!isRecord(written) || Object.keys(written).sort().join("\0") !== "markerDigest\0path\0state" || written.path !== canaryPath || written.state !== "written" || typeof written.markerDigest !== "string" || !/^[0-9a-f]{64}$/u.test(written.markerDigest) || !isRecord(removed) || Object.keys(removed).sort().join("\0") !== "path\0state" || removed.path !== canaryPath || removed.state !== "removed") fail("guest isolation canary output is not exact"); if (await lstat(hostMarkerPath).then(() => true, error => { if (error?.code === "ENOENT") return false; throw error; })) fail("guest bridge canary remained after controller removal"); return { attest, canary: { written, removed, path: canaryPath, hostObserved: true } }; } finally { client.close(); await worker.waitForExit(5_000).catch(() => undefined); } }
+function assertGuestAttestation(value) { if (!isRecord(value) || Object.keys(value).sort().join("\0") !== "agentGid\0agentUid\0controllerGid\0controllerUid\0environmentKeys\0expectedControllerGid\0expectedControllerUid\0forbiddenSockets\0mountInfoDigest\0rootfulDockerSocketAbsent\0rootlessDockerSocket\0statusDigest\0ticket\0".slice(0, -1)) fail("guest attestation fields are not closed"); if (value.controllerUid !== 1000 || value.controllerGid !== 1000 || value.expectedControllerUid !== 1000 || value.expectedControllerGid !== 1000 || value.agentUid !== 1001 || value.agentGid !== 1001 || value.rootlessDockerSocket !== "/ticket/docker/run/docker.sock" || value.rootfulDockerSocketAbsent !== true || typeof value.mountInfoDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.mountInfoDigest) || typeof value.statusDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.statusDigest)) fail("guest principal or namespace attestation is not exact"); if (!isRecord(value.ticket) || Object.keys(value.ticket).sort().join("\0") !== "device\0inode\0linkCount\0mode" || typeof value.ticket.device !== "string" || typeof value.ticket.inode !== "string" || !Number.isSafeInteger(value.ticket.mode) || value.ticket.mode <= 0 || (value.ticket.mode & 0o022) !== 0 || value.ticket.linkCount < 2) fail("guest ticket identity attestation is invalid"); if (!Array.isArray(value.environmentKeys) || value.environmentKeys.join("\0") !== ["HOME", "LANG", "LC_ALL", "PATH", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"].join("\0")) fail("guest environment attestation is not the fixed worker allowlist"); const sockets = value.forbiddenSockets; const expected = ["/run/docker.sock", "/ticket/control/controller.sock", "/var/run/docker.sock"]; if (!Array.isArray(sockets) || sockets.length !== expected.length || sockets.some(item => !isRecord(item) || Object.keys(item).sort().join("\0") !== "absent\0path" || item.absent !== true || typeof item.path !== "string") || expected.some(target => !sockets.some(item => item.path === target))) fail("guest forbidden socket attestation is incomplete"); }
+async function main() {
+  const options = parseArgs(process.argv.slice(2)); await privateRegular(options.release, "release manifest", 4 * 1024 * 1024); const release = await readCanonicalJson(options.release, "release manifest"); try { assertReleaseSemantics(release); } catch (error) { fail(error instanceof Error ? error.message : "release semantics failed"); } if (release.promotion.state !== "validated") fail("release must already be promoted by the trusted release worker");
+  const key = release.promotion.algorithm === "sha256-hmac" ? await readPrivateKey(options["hmac-key-file"], "HMAC promotion key", true) : await readPrivateKey(options["ed25519-public-key"], "Ed25519 promotion key", false); const signatureValid = release.promotion.algorithm === "sha256-hmac" ? verifyHmacSignature(release, key) : verifyEd25519Signature(release, key); if (!signatureValid) fail("release promotion signature is invalid"); await verifyReleaseEvidence(release, options["repository-root"]);
+  const binary = await observeBinary(release); if (!binary) fail("promoted sbx binary was not observed"); assertSandboxRunId(options["run-id"]); assertSandboxName(options["sandbox-name"]); assertReleaseId(release.releaseId); if (options["sandbox-name"] !== deriveSandboxName(options["run-id"])) fail("sandbox name is not derived from the complete run ID");
+  const policy = await verifyNetworkPolicy(options["network-policy"], release.networkProfileDigest); const tuple = selectResourceTuple(release.supportedResources, options["tuple-id"] ? release.supportedResources.find(item => item.tupleId === options["tuple-id"]) : undefined); if (!tuple || tuple.disk.enforcement === "unsupported") fail("the selected disk tuple is unsupported and cannot be conformance-tested");
+  await ensurePrivateEmpty(options["state-root"], "host conformance state root"); ownedStateRoot = options["state-root"]; for (const outside of [options.request, options.output, options["evidence-root"]]) { const relative = path.relative(options["state-root"], outside); if (relative === "" || relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) fail("host result/request/evidence output must not be inside disposable state root"); } canonicalPath(options["evidence-root"], "host evidence root"); const evidenceRootRelative = path.relative(options["repository-root"], options["evidence-root"]).split(path.sep).join("/"); if (evidenceRootRelative !== "evidence" && !evidenceRootRelative.startsWith("evidence/")) fail("host evidence root must be beneath the repository evidence root"); await noSymlinkPath(options["evidence-root"], "host evidence root", true); await mkdir(options["evidence-root"], { recursive: true, mode: 0o700 }); const evidenceInfo = await lstat(options["evidence-root"]); if (!evidenceInfo.isDirectory() || evidenceInfo.isSymbolicLink() || evidenceInfo.nlink < 2 || (evidenceInfo.mode & 0o022) !== 0) fail("host evidence root is not a stable non-writable-by-group directory"); const evidenceRoot = options["evidence-root"]; const ledgerRoot = path.join(options["state-root"], "ledger"); const bridgePath = path.join(options["state-root"], deriveBridgeName(options["run-id"])); await mkdir(evidenceRoot, { recursive: true, mode: 0o700 }); await mkdir(ledgerRoot, { recursive: true, mode: 0o700 }); await mkdir(path.join(options["state-root"], "home"), { recursive: true, mode: 0o700 }); await mkdir(path.join(options["state-root"], "config"), { recursive: true, mode: 0o700 }); await mkdir(path.join(options["state-root"], "runtime"), { recursive: true, mode: 0o700 }); await mkdir(bridgePath, { recursive: true, mode: 0o700 }); await ensurePrivateEmpty(bridgePath, "ticket bridge");
+  let request; const requestInfo = await lstat(options.request).catch(error => { if (error?.code === "ENOENT") return undefined; throw error; }); if (requestInfo) { await privateRegular(options.request, "host probe request"); request = validateHostProbeRequest(await readCanonicalJson(options.request, "host probe request")); } else { request = buildAcceptanceRequest({ runId: options["run-id"], sandboxName: options["sandbox-name"], releaseId: release.releaseId, platform: release.platform, architecture: release.architecture, probes: HOST_PROBE_NAMES, requestedAt: new Date().toISOString() }); await validateHostProbeRequest(request); await writeExclusive(options.request, request, "host probe request"); } if (request.runId !== options["run-id"] || request.sandboxName !== options["sandbox-name"] || request.releaseId !== release.releaseId || request.platform !== release.platform || request.architecture !== release.architecture || request.probes.length !== HOST_PROBE_NAMES.length || HOST_PROBE_NAMES.some(probe => !request.probes.includes(probe))) fail("host probe request is not the complete release-bound probe set");
+  if (options["observer-input-root"]) { await noSymlinkPath(options["observer-input-root"], "host observer input root"); const inputInfo = await lstat(options["observer-input-root"]); if (!inputInfo.isDirectory() || inputInfo.isSymbolicLink() || (inputInfo.mode & 0o022) !== 0) fail("host observer input root is not a stable directory"); }
+  const observerPath = options.observer; await privateRegular(observerPath, "host observer", 256 * 1024 * 1024, false); if (digest(await readStableBytes(observerPath, "host observer", 256 * 1024 * 1024, false)) !== options["observer-sha256"]) fail("host observer executable digest differs from the supplied identity");
+  const builder = new SbxV039CommandBuilder({ executable: release.sbxBinary.path, executableSha256: release.sbxBinary.sha256, cwd: options["state-root"], environment: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", HOME: path.join(options["state-root"], "home"), XDG_CONFIG_HOME: path.join(options["state-root"], "config"), XDG_RUNTIME_DIR: path.join(options["state-root"], "runtime") } }); const ledger = new FileHostProcessLedger({ root: ledgerRoot }); const supervisor = new HostProcessSupervisor({ ledger, verifyExecutable: async command => { if (command.executable !== release.sbxBinary.path || command.executableSha256 !== release.sbxBinary.sha256) throw new Error("sbx command is not bound to the promoted binary"); } }); const resolved = await new SandboxReleaseResolver({ releases: [release], platform: release.platform, architecture: release.architecture, ...(release.promotion.algorithm === "sha256-hmac" ? { hmacKey: key } : { ed25519PublicKey: key }), observeBinary: async () => binary }).resolve({ templateName: release.template.reference.split("@")[0], templateDigest: release.template.digest, platform: release.platform, architecture: release.architecture, resources: { cpus: tuple.cpus, memoryMiB: tuple.memoryMiB, disk: tuple.disk }, networkProfileDigest: release.networkProfileDigest }); const driver = new SbxV039Driver({ release: resolved, builder, executor: supervisor, processLedger: ledger });
+  const now = Date.now(); const spec = buildSandboxSpec({ runId: options["run-id"], ticketIdentifier: options["ticket-id"], template: { name: release.template.reference.split("@")[0], digest: release.template.digest, reference: release.template.reference }, resources: { cpus: tuple.cpus, memoryMiB: tuple.memoryMiB, disk: tuple.disk }, network: policy, bridgeQuotaBytes: release.bridgeQuotaBytes, retention: { successUntil: new Date(now + 3_600_000).toISOString(), failureUntil: new Date(now + 7_200_000).toISOString(), artifactUntil: new Date(now + 86_400_000).toISOString() } });
+  const observerResourcePath = path.join(options["state-root"], "observer-resource-context.json"); await writeExclusive(observerResourcePath, { schemaVersion: 1, kind: "squire-sandbox-host-observer-context", runId: request.runId, releaseId: request.releaseId, templateDigest: release.template.digest, networkProfileDigest: release.networkProfileDigest, bridgeQuotaBytes: release.bridgeQuotaBytes, resourceTuple: tuple }, "observer resource context");
+  const evidence = []; const result = { schemaVersion: 1, kind: "squire-sandbox-host-probe-result", requestId: request.requestId, runId: request.runId, sandboxName: request.sandboxName, releaseId: request.releaseId, platform: request.platform, architecture: request.architecture, status: "fail", hostOnly: true, evidence, completedAt: new Date().toISOString() }; let exact; let running; let oldRunning; let cleanupFailure;
+  try {
+    exact = await driver.create(spec, bridgePath); running = await driver.start(exact); oldRunning = running;
+    const policyObservation = await driver.policy(); if (policyObservation.digest !== release.networkProfileDigest) fail("live sbx policy differs from the promoted policy");
+    evidence.push(await writeBuiltinEvidence(evidenceRoot, options["repository-root"], request, "sbx-identity", "running", identityFor(running, release.template.digest), { verified: true, binary, sandbox: running, policy: policyObservation }));
+    // Guest attestation and the bridge canary are necessary runtime checks, but
+    // they are not host-conformance proof. Principal separation remains an
+    // externally executed observer probe so this worker never upgrades guest
+    // claims into host-only acceptance evidence.
+    await guestAttest(driver, running, release, request, bridgePath);
+    for (const probe of request.probes) {
+      if (probe === "sbx-identity" || probe === "persistence" || probe === "exact-removal") continue;
+      const observerRequest = { ...request, _probe: probe, _phase: "running", _bridgePath: bridgePath, _releasePath: options.release, _resourcePath: observerResourcePath, _networkPolicyPath: options["network-policy"] }; evidence.push(await runObserver(options, observerRequest, identityFor(running, release.template.digest), options["state-root"], evidenceRoot, options["repository-root"]));
+    }
+    if (request.probes.includes("persistence")) { await driver.stop(running); oldRunning = running; running = await driver.start(running); if (running.id !== oldRunning.id || running.vmId !== oldRunning.vmId || running.templateDigest !== oldRunning.templateDigest || !running.bootId) fail("stop/start changed the immutable sandbox identity or lost the boot identity"); evidence.push(await runObserver(options, { ...request, _probe: "persistence", _phase: "restarted", _bridgePath: bridgePath, _releasePath: options.release, _resourcePath: observerResourcePath, _networkPolicyPath: options["network-policy"] }, identityFor(running, release.template.digest), options["state-root"], evidenceRoot, options["repository-root"])); }
+    if (request.probes.includes("exact-removal")) { await driver.stop(running); await driver.remove(running); if (await driver.inspect(request.sandboxName)) fail("exact sandbox removal was not observed"); evidence.push(await runObserver(options, { ...request, _probe: "exact-removal", _phase: "removed", _bridgePath: bridgePath, _releasePath: options.release, _resourcePath: observerResourcePath, _networkPolicyPath: options["network-policy"] }, { sandboxId: running.id, vmId: running.vmId, bootId: running.bootId ?? oldRunning?.bootId ?? "stopped", templateDigest: running.templateDigest }, options["state-root"], evidenceRoot, options["repository-root"])); }
+    await quarantineBridge(bridgePath, options["state-root"]); result.status = "pass";
+  } finally {
+    if (result.status !== "pass") {
+      try { const candidate = running ?? exact; if (candidate) { const current = await driver.inspect(request.sandboxName); if (current && current.id === candidate.id && current.templateDigest === candidate.templateDigest && current.vmId === candidate.vmId) { const stopped = await driver.stop(current); await driver.remove(stopped); } } } catch (error) { cleanupFailure = String(error); }
+      try { await quarantineBridge(bridgePath, options["state-root"]); } catch (error) { cleanupFailure = `${cleanupFailure ?? ""}${String(error)}`; }
+    }
+    if (cleanupFailure) result.status = "fail"; try { await removeTreeNoFollow(options["state-root"], options["state-root"]); } catch (error) { cleanupFailure = `${cleanupFailure ?? ""}${String(error)}`; result.status = "fail"; } result.completedAt = new Date().toISOString(); await validateHostProbeResult(result, request); await writeExclusive(options.output, result, "host probe result"); if (cleanupFailure) process.stderr.write(`cleanup failure: ${cleanupFailure}\n`);
+  }
+  process.stdout.write(`${canonicalJson(result)}\n`);
+}
+async function writeBuiltinEvidence(evidenceRoot, repositoryRoot, request, probe, phase, identity, observations) { const evidence = buildHostConformanceEvidence({ schemaVersion: 1, kind: "squire-sandbox-host-observer-result", requestId: request.requestId, parentRequestId: request.requestId, runId: request.runId, sandboxName: request.sandboxName, releaseId: request.releaseId, platform: request.platform, architecture: request.architecture, probe, phase, identity, status: "pass", hostOnly: true, observations, completedAt: new Date().toISOString() }); const name = `host-${probe}-${phase}-${request.requestId}.json`; const file = path.join(evidenceRoot, name); await writeExclusive(file, evidence, "host evidence"); const fileDigest = digest(await readStableBytes(file, "host evidence", 4 * 1024 * 1024, true)); const expected = hostConformanceEvidenceDigest(evidence); if (fileDigest !== expected) fail("built-in host evidence digest changed"); return { path: evidenceReferencePath(file, repositoryRoot), sha256: expected, schemaId: HOST_CONFORMANCE_SCHEMA_ID }; }
+main().catch(async error => {
+  try {
+    const options = parseArgs(process.argv.slice(2)); if (ownedStateRoot === options["state-root"]) await removeTreeNoFollow(options["state-root"], options["state-root"]).catch(() => undefined); const requestBytes = await readStableBytes(options.request, "host probe request", 4 * 1024 * 1024, true); const requestValue = JSON.parse(requestBytes.toString("utf8")); const request = validateHostProbeRequest(requestValue); const failure = { schemaVersion: 1, kind: "squire-sandbox-host-probe-result", requestId: request.requestId, runId: request.runId, sandboxName: request.sandboxName, releaseId: request.releaseId, platform: request.platform, architecture: request.architecture, status: "fail", hostOnly: true, evidence: [], completedAt: new Date().toISOString() }; await validateHostProbeResult(failure, request); await writeExclusive(options.output, failure, "host probe failure result");
+  } catch { /* A malformed/preflight request cannot safely produce a bound result. */ }
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1;
+});

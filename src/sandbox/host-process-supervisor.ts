@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { access, lstat, mkdir, open, readFile, readlink, readdir, realpath, rename, rmdir, unlink, type FileHandle } from "node:fs/promises";
-import { constants } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { SbxCommand } from "./sbx-command.js";
-import { commandFingerprint, SbxCommandError } from "./sbx-command.js";
+import { assertSbxCommand, commandFingerprint, SbxCommandError } from "./sbx-command.js";
 import { assertSha256, canonicalBytes, canonicalJson, sha256Bytes } from "./identity.js";
 import { fsyncDirectory, openNoFollowWithin, readExactNoFollow, writeExclusiveFile } from "../git/paths.js";
 
@@ -257,6 +257,9 @@ class ChildHostProcess implements HostChildProcess {
 export interface HostProcessSupervisorOptions {
   /** Required in production; InMemoryHostProcessLedger is an explicit test seam. */
   readonly ledger?: HostProcessLedger;
+  /** Test-only escape hatch for exercising durable ownership with a non-sbx
+   * executable. It is rejected for file-backed/production ledgers. */
+  readonly testOnlyAllowNonSbxCommand?: boolean;
   readonly maxOutputBytes?: number;
   readonly defaultTimeoutMs?: number;
   readonly verifyExecutable?: (command: SbxCommand) => Promise<void>;
@@ -282,15 +285,19 @@ export class HostProcessSupervisor {
   readonly #maxOutputBytes: number;
   readonly #defaultTimeoutMs: number;
   readonly #verifyExecutable: ((command: SbxCommand) => Promise<void>) | undefined;
+  readonly #testOnlyAllowNonSbxCommand: boolean;
   constructor(options: HostProcessSupervisorOptions = {}) {
-    if (!options || typeof options !== "object" || Array.isArray(options) || !options.ledger || (options.verifyExecutable !== undefined && typeof options.verifyExecutable !== "function")) throw new SbxCommandError("a durable host process ledger is required; in-memory ownership is test-only");
+    if (!options || typeof options !== "object" || Array.isArray(options) || !options.ledger || (options.verifyExecutable !== undefined && typeof options.verifyExecutable !== "function") || (options.testOnlyAllowNonSbxCommand !== undefined && typeof options.testOnlyAllowNonSbxCommand !== "boolean")) throw new SbxCommandError("a durable host process ledger is required; in-memory ownership is test-only");
+    if (options.testOnlyAllowNonSbxCommand === true && !(options.ledger instanceof InMemoryHostProcessLedger)) throw new SbxCommandError("non-sbx command test mode requires the explicit in-memory ledger");
     this.#ledger = options.ledger;
+    this.#testOnlyAllowNonSbxCommand = options.testOnlyAllowNonSbxCommand === true;
     this.#maxOutputBytes = boundedPositiveInteger(options.maxOutputBytes ?? 4 * 1024 * 1024, 64 * 1024 * 1024, "host command output limit");
     this.#defaultTimeoutMs = boundedPositiveInteger(options.defaultTimeoutMs ?? 30_000, 300_000, "host command timeout");
     this.#verifyExecutable = options.verifyExecutable;
   }
 
   async spawn(command: SbxCommand, signal?: AbortSignal, onSpawn?: (process: HostChildProcess) => void | Promise<void>): Promise<HostChildProcess> {
+    try { assertSbxCommand(command); } catch (error) { if (!this.#testOnlyAllowNonSbxCommand) throw error instanceof SbxCommandError ? error : new SbxCommandError(error instanceof Error ? error.message : "host command is invalid"); }
     if (signal?.aborted) throw new SbxCommandError("host command was aborted before spawn");
     await this.#verify(command);
     if (signal?.aborted) throw new SbxCommandError("host command was aborted before intent persistence");
@@ -310,12 +317,16 @@ export class HostProcessSupervisor {
     let startTime: string;
     let executableDigest: string;
     try {
-      startTime = await processStartTime(child.pid!);
-      const executable = await readProcExecutable(child.pid!);
-      const promotedExecutable = await realpath(command.executable);
+      // Capture identity synchronously immediately after spawn. A short-lived
+      // sbx command may already be a zombie by the time an asynchronous /proc
+      // read runs, but its exact identity remains available until reaping.
+      startTime = processStartTimeSync(child.pid!);
+      const executable = readProcExecutableSync(child.pid!);
+      const promotedExecutable = realpathSync(command.executable);
       if (command.executable !== promotedExecutable || executable !== promotedExecutable) throw new SbxCommandError("spawned sbx child executable path differs from the promoted path");
-      executableDigest = await hashFile(executable);
+      executableDigest = hashFileSync(executable);
       if (executableDigest !== command.executableSha256) throw new SbxCommandError("spawned sbx child executable differs from the promoted digest");
+      assertProcessArgvSync(child.pid!, command.argv, command.executable);
     }
     catch (error) {
       await this.#ledger.persistUnknown(intent).catch(() => undefined);
@@ -406,7 +417,8 @@ export class HostProcessSupervisor {
       const promotedExecutable = await realpath(ledger.executable);
       const digest = await hashFile(executable);
       if (executable !== promotedExecutable || start !== parsed.startTime || digest !== parsed.executableDigest) return undefined;
-      return new ResolvedHostProcess(parsed.pid, parsed.startTime, ledger.executable, parsed.executableDigest);
+      await assertProcessArgv(parsed.pid, ledger.argv, ledger.executable);
+      return new ResolvedHostProcess(parsed.pid, parsed.startTime, ledger.executable, parsed.executableDigest, ledger.argv);
     } catch { return undefined; }
   }
 
@@ -416,17 +428,17 @@ export class HostProcessSupervisor {
     if (process.exitCode !== null) return;
     const intent = process.commandId ? await this.#ledger.read(process.commandId) : await this.#ledger.findByIdentity(process.identity);
     if (!intent || (intent.state !== "spawned" && intent.state !== "unknown") || intent.identity !== process.identity || intent.pid !== process.pid || intent.startTime !== process.startTime || intent.executable !== process.executable || intent.executableDigest !== process.executableDigest) throw new SbxCommandError("host child is not owned by its durable command ledger");
-    await assertLiveProcessIdentity(process);
+    await assertLiveProcessIdentity(process, intent.argv);
     const termDelivered = process.kill("SIGTERM");
     if (!termDelivered && process.exitCode === null) {
-      await assertLiveProcessIdentity(process);
+      await assertLiveProcessIdentity(process, intent.argv);
       const killDelivered = process.kill("SIGKILL");
       if (!killDelivered && process.exitCode === null) throw new SbxCommandError("host child kill signal was not delivered");
     }
     try { await process.waitForExit(boundedGraceMs); }
     catch {
       if (process.exitCode === null) {
-        await assertLiveProcessIdentity(process);
+        await assertLiveProcessIdentity(process, intent.argv);
         const killDelivered = process.kill("SIGKILL");
         if (!killDelivered && process.exitCode === null) throw new SbxCommandError("host child kill signal was not delivered");
       }
@@ -442,8 +454,10 @@ export class HostProcessSupervisor {
     // an additional policy check, never a bypass for the byte identity proof.
     try {
       const resolved = await realpath(command.executable);
-      if (resolved !== command.executable || !pathCleanHost(command.executable)) throw new SbxCommandError("sbx executable path must be a canonical non-symlink path");
+      const resolvedCwd = await realpath(command.cwd);
+      if (resolved !== command.executable || resolvedCwd !== command.cwd || !pathCleanHost(command.executable) || !pathCleanHost(command.cwd, true)) throw new SbxCommandError("sbx executable or cwd path must be canonical non-symlink paths");
       await assertNoSymlinkAncestors(command.executable);
+      await assertNoSymlinkAncestors(command.cwd);
       const digest = await hashFile(command.executable);
       if (digest !== command.executableSha256) throw new SbxCommandError("sbx executable digest differs from the release");
     } catch (error) {
@@ -465,7 +479,16 @@ export function parseHostProcessIdentity(value: string): { readonly pid: number;
 export async function processStartTime(pid: number | null | undefined): Promise<string> {
   if (!Number.isSafeInteger(pid) || pid === null || pid === undefined || pid <= 0 || pid > 4_194_304) throw new SbxCommandError("host child did not have a usable PID");
   if (process.platform !== "linux") throw new SbxCommandError("durable host process start-time evidence is unsupported on this platform");
-  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  return parseProcessStartTime(await readFile(`/proc/${pid}/stat`, "utf8"));
+}
+
+function processStartTimeSync(pid: number | null | undefined): string {
+  if (!Number.isSafeInteger(pid) || pid === null || pid === undefined || pid <= 0 || pid > 4_194_304) throw new SbxCommandError("host child did not have a usable PID");
+  if (process.platform !== "linux") throw new SbxCommandError("durable host process start-time evidence is unsupported on this platform");
+  return parseProcessStartTime(readFileSync(`/proc/${pid}/stat`, "utf8"));
+}
+
+function parseProcessStartTime(stat: string): string {
   const close = stat.lastIndexOf(")");
   if (close < 0) throw new SbxCommandError("host process stat output is malformed");
   const fields = stat.slice(close + 2).trim().split(/\s+/u);
@@ -478,6 +501,24 @@ async function readProcExecutable(pid: number): Promise<string> {
   const link = await readlink(`/proc/${pid}/exe`).catch(() => undefined);
   if (link) return link;
   throw new SbxCommandError("host process executable identity is unavailable");
+}
+function readProcExecutableSync(pid: number): string {
+  try { return readlinkSync(`/proc/${pid}/exe`); }
+  catch { throw new SbxCommandError("host process executable identity is unavailable"); }
+}
+async function assertProcessArgv(pid: number, argv: readonly string[], executable?: string): Promise<void> {
+  if (!Array.isArray(argv) || argv.length === 0 || argv.length > 128 || argv.some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || executable !== undefined && (!path.isAbsolute(executable) || !pathCleanHost(executable))) throw new SbxCommandError("host process argv identity is invalid");
+  if (executable === undefined) throw new SbxCommandError("host process executable identity is required for argv verification");
+  const expected = expectedProcArgv(executable, argv);
+  const actual = await readFile(`/proc/${pid}/cmdline`);
+  if (!actual.equals(expected)) throw new SbxCommandError("host process argv identity changed");
+}
+function assertProcessArgvSync(pid: number, argv: readonly string[], executable: string): void {
+  if (!Array.isArray(argv) || argv.length === 0 || argv.length > 128 || argv.some(item => typeof item !== "string" || item.length === 0 || item.length > 2_048 || /[\u0000-\u001f\u007f\r\n]/u.test(item)) || !path.isAbsolute(executable) || !pathCleanHost(executable)) throw new SbxCommandError("host process argv identity is invalid");
+  if (!readFileSync(`/proc/${pid}/cmdline`).equals(expectedProcArgv(executable, argv))) throw new SbxCommandError("host process argv identity changed");
+}
+function expectedProcArgv(executable: string, argv: readonly string[]): Buffer {
+  return Buffer.concat([Buffer.from(executable, "utf8"), Buffer.from([0]), ...argv.map(item => Buffer.concat([Buffer.from(item, "utf8"), Buffer.from([0])]))]);
 }
 
 async function hashFile(file: string): Promise<string> {
@@ -503,6 +544,32 @@ async function hashFile(file: string): Promise<string> {
   } finally { await handle.close(); }
 }
 
+function hashFileSync(file: string): string {
+  if (typeof file !== "string" || !path.isAbsolute(file) || file.includes("\0") || process.platform !== "linux" || constants.O_NOFOLLOW === undefined) throw new SbxCommandError("secure executable hashing is unsupported on this platform");
+  let resolved: string;
+  try { resolved = realpathSync(file); } catch (error) { throw new SbxCommandError(`executable path cannot be resolved: ${error instanceof Error ? error.message : String(error)}`); }
+  if (!path.isAbsolute(resolved) || !pathCleanHost(resolved)) throw new SbxCommandError("resolved executable path is not canonical");
+  let fd: number | undefined;
+  try {
+    fd = openSync(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.nlink !== 1 || info.size < 1 || info.size > 256 * 1024 * 1024 || (info.mode & 0o022) !== 0) throw new SbxCommandError("executable is not a bounded, privately owned regular file");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, info.size)));
+    let offset = 0;
+    while (offset < info.size) {
+      const bytes = readSync(fd, buffer, 0, Math.min(buffer.length, info.size - offset), offset);
+      if (bytes <= 0) throw new SbxCommandError("executable ended during identity hashing");
+      hash.update(buffer.subarray(0, bytes)); offset += bytes;
+    }
+    const after = fstatSync(fd);
+    if (after.dev !== info.dev || after.ino !== info.ino || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs || realpathSync(file) !== resolved) throw new SbxCommandError("executable changed during identity hashing");
+    return hash.digest("hex");
+  } catch (error) {
+    throw error instanceof SbxCommandError ? error : new SbxCommandError(`executable cannot be hashed without following links: ${error instanceof Error ? error.message : String(error)}`);
+  } finally { if (fd !== undefined) closeSync(fd); }
+}
+
 class ResolvedHostProcess implements HostChildProcess {
   readonly identity: string;
   readonly pid: number;
@@ -515,8 +582,9 @@ class ResolvedHostProcess implements HostChildProcess {
   exitCode: number | null = null;
   exitSignal: string | null = null;
   readonly #listeners = new Set<(code: number | null, signal: string | null) => void>();
-  constructor(pid: number, startTime: string, executable: string, executableDigest: string) {
-    this.pid = pid; this.startTime = startTime; this.executable = executable; this.executableDigest = executableDigest;
+  readonly #argv: readonly string[];
+  constructor(pid: number, startTime: string, executable: string, executableDigest: string, argv: readonly string[]) {
+    this.pid = pid; this.startTime = startTime; this.executable = executable; this.executableDigest = executableDigest; this.#argv = Object.freeze([...argv]);
     this.identity = `host-child:${pid}:${startTime}:${executableDigest}`;
   }
   on(event: "exit", listener: (code: number | null, signal: string | null) => void): this { if (event === "exit") { if (this.exitCode !== null) queueMicrotask(() => listener(this.exitCode, this.exitSignal)); else this.#listeners.add(listener); } return this; }
@@ -524,7 +592,7 @@ class ResolvedHostProcess implements HostChildProcess {
   async waitForExit(timeoutMs: number): Promise<void> {
     const deadline = Date.now() + boundedPositiveInteger(timeoutMs, 300_000, "resolved host child exit timeout");
     while (this.exitCode === null && Date.now() < deadline) {
-      const state = await exactProcessState(this.pid, this.startTime, this.executableDigest);
+      const state = await exactProcessState(this.pid, this.startTime, this.executable, this.executableDigest, this.#argv);
       if (state === "exited") { this.#settle(0, this.exitSignal); break; }
       if (state === "changed") throw new SbxCommandError("resolved host child identity changed before exit could be observed");
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -538,12 +606,13 @@ class NullReadable implements HostProcessReadable {
   on(_event: "data" | "end", _listener: ((chunk: Buffer | string) => void) | (() => void)): this { return this; }
 }
 
-async function exactProcessState(pid: number, startTime: string, executableDigest: string): Promise<"alive" | "exited" | "changed"> {
+async function exactProcessState(pid: number, startTime: string, executable: string, executableDigest: string, argv: readonly string[]): Promise<"alive" | "exited" | "changed"> {
   try {
     const currentStart = await processStartTime(pid);
     if (currentStart !== startTime) return "changed";
-    const executable = await readProcExecutable(pid);
-    if (await hashFile(executable) !== executableDigest) return "changed";
+    const currentExecutable = await readProcExecutable(pid);
+    if (currentExecutable !== executable || await hashFile(currentExecutable) !== executableDigest) return "changed";
+    await assertProcessArgv(pid, argv, currentExecutable);
     const stat = await readFile(`/proc/${pid}/stat`, "utf8");
     const close = stat.lastIndexOf(")");
     if (close < 0) return "changed";
@@ -554,17 +623,18 @@ async function exactProcessState(pid: number, startTime: string, executableDiges
   }
 }
 
-async function exactProcessStillAlive(pid: number, startTime: string, executableDigest: string): Promise<boolean> {
-  return (await exactProcessState(pid, startTime, executableDigest)) === "alive";
+async function exactProcessStillAlive(pid: number, startTime: string, executable: string, executableDigest: string, argv: readonly string[]): Promise<boolean> {
+  return (await exactProcessState(pid, startTime, executable, executableDigest, argv)) === "alive";
 }
 
-async function assertLiveProcessIdentity(child: Pick<HostChildProcess, "pid" | "startTime" | "executableDigest">): Promise<void> {
+async function assertLiveProcessIdentity(child: Pick<HostChildProcess, "pid" | "startTime" | "executable" | "executableDigest">, argv: readonly string[]): Promise<void> {
   if (globalThis.process.platform === "win32") throw new SbxCommandError("live host process identity verification is unsupported on this platform");
   try {
     const startTime = await processStartTime(child.pid);
     const executable = await readProcExecutable(child.pid);
     const digest = await hashFile(executable);
-    if (startTime !== child.startTime || digest !== child.executableDigest || !(await exactProcessStillAlive(child.pid, child.startTime, child.executableDigest))) throw new SbxCommandError("host process identity changed before termination");
+    await assertProcessArgv(child.pid, argv, child.executable);
+    if (executable !== child.executable || startTime !== child.startTime || digest !== child.executableDigest || !(await exactProcessStillAlive(child.pid, child.startTime, child.executable, child.executableDigest, argv))) throw new SbxCommandError("host process identity changed before termination");
   } catch (error) {
     if (error instanceof SbxCommandError) throw error;
     throw new SbxCommandError(`host process identity could not be verified before termination: ${error instanceof Error ? error.message : String(error)}`);
@@ -699,5 +769,5 @@ function isCode(error: unknown, code: string, depth = 0): boolean {
   if ("cause" in error) return isCode((error as { cause?: unknown }).cause, code, depth + 1);
   return false;
 }
-function pathCleanHost(value: string): boolean { return value.length > 1 && path.isAbsolute(value) && path.normalize(value) === value && !value.endsWith(path.sep) && !value.includes("//") && !value.includes("\\") && !/[\u0000-\u001f\u007f\r\n]/u.test(value); }
+function pathCleanHost(value: string, allowRoot = false): boolean { return (value.length > 1 || allowRoot) && path.isAbsolute(value) && path.normalize(value) === value && (!value.endsWith(path.sep) || allowRoot && value === path.parse(value).root) && !value.includes("//") && !value.includes("\\") && !/[\u0000-\u001f\u007f\r\n]/u.test(value); }
 void assertSha256;

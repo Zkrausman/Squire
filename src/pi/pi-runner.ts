@@ -8,6 +8,7 @@ import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDire
 import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, ProcessLaunch, RuntimeResolver } from "./pi-process.js";
 import { PiRpcClient, type PiState } from "./pi-rpc-client.js";
 import { assertRunId } from "../git/identity.js";
+import { REQUIRED_LLM_WIKI_RUNTIME_VERSION, REQUIRED_PI_RUNTIME_VERSION } from "../sandbox/contracts.js";
 import { canonicalJson } from "../sandbox/identity.js";
 
 export interface RunnerConfig {
@@ -164,7 +165,12 @@ export class PiRunner {
     const owner = `runner-${randomUUID()}-${++this.#ownerSequence}`;
     const leaseKey = `process:${role}`;
     const processLeaseMs = positiveInteger(this.config.processLeaseMs ?? 30_000, "process lease");
-    const stepTimeoutMs = positiveInteger(this.config.allocationStepTimeoutMs ?? Math.max(1, Math.floor(processLeaseMs / 2)), "allocation step timeout");
+    const rpcTimeoutMs = positiveInteger(this.config.commandTimeoutMs ?? 5_000, "Pi command timeout");
+    // A real Pi handshake is itself a bounded RPC. Never make the enclosing
+    // allocation step shorter than that explicit RPC budget; doing so turns
+    // host contention into a false process-ownership failure. Tests and
+    // production callers may still provide a narrower explicit step bound.
+    const stepTimeoutMs = positiveInteger(this.config.allocationStepTimeoutMs ?? Math.max(1, Math.floor(processLeaseMs / 2), rpcTimeoutMs), "allocation step timeout");
     const roleConfig = normalizeRoleConfig(role, this.config.roles[role]!);
     const roleTimeoutSeconds = positiveInteger(roleConfig.timeoutSeconds ?? 0, `role timeout for ${role}`);
     const allocationTimeoutMs = positiveInteger(this.config.allocationTimeoutMs ?? Math.max(roleTimeoutSeconds * 1_000, stepTimeoutMs * 12), "allocation timeout");
@@ -280,8 +286,9 @@ export class PiRunner {
 
   async #resolveAndRecord(runId: string, lease?: AllocationLease, signal?: AbortSignal): Promise<RuntimeResolution> {
     let snapshot = await this.store.read(runId); if (!snapshot) throw new Error("run not found");
-    if (snapshot.runtimeResolution) return snapshot.runtimeResolution;
+    if (snapshot.runtimeResolution) { assertImmutableRunRuntime(snapshot.runtimeResolution); return snapshot.runtimeResolution; }
     const observed = await this.resolver.resolve(runId, signal); if (signal?.aborted) throw new Error("runtime resolution aborted");
+    assertImmutableRunRuntime(observed);
     for (;;) {
       snapshot = await this.store.read(runId); if (!snapshot) throw new Error("run not found");
       if (snapshot.runtimeResolution) return snapshot.runtimeResolution;
@@ -647,6 +654,10 @@ export class PiRunner {
       ? materializer.teardown(runId, signal)
       : Promise.reject(new Error("Pi agent-directory materializer has no component teardown operation"));
   }
+}
+
+function assertImmutableRunRuntime(runtime: RuntimeResolution): void {
+  if (runtime.pi.version !== REQUIRED_PI_RUNTIME_VERSION || runtime.llmWiki.version !== REQUIRED_LLM_WIKI_RUNTIME_VERSION) throw new Error(`run runtime must resolve Pi ${REQUIRED_PI_RUNTIME_VERSION} and pi-llm-wiki ${REQUIRED_LLM_WIKI_RUNTIME_VERSION} exactly`);
 }
 
 function positiveInteger(value: number, name: string): number {

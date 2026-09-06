@@ -32,8 +32,8 @@ export class PiRpcClient extends EventEmitter {
     if (this.#failure) throw this.#failure;
     if (this.#closed) throw new ProtocolError("Pi process is closed");
     if (signal?.aborted) throw new ProtocolError("Pi RPC command was aborted");
-    const commandType = command["type"];
-    if (!isSupportedCommand(commandType)) throw new ProtocolError("unsupported RPC command");
+    const commandType = command?.["type"];
+    if (!isSupportedCommand(commandType) || !isClosedCommand(command, commandType)) throw new ProtocolError("unsupported or non-closed RPC command");
     const timeout = boundedTimeout(timeoutMs ?? this.#timeout, "RPC command timeout");
     const id = `squire-${String(++this.#sequence).padStart(8, "0")}`;
     return new Promise<RpcResponse>((resolve, reject) => {
@@ -119,6 +119,14 @@ function validateResponse(record: Record<string, unknown>, expectedCommand: Supp
   return record as unknown as RpcResponse;
 }
 function isSupportedCommand(value: unknown): value is SupportedCommand { return typeof value === "string" && ["get_state", "get_entries", "prompt", "clear_queue", "abort_retry", "abort"].includes(value); }
+function isClosedCommand(command: Record<string, unknown>, type: SupportedCommand): boolean {
+  if (!command || typeof command !== "object" || Array.isArray(command)) return false;
+  const expected = type === "prompt" ? ["message", "type"] : type === "get_entries" && Object.hasOwn(command, "since") ? ["since", "type"] : ["type"];
+  if (Object.keys(command).sort().join("\0") !== expected.sort().join("\0")) return false;
+  if (type === "prompt") return typeof command["message"] === "string" && Buffer.byteLength(command["message"], "utf8") <= 256 * 1024 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(command["message"]);
+  if (type === "get_entries" && Object.hasOwn(command, "since")) return typeof command["since"] === "string" && command["since"].length > 0 && command["since"].length <= 256 && !/[\u0000-\u001f\u007f\r\n]/u.test(command["since"]);
+  return true;
+}
 function isEntries(value: unknown): boolean { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; return Object.keys(v).every(key => key === "entries" || key === "leafId") && Array.isArray(v["entries"]) && (v["leafId"] === null || typeof v["leafId"] === "string"); }
 function isClearQueue(value: unknown): boolean { if (!value || typeof value !== "object" || Array.isArray(value)) return false; const v = value as Record<string, unknown>; return Object.keys(v).every(key => key === "steering" || key === "followUp") && Array.isArray(v["steering"]) && v["steering"].every(item => typeof item === "string") && Array.isArray(v["followUp"]) && v["followUp"].every(item => typeof item === "string"); }
 function isState(value: unknown): value is PiState {

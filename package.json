@@ -13,6 +13,9 @@
     "validate:contracts": "node scripts/validate-contracts.mjs",
     "validate:sandbox": "npm run build && node scripts/validate-sandbox-contracts.mjs",
     "verify:sandbox-release": "npm run build && node scripts/verify-sandbox-release.mjs",
+    "build:sandbox-template": "node scripts/build-sandbox-template.mjs",
+    "promote:sandbox-release": "npm run build && node scripts/promote-sandbox-release.mjs",
+    "accept:sandbox-v039": "npm run build && node scripts/acceptance/sandbox-v039.mjs",
     "validate:all": "npm run validate:contracts && npm run validate:sandbox",
     "test": "npm run build && node --test test/contracts.test.mjs dist/test/*.test.js"
   },

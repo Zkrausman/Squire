@@ -18,6 +18,11 @@ export function assertRunId(runId: string): string {
   return runId;
 }
 
+export function assertSha256(value: string, label = "SHA-256 digest"): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value)) throw new GitIdentityError(`${label} is invalid`);
+  return value;
+}
+
 export function assertTicketIdentifier(ticketIdentifier: string): string {
   if (typeof ticketIdentifier !== "string" || ticketIdentifier.length > 200 || !TICKET_IDENTIFIER_PATTERN.test(ticketIdentifier)) throw new GitIdentityError("invalid ticket identifier");
   return ticketIdentifier;

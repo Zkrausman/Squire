@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-09-05T20:05:35.838Z",
+  "last_updated": "2026-09-06T04:36:17.355Z",
   "pages": {
     "analyses/epic-boundary-project-wiki-maintenance": {
       "type": "analysis",
@@ -8,6 +8,12 @@
       "confidence": "high",
       "created": "2026-09-01",
       "updated": "2026-09-01"
+    },
+    "concepts/aidev-223-restricted-sandbox": {
+      "type": "concept",
+      "title": "AIDEV-223 restricted sandbox",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
     },
     "concepts/five-session-pi-rpc-topology": {
       "type": "concept",
@@ -209,6 +215,15 @@
       "created": "2026-09-04",
       "updated": "2026-09-04"
     },
+    "sources/aidev-223-restricted-sandbox-implementation": {
+      "type": "source",
+      "title": "Restricted sandbox controller implementation",
+      "category": "architecture",
+      "status": "insight",
+      "slug": "aidev-223-restricted-sandbox-implementation",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
+    },
     "sources/durable-noncooperative-process-ownership": {
       "type": "source",
       "title": "Durable non-cooperative process ownership",
@@ -352,6 +367,25 @@
       "source_context": "AIDEV-222 attempt-4 review remediation and verification",
       "created": "2026-09-04",
       "updated": "2026-09-04"
+    },
+    "sources/obs-2026-09-06-aidev-223-materialization-publication-race-hardened": {
+      "type": "source",
+      "title": "Observation: AIDEV-223 materialization publication race hardened",
+      "tags": [
+        "AIDEV-223",
+        "sandbox",
+        "concurrency",
+        "publication",
+        "race",
+        "conformance"
+      ],
+      "status": "observation",
+      "slug": "obs-2026-09-06-aidev-223-materialization-publication-race-hardened",
+      "relevance": "high",
+      "observed_at": "2026-09-06T04:36:11.575Z",
+      "source_context": "Implement AIDEV-223 restricted sandbox",
+      "created": "2026-09-06",
+      "updated": "2026-09-06"
     },
     "sources/persisted-acceptance-authority-chain": {
       "type": "source",

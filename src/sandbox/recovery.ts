@@ -33,6 +33,11 @@ export class SandboxRecoveryService {
     if (record.identity && record.identity.templateDigest !== record.templateDigest) throw new SandboxRecoveryError("sandbox recovery record template identity changed");
     if (record.lifecycle === "removed") return { runId, record, disposition: "already-removed" };
     if (record.lifecycle === "blocked") return { runId, record, disposition: "blocked" };
+    // A transfer reservation owns private staging and a guest channel. After a
+    // controller restart its completion cannot be inferred from sandbox
+    // inspection; require the lifecycle owner to re-drive or fence it rather
+    // than reattesting/reusing a possibly replayed generation.
+    if (record.operation?.kind === "transfer") return { runId, record, disposition: "blocked" };
     if (signal?.aborted) throw new SandboxRecoveryError("sandbox recovery inspection was aborted");
     const observed = await this.#driver.inspect(record.sandboxName, signal);
     if (observed) assertObservedSandbox(observed);

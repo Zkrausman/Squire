@@ -19,5 +19,7 @@ export interface PiProcessFactory {
 }
 /** Resolves a supervisor-owned process handle from its durable exact identity; undefined means unknown, not exited. */
 export interface ProcessIdentityResolver { resolve(processIdentity: string, signal?: AbortSignal): Promise<PiProcess | undefined> }
-/** Resolves the selected installations once; no repository-wide exact version pin is required. */
+/** Resolves the trusted run selection once and returns its exact observed
+ * installation identities/versions. The selection is persisted by PiRunner;
+ * no repository-wide package pin or in-run latest/update lookup is allowed. */
 export interface RuntimeResolver { resolve(runId: string, signal?: AbortSignal): Promise<RuntimeResolution> }

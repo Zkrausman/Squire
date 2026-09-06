@@ -1,11 +1,12 @@
 import { ROLES, type ContractReference, type Role } from "../control/domain.js";
-import type { GitObjectFormat, ReadyGitWorkspace } from "../git/domain.js";
+import type { GitImmutableBundleImportDescriptor, GitObjectFormat, GitWorkspaceServicePort, ReadyGitWorkspace } from "../git/domain.js";
 import type { GuestOperationClient } from "./guest-protocol.js";
 import { assertCanonicalSandboxPath, assertSandboxName, assertSandboxRunId, assertSha256, deriveSandboxName } from "./identity.js";
 
-export interface SandboxImmutableBundleImportDescriptor {
+export interface SandboxImmutableBundleImportDescriptor extends GitImmutableBundleImportDescriptor {
   readonly runId: string;
   readonly sandboxName: string;
+  readonly sandboxId: string;
   readonly spec: ContractReference;
   readonly importPath: "/ticket/import/repository-seed.bundle";
   readonly byteLength: number;
@@ -21,47 +22,60 @@ export interface SandboxGitWorkspaceProxyPort {
   importImmutableBundle(descriptor: SandboxImmutableBundleImportDescriptor, signal?: AbortSignal): Promise<ReadyGitWorkspace>;
   readonly role: Role;
 }
+
+export interface SandboxGitWorkspaceComposition {
+  readonly service: GitWorkspaceServicePort;
+  readonly owner: string;
+}
 export class SandboxGitWorkspaceProxyError extends Error {
   constructor(message: string) { super(message); this.name = "SandboxGitWorkspaceProxyError"; }
 }
 
-/** Guest-side adapter seam for AIDEV-222. The actual GitWorkspaceService is
- * constructed by the measured guest worker; this object only sends a closed
- * descriptor and validates the normal ReadyGitWorkspace result before it can
- * cross the trust boundary. */
+/** Composition adapter for AIDEV-222. The channel proves the request is
+ * attached to the measured sandbox, while the injected GitWorkspaceService
+ * remains the only owner of repository import, Git verification, and manifests. */
 export class SandboxGitWorkspaceProxy implements SandboxGitWorkspaceProxyPort {
   readonly #channel: GuestOperationClient;
+  readonly #composition: SandboxGitWorkspaceComposition | undefined;
   readonly role: Role;
-  constructor(channel: GuestOperationClient, role: Role = "orchestrator") {
+  constructor(channel: GuestOperationClient, role: Role = "orchestrator", composition?: SandboxGitWorkspaceComposition) {
     if (!channel || typeof channel.invoke !== "function" || !ROLES.includes(role)) throw new SandboxGitWorkspaceProxyError("sandbox Git proxy requires a closed guest channel and role");
+    if (composition !== undefined && (!composition.service || typeof composition.service.importImmutableBundle !== "function" || typeof composition.owner !== "string" || composition.owner.length === 0 || composition.owner.length > 200 || /[\u0000-\u001f\u007f\r\n]/u.test(composition.owner))) throw new SandboxGitWorkspaceProxyError("sandbox Git composition is not closed");
     this.#channel = channel;
+    this.#composition = composition;
     this.role = role;
   }
 
   async importImmutableBundle(descriptor: SandboxImmutableBundleImportDescriptor, signal?: AbortSignal): Promise<ReadyGitWorkspace> {
     validateDescriptor(descriptor);
+    if (this.#channel.binding.runId !== descriptor.runId || this.#channel.binding.sandboxName !== descriptor.sandboxName || this.#channel.binding.sandboxId !== descriptor.sandboxId) throw new SandboxGitWorkspaceProxyError("sandbox Git import channel identity differs from the descriptor");
     if (signal?.aborted) throw new SandboxGitWorkspaceProxyError("sandbox Git import was aborted");
-    const result = await this.#channel.invoke("import", { kind: "aidev-222-immutable-bundle", descriptor }, signal);
-    return validateReadyGitWorkspace(result, descriptor.runId);
+    if (!this.#composition) throw new SandboxGitWorkspaceProxyError("sandbox Git import requires the composed AIDEV-222 GitWorkspaceService");
+    try {
+      const workspace = await this.#composition.service.importImmutableBundle(descriptor, this.#composition.owner, signal);
+      return validateReadyGitWorkspace(workspace, descriptor.runId);
+    }
+    catch (error) { throw new SandboxGitWorkspaceProxyError(error instanceof Error ? error.message : String(error)); }
   }
 }
 
-export function createSandboxGitWorkspaceProxy(channel: GuestOperationClient, role?: Role): SandboxGitWorkspaceProxy {
-  return new SandboxGitWorkspaceProxy(channel, role);
+export function createSandboxGitWorkspaceProxy(channel: GuestOperationClient, role?: Role, composition?: SandboxGitWorkspaceComposition): SandboxGitWorkspaceProxy {
+  return new SandboxGitWorkspaceProxy(channel, role, composition);
 }
 
 function validateDescriptor(value: SandboxImmutableBundleImportDescriptor): void {
   const record = asRecord(value);
-  const keys = ["baseBranch", "baseSha", "byteLength", "controllerOnly", "importPath", "localTransport", "objectFormat", "repository", "runId", "sandboxName", "sha256", "spec"];
+  const keys = ["baseBranch", "baseSha", "byteLength", "controllerOnly", "importPath", "localTransport", "objectFormat", "repository", "runId", "sandboxId", "sandboxName", "sha256", "spec", "transferGeneration"];
   const spec = record ? asRecord(record["spec"]) : undefined;
   if (!record || !hasExactKeys(record, keys) || !spec) throw new SandboxGitWorkspaceProxyError("Git import descriptor is not a closed object");
   const runId = record["runId"];
   const sandboxName = record["sandboxName"];
+  const sandboxId = record["sandboxId"];
   const importPath = record["importPath"];
   assertSandboxRunId(String(runId));
   assertSandboxName(String(sandboxName));
   assertCanonicalSandboxPath(String(importPath), "Git import path");
-  if (sandboxName !== deriveSandboxName(String(runId)) || importPath !== "/ticket/import/repository-seed.bundle" || record["repository"] !== "/ticket/git/repo.git" || record["controllerOnly"] !== true || record["localTransport"] !== false || !hasExactKeys(spec, ["path", "schemaId", "sha256"]) || spec["path"] !== `artifacts/git/${runId}/workspace-spec.json` || typeof spec["sha256"] !== "string" || !/^[0-9a-f]{64}$/u.test(spec["sha256"]) || spec["schemaId"] !== "urn:squire:git-workspace:v1:workspace-spec") throw new SandboxGitWorkspaceProxyError("Git import descriptor is not controller-only and fixed");
+  if (sandboxName !== deriveSandboxName(String(runId)) || typeof sandboxId !== "string" || sandboxId.length === 0 || sandboxId.length > 512 || /[\u0000-\u001f\u007f\r\n:]/u.test(sandboxId) || importPath !== "/ticket/import/repository-seed.bundle" || record["repository"] !== "/ticket/git/repo.git" || record["controllerOnly"] !== true || record["localTransport"] !== false || !Number.isSafeInteger(record["transferGeneration"]) || Number(record["transferGeneration"]) < 1 || !hasExactKeys(spec, ["path", "schemaId", "sha256"]) || spec["path"] !== `artifacts/git/${runId}/workspace-spec.json` || typeof spec["sha256"] !== "string" || !/^[0-9a-f]{64}$/u.test(spec["sha256"]) || spec["schemaId"] !== "urn:squire:git-workspace:v1:workspace-spec") throw new SandboxGitWorkspaceProxyError("Git import descriptor is not controller-only and fixed");
   if (!Number.isSafeInteger(record["byteLength"]) || Number(record["byteLength"]) <= 0 || Number(record["byteLength"]) > 536_870_912) throw new SandboxGitWorkspaceProxyError("Git import length is invalid");
   if (typeof record["sha256"] !== "string") throw new SandboxGitWorkspaceProxyError("Git import digest is malformed");
   assertSha256(record["sha256"], "Git import digest");

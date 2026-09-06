@@ -8,6 +8,7 @@
 
 ## Concepts
 
+- [[concepts/aidev-223-restricted-sandbox]] — AIDEV-223 restricted sandbox *(created: 2026-09-06)*
 - [[concepts/five-session-pi-rpc-topology]] — five-session-pi-rpc-topology *(created: 2026-09-01)*
 - [[concepts/immutable-handoff-validation]] — immutable-handoff-validation *(created: 2026-09-01)*
 - [[concepts/run-scoped-pi-profiles-and-trusted-footer]] — Run-scoped Pi profiles and trusted wiki footer *(created: 2026-09-02)*
@@ -26,6 +27,7 @@
 - [[sources/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 - [[sources/aidev-222-review-2-remediation-complete]] — AIDEV-222 review-2 remediation complete *(created: 2026-09-04)*
 - [[sources/aidev-222-review-3-isolation-authentication]] — AIDEV-222 runtime isolation authentication *(created: 2026-09-04)*
+- [[sources/aidev-223-restricted-sandbox-implementation]] — Restricted sandbox controller implementation *(created: 2026-09-06)*
 - [[sources/durable-noncooperative-process-ownership]] — Durable non-cooperative process ownership *(created: 2026-09-02)*
 - [[sources/fenced-first-session-allocation]] — Fenced first-session allocation *(created: 2026-09-01)*
 - [[sources/obs-2026-09-01-fenced-dispatch-authority-invariant]] — Observation: Fenced dispatch authority invariant *(created: 2026-09-01)*
@@ -35,6 +37,7 @@
 - [[sources/obs-2026-09-04-aidev-222-retention-flake-removed]] — Observation: AIDEV-222 retention flake removed *(created: 2026-09-04)*
 - [[sources/obs-2026-09-04-aidev-222-review-2-blockers-remediated]] — Observation: AIDEV-222 review-2 blockers remediated *(created: 2026-09-04)*
 - [[sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed]] — Observation: AIDEV-222 Review 3 isolation blocker closed *(created: 2026-09-04)*
+- [[sources/obs-2026-09-06-aidev-223-materialization-publication-race-hardened]] — Observation: AIDEV-223 materialization publication race hardened *(created: 2026-09-06)*
 - [[sources/persisted-acceptance-authority-chain]] — Persisted acceptance authority chain *(created: 2026-09-01)*
 - [[sources/pi-allocation-recovery-requires-exact-exit-identity]] — Exact Pi allocation recovery identity *(created: 2026-09-05)*
 - [[sources/post-settlement-lease-loss-compensation]] — Post-settlement lease-loss compensation *(created: 2026-09-01)*
@@ -58,4 +61,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-05T20:05:35.838Z* | *Total pages: 40*
+*Last updated: 2026-09-06T04:36:17.355Z* | *Total pages: 43*

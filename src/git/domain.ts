@@ -280,9 +280,27 @@ export interface GitWorkspaceOfflinePort {
   commit(runId: string, message: string): Promise<GitWorkspaceCommit>;
 }
 
+export interface GitImmutableBundleImportDescriptor {
+  readonly runId: string;
+  readonly sandboxName: string;
+  readonly sandboxId: string;
+  readonly spec: ContractReference;
+  readonly importPath: "/ticket/import/repository-seed.bundle";
+  readonly byteLength: number;
+  readonly sha256: string;
+  readonly objectFormat: GitObjectFormat;
+  readonly baseSha: string;
+  readonly repository: "/ticket/git/repo.git";
+  readonly baseBranch: string;
+  readonly transferGeneration: number;
+  readonly controllerOnly: true;
+  readonly localTransport: false;
+}
+
 export interface GitWorkspaceServicePort extends GitWorkspaceReadiness, GitWorkspaceOfflinePort {
   createSpec(input: GitWorkspaceSpecInput): Promise<ContractReference>;
   provision(runId: string, spec: ContractReference, owner: string): Promise<ReadyGitWorkspace>;
+  importImmutableBundle(descriptor: GitImmutableBundleImportDescriptor, owner: string, signal?: AbortSignal): Promise<ReadyGitWorkspace>;
   observeHead(runId?: string): Promise<string>;
   exportBundle(runId: string, expectedHead: string, owner: string): Promise<GitBundleRecord>;
   markRetained(runId: string, policy: GitWorkspaceRetention, owner: string): Promise<GitWorkspaceRecord>;

@@ -180,6 +180,11 @@ export class SandboxTeardownCoordinator {
       }
     } catch (error) {
       const failure = error instanceof TeardownCoordinatorError ? error : new TeardownCoordinatorError(error instanceof Error ? error.message : String(error));
+      // `drain.owner` is the durable intent owner, while the short-lived
+      // operation lease deliberately uses a fresh owner on each controller
+      // attempt.  Blocking must therefore use the persisted drain owner;
+      // using the lease owner would make a resumed teardown impossible to
+      // diagnose or durably block after its first component failure.
       if (ownsTeardownLease && drain && this.#store.blockRunTeardown) await this.#store.blockRunTeardown(runId, drain.owner, { code: "teardown", message: failure.message }, this.#clock.now()).catch(() => undefined);
       throw failure;
     } finally {
