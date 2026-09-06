@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { AttemptResultPort } from "../control/attempt-coordinator.js";
 import { AttemptCoordinator } from "../control/attempt-coordinator.js";
 import type { Clock, ContractReference, PhaseAttempt, Role, RunSnapshot, SessionRegistration } from "../control/domain.js";
@@ -47,8 +48,19 @@ function fail(message: string): never {
 }
 
 function exactRegistration(registration: SessionRegistration | undefined, runId: string, sessionId: string): SessionRegistration {
-  if (!registration || registration.runId !== runId || registration.role !== "plan" || registration.sessionId !== sessionId || registration.sessionFile.length === 0 || !Number.isSafeInteger(registration.processGeneration) || registration.processGeneration < 1) fail("persisted Plan session registration is missing or mismatched");
+  if (!registration || registration.runId !== runId || registration.role !== "plan" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u.test(sessionId) || registration.sessionId !== sessionId || typeof registration.sessionFile !== "string" || registration.sessionFile.length === 0 || !registration.sessionFile.startsWith("/") || path.posix.normalize(registration.sessionFile) !== registration.sessionFile || /[\u0000-\u001f\u007f]/u.test(registration.sessionFile) || !registration.sessionFile.endsWith(`_${sessionId}.jsonl`) || !Number.isSafeInteger(registration.processGeneration) || registration.processGeneration < 1) fail("persisted Plan session registration is missing or mismatched");
   return registration;
+}
+
+function sameRegistration(left: SessionRegistration, right: SessionRegistration): boolean {
+  return left.runId === right.runId
+    && left.role === right.role
+    && left.sessionId === right.sessionId
+    && left.sessionFile === right.sessionFile
+    && left.processGeneration === right.processGeneration
+    && left.processState === right.processState
+    && left.processIdentity === right.processIdentity
+    && left.registeredAt === right.registeredAt;
 }
 
 function exactAttempt(run: RunSnapshot, handoffId: string): { readonly attempt: PhaseAttempt; readonly index: number } {
@@ -87,12 +99,18 @@ export class PlanSessionService {
    */
   async execute(runId: string, handoffId: string, triggerPath: string, owner: string, signal?: AbortSignal): Promise<"result_accepted"> {
     const { store, runner, workspace, inputValidator, artifactValidator, clock } = this.dependencies;
+    if (typeof runId !== "string" || runId.length === 0 || /[\u0000-\u001f\u007f]/u.test(runId)) fail("Plan run identity is invalid");
+    if (typeof handoffId !== "string" || handoffId.length === 0 || /[\u0000-\u001f\u007f]/u.test(handoffId)) fail("Plan handoff identity is invalid");
+    if (typeof owner !== "string" || owner.trim().length === 0 || /[\u0000-\u001f\u007f]/u.test(owner)) fail("Plan owner identity is invalid");
     const run = await store.read(runId);
     if (!run) fail("run not found");
     if (run.state !== "planning") fail("Plan session requires planning workflow state");
     const selected = exactAttempt(run, handoffId);
     if (selected.attempt.inputHead !== run.currentHead) fail("Plan attempt input head is stale");
     const registration = exactRegistration(await store.getSession(runId, "plan"), runId, selected.attempt.targetSessionId);
+    if (typeof runner.validateRegistration !== "function") fail("Plan session registration validator is missing");
+    try { await runner.validateRegistration(registration, signal); }
+    catch (error) { throw new PlanSessionError("persisted Plan session registration failed exact validation", { cause: error }); }
     const canonicalTrigger = assertTriggerPath(triggerPath, selected.attempt.attempt);
     const firstReady = await this.#assertWorkspace(run, workspace, runId, run.currentHead);
     const firstContext: PlanAttemptContext = {
@@ -138,6 +156,20 @@ export class PlanSessionService {
     if (validated.ticket.ticket.identifier !== preliminary.ticket.ticket.identifier) fail("Plan input changed during validation");
     const secondReady = await this.#assertWorkspace(run, workspace, runId, run.currentHead);
     if (!sameContractReference(secondReady.spec, firstReady.spec) || !sameContractReference(secondReady.manifest, firstReady.manifest) || secondReady.headSha !== firstReady.headSha) fail("workspace readiness identity changed before Plan launch");
+    // Input validation and readiness checks are asynchronous. Re-read every
+    // controller identity immediately before PiRunner can reserve/spawn so a
+    // concurrent handoff, state, session, or head change cannot be hidden by
+    // the earlier snapshot.
+    const beforeLaunch = await store.read(runId);
+    if (!beforeLaunch || beforeLaunch.version !== run.version || beforeLaunch.state !== "planning" || beforeLaunch.currentHead !== run.currentHead) fail("workflow changed before Plan launch");
+    const latestBeforeLaunch = exactAttempt(beforeLaunch, handoffId);
+    if (latestBeforeLaunch.attempt.attempt !== selected.attempt.attempt || latestBeforeLaunch.attempt.targetSessionId !== selected.attempt.targetSessionId || latestBeforeLaunch.attempt.inputHead !== selected.attempt.inputHead || !sameContractReference(latestBeforeLaunch.attempt.input, selected.attempt.input)) fail("Plan attempt changed before launch");
+    const registrationBeforeLaunch = exactRegistration(await store.getSession(runId, "plan"), runId, selected.attempt.targetSessionId);
+    if (!sameRegistration(registrationBeforeLaunch, registration)) fail("Plan session registration changed before launch");
+    try { await runner.validateRegistration(registrationBeforeLaunch, signal); }
+    catch (error) { throw new PlanSessionError("persisted Plan session registration changed before Plan launch", { cause: error }); }
+    const launchReady = await this.#assertWorkspace(beforeLaunch, workspace, runId, run.currentHead);
+    if (!sameContractReference(launchReady.spec, secondReady.spec) || !sameContractReference(launchReady.manifest, secondReady.manifest) || launchReady.headSha !== secondReady.headSha) fail("workspace readiness identity changed before Plan launch");
     const persistedPlan = validated.configuration.pi.roles["plan"];
     if (!persistedPlan) fail("persisted workflow configuration has no Plan profile");
     this.#assertRunnerProfile(persistedPlan);
@@ -168,8 +200,13 @@ export class PlanSessionService {
       async fence => {
         const current = await store.read(fence.runId);
         if (!current || current.currentHead !== fence.expectedHead || current.state !== "planning") fail("workflow changed during Plan result acceptance");
-        await this.#assertWorkspace(current, workspace, fence.runId, fence.expectedHead);
-        await this.#assertWorkspace(current, workspace, fence.runId, fence.expectedHead);
+        const persistedAttempt = current.attempts.find(candidate => candidate.handoffId === fence.handoffId);
+        if (!persistedAttempt || persistedAttempt.phase !== "plan" || persistedAttempt.accepted || persistedAttempt.targetSessionId !== fence.attempt.targetSessionId || persistedAttempt.inputHead !== fence.attempt.inputHead || !sameContractReference(persistedAttempt.input, fence.attempt.input)) fail("Plan attempt changed during result acceptance");
+        const first = await this.#assertWorkspace(current, workspace, fence.runId, fence.expectedHead);
+        const afterFirst = await store.read(fence.runId);
+        if (!afterFirst || afterFirst.version !== current.version || afterFirst.currentHead !== fence.expectedHead || afterFirst.state !== "planning") fail("workflow changed during Plan result fencing");
+        const second = await this.#assertWorkspace(afterFirst, workspace, fence.runId, fence.expectedHead);
+        if (!sameContractReference(first.spec, second.spec) || !sameContractReference(first.manifest, second.manifest) || first.headSha !== second.headSha) fail("workspace readiness changed during Plan result fencing");
       },
     );
     const results: AttemptResultPort = {

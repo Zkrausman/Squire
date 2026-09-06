@@ -92,6 +92,16 @@ export function createPhaseSemanticPolicy(requiredCommandIds: readonly string[] 
       if (document["inputHead"] !== attempt.inputHead) errors.push("plan inputHead mismatch");
       if (result.phase === "plan" && result.status === "pass" && (result.findings.length > 0 || result.failures.length > 0)) errors.push("passing Plan result must contain no findings or failures");
       if (result.phase === "plan") {
+        const expectedPlanPath = `artifacts/plan/${attempt.attempt}/plan.json`;
+        const expectedEvidencePath = `evidence/plan/${attempt.attempt}/verification.md`;
+        const planArtifacts = result.artifacts.filter(artifact => artifact.schemaId === "urn:squire:contracts:v1:implementation-plan");
+        const reports = result.evidence.filter(evidence => evidence.path === expectedEvidencePath && evidence.mediaType === "text/markdown" && evidence.kind === "report");
+        if (result.artifacts.length !== 1 || planArtifacts.length !== 1 || planArtifacts[0]?.path !== expectedPlanPath || planArtifacts[0]?.mediaType !== "application/json") errors.push("Plan result does not reference exactly its fixed plan artifact");
+        if (reports.length !== 1 || result.evidence.length !== 1) errors.push("Plan result does not reference exactly its fixed verification report");
+        if (result.status === "failed" && (result.findings.length !== 0 || result.failures.length !== 1 || result.failures[0]?.["id"] !== "PLAN_CONTEXT_BLOCKED" || result.failures[0]?.blocking !== true)) errors.push("failed Plan result must contain exactly one blocking PLAN_CONTEXT_BLOCKED failure");
+        if (result.status === "failed" && (typeof document["summary"] !== "string" || !/\b(?:blocked|must not start|cannot proceed)\b/iu.test(document["summary"]))) errors.push("failed Plan artifact lacks an explicit blocked marker");
+      }
+      if (result.phase === "plan") {
         try {
           validateImplementationPlanDocument(document, {
             expectedRunId: run.runId,
@@ -99,6 +109,7 @@ export function createPhaseSemanticPolicy(requiredCommandIds: readonly string[] 
             expectedInputHead: attempt.inputHead,
             ...(planOptions?.allowedCommandIds !== undefined ? { allowedValidationCommandIds: planOptions.allowedCommandIds } : {}),
             ...(result.status === "pass" ? { requiredValidationCommandIds: planOptions?.requiredCommandIds ?? requiredCommandIds } : {}),
+            allowUnresolvedAssumptions: result.status === "failed",
             allowBlockedMarker: result.status === "failed",
           });
         } catch (error) {

@@ -51,6 +51,14 @@ export class SafeArtifactReader implements ImmutableArtifactReader {
       }
       const after = await handle.stat();
       if (before.dev !== after.dev || before.ino !== after.ino || before.mode !== after.mode || before.nlink !== after.nlink || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new ArtifactReadError("artifact changed during read");
+      const targetAfter = await lstat(target).catch(() => { throw new ArtifactReadError("artifact identity changed during read"); });
+      if (targetAfter.dev !== after.dev || targetAfter.ino !== after.ino || targetAfter.mode !== after.mode || targetAfter.nlink !== after.nlink || targetAfter.size !== after.size || targetAfter.mtimeMs !== after.mtimeMs || targetAfter.ctimeMs !== after.ctimeMs || targetAfter.isSymbolicLink()) throw new ArtifactReadError("artifact identity changed during read");
+      let currentAfter = root;
+      for (const part of reference.path.split("/").slice(1, -1)) {
+        currentAfter = path.join(currentAfter, part);
+        const parentInfo = await lstat(currentAfter).catch(() => { throw new ArtifactReadError("artifact parent changed during read"); });
+        if (!parentInfo.isDirectory() || parentInfo.isSymbolicLink()) throw new ArtifactReadError("artifact parent changed during read");
+      }
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== reference.sha256) throw new ArtifactReadError("artifact digest mismatch");
       return bytes;

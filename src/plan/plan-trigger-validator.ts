@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { ContractReference } from "../control/domain.js";
 import { V1ArtifactValidator, type JsonObject } from "../contracts/v1-artifact-validator.js";
-import { SafeArtifactReader } from "../control/safe-artifact-reader.js";
 import { PHASE_INPUT_SCHEMA_ID, PHASE_TRIGGER_SCHEMA_ID, type PhaseTriggerDocument } from "./domain.js";
+
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
+const MAX_TRIGGER_BYTES = 1 * 1024 * 1024;
 
 export class PlanTriggerValidationError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -15,18 +17,42 @@ export class PlanTriggerValidationError extends Error {
 }
 
 function fail(message: string): never { throw new PlanTriggerValidationError(message); }
+function isCode(error: unknown, code: string): boolean { return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === code; }
+
+async function assertDirectoryChain(root: string, targetDirectory: string): Promise<void> {
+  const rootInfo = await lstat(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) fail("Plan trigger root is not a real directory");
+  const relative = path.relative(root, targetDirectory);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) fail("Plan trigger escaped ticket root");
+  let current = root;
+  for (const part of relative.split(path.sep).filter(Boolean)) {
+    if (!part || part === "." || part === ".." || CONTROL_CHARACTER.test(part)) fail("Plan trigger parent path is unsafe");
+    current = path.join(current, part);
+    const info = await lstat(current);
+    if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o700) fail("Plan trigger parent is not a private real directory");
+  }
+  const canonicalRoot = await realpath(root);
+  const canonicalDirectory = await realpath(targetDirectory);
+  if (canonicalDirectory !== canonicalRoot && !canonicalDirectory.startsWith(`${canonicalRoot}${path.sep}`)) fail("Plan trigger parent escaped ticket root");
+}
+
+function sameStat(left: Awaited<ReturnType<import("node:fs/promises").FileHandle["stat"]>>, right: Awaited<ReturnType<import("node:fs/promises").FileHandle["stat"]>>): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.nlink === right.nlink && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
 
 async function readTriggerBytes(ticketRoot: string, relativePath: string): Promise<Buffer> {
-  if (!path.isAbsolute(ticketRoot) || !/^artifacts\/handoffs\/plan\/[1-9][0-9]*\/trigger\.json$/u.test(relativePath) || path.posix.normalize(relativePath) !== relativePath || relativePath.includes("\u0000")) fail("Plan trigger path is not canonical");
-  const target = path.resolve(ticketRoot, ...relativePath.split("/"));
+  if (!path.isAbsolute(ticketRoot) || !/^artifacts\/handoffs\/plan\/[1-9][0-9]*\/trigger\.json$/u.test(relativePath) || path.posix.normalize(relativePath) !== relativePath || relativePath.includes("\\") || CONTROL_CHARACTER.test(relativePath)) fail("Plan trigger path is not canonical");
   const root = path.resolve(ticketRoot);
-  if (!target.startsWith(`${root}${path.sep}`)) fail("Plan trigger escaped ticket root");
+  const target = path.resolve(root, ...relativePath.split("/"));
+  if (target === root || !target.startsWith(`${root}${path.sep}`)) fail("Plan trigger escaped ticket root");
+  await assertDirectoryChain(root, path.dirname(target));
+  if (constants.O_NOFOLLOW === undefined) fail("secure Plan trigger reads are unsupported on this platform");
   let handle;
-  try { handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
-  catch (error) { throw new PlanTriggerValidationError("Plan trigger is missing or cannot be opened", { cause: error }); }
+  try { handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch (error) { throw new PlanTriggerValidationError("Plan trigger is missing or cannot be opened safely", { cause: error }); }
   try {
     const before = await handle.stat();
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 1024 * 1024) fail("Plan trigger is not a bounded regular file");
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== 0o600 || before.size > MAX_TRIGGER_BYTES) fail("Plan trigger is not a bounded regular private file");
     const bytes = Buffer.allocUnsafe(before.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -35,7 +61,13 @@ async function readTriggerBytes(ticketRoot: string, relativePath: string): Promi
       offset += read.bytesRead;
     }
     const after = await handle.stat();
-    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) fail("Plan trigger changed during read");
+    if (!sameStat(before, after)) fail("Plan trigger changed during read");
+    const canonicalRoot = await realpath(root);
+    const canonicalTarget = await realpath(target);
+    if (canonicalTarget !== canonicalRoot && !canonicalTarget.startsWith(`${canonicalRoot}${path.sep}`)) fail("Plan trigger escaped ticket root");
+    const targetAfter = await lstat(target);
+    if (!sameStat(after, targetAfter)) fail("Plan trigger identity changed during read");
+    await assertDirectoryChain(root, path.dirname(target));
     return bytes;
   } finally { await handle.close(); }
 }
@@ -44,7 +76,7 @@ export class PlanTriggerValidator {
   readonly #validator: V1ArtifactValidator;
   readonly #ticketRoot: string;
   constructor(validator: V1ArtifactValidator, ticketRoot = "/ticket") {
-    if (!path.isAbsolute(ticketRoot) || ticketRoot.includes("\u0000")) fail("Plan ticket root is unsafe");
+    if (!path.isAbsolute(ticketRoot) || ticketRoot.includes("\u0000") || CONTROL_CHARACTER.test(ticketRoot)) fail("Plan ticket root is unsafe");
     this.#validator = validator;
     this.#ticketRoot = path.resolve(ticketRoot);
   }

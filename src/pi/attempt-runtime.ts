@@ -13,11 +13,12 @@ export class PiAttemptRuntime implements AttemptRuntime {
   constructor(readonly runner: PiRunner, readonly clock: Clock, readonly limits: LifecycleLimits = DEFAULT_LIFECYCLE_LIMITS, readonly planContext?: PlanLaunchContext) {}
   roleTimeoutMs(role: Role): number { const seconds = this.runner.config.roles[role]?.timeoutSeconds; if (!Number.isInteger(seconds) || seconds === undefined || seconds <= 0) throw new Error(`missing finite role timeout: ${role}`); return seconds * 1_000; }
   async ensureProcess(runId: string, role: Role, launchAllowed: boolean): Promise<{ launched: boolean }> {
+    if (role === "plan" && !this.planContext) throw new Error("Plan process launch requires controller-bound Plan context");
+    if (role !== "plan" && this.planContext) throw new Error("Plan launch context cannot be used for another role");
+    if (role === "plan" && this.planContext) this.runner.assertPlanContext(runId, role, this.planContext);
     const existing = this.runner.live.get(`${runId}:${role}`);
     if (existing?.process.exitCode === null && !existing.client.failure) { this.#client = existing.client; this.#process = existing.process; return { launched: false }; }
     if (!launchAllowed) throw new Error("process launch budget exhausted");
-    if (role === "plan" && !this.planContext) throw new Error("Plan process launch requires controller-bound Plan context");
-    if (role !== "plan" && this.planContext) throw new Error("Plan launch context cannot be used for another role");
     const launchOptions = role === "plan" && this.planContext ? { planContext: this.planContext } : {};
     const launched = await this.runner.launch(runId, role, launchOptions); this.#client = launched.client; this.#process = launched.process; return { launched: true };
   }

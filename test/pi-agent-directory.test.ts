@@ -122,6 +122,12 @@ test("materializer writes deterministic run-scoped settings, manifest, and trust
   assert.equal(manifest["trustedPackage"]["treeSha256"], first.packageDigest);
   const footer = await readFile(first.footerExtensionPath);
   assert.equal(manifest["files"]["footerExtension"].sha256, createHash("sha256").update(footer).digest("hex"));
+  const planExtension = await readFile(first.planExtensionPath!);
+  assert.equal(manifest["files"]["planExtension"].sha256, createHash("sha256").update(planExtension).digest("hex"));
+  assert.equal(first.planExtensionDigest, manifest["files"]["planExtension"].sha256);
+  assert.deepEqual(manifest["trustedExtensionSets"]["default"], first.trustedExtensionPaths);
+  assert.deepEqual(manifest["trustedExtensionSets"]["plan"], first.trustedExtensionPathsByRole?.plan);
+  assert.equal(first.trustedExtensionPathsByRole?.plan?.[1], first.planExtensionPath);
   assert.equal((await (await import("node:fs/promises")).readdir(workspace)).length, 0);
   // Pi creates these private runtime files on its first real launch. They are
   // permitted only by their fixed names; auth remains the empty unprovisioned

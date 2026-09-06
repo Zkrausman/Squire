@@ -910,7 +910,7 @@ export class PiAgentDirectoryMaterializer {
     if (!SAFE_RELATIVE_FILE.test(relativePath) || relativePath.split("/").some(part => part === "." || part === "..")) {
       throw new Error("trusted auth destination must be a safe relative file");
     }
-    if ([SETTINGS_FILE, FOOTER_FILE, MANIFEST_FILE, PI_MODELS_STORE_FILE].includes(relativePath)) {
+    if ([SETTINGS_FILE, FOOTER_FILE, PLAN_FILE, MANIFEST_FILE, PI_MODELS_STORE_FILE].includes(relativePath)) {
       throw new Error("trusted auth destination conflicts with a generated Pi file");
     }
     const source = path.resolve(input.sourcePath);
@@ -992,13 +992,15 @@ export class PiAgentDirectoryMaterializer {
 export function createDefaultPiAgentDirectoryMaterializer(
   workspace: string | undefined,
   runLifecycleAuthority: RunQuiescenceAuthority,
+  runtimeRoot?: string,
 ): PiAgentDirectoryMaterializer {
-  const key = path.resolve(workspace ?? DEFAULT_WORKSPACE);
+  const key = `${path.resolve(runtimeRoot ?? DEFAULT_RUNTIME_ROOT)}\u0000${path.resolve(workspace ?? DEFAULT_WORKSPACE)}`;
   const registry = AUTHORITY_DEFAULT_MATERIALIZERS.get(runLifecycleAuthority) ?? new Map<string, PiAgentDirectoryMaterializer>();
   const existing = registry.get(key);
   if (existing) return existing;
   const created = new PiAgentDirectoryMaterializer({
     ...(workspace ? { workspace } : {}),
+    ...(runtimeRoot ? { runtimeRoot } : {}),
     runLifecycleAuthority,
   });
   registry.set(key, created);

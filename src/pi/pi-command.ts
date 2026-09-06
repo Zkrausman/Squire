@@ -66,6 +66,8 @@ export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
     // AIDEV-223 is not merged at this base: this is a Pi tool allowlist, not
     // an OS sandbox. No shell, edit, write, or privileged Git tool is exposed.
     args.push("--offline", "--tools", [...PLAN_ALLOWED_BUILTIN_TOOLS, ...PLAN_ALLOWED_WIKI_TOOLS, PLAN_TOOL_NAME].join(","));
+  } else if (options.planContext) {
+    throw new Error("Plan launch context cannot be used for another role");
   }
   if (options.trustedExtensionPaths?.length) {
     // Explicit extensions are additive even with --no-extensions. Disable every
