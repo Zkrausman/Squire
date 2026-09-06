@@ -43,6 +43,14 @@ Review/Test remediation creates a new immutable Implement handoff and monotonica
 
 Pi defaults are centralized and independently overridable: Orchestrator/Plan `openai-codex/gpt-5.6-sol/high`, Implement `openai-codex/gpt-5.6-luna/max`, Review `openai-codex/gpt-5.6-sol/medium`, Test `openai-codex/gpt-5.6-terra/high`, and wiki background `openai-codex/gpt-5.6-luna/high`. Defaults are finite: two process launches per attempt, 5-second RPC command/abort grace, 10-second SIGTERM grace, then SIGKILL. Cancellation order is `clear_queue`, `abort_retry`, `abort`, grace, SIGTERM, grace, SIGKILL. Configured role deadlines and review/test/total remediation budgets cap work. A compare-and-set terminal outcome wins races; late results are audit-only and cannot reopen a terminal run.
 
+## AIDEV-218 Plan composition
+
+AIDEV-218 composes this control plane through `PlanSessionService`; it does not add a second lifecycle authority. The Plan session derives its exact persisted handoff and `plan` registration, validates the phase-input/ticket/configuration chain, and fences AIDEV-222 readiness and clean offline status around result acceptance. Plan is a separate top-level Pi RPC process with its own exact role-local JSONL session.
+
+The Plan role uses a fixed Pi allowlist (`read`, `grep`, `find`, `ls`, project-only `wiki_recall`, and the terminating `squire_submit_plan` tool). It does not expose shell, edit, write, package/install, wiki mutation, or arbitrary repository extension tools. Its generated extension is digest-bound in the AIDEV-228 agent manifest and writes only fixed attempt-scoped plan/evidence paths; `result.json` is written last. A pass publishes an immutable `implementation-plan` and requests `implementing/phase_pass`; a blocked context is represented by v1 `failed`, a blocking `PLAN_CONTEXT_BLOCKED` policy failure, bounded actionable report evidence, and `failed/phase_failed`. All normal result/transitive validation and one fenced CAS acceptance remain in this control plane, and the registered Orchestrator remains the transition authority.
+
+Pi's tool allowlist is not an OS sandbox. AIDEV-223 is not merged at this base, so this component makes no OS/microVM/principal isolation claim. AIDEV-224 still owns durable intake/reconciliation and AIDEV-217 owns Herdr tabs.
+
 ## Project-wiki maintenance boundary
 
 The committed `.llm-wiki` is Squire's native OKF v0.2 company/project knowledge vault. Maintain it only from the target worktree. Capture durable committed architecture/contract sources, synthesize cross-linked cited concepts, and run native lint/status checks. Never mix a personal/host vault, secrets, temporary paths, raw session transcripts, or routine run status into project knowledge. Wiki edits change Git head and therefore occur before the Review/Test head is frozen; later wiki maintenance requires fresh gates.

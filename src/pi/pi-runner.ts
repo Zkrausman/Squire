@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Clock, Lease, LeaseGuard, ProcessAllocation, Role, RuntimeResolution, SessionRegistration } from "../control/domain.js";
 import type { GitWorkspaceReadiness } from "../git/domain.js";
 import { StoreConflictError, type RunQuiescenceAuthority, type WorkflowStore } from "../control/workflow-store.js";
-import { buildPiCommand, assertSafeResumeArgs } from "./pi-command.js";
+import { buildPiCommand, assertSafeResumeArgs, type PlanLaunchContext } from "./pi-command.js";
+import { buildPlanSystemPrompt } from "../plan/plan-instructions.js";
 import { normalizeRoleConfig, normalizeWikiProfile, type PiRoleConfig, type PiWikiProfileInput } from "./pi-configuration.js";
 import { createDefaultPiAgentDirectoryMaterializer, type MaterializedPiAgentDirectory, type PiAgentDirectoryMaterializerPort, type PiAgentDirectoryRequest, type PiAgentDirectoryTeardownResult } from "./pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessIdentityResolver, RuntimeResolver } from "./pi-process.js";
@@ -30,7 +31,7 @@ export interface RunnerConfig {
 }
 export type RegistrationValidator = (registration: SessionRegistration, signal?: AbortSignal) => Promise<void>;
 export type RoleInstructionReader = (canonicalPath: string, signal?: AbortSignal) => Promise<string>;
-interface LiveHandle { process: PiProcess; client: PiRpcClient; runId: string; role: Role; generation: number }
+interface LiveHandle { process: PiProcess; client: PiRpcClient; runId: string; role: Role; generation: number; planContextFingerprint?: string }
 interface AllocatingHandle { process: PiProcess; runId: string; role: Role; generation: number; owner: string; fencingToken: number }
 interface AllocationLease extends Lease { runId: string; deadlineAt: number; ttlMs: number; stepTimeoutMs: number }
 
@@ -136,7 +137,7 @@ export class PiRunner {
     if (!allocation) await this.#verifyRegisteredProcessCleaned(runId, role, generation, process.identity);
   }
 
-  async launch(runId: string, role: Role): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
+  async launch(runId: string, role: Role, launchOptions: { readonly planContext?: PlanLaunchContext } = {}): Promise<{ process: PiProcess; client: PiRpcClient; state: PiState; runtime: RuntimeResolution; agentDir?: string }> {
     await this.#runLifecycleAuthority.assertRunStartAllowed(runId, this.clock.now());
     await this.config.workspaceReadiness.verify(runId);
     const key = `${runId}:${role}`;
@@ -186,7 +187,7 @@ export class PiRunner {
       const spec = buildPiCommand({
         role,
         config: roleConfig,
-        instructions,
+        instructions: role === "plan" ? buildPlanSystemPrompt(instructions) : instructions,
         piBinary: runtime.pi.executable,
         ...(this.config.workspace ? { workspace: this.config.workspace } : {}),
         ...(this.config.sessionRoot ? { sessionRoot: this.config.sessionRoot } : {}),
@@ -194,7 +195,13 @@ export class PiRunner {
         agentDir: verifiedMaterialized.agentDir,
         homeDir: verifiedMaterialized.homeDir,
         wikiHomeDir: verifiedMaterialized.wikiHomeDir,
-        trustedExtensionPaths: verifiedMaterialized.trustedExtensionPaths,
+        trustedExtensionPaths: role === "plan"
+          ? verifiedMaterialized.trustedExtensionPathsByRole?.plan
+            ?? (verifiedMaterialized.planExtensionPath
+              ? [verifiedMaterialized.trustedExtensionPaths[0]!, verifiedMaterialized.planExtensionPath, verifiedMaterialized.trustedExtensionPaths[1]!]
+              : verifiedMaterialized.trustedExtensionPaths)
+          : verifiedMaterialized.trustedExtensionPaths,
+        ...(launchOptions.planContext ? { planContext: launchOptions.planContext } : {}),
       });
       if (claimed) assertSafeResumeArgs(spec.args, claimed.sessionFile);
       const ownProcess = (value: PiProcess): void => {
@@ -211,7 +218,7 @@ export class PiRunner {
       }, ownProcess);
       await this.#step("spawn ownership claim", lease, () => this.#setAllocation(runId, role, lease, "spawned", process!.identity));
       const client = new PiRpcClient(process, { commandTimeoutMs: this.config.commandTimeoutMs ?? 5_000 });
-      this.live.set(key, { process, client, runId, role, generation });
+      this.live.set(key, { process, client, runId, role, generation, ...(launchOptions.planContext ? { planContextFingerprint: JSON.stringify(launchOptions.planContext) } : {}) });
       if (this.allocating.get(key)?.process === process) this.allocating.delete(key);
       client.on("protocol_error", () => { void this.#markProcess(runId, role, generation!, process!.identity, "failed"); });
       const state = await this.#step("Pi handshake", lease, () => client.getState());

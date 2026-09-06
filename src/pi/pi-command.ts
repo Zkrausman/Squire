@@ -1,9 +1,24 @@
 import path from "node:path";
-import type { Role, SessionRegistration } from "../control/domain.js";
+import type { ContractReference, Role, SessionRegistration } from "../control/domain.js";
+import { PLAN_ALLOWED_BUILTIN_TOOLS, PLAN_ALLOWED_WIKI_TOOLS, PLAN_TOOL_NAME } from "../plan/domain.js";
 import type { ProcessLaunch } from "./pi-process.js";
 import { normalizeRoleConfig, type PiRoleConfig } from "./pi-configuration.js";
 
 export type { PiRoleConfig } from "./pi-configuration.js";
+
+export interface PlanLaunchContext {
+  readonly runId: string;
+  readonly handoffId: string;
+  readonly attempt: number;
+  readonly targetSessionId: string;
+  readonly inputHead: string;
+  readonly inputArtifact: ContractReference;
+  readonly ticketIdentifier: string;
+  readonly completedAt: string;
+  readonly allowedValidationCommandIds: readonly string[];
+  readonly requiredValidationCommandIds: readonly string[];
+  readonly ticketRoot?: string;
+}
 
 export interface PiCommandOptions {
   piBinary: string;
@@ -21,6 +36,8 @@ export interface PiCommandOptions {
   wikiHomeDir?: string;
   /** Ordered [wiki extension, Squire footer extension] trusted paths. */
   trustedExtensionPaths?: readonly string[];
+  /** Controller-bound context for the read-only Plan submission extension. */
+  planContext?: PlanLaunchContext;
 }
 
 export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
@@ -45,6 +62,11 @@ export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
     throw new Error("Pi HOME and WIKI_HOME must be supplied together");
   }
 
+  if (options.role === "plan") {
+    // AIDEV-223 is not merged at this base: this is a Pi tool allowlist, not
+    // an OS sandbox. No shell, edit, write, or privileged Git tool is exposed.
+    args.push("--offline", "--tools", [...PLAN_ALLOWED_BUILTIN_TOOLS, ...PLAN_ALLOWED_WIKI_TOOLS, PLAN_TOOL_NAME].join(","));
+  }
   if (options.trustedExtensionPaths?.length) {
     // Explicit extensions are additive even with --no-extensions. Disable every
     // discovered project resource so a repository cannot replace the trusted
@@ -57,6 +79,21 @@ export function buildPiCommand(options: PiCommandOptions): ProcessLaunch {
   if (options.homeDir !== undefined && options.wikiHomeDir !== undefined) {
     env["HOME"] = options.homeDir;
     env["WIKI_HOME"] = options.wikiHomeDir;
+  }
+  if (options.role === "plan" && options.planContext) {
+    const plan = options.planContext;
+    env["SQUIRE_TICKET_ROOT"] = plan.ticketRoot ?? "/ticket";
+    env["SQUIRE_PLAN_RUN_ID"] = plan.runId;
+    env["SQUIRE_PLAN_HANDOFF_ID"] = plan.handoffId;
+    env["SQUIRE_PLAN_ATTEMPT"] = String(plan.attempt);
+    env["SQUIRE_PLAN_SESSION_ID"] = plan.targetSessionId;
+    env["SQUIRE_PLAN_INPUT_HEAD"] = plan.inputHead;
+    env["SQUIRE_PLAN_INPUT_PATH"] = plan.inputArtifact.path;
+    env["SQUIRE_PLAN_INPUT_SHA256"] = plan.inputArtifact.sha256;
+    env["SQUIRE_PLAN_TICKET_IDENTIFIER"] = plan.ticketIdentifier;
+    env["SQUIRE_PLAN_COMPLETED_AT"] = plan.completedAt;
+    env["SQUIRE_PLAN_ALLOWED_VALIDATION_COMMAND_IDS"] = JSON.stringify(plan.allowedValidationCommandIds);
+    env["SQUIRE_PLAN_REQUIRED_VALIDATION_COMMAND_IDS"] = JSON.stringify(plan.requiredValidationCommandIds);
   }
   return { command: options.piBinary, args, cwd: workspace, env };
 }

@@ -12,7 +12,7 @@ export interface ImmutableArtifactReader { readExact(reference: DigestReference)
 export class SafeArtifactReader implements ImmutableArtifactReader {
   constructor(readonly ticketRoot = "/ticket", readonly maxBytes = 16 * 1024 * 1024) {}
   async readExact(reference: DigestReference): Promise<Buffer> {
-    if (!/^(artifacts|evidence)\/(?!.*(?:^|\/)\.\.?\/)\S+$/.test(reference.path) || path.posix.normalize(reference.path) !== reference.path || path.isAbsolute(reference.path)) throw new ArtifactReadError("non-canonical artifact path");
+    if (!/^(artifacts|evidence)\/(?!.*(?:^|\/)\.\.?\/)\S+$/.test(reference.path) || path.posix.normalize(reference.path) !== reference.path || path.isAbsolute(reference.path) || reference.path.length > 4096 || /[\u0000-\u001f\u007f]/u.test(reference.path)) throw new ArtifactReadError("non-canonical artifact path");
     const rootName = reference.path.split("/", 1)[0];
     if (rootName !== "artifacts" && rootName !== "evidence") throw new ArtifactReadError("artifact root is not allowed");
     const root = path.join(this.ticketRoot, rootName);
@@ -26,6 +26,12 @@ export class SafeArtifactReader implements ImmutableArtifactReader {
     } catch (error) {
       if (error instanceof ArtifactReadError) throw error;
       throw new ArtifactReadError("artifact root is missing");
+    }
+    let component = root;
+    for (const part of reference.path.split("/").slice(1, -1)) {
+      component = path.join(component, part);
+      const componentInfo = await lstat(component).catch(() => { throw new ArtifactReadError("artifact parent is missing"); });
+      if (componentInfo.isSymbolicLink() || !componentInfo.isDirectory()) throw new ArtifactReadError("artifact parent is not a real directory");
     }
     if (constants.O_NOFOLLOW === undefined) throw new ArtifactReadError("secure no-follow artifact reads are unsupported on this platform");
     const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => { throw new ArtifactReadError("artifact is missing or a symlink"); });

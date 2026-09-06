@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "handoffId": "handoff_plan_1",
+  "runId": "run_example01",
+  "phase": "plan",
+  "attempt": 1,
+  "targetSessionId": "session-plan-01",
+  "inputHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "inputArtifact": {
+    "path": "artifacts/handoffs/plan-1.json",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "schemaId": "urn:squire:contracts:v1:phase-input"
+  }
+}
