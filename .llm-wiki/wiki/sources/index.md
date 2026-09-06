@@ -27,6 +27,7 @@
 - [Observation: AIDEV-222 retention flake removed](obs-2026-09-04-aidev-222-retention-flake-removed.md)
 - [Observation: AIDEV-222 review-2 blockers remediated](obs-2026-09-04-aidev-222-review-2-blockers-remediated.md)
 - [Observation: AIDEV-222 Review 3 isolation blocker closed](obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed.md)
+- [Observation: AIDEV-218 Plan phase implementation committed](obs-2026-09-06-aidev-218-plan-phase-implementation-committed.md)
 - [Persisted acceptance authority chain](persisted-acceptance-authority-chain.md)
 - [Post-settlement lease-loss compensation](post-settlement-lease-loss-compensation.md)
 - [Registered-session process recovery](registered-session-process-recovery.md)

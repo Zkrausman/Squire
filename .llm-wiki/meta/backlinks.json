@@ -206,6 +206,7 @@
   "sources/obs-2026-09-04-aidev-222-review-3-isolation-blocker-closed": [
     "syntheses/aidev-222-isolated-git-workspace"
   ],
+  "sources/obs-2026-09-06-aidev-218-plan-phase-implementation-committed": [],
   "sources/persisted-acceptance-authority-chain": [
     "concepts/immutable-handoff-validation"
   ],
