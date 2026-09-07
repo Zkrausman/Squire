@@ -10,6 +10,7 @@ export class RealPiProcess extends EventEmitter implements PiProcess {
   readonly stderr: PiProcess["stderr"];
   readonly output: string[] = [];
   readonly errors: string[] = [];
+  stdinError: Error | undefined;
   exitCode: number | null = null;
 
   constructor(readonly child: ChildProcess) {
@@ -20,6 +21,14 @@ export class RealPiProcess extends EventEmitter implements PiProcess {
     this.stderr = child.stderr;
     child.stdout.on("data", chunk => this.output.push(chunk.toString()));
     child.stderr.on("data", chunk => this.errors.push(chunk.toString()));
+    child.stdin.on("error", error => {
+      this.stdinError = error;
+      this.errors.push(`stdin: ${error.message}`);
+      // A broken RPC pipe is a failed test child, not a diagnostic to discard.
+      // Force the normal observed-exit path so PiRpcClient rejects its pending
+      // command instead of leaving the child alive after an asynchronous EPIPE.
+      if (this.exitCode === null && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    });
     child.once("error", error => this.errors.push(`child: ${error.message}`));
     child.once("exit", (code, signal) => {
       this.exitCode = code ?? (signal === "SIGTERM" ? 143 : 1);
