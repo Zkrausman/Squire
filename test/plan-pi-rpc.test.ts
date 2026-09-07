@@ -14,6 +14,13 @@ import { run, runtime } from "./support/fixtures.js";
 const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
 const WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
 
+function cleanPiEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_"))),
+    ...overrides,
+  };
+}
+
 function launchSpec(root: string, agentDir: string, homeDir: string, wikiHomeDir: string, extensionPaths: readonly string[]): ProcessLaunch {
   const command = buildPiCommand({
     piBinary: PI_CLI,
@@ -43,18 +50,43 @@ function launchSpec(root: string, agentDir: string, homeDir: string, wikiHomeDir
   return { ...command, env: { ...command.env, PI_OFFLINE: "1" } };
 }
 
+async function waitForChildExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      reject(new Error("Plan RPC child exit timeout"));
+    }, timeoutMs);
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    child.once("exit", onExit);
+  });
+}
+
+async function terminateChild(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  try {
+    await waitForChildExit(child, 5_000);
+  } catch (error) {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    await waitForChildExit(child, 5_000).catch(() => { throw error; });
+  }
+}
+
 async function probeRpc(spec: ProcessLaunch): Promise<{ state: Record<string, unknown>; output: string; errors: string }> {
-  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: { ...process.env, ...spec.env }, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: cleanPiEnvironment({ ...spec.env, PI_OFFLINE: "1" }), stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   let errors = "";
   let settled = false;
-  const result = await new Promise<{ state: Record<string, unknown>; output: string; errors: string }>((resolve, reject) => {
+  const result = new Promise<{ state: Record<string, unknown>; output: string; errors: string }>((resolve, reject) => {
     const timer = setTimeout(() => finish(new Error("real Plan RPC probe timed out")), 20_000);
     const finish = (error?: Error, state?: Record<string, unknown>): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (child.exitCode === null) child.kill("SIGTERM");
       if (error) reject(error);
       else resolve({ state: state!, output, errors });
     };
@@ -71,12 +103,16 @@ async function probeRpc(spec: ProcessLaunch): Promise<{ state: Record<string, un
       }
     });
     child.stderr.on("data", chunk => { errors += chunk.toString(); });
+    child.stdin.on("error", error => finish(error));
     child.once("error", error => finish(error));
     child.once("exit", code => { if (!settled && code !== 0) finish(new Error(`Plan RPC probe exited with ${code ?? "unknown"}`)); });
     child.stdin.write(`${JSON.stringify({ id: "probe-state", type: "get_state" })}\n`);
   });
-  if (child.exitCode === null) child.kill("SIGTERM");
-  return result;
+  try {
+    return await result;
+  } finally {
+    await terminateChild(child);
+  }
 }
 
 test("real Pi RPC loads the materialized Plan extension with the fixed Plan role policy", async () => {

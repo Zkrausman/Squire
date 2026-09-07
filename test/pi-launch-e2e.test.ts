@@ -420,6 +420,15 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     assert.doesNotMatch(rpcOutput, /"type":"extension_error"/u);
     assert.equal(process?.errors.join(""), "");
 
+    // Reap the RPC child before starting the second real-Pi TUI probe. Keeping
+    // both actual Pi children alive lets concurrent test workers contend for
+    // the same bounded CI process/IO budget and makes the handshake scheduler-
+    // dependent. This is test-support cleanup only: each genuine handshake
+    // remains bounded and fail-closed.
+    if (process && process.exitCode === null) process.kill("SIGTERM");
+    if (process) await process.waitForExit(5_000);
+    assert.notEqual(process?.exitCode, null, "RPC child must be reaped before the TUI probe");
+
     // The real @zosmaai/pi-llm-wiki extension emitted both status keys during
     // RPC session_start above; the TUI repeats that native path and the probe
     // observes those calls without synthesizing a wiki status.
