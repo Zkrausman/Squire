@@ -25,8 +25,36 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Validate CI workflow contract
+        run: node .github/validate-ci-workflow.mjs
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Provision ticket runtime
+        run: |
+          sudo install -d -m 700 -o "$(id -u)" -g "$(id -g)" /ticket /ticket/runtime /ticket/workspace
+          install -m 600 .github/runtime/package.json /ticket/runtime/package.json
+          install -m 600 .github/runtime/package-lock.json /ticket/runtime/package-lock.json
+          npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund
+
+      - name: Validate ticket runtime
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import fs from "node:fs";
+          const files = [
+            "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+            "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/utils.js",
+            "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/extensions/llm-wiki/index.ts",
+            "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/dist/extensions/llm-wiki/lib/utils.js",
+            "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/dist/extensions/llm-wiki/lib/recall.js",
+          ];
+          for (const file of files) assert.equal(fs.statSync(file).isFile(), true, file);
+          assert.equal(JSON.parse(fs.readFileSync("/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/package.json")).version, "0.84.4");
+          assert.equal(JSON.parse(fs.readFileSync("/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/package.json")).version, "0.11.8");
+          console.log("ticket runtime: required Pi, pi-tui, and llm-wiki files and versions are present");
+          NODE
 
       - name: Build
         run: npm run build

@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@zosmaai/pi-llm-wiki": "0.11.8"
+  }
+}
