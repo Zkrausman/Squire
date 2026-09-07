@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const WORKFLOW_PATH = ".github/workflows/ci.yml";
 const RUNTIME_MANIFEST_PATH = ".github/runtime/package.json";
 const RUNTIME_LOCK_PATH = ".github/runtime/package-lock.json";
+const RUNTIME_VALIDATOR_PATH = ".github/validate-ticket-runtime.mjs";
+const EXPECTED_RUNTIME_VALIDATOR_SHA256 = "a6656246b9ccc62a4ecf1600ff4817eb7bb51c5178c71472c1305ae08c10fdbf";
+const EXPECTED_PROVISION_RUN = [
+  'sudo install -d -m 700 -o "$(id -u)" -g "$(id -g)" /ticket /ticket/runtime /ticket/workspace',
+  "install -m 600 .github/runtime/package.json /ticket/runtime/package.json",
+  "install -m 600 .github/runtime/package-lock.json /ticket/runtime/package-lock.json",
+  "npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
+].join("\n") + "\n";
 
 function indentation(line) {
   const match = /^( *)/.exec(line);
@@ -179,7 +188,14 @@ function exactRun(step, expected, label) {
 const workflow = await readFile(WORKFLOW_PATH, "utf8");
 const runtimeManifest = JSON.parse(await readFile(RUNTIME_MANIFEST_PATH, "utf8"));
 const runtimeLock = JSON.parse(await readFile(RUNTIME_LOCK_PATH, "utf8"));
+const runtimeValidator = await readFile(RUNTIME_VALIDATOR_PATH, "utf8");
 const document = parseWorkflow(workflow);
+const runtimeValidatorSha256 = createHash("sha256").update(runtimeValidator).digest("hex");
+assert.equal(runtimeValidatorSha256, EXPECTED_RUNTIME_VALIDATOR_SHA256, "ticket runtime validator source changed");
+assert.match(runtimeValidator, /lstatSync/u);
+assert.match(runtimeValidator, /isSymbolicLink/u);
+assert.match(runtimeValidator, /path\.posix\.relative/u);
+assert.match(runtimeValidator, /pi-tui/u);
 
 exactKeys(document, ["name", "on", "permissions", "jobs"], "workflow");
 assert.equal(document.name, "CI");
@@ -229,11 +245,9 @@ exactRun(negativeProbes, "node .github/test-ci-workflow-validator.mjs", "negativ
 exactKeys(install, ["name", "run"], "root install step");
 exactRun(install, "npm ci", "root install");
 exactKeys(provision, ["name", "run"], "runtime provisioning step");
-assert.match(provision.run, /npm ci --prefix \/ticket\/runtime --ignore-scripts --no-audit --no-fund\n/u);
+exactRun(provision, EXPECTED_PROVISION_RUN, "runtime provisioning");
 exactKeys(runtimeValidation, ["name", "run"], "runtime validation step");
-assert.match(runtimeValidation.run, /lstatSync/u);
-assert.match(runtimeValidation.run, /pi-tui\/package\.json/u);
-assert.match(runtimeValidation.run, /0\.84\.4/u);
+exactRun(runtimeValidation, "node .github/validate-ticket-runtime.mjs", "runtime validation");
 exactKeys(build, ["name", "run"], "build step");
 exactRun(build, "npm run build", "build");
 exactKeys(contracts, ["name", "run"], "contract validation step");

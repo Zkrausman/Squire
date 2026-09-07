@@ -45,44 +45,7 @@ jobs:
           npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund
 
       - name: Validate ticket runtime
-        run: |
-          node --input-type=module <<'NODE'
-          import assert from "node:assert/strict";
-          import fs from "node:fs";
-          const runtimePackages = {
-            "pi-agent-core": "0.84.4",
-            "pi-ai": "0.84.4",
-            "pi-client": "0.84.4",
-            "pi-protocol": "0.84.4",
-            "pi-telemetry": "0.84.4",
-            "pi-tui": "0.84.4",
-          };
-          const runtimePackageRoot = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works";
-          const requiredFiles = [
-            "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
-            "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/extensions/llm-wiki/index.ts",
-            "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/dist/extensions/llm-wiki/lib/utils.js",
-            "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/dist/extensions/llm-wiki/lib/recall.js",
-            `${runtimePackageRoot}/pi-tui/dist/utils.js`,
-          ];
-          const assertRegularFile = file => assert.equal(fs.lstatSync(file).isFile(), true, `required regular file missing or symlinked: ${file}`);
-          for (const file of requiredFiles) assertRegularFile(file);
-          for (const [name, version] of Object.entries(runtimePackages)) {
-            const packageJson = `${runtimePackageRoot}/${name}/package.json`;
-            assertRegularFile(packageJson);
-            assert.equal(JSON.parse(fs.readFileSync(packageJson)).version, version, `${name} version mismatch`);
-          }
-          const piTuiPackageJson = `${runtimePackageRoot}/pi-tui/package.json`;
-          assertRegularFile(piTuiPackageJson);
-          assert.equal(JSON.parse(fs.readFileSync(piTuiPackageJson)).version, "0.84.4");
-          const piPackageJson = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/package.json";
-          const wikiPackageJson = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki/package.json";
-          assertRegularFile(piPackageJson);
-          assertRegularFile(wikiPackageJson);
-          assert.equal(JSON.parse(fs.readFileSync(piPackageJson)).version, "0.84.4");
-          assert.equal(JSON.parse(fs.readFileSync(wikiPackageJson)).version, "0.11.8");
-          console.log("ticket runtime: integrity-bound Pi closure, nested pi-tui, and llm-wiki files and versions are present");
-          NODE
+        run: node .github/validate-ticket-runtime.mjs
 
       - name: Build
         run: npm run build
