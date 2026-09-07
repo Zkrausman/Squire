@@ -10,24 +10,23 @@ const TERMINATION_GRACE_MS = 5_000;
 const NATURAL_EXIT_GRACE_MS = 50;
 
 type ExitObservation = { code: number | null; signal: string | null };
+type FailureCategory = "protocol" | "startup" | "lifecycle" | "cleanup";
+type FailureRecord = { error: Error; category: FailureCategory };
 
 interface ProbeState {
-  failure?: Error;
+  failures: FailureRecord[];
+  responseAccepted: boolean;
   exit?: ExitObservation;
   close?: ExitObservation;
-  terminationRequested: boolean;
-  terminationSignal?: "SIGTERM" | "SIGKILL";
+  gracefulTeardownRequested: boolean;
+  escalation?: "SIGTERM" | "SIGKILL";
+  exitFailureRecorded: boolean;
 }
 
 export interface PlanRpcProbeResult {
   state: Record<string, unknown>;
   output: string;
   errors: string;
-}
-
-export interface PlanRpcProbeHooks {
-  /** Test-only seam for deterministic primary-error/cleanup-error coverage. */
-  terminateChild?: (child: ChildProcess, deadlineAt: number) => Promise<void>;
 }
 
 function cleanPiEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
@@ -53,9 +52,13 @@ function terminationDescription(observation: ExitObservation): string {
   return observation.code === null ? observation.signal ?? "unknown" : `code ${observation.code}`;
 }
 
-function combineErrors(message: string, errors: readonly Error[]): Error {
-  if (errors.length === 1) return errors[0]!;
-  return new AggregateError(errors, message);
+function combineFailures(state: ProbeState): Error | undefined {
+  if (state.failures.length === 0) return undefined;
+  const primaryIndex = state.failures.findIndex(({ category }) => category === "protocol" || category === "startup");
+  const index = primaryIndex === -1 ? 0 : primaryIndex;
+  const ordered = [state.failures[index]!, ...state.failures.slice(0, index), ...state.failures.slice(index + 1)];
+  if (ordered.length === 1) return ordered[0]!.error;
+  return new AggregateError(ordered.map(({ error }) => error), "Plan RPC probe failed with primary and secondary diagnostics");
 }
 
 async function waitForClose(child: ChildProcess, state: ProbeState, deadlineAt: number, maxWaitMs = Number.POSITIVE_INFINITY): Promise<void> {
@@ -80,90 +83,136 @@ async function observeNaturalExit(child: ChildProcess, state: ProbeState, deadli
   await waitForClose(child, state, deadlineAt, NATURAL_EXIT_GRACE_MS).catch(() => undefined);
 }
 
-async function terminateChild(child: ChildProcess, state: ProbeState, deadlineAt: number): Promise<void> {
+function recordFailure(
+  state: ProbeState,
+  error: unknown,
+  category: FailureCategory,
+  responseSettled: { value: boolean },
+  responseTimer: { value: ReturnType<typeof setTimeout> | undefined },
+  rejectResponse: (error: Error) => void,
+): void {
+  const failure = asError(error);
+  state.failures.push({ error: failure, category });
+  if (!responseSettled.value && category !== "cleanup") {
+    responseSettled.value = true;
+    if (responseTimer.value) clearTimeout(responseTimer.value);
+    rejectResponse(failure);
+  }
+}
+
+async function terminateChild(
+  child: ChildProcess,
+  state: ProbeState,
+  deadlineAt: number,
+  recordCleanupFailure: (error: unknown) => void,
+): Promise<void> {
   // Let a natural exit event win over a response-resolution microtask before
-  // the parent claims ownership of termination. This is the response/exit race
-  // that the previous helper incorrectly settled as success.
+  // the controller claims ownership of graceful teardown.
   await nextTurn();
   await observeNaturalExit(child, state, deadlineAt);
   if (state.close) return;
-  if (!state.exit && child.exitCode === null && child.signalCode === null) {
-    state.terminationRequested = true;
-    state.terminationSignal = "SIGTERM";
-    if (!child.kill("SIGTERM")) {
-      state.terminationRequested = false;
-      delete state.terminationSignal;
-    }
+  if (state.exit || child.exitCode !== null || child.signalCode !== null) {
+    try { await waitForClose(child, state, deadlineAt); }
+    catch (error) { recordCleanupFailure(error); }
+    return;
   }
+
+  state.gracefulTeardownRequested = true;
+  try {
+    child.stdin?.end();
+  } catch (error) {
+    recordCleanupFailure(error);
+  }
+
   try {
     await waitForClose(child, state, deadlineAt, TERMINATION_GRACE_MS);
-  } catch (termError) {
-    if (state.close) return;
-    if (!state.terminationRequested || remainingMs(deadlineAt) <= 0) throw termError;
-    state.terminationRequested = true;
-    state.terminationSignal = "SIGKILL";
-    child.kill("SIGKILL");
-    await waitForClose(child, state, deadlineAt);
+    return;
+  } catch {
+    recordCleanupFailure(new Error("Plan RPC graceful child teardown timed out; controller requested SIGTERM"));
   }
+  if (state.close) return;
+  if (state.exit || child.exitCode !== null || child.signalCode !== null) {
+    try { await waitForClose(child, state, deadlineAt); }
+    catch (error) { recordCleanupFailure(error); }
+    return;
+  }
+
+  state.escalation = "SIGTERM";
+  if (!child.kill("SIGTERM")) recordCleanupFailure(new Error("Plan RPC controller SIGTERM teardown request failed"));
+  try {
+    await waitForClose(child, state, deadlineAt, TERMINATION_GRACE_MS);
+    return;
+  } catch {
+    recordCleanupFailure(new Error("Plan RPC SIGTERM teardown did not close the child before its grace deadline; controller requested SIGKILL"));
+  }
+  if (state.close) return;
+  state.escalation = "SIGKILL";
+  if (!child.kill("SIGKILL")) recordCleanupFailure(new Error("Plan RPC controller SIGKILL teardown request failed"));
+  try { await waitForClose(child, state, deadlineAt); }
+  catch (error) { recordCleanupFailure(error); }
 }
 
-function classifyExit(state: ProbeState): Error | undefined {
-  if (!state.exit) return new Error("Plan RPC child exit was not observed");
-  if (!state.terminationRequested) {
-    return new Error(`Plan RPC child exited before parent cleanup: ${terminationDescription(state.exit)}`);
+function classifyLifecycle(state: ProbeState, recordCleanupFailure: (error: unknown) => void): void {
+  if (!state.exit) {
+    recordCleanupFailure(new Error("Plan RPC child exit was not observed before the absolute deadline"));
+  } else if (!state.gracefulTeardownRequested) {
+    if (!state.exitFailureRecorded) {
+      state.exitFailureRecorded = true;
+      recordCleanupFailure(new Error(`Plan RPC child exited before controller teardown: ${terminationDescription(state.exit)}`));
+    }
+  } else if (state.exit.code !== 0 || state.exit.signal !== null) {
+    recordCleanupFailure(new Error(`Plan RPC graceful teardown ended with ${terminationDescription(state.exit)} instead of code 0`));
   }
-  const expected = state.exit.signal === "SIGTERM"
-    || state.exit.signal === "SIGKILL"
-    || state.exit.code === 143;
-  return expected ? undefined : new Error(`Plan RPC child had an unexpected cleanup exit: ${terminationDescription(state.exit)}`);
+  if (!state.close) recordCleanupFailure(new Error("Plan RPC child close was not observed before the absolute deadline"));
 }
 
-export async function probePlanRpc(spec: ProcessLaunch, hooks: PlanRpcProbeHooks = {}): Promise<PlanRpcProbeResult> {
+export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeResult> {
+  const startedAt = Date.now();
   const child = spawnChild(spec.command, [...spec.args], {
     cwd: spec.cwd,
     env: cleanPiEnvironment({ ...spec.env, PI_OFFLINE: "1" }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   if (!child.stdin || !child.stdout || !child.stderr) throw new Error("Plan RPC child did not expose piped stdio");
-  const startedAt = Date.now();
   const deadlineAt = startedAt + TOTAL_DEADLINE_MS;
-  const state: ProbeState = { terminationRequested: false };
+  const state: ProbeState = {
+    failures: [],
+    responseAccepted: false,
+    gracefulTeardownRequested: false,
+    exitFailureRecorded: false,
+  };
   let output = "";
   let errors = "";
   let lineBuffer = "";
-  let responseSettled = false;
-  let responseTimer: ReturnType<typeof setTimeout> | undefined;
+  const responseSettled = { value: false };
+  const responseTimer: { value: ReturnType<typeof setTimeout> | undefined } = { value: undefined };
   let resolveResponse!: (value: Record<string, unknown>) => void;
   let rejectResponse!: (error: Error) => void;
 
-  const recordFailure = (error: unknown): void => {
-    const failure = asError(error);
-    if (!state.failure) state.failure = failure;
-    if (!responseSettled) {
-      responseSettled = true;
-      if (responseTimer) clearTimeout(responseTimer);
-      rejectResponse(failure);
-    }
+  const record = (error: unknown, category: FailureCategory): void => {
+    recordFailure(state, error, category, responseSettled, responseTimer, rejectResponse);
   };
+  const recordCleanupFailure = (error: unknown): void => { record(error, "cleanup"); };
   const acceptResponse = (data: Record<string, unknown>): void => {
-    if (responseSettled) return;
-    responseSettled = true;
-    if (responseTimer) clearTimeout(responseTimer);
+    if (responseSettled.value || state.responseAccepted || state.failures.length > 0) return;
+    state.responseAccepted = true;
+    responseSettled.value = true;
+    if (responseTimer.value) clearTimeout(responseTimer.value);
     resolveResponse(data);
   };
   const inspectLine = (line: string): void => {
     if (!line) return;
-    let record: Record<string, unknown>;
-    try { record = JSON.parse(line) as Record<string, unknown>; } catch { return; }
-    if (record["type"] === "extension_error" && !state.terminationRequested) {
-      recordFailure(new Error(`Plan extension failed to load: ${line}`));
+    let recordValue: Record<string, unknown>;
+    try { recordValue = JSON.parse(line) as Record<string, unknown>; } catch { return; }
+    if (recordValue["type"] === "extension_error") {
+      record(new Error(`Plan extension failed to load: ${line}`), state.responseAccepted ? "lifecycle" : "protocol");
     }
-    if (record["id"] !== "probe-state" || record["type"] !== "response") return;
-    if (record["success"] !== true || !record["data"] || typeof record["data"] !== "object" || Array.isArray(record["data"])) {
-      recordFailure(new Error(`Plan RPC get_state failed: ${line}`));
+    if (recordValue["id"] !== "probe-state" || recordValue["type"] !== "response") return;
+    if (recordValue["success"] !== true || !recordValue["data"] || typeof recordValue["data"] !== "object" || Array.isArray(recordValue["data"])) {
+      record(new Error(`Plan RPC get_state failed: ${line}`), "protocol");
       return;
     }
-    acceptResponse(record["data"] as Record<string, unknown>);
+    acceptResponse(recordValue["data"] as Record<string, unknown>);
   };
 
   child.stdout.on("data", chunk => {
@@ -175,11 +224,14 @@ export async function probePlanRpc(spec: ProcessLaunch, hooks: PlanRpcProbeHooks
     for (const line of lines) inspectLine(line);
   });
   child.stderr.on("data", chunk => { errors += chunk.toString(); });
-  child.stdin.on("error", error => { if (!state.terminationRequested) recordFailure(error); });
-  child.once("error", error => { if (!state.terminationRequested) recordFailure(error); });
+  child.stdin.on("error", error => { record(error, state.responseAccepted ? "lifecycle" : "startup"); });
+  child.once("error", error => { record(error, state.responseAccepted ? "lifecycle" : "startup"); });
   child.once("exit", (code, signal) => {
     state.exit = { code, signal };
-    if (!state.terminationRequested) recordFailure(new Error(`Plan RPC child exited before parent cleanup: ${terminationDescription(state.exit)}`));
+    if (!state.gracefulTeardownRequested) {
+      state.exitFailureRecorded = true;
+      record(new Error(`Plan RPC child exited before controller teardown: ${terminationDescription(state.exit)}`), state.responseAccepted ? "lifecycle" : "startup");
+    }
   });
   child.once("close", (code, signal) => {
     state.close = { code, signal };
@@ -188,38 +240,31 @@ export async function probePlanRpc(spec: ProcessLaunch, hooks: PlanRpcProbeHooks
     resolveResponse = resolve;
     rejectResponse = reject;
     const timeoutMs = Math.min(RESPONSE_TIMEOUT_MS, remainingMs(deadlineAt));
-    responseTimer = setTimeout(() => recordFailure(new Error("real Plan RPC probe timed out")), Math.max(1, timeoutMs));
+    responseTimer.value = setTimeout(() => record(new Error("real Plan RPC probe timed out"), "protocol"), Math.max(1, timeoutMs));
   });
 
   let response: Record<string, unknown> | undefined;
-  let primaryError: Error | undefined;
   try {
     child.stdin.write(`${JSON.stringify({ id: "probe-state", type: "get_state" })}\n`);
     response = await responsePromise;
     await nextTurn();
   } catch (error) {
-    primaryError = asError(error);
+    if (!state.failures.some(({ error: existing }) => existing === error)) {
+      responseSettled.value = true;
+      if (responseTimer.value) clearTimeout(responseTimer.value);
+      record(error, "protocol");
+    }
   }
 
-  const cleanupErrors: Error[] = [];
-  try {
-    if (hooks.terminateChild) await hooks.terminateChild(child, deadlineAt);
-    else await terminateChild(child, state, deadlineAt);
-  } catch (error) {
-    cleanupErrors.push(asError(error));
-  }
+  await terminateChild(child, state, deadlineAt, recordCleanupFailure);
   if (!state.close) {
     try { await waitForClose(child, state, deadlineAt); }
-    catch (error) { cleanupErrors.push(asError(error)); }
+    catch (error) { recordCleanupFailure(error); }
   }
   await nextTurn();
-  const exitFailure = classifyExit(state);
-  if (exitFailure && !state.failure) cleanupErrors.push(exitFailure);
-  const cleanupError = cleanupErrors.length > 0 ? combineErrors("Plan RPC child cleanup failed", cleanupErrors) : undefined;
-  const failure = state.failure ?? primaryError;
-  if (failure && cleanupError) throw new AggregateError([failure, cleanupError], "Plan RPC probe failed and child cleanup also failed");
+  classifyLifecycle(state, recordCleanupFailure);
+  const failure = combineFailures(state);
   if (failure) throw failure;
-  if (cleanupError) throw cleanupError;
   if (!response) throw new Error("Plan RPC probe completed without a response");
   return { state: response, output, errors };
 }
