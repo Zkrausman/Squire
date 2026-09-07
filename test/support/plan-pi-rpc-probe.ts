@@ -1,5 +1,13 @@
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import type { ProcessLaunch } from "../../src/pi/pi-process.js";
+import {
+  BoundedTail,
+  collectSensitiveValues,
+  PI_CHILD_OUTPUT_LIMIT_BYTES,
+  PI_CHILD_STDERR_LIMIT_BYTES,
+  preparePiChildLaunch,
+  redactText,
+} from "./pi-child-support.js";
 
 const RESPONSE_TIMEOUT_MS = 20_000;
 // Keep one absolute probe/cleanup deadline below the unchanged 30-second
@@ -18,6 +26,7 @@ interface ProbeState {
   responseAccepted: boolean;
   exit?: ExitObservation;
   close?: ExitObservation;
+  terminalState?: "running" | "exited" | "startup-error" | "closed-without-exit";
   gracefulTeardownRequested: boolean;
   escalation?: "SIGTERM" | "SIGKILL";
   exitFailureRecorded: boolean;
@@ -27,13 +36,6 @@ export interface PlanRpcProbeResult {
   state: Record<string, unknown>;
   output: string;
   errors: string;
-}
-
-function cleanPiEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
-  return {
-    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_"))),
-    ...overrides,
-  };
 }
 
 function asError(value: unknown): Error {
@@ -154,6 +156,7 @@ async function terminateChild(
 
 function classifyLifecycle(state: ProbeState, recordCleanupFailure: (error: unknown) => void): void {
   if (!state.exit) {
+    recordCleanupFailure(new Error(`Plan RPC child terminal state ${state.terminalState ?? "unknown"} settled without an observed exit`));
     recordCleanupFailure(new Error("Plan RPC child exit was not observed before the absolute deadline"));
   } else if (!state.gracefulTeardownRequested) {
     if (!state.exitFailureRecorded) {
@@ -168,9 +171,10 @@ function classifyLifecycle(state: ProbeState, recordCleanupFailure: (error: unkn
 
 export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeResult> {
   const startedAt = Date.now();
-  const child = spawnChild(spec.command, [...spec.args], {
+  const prepared = preparePiChildLaunch(spec);
+  const child = spawnChild(prepared.command, [...prepared.args], {
     cwd: spec.cwd,
-    env: cleanPiEnvironment({ ...spec.env, PI_OFFLINE: "1" }),
+    env: prepared.environment,
     stdio: ["pipe", "pipe", "pipe"],
   });
   if (!child.stdin || !child.stdout || !child.stderr) throw new Error("Plan RPC child did not expose piped stdio");
@@ -178,11 +182,13 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
   const state: ProbeState = {
     failures: [],
     responseAccepted: false,
+    terminalState: "running",
     gracefulTeardownRequested: false,
     exitFailureRecorded: false,
   };
-  let output = "";
-  let errors = "";
+  const outputTail = new BoundedTail(PI_CHILD_OUTPUT_LIMIT_BYTES);
+  const errorTail = new BoundedTail(PI_CHILD_STDERR_LIMIT_BYTES);
+  const sensitiveValues = collectSensitiveValues(process.env, spec.env);
   let lineBuffer = "";
   const responseSettled = { value: false };
   const responseTimer: { value: ReturnType<typeof setTimeout> | undefined } = { value: undefined };
@@ -217,16 +223,21 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
 
   child.stdout.on("data", chunk => {
     const text = chunk.toString();
-    output += text;
+    outputTail.append(chunk);
     lineBuffer += text;
+    if (Buffer.byteLength(lineBuffer, "utf8") > PI_CHILD_OUTPUT_LIMIT_BYTES) {
+      record(new Error("Plan RPC child emitted an unterminated stdout line beyond the bounded output limit"), "protocol");
+      lineBuffer = lineBuffer.slice(-PI_CHILD_OUTPUT_LIMIT_BYTES);
+    }
     const lines = lineBuffer.split("\n");
     lineBuffer = lines.pop() ?? "";
     for (const line of lines) inspectLine(line);
   });
-  child.stderr.on("data", chunk => { errors += chunk.toString(); });
+  child.stderr.on("data", chunk => { errorTail.append(chunk); });
   child.stdin.on("error", error => { record(error, state.responseAccepted ? "lifecycle" : "startup"); });
   child.once("error", error => { record(error, state.responseAccepted ? "lifecycle" : "startup"); });
   child.once("exit", (code, signal) => {
+    state.terminalState = "exited";
     state.exit = { code, signal };
     if (!state.gracefulTeardownRequested) {
       state.exitFailureRecorded = true;
@@ -235,6 +246,7 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
   });
   child.once("close", (code, signal) => {
     state.close = { code, signal };
+    if (!state.exit) state.terminalState = state.failures.some(({ category }) => category === "startup") ? "startup-error" : "closed-without-exit";
   });
   const responsePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
     resolveResponse = resolve;
@@ -266,5 +278,5 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
   const failure = combineFailures(state);
   if (failure) throw failure;
   if (!response) throw new Error("Plan RPC probe completed without a response");
-  return { state: response, output, errors };
+  return { state: response, output: outputTail.toString(), errors: redactText(errorTail.toString(), sensitiveValues) };
 }

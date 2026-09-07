@@ -19,6 +19,19 @@ function gracefulChild(onEnd: string): ProcessLaunch {
   return childSpec(`process.stdout.write(${JSON.stringify(responseLine)});process.stdin.resume();process.stdin.on('end',()=>{${onEnd}});`);
 }
 
+test("Plan RPC child uses the exact controller runtime and allowlisted environment", async () => {
+  const script = `const data = { node: process.execPath, path: process.env.PATH, home: process.env.HOME ?? null, secret: process.env.OPENAI_API_KEY ?? null, nodeOptions: process.env.NODE_OPTIONS ?? null, ambientPi: process.env.PI_AMBIENT_BAD ?? null }; process.stdout.write(JSON.stringify({ id: "probe-state", type: "response", command: "get_state", success: true, data }) + "\\n"); process.stdin.resume(); process.stdin.on("end", () => process.exit(0));`;
+  const hostilePath = "/tmp/aidev242-hostile-plan-path";
+  const result = await probePlanRpc({ command: process.execPath, args: ["-e", script], cwd: process.cwd(), env: { PATH: hostilePath, OPENAI_API_KEY: "plan-secret-must-not-cross", NODE_OPTIONS: "--require=/tmp/no-such-hook", PI_AMBIENT_BAD: "plan-pi-must-not-cross" } });
+  assert.equal(result.state["node"], process.execPath);
+  assert.match(String(result.state["path"]), new RegExp(`${process.execPath.slice(0, process.execPath.lastIndexOf("/"))}`));
+  assert.doesNotMatch(String(result.state["path"]), new RegExp(hostilePath));
+  assert.equal(result.state["home"], null);
+  assert.equal(result.state["secret"], null);
+  assert.equal(result.state["nodeOptions"], null);
+  assert.equal(result.state["ambientPi"], null);
+});
+
 test("Plan RPC probe requires controller EOF teardown and an observed zero exit", async () => {
   const result = await probePlanRpc(gracefulChild("process.exit(0);"));
   assert.deepEqual(result.state, { ok: true });

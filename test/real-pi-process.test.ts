@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +8,10 @@ import type { ProcessLaunch } from "../src/pi/pi-process.js";
 import { RealPiProcessFactory } from "./support/real-pi-process.js";
 
 const delay = (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+function scriptSpec(command: string, cwd: string, env: Record<string, string> = {}): ProcessLaunch {
+  return { command, args: [], cwd, env };
+}
 
 test("real Pi process reports a causal closed-stdin EPIPE without an uncaught exception", async () => {
   const factory = new RealPiProcessFactory();
@@ -42,59 +47,123 @@ test("real Pi process reports a causal closed-stdin EPIPE without an uncaught ex
   if (synchronousWriteError) assert.match(String(synchronousWriteError), /closed|destroyed|EPIPE/iu);
 });
 
-test("real Pi process inherits the controller PATH needed by env-based child shebangs", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-path-"));
-  const bin = path.join(root, "bin");
-  const launcher = path.join(bin, "aidev-node-probe");
-  const childScript = path.join(root, "probe");
-  await mkdir(bin, { recursive: true, mode: 0o700 });
-  const quotedNodePath = process.execPath.replaceAll("'", "'\\''");
-  await writeFile(launcher, `#!/bin/sh\nexec '${quotedNodePath}' "$@"\n`, { mode: 0o700 });
-  await writeFile(childScript, "#!/usr/bin/env aidev-node-probe\nprocess.stdout.write(\"PATH_PROBE_OK\\n\");\n", { mode: 0o700 });
-  await chmod(launcher, 0o700);
-  await chmod(childScript, 0o700);
-  const previousPath = process.env["PATH"];
-  process.env["PATH"] = `${bin}${path.delimiter}${previousPath ?? ""}`;
+test("real Pi child uses the exact controller Node and an allowlisted environment", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-allowlist-"));
+  const hostileBin = path.join(root, "hostile-bin");
+  const hook = path.join(root, "node-options-hook.cjs");
+  const probe = path.join(root, "allowlist-probe.mjs");
+  const marker = path.join(root, "node-options-hook-ran");
+  await mkdir(hostileBin, { recursive: true, mode: 0o700 });
+  await writeFile(path.join(hostileBin, "node"), "#!/bin/sh\nprintf 'MALICIOUS_NODE_SELECTED\\n'\n", { mode: 0o700 });
+  await writeFile(hook, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed");\n`, { mode: 0o600 });
+  await writeFile(probe, `
+    import { spawnSync } from "node:child_process";
+    const nested = spawnSync("node", ["-e", "process.stdout.write(process.execPath)"], { encoding: "utf8" });
+    process.stdout.write(JSON.stringify({
+      nestedStatus: nested.status,
+      nestedPath: nested.stdout.trim(),
+      path: process.env.PATH,
+      home: process.env.HOME ?? null,
+      openAiKey: process.env.OPENAI_API_KEY ?? null,
+      nodeOptions: process.env.NODE_OPTIONS ?? null,
+      ambientPi: process.env.PI_AMBIENT_BAD ?? null,
+    }));
+  `, { mode: 0o600 });
+  const secret = "review9-ambient-secret";
+  const factory = new RealPiProcessFactory({
+    PATH: hostileBin,
+    HOME: path.join(root, "host-home"),
+    OPENAI_API_KEY: secret,
+    NODE_OPTIONS: `--require=${hook}`,
+    PI_AMBIENT_BAD: "ambient-pi-must-not-cross",
+  });
   try {
-    const real = await new RealPiProcessFactory().spawn({ command: childScript, args: [], cwd: root, env: {} });
+    const real = await factory.spawn(scriptSpec(probe, root, {
+      PATH: hostileBin,
+      OPENAI_API_KEY: "override-secret-must-not-cross",
+      NODE_OPTIONS: `--require=${hook}`,
+      PI_AMBIENT_BAD: "override-pi-must-not-cross",
+    }));
     await real.waitForExit(5_000);
     assert.equal(real.exitCode, 0);
-    assert.match(real.output.join(""), /PATH_PROBE_OK/u);
+    assert.equal(real.spawnCommand, process.execPath);
+    assert.equal(real.spawnArgs[0], probe);
+    const result = JSON.parse(real.output) as Record<string, string | number | null>;
+    assert.equal(result["nestedStatus"], 0);
+    assert.equal(result["nestedPath"], process.execPath);
+    assert.match(String(result["path"]), new RegExp(`${path.dirname(process.execPath).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`));
+    assert.doesNotMatch(String(result["path"]), new RegExp(hostileBin.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+    assert.equal(result["home"], null);
+    assert.equal(result["openAiKey"], null);
+    assert.equal(result["nodeOptions"], null);
+    assert.equal(result["ambientPi"], null);
+    assert.equal(existsSync(marker), false, "ambient NODE_OPTIONS must not execute in the child");
+    assert.equal(real.environment["OPENAI_API_KEY"], undefined);
+    assert.equal(real.environment["HOME"], undefined);
+    assert.equal(real.terminalState, "exited");
+
+    const emptyPathReal = await factory.spawn(scriptSpec(probe, root, { PATH: "" }));
+    await emptyPathReal.waitForExit(5_000);
+    assert.equal(emptyPathReal.exitCode, 0, "empty caller PATH must not disable the exact runtime PATH");
+    assert.equal(JSON.parse(emptyPathReal.output)["nestedPath"], process.execPath);
   } finally {
-    if (previousPath === undefined) delete process.env["PATH"];
-    else process.env["PATH"] = previousPath;
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("real Pi process preserves startup stderr, exit, environment, and timing diagnostics", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-startup-"));
-  const emptyPath = path.join(root, "empty-path");
-  const childScript = path.join(root, "probe");
-  await mkdir(emptyPath, { recursive: true, mode: 0o700 });
-  await writeFile(childScript, "#!/usr/bin/env aidev-missing-node\nprocess.stdout.write(\"UNREACHABLE\\n\");\n", { mode: 0o700 });
-  await chmod(childScript, 0o700);
+test("real Pi diagnostics bound and redact large secret-bearing stderr", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-stderr-"));
+  const probe = path.join(root, "stderr-probe.mjs");
+  const secret = "stderr-secret-sentinel";
+  await writeFile(probe, `process.stderr.write("x".repeat(120000)); process.stderr.write(${JSON.stringify(`OPENAI_API_KEY=${secret}\n`)}); process.exit(7);\n`, { mode: 0o600 });
   try {
-    const real = await new RealPiProcessFactory().spawn({ command: childScript, args: [], cwd: root, env: { PATH: emptyPath } });
+    const real = await new RealPiProcessFactory().spawn(scriptSpec(probe, root));
     await real.waitForExit(5_000);
-    assert.equal(real.exitCode, 127);
-    assert.match(real.errors.join(""), /aidev-missing-node|No such file/u);
-    const diagnostic = real.diagnostic("real Pi startup failure");
-    assert.match(diagnostic, /rawExit=127/u);
-    assert.match(diagnostic, /env=.*PATH/u);
-    assert.match(diagnostic, /elapsedMs=\d+/u);
-    assert.match(diagnostic, /stderr=.*aidev-missing-node|stderr=.*No such file/u);
-    assert.match(diagnostic, /observedErrors=.*aidev-missing-node|observedErrors=.*No such file/u);
-    assert.throws(() => real.stdin.write("handshake\n"), /rawExit=127|aidev-missing-node|No such file/u);
-
-    const missing = await new RealPiProcessFactory().spawn({ command: path.join(root, "missing-command"), args: [], cwd: root, env: {} });
-    await new Promise<void>(resolve => {
-      if (missing.childError) resolve();
-      else missing.child.once("error", () => resolve());
-    });
-    assert.throws(() => missing.stdin.write("handshake\n"), /ENOENT|spawn/u);
-    assert.match(missing.diagnostic("real Pi executable startup failure"), /observedErrors=.*ENOENT|observedErrors=.*spawn/u);
+    assert.equal(real.exitCode, 7);
+    assert.ok(Buffer.byteLength(real.stderrOutput, "utf8") <= 8_192);
+    const diagnostic = real.diagnostic("bounded startup diagnostic");
+    assert.ok(Buffer.byteLength(diagnostic, "utf8") <= 16_384);
+    assert.equal(diagnostic.includes(secret), false);
+    assert.match(diagnostic, /<redacted>/u);
+    assert.equal(real.errors.length, 0, "stderr must not be duplicated into process errors");
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real Pi ENOENT settles exactly once at close without inventing an exit code", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-enoent-"));
+  const factory = new RealPiProcessFactory();
+  try {
+    const real = await factory.spawn(scriptSpec(path.join(root, "missing-command"), root));
+    let exitEvents = 0;
+    real.on("exit", () => { exitEvents += 1; });
+    const startedAt = Date.now();
+    await real.waitForExit(1_000);
+    await real.waitForExit(1_000);
+    assert.ok(Date.now() - startedAt < 1_000);
+    assert.equal(real.terminalState, "startup-error");
+    assert.equal(real.exitCode, null);
+    assert.equal(exitEvents, 1);
+    assert.match(real.diagnostic("ENOENT startup diagnostic"), /terminalState=startup-error/u);
+    assert.match(real.diagnostic("ENOENT startup diagnostic"), /ENOENT|spawn/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real Pi child success remains deterministic under concurrent launches", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-concurrent-"));
+  const probe = path.join(root, "success-probe.mjs");
+  await writeFile(probe, "process.stdout.write('CONCURRENT_PI_OK');\n", { mode: 0o600 });
+  const factory = new RealPiProcessFactory();
+  try {
+    const processes = await Promise.all(Array.from({ length: 16 }, () => factory.spawn(scriptSpec(probe, root))));
+    await Promise.all(processes.map(process => process.waitForExit(5_000)));
+    assert.equal(processes.every(process => process.exitCode === 0 && process.terminalState === "exited" && process.output === "CONCURRENT_PI_OK"), true);
+  } finally {
+    for (const process of factory.processes) if (process.exitCode === null) process.kill("SIGKILL");
+    await Promise.all(factory.processes.map(process => process.waitForExit(5_000).catch(() => undefined)));
     await rm(root, { recursive: true, force: true });
   }
 });

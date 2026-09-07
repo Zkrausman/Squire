@@ -11,6 +11,7 @@ import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessLaunch } from "../src/pi/pi-process.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
+import { BoundedTail, buildPiChildEnvironment, collectSensitiveValues, PI_CHILD_STDERR_LIMIT_BYTES, preparePiChildLaunch, redactText } from "./support/pi-child-support.js";
 import { run, runtime, testWorkspaceReadiness } from "./support/fixtures.js";
 
 const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
@@ -26,18 +27,24 @@ class ChildPiProcess extends EventEmitter implements PiProcess {
   readonly stderr: PiProcess["stderr"];
   readonly output: string[] = [];
   readonly errors: string[] = [];
+  private readonly stderrTail = new BoundedTail(PI_CHILD_STDERR_LIMIT_BYTES);
+  private readonly redactionValues: readonly string[];
   exitCode: number | null = null;
 
-  constructor(readonly child: ChildProcess) {
+  constructor(readonly child: ChildProcess, redactionValues: readonly string[]) {
     super();
     if (!child.stdin || !child.stdout || !child.stderr) throw new Error("Pi child did not expose piped stdio");
     this.stdin = { write: data => child.stdin!.write(data) };
     this.stdout = child.stdout;
     this.stderr = child.stderr;
-    child.stdout.on("data", chunk => this.output.push(chunk.toString()));
-    child.stderr.on("data", chunk => this.errors.push(chunk.toString()));
-    child.stdin.on("error", error => this.errors.push(`stdin: ${error.message}`));
-    child.once("error", error => this.errors.push(`child: ${error.message}`));
+    child.stdout.on("data", chunk => {
+      this.output.push(chunk.toString());
+      while (this.output.join("").length > 65_536) this.output.shift();
+    });
+    child.stderr.on("data", chunk => this.stderrTail.append(chunk));
+    child.stdin.on("error", error => this.errors.push(`stdin: ${redactText(error.message, this.redactionValues)}`));
+    child.once("error", error => this.errors.push(`child: ${redactText(error.message, this.redactionValues)}`));
+    this.redactionValues = redactionValues;
     child.once("exit", (code, signal) => {
       this.exitCode = code ?? (signal === "SIGTERM" ? 143 : 1);
       this.emit("exit", code, signal);
@@ -74,12 +81,13 @@ class ChildPiProcessFactory implements PiProcessFactory {
 
   async spawn(spec: ProcessLaunch, signal?: AbortSignal, onSpawn?: (spawned: PiProcess) => void): Promise<ChildPiProcess> {
     if (signal?.aborted) throw new Error("spawn aborted");
-    const child = spawnChild(spec.command, spec.args, {
+    const prepared = preparePiChildLaunch(spec);
+    const child = spawnChild(prepared.command, [...prepared.args], {
       cwd: spec.cwd,
-      env: cleanPiEnvironment({ ...spec.env, PI_OFFLINE: "1" }),
+      env: prepared.environment,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    const spawned = new ChildPiProcess(child);
+    const spawned = new ChildPiProcess(child, collectSensitiveValues(process.env, spec.env));
     this.launches.push(spec);
     this.processes.push(spawned);
     onSpawn?.(spawned);
@@ -89,13 +97,6 @@ class ChildPiProcessFactory implements PiProcessFactory {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function cleanPiEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
-  return {
-    ...Object.fromEntries(Object.entries(globalThis.process.env).filter(([key]) => !key.startsWith("PI_"))),
-    ...overrides,
-  };
 }
 
 function terminalFrame(output: string, rows = 40, columns = 240): string[] {
@@ -228,9 +229,9 @@ async function runRealTuiFooterProbe(options: {
     "--extension", options.footerPath,
   ].map(shellQuote).join(" ");
   const ttyCommand = `stty cols 240 rows 40; ${command}`;
-  const child = spawnChild("script", ["-qefc", ttyCommand, "/dev/null"], {
+  const child = spawnChild("/usr/bin/script", ["-qefc", ttyCommand, "/dev/null"], {
     cwd: options.workspace,
-    env: cleanPiEnvironment({
+    env: buildPiChildEnvironment({
       HOME: options.homeDir,
       WIKI_HOME: options.wikiHomeDir,
       PI_CODING_AGENT_DIR: options.agentDir,
@@ -240,7 +241,11 @@ async function runRealTuiFooterProbe(options: {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let output = "";
-  let stderr = "";
+  const stderrTail = new BoundedTail(PI_CHILD_STDERR_LIMIT_BYTES);
+  const sensitiveValues = collectSensitiveValues(process.env, {
+    HOME: options.homeDir,
+    WIKI_HOME: options.wikiHomeDir,
+  });
   let sentExit = false;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let stableFrame: string[] | undefined;
@@ -267,7 +272,7 @@ async function runRealTuiFooterProbe(options: {
       output += chunk.toString();
       scheduleExitAfterStableFrame();
     });
-    child.stderr?.on("data", chunk => { stderr += chunk.toString(); });
+    child.stderr?.on("data", chunk => { stderrTail.append(chunk); });
     child.once("error", error => {
       clearTimeout(timer);
       if (settleTimer !== undefined) clearTimeout(settleTimer);
@@ -277,7 +282,7 @@ async function runRealTuiFooterProbe(options: {
       clearTimeout(timer);
       if (settleTimer !== undefined) clearTimeout(settleTimer);
       if (code !== 0) reject(new Error(`real Pi TUI footer probe exited with ${code ?? "unknown"}`));
-      else resolve({ output, stderr, frame: stableFrame ?? terminalFrame(output) });
+      else resolve({ output, stderr: redactText(stderrTail.toString(), sensitiveValues), frame: stableFrame ?? terminalFrame(output) });
     });
   });
   try { return await ready; }
