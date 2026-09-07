@@ -57,9 +57,13 @@ class ChildPiProcess extends EventEmitter implements PiProcess {
       this.exitCode = code;
       this.emit("exit", code, signal);
     });
+    child.once("close", () => {
+      this.stdoutTail.finalize();
+      this.stderrTail.finalize();
+    });
   }
 
-  get output(): string[] { return [this.stdoutTail.text()]; }
+  get output(): string[] { return [this.stdoutTail.snapshot()]; }
 
   override on(event: "exit", listener: (code: number | null, signal: string | null) => void): this {
     return super.on(event, listener);
@@ -296,8 +300,8 @@ async function runRealTuiFooterProbe(options: {
       if (settleTimer !== undefined) clearTimeout(settleTimer);
       if (code !== 0) reject(sanitizeError(new Error(`real Pi TUI footer probe exited with ${code ?? "unknown"}`), redactor));
       else {
-        output = outputTail.text();
-        resolve({ output, stderr: stderrTail.text(), frame: stableFrame ?? terminalFrame(output) });
+        output = outputTail.snapshot();
+        resolve({ output, stderr: stderrTail.snapshot(), frame: stableFrame ?? terminalFrame(output) });
       }
     });
   });

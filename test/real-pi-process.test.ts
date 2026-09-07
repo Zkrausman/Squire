@@ -137,7 +137,10 @@ test("real Pi redacts fragmented plaintext, base64, hex, and URL secrets from ev
   const probe = path.join(root, "redaction-probe.mjs");
   const ambientSecrets = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`HOST_SECRET_${index}`, `host secret/${index}+987654321==`])) as Record<string, string>;
   const secret = ambientSecrets["HOST_SECRET_99"]!;
-  const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), Buffer.from(secret, "utf8").toString("hex"), encodeURIComponent(secret)];
+  const hex = Buffer.from(secret, "utf8").toString("hex");
+  const percent = encodeURIComponent(secret);
+  const mixedCase = (value: string): string => [...value].map((character, index) => index % 2 === 0 ? character.toUpperCase() : character.toLowerCase()).join("");
+  const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), hex, percent, mixedCase(hex), mixedCase(percent)];
   await writeFile(probe, `const forms = ${JSON.stringify(forms)}; for (const value of forms) for (const character of value) process.stderr.write(character); process.exit(7);\n`, { mode: 0o600 });
   const factory = new RealPiProcessFactory(ambientSecrets);
   try {
@@ -155,6 +158,33 @@ test("real Pi redacts fragmented plaintext, base64, hex, and URL secrets from ev
     for (const form of forms) assert.equal(surfaces.includes(form), false, `causal error leaked: ${form}`);
     assert.equal("process" in thrown, false);
     assert.equal("launch" in thrown, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real Pi live diagnostic snapshots do not finalize later fragmented output", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-live-diagnostic-"));
+  const probe = path.join(root, "live-diagnostic-probe.mjs");
+  await writeFile(probe, "setTimeout(() => { for (const character of 'late-live-output-€') process.stderr.write(character); }, 50); setTimeout(() => process.exit(0), 250);\n", { mode: 0o600 });
+  try {
+    const real = await new RealPiProcessFactory().spawn(scriptSpec(probe, root));
+    let exits = 0;
+    real.on("exit", () => { exits += 1; });
+    for (let index = 0; index < 4; index += 1) {
+      void real.output;
+      void real.stderrOutput;
+      void real.diagnostic(`live snapshot ${index}`);
+    }
+    await delay(120);
+    void real.output;
+    void real.stderrOutput;
+    void real.diagnostic("live snapshot after output");
+    await real.waitForExit(5_000);
+    assert.equal(real.exitCode, 0);
+    assert.equal(real.terminalState, "exited");
+    assert.equal(exits, 1);
+    assert.match(real.stderrOutput, /late-live-output/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

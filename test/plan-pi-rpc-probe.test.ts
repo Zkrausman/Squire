@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import test from "node:test";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
+import { BoundedFailureAccumulator } from "./support/pi-child-support.js";
 import { probePlanRpc } from "./support/plan-pi-rpc-probe.js";
 
 const responseLine = `${JSON.stringify({ id: "probe-state", type: "response", command: "get_state", success: true, data: { ok: true } })}\n`;
@@ -79,7 +80,10 @@ test("Plan RPC probe preserves malformed RPC as primary and reports real exit fa
 
 test("Plan RPC redacts encoded secrets from primary, secondary, aggregate, and inspection paths", async () => {
   const secret = "Plan Encoded/Secret+246813579==";
-  const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), Buffer.from(secret, "utf8").toString("hex"), encodeURIComponent(secret)];
+  const hex = Buffer.from(secret, "utf8").toString("hex");
+  const percent = encodeURIComponent(secret);
+  const mixedCase = (value: string): string => [...value].map((character, index) => index % 2 === 0 ? character.toUpperCase() : character.toLowerCase()).join("");
+  const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), hex, percent, mixedCase(hex), mixedCase(percent)];
   const extensionLine = JSON.stringify({ type: "extension_error", extensionPath: "secret-extension.mjs", error: forms.join(" | ") });
   const script = `process.stdout.write(${JSON.stringify(responseLine)}); process.stdout.write(${JSON.stringify(extensionLine + "\n")}); process.exit(7);`;
   let thrown: unknown;
@@ -111,6 +115,25 @@ test("Plan RPC retains bounded UTF-8 tails and failure records under protocol fl
   const messages = thrown.errors.map(error => error instanceof Error ? error.message : String(error)).join("\n");
   assert.ok(Buffer.byteLength(messages, "utf8") <= 16 * 1024 + 512);
   assert.match(messages, /omitted \d+ secondary failure record/u);
+});
+
+test("Plan RPC late primary keeps aggregate metadata, stacks, and causes within the total byte budget", async () => {
+  const secondaryLines = Array.from({ length: 16 }, (_, index) => JSON.stringify({ type: "extension_error", error: `secondary-${index}-${"S".repeat(900)}` }) + "\n").join("");
+  const latePrimary = `${JSON.stringify({ id: "probe-state", type: "response", command: "get_state", success: false, error: "P".repeat(2_000) })}\n`;
+  const script = `const payload = ${JSON.stringify(responseLine + secondaryLines + latePrimary)}; process.stdout.write(payload, () => process.exit(7));`;
+  let thrown: unknown;
+  try { await probePlanRpc(childSpec(script)); }
+  catch (error) { thrown = error; }
+  assert.ok(thrown instanceof AggregateError);
+  assert.match(String(thrown.errors[0]), /Plan RPC get_state failed/u);
+  const publicBytes = [
+    thrown.name,
+    thrown.message,
+    thrown.stack ?? "",
+    ...thrown.errors.flatMap(error => error instanceof Error ? [error.name, error.message, error.stack ?? ""] : [String(error)]),
+  ].reduce((total, value) => total + Buffer.byteLength(value, "utf8"), 0);
+  assert.ok(publicBytes <= BoundedFailureAccumulator.MAX_BYTES, `aggregate public bytes exceeded budget: ${publicBytes}`);
+  assert.ok(thrown.errors.length <= BoundedFailureAccumulator.MAX_RECORDS + 1);
 });
 
 test("Plan RPC probe preserves startup failure and reports its real exit diagnostic", async () => {

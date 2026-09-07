@@ -117,13 +117,16 @@ export class RealPiProcess extends EventEmitter implements PiProcess {
     });
     child.once("close", () => {
       this.closeObservedAt = Date.now();
+      this.stdoutTail.finalize();
+      this.stderrTail.finalize();
+      this.errorTail.finalize();
       if (!this.#exitEmitted) this.settle(this.childError ? "startup-error" : "closed-without-exit", null, null);
     });
   }
 
   /** Bounded compatibility views; output and stderr are retained once each. */
-  get output(): string { return this.stdoutTail.text(); }
-  get stderrOutput(): string { return this.stderrTail.text(); }
+  get output(): string { return this.stdoutTail.snapshot(); }
+  get stderrOutput(): string { return this.stderrTail.snapshot(); }
 
   override on(event: "exit", listener: (code: number | null, signal: string | null) => void): this {
     return super.on(event, listener);
@@ -161,8 +164,8 @@ export class RealPiProcess extends EventEmitter implements PiProcess {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => [key, truncateUtf8(this.redactor.redact(value), 512)]));
     const safeArgs = this.spawnArgs.map(value => truncateUtf8(this.redactor.redact(value), 512));
-    const stderr = this.stderrTail.text() || "<empty>";
-    const observedErrors = this.errorTail.text() || "<empty>";
+    const stderr = this.stderrTail.snapshot() || "<empty>";
+    const observedErrors = this.errorTail.snapshot() || "<empty>";
     const rawExit = this.child.exitCode === null ? "null" : String(this.child.exitCode);
     const normalizedExit = this.exitCode === null ? "null" : String(this.exitCode);
     const elapsedMs = Date.now() - this.startedAt;

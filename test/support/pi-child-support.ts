@@ -76,22 +76,41 @@ export function truncateUtf8(value: string, limitBytes: number): string {
   return `${utf8Prefix(value, Math.max(0, limitBytes - utf8ByteLength(suffix)))}${suffix}`;
 }
 
-function encodedForms(value: string): string[] {
+type RedactionPattern = Readonly<{ value: string; caseInsensitive: boolean }>;
+
+function encodedForms(value: string): RedactionPattern[] {
   const bytes = Buffer.from(value, "utf8");
   const base64 = bytes.toString("base64");
   const base64Url = bytes.toString("base64url");
   const encodedUrl = encodeURIComponent(value);
   return [
-    value,
-    bytes.toString("hex"),
-    bytes.toString("hex").toUpperCase(),
-    base64,
-    base64.replace(/=+$/u, ""),
-    base64Url,
-    encodedUrl,
-    encodedUrl.replace(/%[0-9A-F]{2}/gu, match => match.toLowerCase()),
-    encodedUrl.replace(/%20/gu, "+"),
+    { value, caseInsensitive: false },
+    { value: bytes.toString("hex"), caseInsensitive: true },
+    { value: base64, caseInsensitive: false },
+    { value: base64.replace(/=+$/u, ""), caseInsensitive: false },
+    { value: base64Url, caseInsensitive: false },
+    { value: encodedUrl, caseInsensitive: true },
+    { value: encodedUrl.replace(/%20/gu, "+"), caseInsensitive: true },
   ];
+}
+
+function normalizePattern(pattern: RedactionPattern): string {
+  return pattern.caseInsensitive ? pattern.value.toLowerCase() : pattern.value;
+}
+
+function replacePattern(value: string, pattern: RedactionPattern): string {
+  const needle = normalizePattern(pattern);
+  const haystack = pattern.caseInsensitive ? value.toLowerCase() : value;
+  let from = 0;
+  let start = haystack.indexOf(needle, from);
+  if (start < 0) return value;
+  let result = "";
+  while (start >= 0) {
+    result += value.slice(from, start) + "<redacted>";
+    from = start + needle.length;
+    start = haystack.indexOf(needle, from);
+  }
+  return result + value.slice(from);
 }
 
 /**
@@ -100,12 +119,12 @@ function encodedForms(value: string): string[] {
  * value and risking a leak.
  */
 export class BoundedRedactor {
-  readonly #patterns: readonly string[];
+  readonly #patterns: readonly RedactionPattern[];
   readonly #overflow: boolean;
   readonly #maxPatternChars: number;
 
   constructor(...records: ReadonlyArray<Readonly<Record<string, string | undefined>>>) {
-    const patterns = new Set<string>();
+    const patterns = new Map<string, RedactionPattern>();
     let bytes = 0;
     let overflow = false;
     let maxPatternChars = 1;
@@ -113,19 +132,21 @@ export class BoundedRedactor {
       for (const [key, value] of Object.entries(record)) {
         if (!SENSITIVE_NAME.test(key) || value === undefined || value.length < 4) continue;
         for (const form of encodedForms(value)) {
-          const formBytes = utf8ByteLength(form);
+          const normalized = normalizePattern(form);
+          const formBytes = utf8ByteLength(normalized);
           if (formBytes > MAX_PATTERN_BYTES || bytes + formBytes > REDACTION_PATTERN_BUDGET_BYTES) {
             overflow = true;
             continue;
           }
-          if (patterns.has(form)) continue;
-          patterns.add(form);
+          const key = `${form.caseInsensitive ? "i" : "s"}:${normalized}`;
+          if (patterns.has(key)) continue;
+          patterns.set(key, form);
           bytes += formBytes;
-          maxPatternChars = Math.max(maxPatternChars, form.length);
+          maxPatternChars = Math.max(maxPatternChars, form.value.length);
         }
       }
     }
-    this.#patterns = [...patterns].sort((left, right) => right.length - left.length);
+    this.#patterns = [...patterns.values()].sort((left, right) => right.value.length - left.value.length);
     this.#overflow = overflow;
     this.#maxPatternChars = Math.min(MAX_PATTERN_BYTES, maxPatternChars);
   }
@@ -136,7 +157,7 @@ export class BoundedRedactor {
   redact(value: string): string {
     if (this.#overflow) return "<redaction-set-overflow>";
     let redacted = value;
-    for (const pattern of this.#patterns) redacted = redacted.replaceAll(pattern, "<redacted>");
+    for (const pattern of this.#patterns) redacted = replacePattern(redacted, pattern);
     redacted = redacted.replace(SENSITIVE_ASSIGNMENT, "$1<redacted>");
     redacted = redacted.replace(/(Bearer\s+)[^\s,;]+/giu, "$1<redacted>");
     return redacted;
@@ -147,9 +168,11 @@ export class BoundedRedactor {
     if (this.#overflow) return { value: "", withheld: value.length > 0 };
     let withheldChars = 0;
     for (const pattern of this.#patterns) {
-      const maximum = Math.min(pattern.length - 1, value.length);
+      const prefix = pattern.caseInsensitive ? value.toLowerCase() : value;
+      const patternValue = normalizePattern(pattern);
+      const maximum = Math.min(patternValue.length - 1, prefix.length);
       for (let length = maximum; length > withheldChars; length -= 1) {
-        if (value.endsWith(pattern.slice(0, length))) {
+        if (prefix.endsWith(patternValue.slice(0, length))) {
           withheldChars = length;
           break;
         }
@@ -163,10 +186,12 @@ export class BoundedRedactor {
     if (this.#overflow) return 0;
     let earliest: number | undefined;
     for (const pattern of this.#patterns) {
-      let start = value.indexOf(pattern);
+      const needle = normalizePattern(pattern);
+      const haystack = pattern.caseInsensitive ? value.toLowerCase() : value;
+      let start = haystack.indexOf(needle);
       while (start >= 0) {
-        if (start < boundary && start + pattern.length > boundary && (earliest === undefined || start < earliest)) earliest = start;
-        start = value.indexOf(pattern, start + 1);
+        if (start < boundary && start + needle.length > boundary && (earliest === undefined || start < earliest)) earliest = start;
+        start = haystack.indexOf(needle, start + 1);
       }
     }
     return earliest;
@@ -214,6 +239,7 @@ export class BoundedRedactionAccumulator {
   readonly #holdChars: number;
   #pending = "";
   #finished = false;
+  #finalText: string | undefined;
   #chunks = 0;
   #totalInputBytes = 0;
 
@@ -224,7 +250,9 @@ export class BoundedRedactionAccumulator {
   }
 
   append(value: string | Buffer): void {
-    if (this.#finished) throw new Error("bounded redaction accumulator is already finished");
+    // A finalized stream must not receive data, but a late Node stream event
+    // must never turn a diagnostic read into an uncaught lifecycle exception.
+    if (this.#finished) return;
     const input = Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8");
     this.#totalInputBytes += input.length;
     this.#chunks += 1;
@@ -277,24 +305,39 @@ export class BoundedRedactionAccumulator {
     return `${marker}${utf8Suffix(tail, available)}`;
   }
 
-  /** A bounded live view that does not close the accumulator or decoder. */
+  get finalized(): boolean { return this.#finished; }
+
+  /** Non-destructive live view; it never closes the decoder or stream. */
   snapshot(): string {
+    if (this.#finalText !== undefined) return this.#finalText;
     const preview = this.#redactor.preview(this.#pending);
     return this.#render(preview.value, preview.withheld);
   }
 
-  text(): string {
+  /** Idempotent exact-once finalization for an ended stream. */
+  finalize(): string {
+    if (this.#finalText !== undefined) return this.#finalText;
     this.finish();
-    return this.#render();
+    this.#finalText = this.#render();
+    return this.#finalText;
   }
+
+  /** Compatibility alias for callers that explicitly request final text. */
+  text(): string { return this.finalize(); }
 }
 
-export function sanitizeError(error: unknown, redactor: BoundedRedactor, limitBytes = 4_096): Error {
+export function sanitizeError(error: unknown, redactor: BoundedRedactor, limitBytes = 4_096, stackLimitBytes = 512): Error {
   const source = error instanceof Error ? error : new Error(String(error));
   const safe = new Error(truncateUtf8(redactor.redact(source.message), limitBytes));
   safe.name = truncateUtf8(redactor.redact(source.name), 128);
+  Object.defineProperty(safe, "stack", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: truncateUtf8(`${safe.name}: ${safe.message}`, stackLimitBytes),
+  });
   const code = (source as NodeJS.ErrnoException).code;
-  if (typeof code === "string") Object.defineProperty(safe, "code", { value: code, enumerable: true });
+  if (typeof code === "string") Object.defineProperty(safe, "code", { value: truncateUtf8(redactor.redact(code), 128), enumerable: true });
   return Object.freeze(safe);
 }
 
@@ -306,31 +349,65 @@ export type SanitizedFailureRecord = Readonly<{ error: Error; category: FailureC
  * The first protocol/startup failure remains primary; secondary causes are
  * sanitized before storage and overflow becomes an explicit summary record.
  */
+function failureRepresentationBytes(error: Error): number {
+  const code = (error as NodeJS.ErrnoException).code;
+  return utf8ByteLength(error.name) + utf8ByteLength(error.message) + utf8ByteLength(error.stack ?? "") + (typeof code === "string" ? utf8ByteLength(code) : 0);
+}
+
+function boundedSummaryError(message: string): Error {
+  const summary = new Error(message);
+  summary.name = "PlanRPCDiagnosticSummary";
+  Object.defineProperty(summary, "stack", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: `${summary.name}: ${summary.message}`,
+  });
+  return Object.freeze(summary);
+}
+
 export class BoundedFailureAccumulator {
   static readonly MAX_RECORDS = 16;
   static readonly MAX_BYTES = 16 * 1024;
+  static readonly AGGREGATE_OVERHEAD_BYTES = 1_024;
+  static readonly RETAINED_RECORD_BYTES = BoundedFailureAccumulator.MAX_BYTES - BoundedFailureAccumulator.AGGREGATE_OVERHEAD_BYTES;
+  static readonly MAX_MESSAGE_BYTES = 640;
+  static readonly MAX_STACK_BYTES = 128;
   readonly #records: SanitizedFailureRecord[] = [];
   #bytes = 0;
   #droppedRecords = 0;
   #droppedBytes = 0;
 
+  #removeRecord(index: number): void {
+    const [removed] = this.#records.splice(index, 1);
+    if (!removed) return;
+    const bytes = failureRepresentationBytes(removed.error);
+    this.#bytes -= bytes;
+    this.#droppedRecords += 1;
+    this.#droppedBytes += bytes;
+  }
+
   add(value: unknown, category: FailureCategory, redactor: BoundedRedactor): Error {
-    const error = sanitizeError(value, redactor);
-    const bytes = utf8ByteLength(error.message);
+    const error = sanitizeError(value, redactor, BoundedFailureAccumulator.MAX_MESSAGE_BYTES, BoundedFailureAccumulator.MAX_STACK_BYTES);
+    const bytes = failureRepresentationBytes(error);
     const isPrimary = category === "protocol" || category === "startup";
     const primaryIndex = this.#records.findIndex(record => record.category === "protocol" || record.category === "startup");
-    if (isPrimary && primaryIndex === -1 && (this.#records.length >= BoundedFailureAccumulator.MAX_RECORDS || this.#bytes + bytes > BoundedFailureAccumulator.MAX_BYTES)) {
-      const removed = this.#records.pop();
-      if (removed) {
-        this.#bytes -= utf8ByteLength(removed.error.message);
-        this.#droppedBytes += utf8ByteLength(removed.error.message);
+
+    // A late primary is promoted only after evicting as many secondary records
+    // as necessary. The retained records plus all error metadata/stack bytes
+    // remain below the aggregate budget, not merely below a record count.
+    if (isPrimary && primaryIndex === -1) {
+      while ((this.#records.length >= BoundedFailureAccumulator.MAX_RECORDS || this.#bytes + bytes > BoundedFailureAccumulator.RETAINED_RECORD_BYTES) && this.#records.length > 0) {
+        this.#removeRecord(this.#records.length - 1);
       }
-      this.#records.unshift({ error, category });
-      this.#bytes += bytes;
-      this.#droppedRecords += 1;
-      return error;
+      if (this.#bytes + bytes <= BoundedFailureAccumulator.RETAINED_RECORD_BYTES) {
+        this.#records.unshift({ error, category });
+        this.#bytes += bytes;
+        return error;
+      }
     }
-    if (this.#records.length >= BoundedFailureAccumulator.MAX_RECORDS || this.#bytes + bytes > BoundedFailureAccumulator.MAX_BYTES) {
+
+    if (this.#records.length >= BoundedFailureAccumulator.MAX_RECORDS || this.#bytes + bytes > BoundedFailureAccumulator.RETAINED_RECORD_BYTES) {
       this.#droppedRecords += 1;
       this.#droppedBytes += bytes;
       return error;
@@ -341,8 +418,10 @@ export class BoundedFailureAccumulator {
   }
 
   get length(): number { return this.#records.length; }
+  get retainedBytes(): number { return this.#bytes; }
   get droppedRecords(): number { return this.#droppedRecords; }
   get droppedBytes(): number { return this.#droppedBytes; }
+  get totalBudgetBytes(): number { return BoundedFailureAccumulator.MAX_BYTES; }
   hasAny(): boolean { return this.#records.length > 0 || this.#droppedRecords > 0; }
   hasCategory(category: FailureCategory): boolean { return this.#records.some(record => record.category === category); }
 
@@ -354,10 +433,17 @@ export class BoundedFailureAccumulator {
       : [this.#records[primaryIndex]!, ...this.#records.slice(0, primaryIndex), ...this.#records.slice(primaryIndex + 1)];
     const errors = ordered.map(record => record.error);
     if (this.#droppedRecords > 0) {
-      errors.push(Object.freeze(new Error(`Plan RPC omitted ${this.#droppedRecords} secondary failure record(s) and ${this.#droppedBytes} failure byte(s) after the bounded diagnostic budget`)));
+      errors.push(boundedSummaryError(`Plan RPC omitted ${this.#droppedRecords} secondary failure record(s) and ${this.#droppedBytes} failure byte(s) after the bounded diagnostic budget`));
     }
     if (errors.length === 1) return errors[0]!;
-    return new AggregateError(errors, "Plan RPC probe failed with primary and bounded secondary diagnostics");
+    const aggregate = new AggregateError(errors, "Plan RPC probe failed with primary and bounded secondary diagnostics");
+    Object.defineProperty(aggregate, "stack", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: "AggregateError: Plan RPC probe failed with primary and bounded secondary diagnostics",
+    });
+    return aggregate;
   }
 }
 

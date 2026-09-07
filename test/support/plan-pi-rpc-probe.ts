@@ -278,8 +278,10 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
   const tail = stdoutDecoder.end();
   if (tail) consumeStdoutText(tail);
   classifyLifecycle(state, recordCleanupFailure);
+  outputTail.finalize();
+  errorTail.finalize();
   const failure = combineFailures(state);
   if (failure) throw failure;
   if (!response) throw new Error("Plan RPC probe completed without a response");
-  return { state: response, output: outputTail.text(), errors: errorTail.text() };
+  return { state: response, output: outputTail.finalize(), errors: errorTail.finalize() };
 }
