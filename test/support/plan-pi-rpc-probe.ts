@@ -1,12 +1,15 @@
+import { StringDecoder } from "node:string_decoder";
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import type { ProcessLaunch } from "../../src/pi/pi-process.js";
 import {
-  BoundedTail,
-  collectSensitiveValues,
+  BoundedFailureAccumulator,
+  BoundedRedactionAccumulator,
+  BoundedRedactor,
+  FailureCategory,
   PI_CHILD_OUTPUT_LIMIT_BYTES,
   PI_CHILD_STDERR_LIMIT_BYTES,
   preparePiChildLaunch,
-  redactText,
+  truncateUtf8,
 } from "./pi-child-support.js";
 
 const RESPONSE_TIMEOUT_MS = 20_000;
@@ -18,11 +21,9 @@ const TERMINATION_GRACE_MS = 5_000;
 const NATURAL_EXIT_GRACE_MS = 50;
 
 type ExitObservation = { code: number | null; signal: string | null };
-type FailureCategory = "protocol" | "startup" | "lifecycle" | "cleanup";
-type FailureRecord = { error: Error; category: FailureCategory };
 
-interface ProbeState {
-  failures: FailureRecord[];
+type ProbeState = {
+  failures: BoundedFailureAccumulator;
   responseAccepted: boolean;
   exit?: ExitObservation;
   close?: ExitObservation;
@@ -30,16 +31,12 @@ interface ProbeState {
   gracefulTeardownRequested: boolean;
   escalation?: "SIGTERM" | "SIGKILL";
   exitFailureRecorded: boolean;
-}
+};
 
 export interface PlanRpcProbeResult {
   state: Record<string, unknown>;
   output: string;
   errors: string;
-}
-
-function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
 }
 
 function remainingMs(deadlineAt: number): number {
@@ -55,12 +52,7 @@ function terminationDescription(observation: ExitObservation): string {
 }
 
 function combineFailures(state: ProbeState): Error | undefined {
-  if (state.failures.length === 0) return undefined;
-  const primaryIndex = state.failures.findIndex(({ category }) => category === "protocol" || category === "startup");
-  const index = primaryIndex === -1 ? 0 : primaryIndex;
-  const ordered = [state.failures[index]!, ...state.failures.slice(0, index), ...state.failures.slice(index + 1)];
-  if (ordered.length === 1) return ordered[0]!.error;
-  return new AggregateError(ordered.map(({ error }) => error), "Plan RPC probe failed with primary and secondary diagnostics");
+  return state.failures.toError();
 }
 
 async function waitForClose(child: ChildProcess, state: ProbeState, deadlineAt: number, maxWaitMs = Number.POSITIVE_INFINITY): Promise<void> {
@@ -89,12 +81,12 @@ function recordFailure(
   state: ProbeState,
   error: unknown,
   category: FailureCategory,
+  redactor: BoundedRedactor,
   responseSettled: { value: boolean },
   responseTimer: { value: ReturnType<typeof setTimeout> | undefined },
   rejectResponse: (error: Error) => void,
 ): void {
-  const failure = asError(error);
-  state.failures.push({ error: failure, category });
+  const failure = state.failures.add(error, category, redactor);
   if (!responseSettled.value && category !== "cleanup") {
     responseSettled.value = true;
     if (responseTimer.value) clearTimeout(responseTimer.value);
@@ -172,6 +164,7 @@ function classifyLifecycle(state: ProbeState, recordCleanupFailure: (error: unkn
 export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeResult> {
   const startedAt = Date.now();
   const prepared = preparePiChildLaunch(spec);
+  const redactor = new BoundedRedactor(process.env, spec.env);
   const child = spawnChild(prepared.command, [...prepared.args], {
     cwd: spec.cwd,
     env: prepared.environment,
@@ -180,15 +173,15 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
   if (!child.stdin || !child.stdout || !child.stderr) throw new Error("Plan RPC child did not expose piped stdio");
   const deadlineAt = startedAt + TOTAL_DEADLINE_MS;
   const state: ProbeState = {
-    failures: [],
+    failures: new BoundedFailureAccumulator(),
     responseAccepted: false,
     terminalState: "running",
     gracefulTeardownRequested: false,
     exitFailureRecorded: false,
   };
-  const outputTail = new BoundedTail(PI_CHILD_OUTPUT_LIMIT_BYTES);
-  const errorTail = new BoundedTail(PI_CHILD_STDERR_LIMIT_BYTES);
-  const sensitiveValues = collectSensitiveValues(process.env, spec.env);
+  const outputTail = new BoundedRedactionAccumulator(PI_CHILD_OUTPUT_LIMIT_BYTES, redactor);
+  const errorTail = new BoundedRedactionAccumulator(PI_CHILD_STDERR_LIMIT_BYTES, redactor);
+  const stdoutDecoder = new StringDecoder("utf8");
   let lineBuffer = "";
   const responseSettled = { value: false };
   const responseTimer: { value: ReturnType<typeof setTimeout> | undefined } = { value: undefined };
@@ -196,11 +189,11 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
   let rejectResponse!: (error: Error) => void;
 
   const record = (error: unknown, category: FailureCategory): void => {
-    recordFailure(state, error, category, responseSettled, responseTimer, rejectResponse);
+    recordFailure(state, error, category, redactor, responseSettled, responseTimer, rejectResponse);
   };
   const recordCleanupFailure = (error: unknown): void => { record(error, "cleanup"); };
   const acceptResponse = (data: Record<string, unknown>): void => {
-    if (responseSettled.value || state.responseAccepted || state.failures.length > 0) return;
+    if (responseSettled.value || state.responseAccepted || state.failures.hasAny()) return;
     state.responseAccepted = true;
     responseSettled.value = true;
     if (responseTimer.value) clearTimeout(responseTimer.value);
@@ -220,18 +213,24 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
     }
     acceptResponse(recordValue["data"] as Record<string, unknown>);
   };
-
-  child.stdout.on("data", chunk => {
-    const text = chunk.toString();
-    outputTail.append(chunk);
+  const consumeStdoutText = (text: string): void => {
     lineBuffer += text;
     if (Buffer.byteLength(lineBuffer, "utf8") > PI_CHILD_OUTPUT_LIMIT_BYTES) {
       record(new Error("Plan RPC child emitted an unterminated stdout line beyond the bounded output limit"), "protocol");
-      lineBuffer = lineBuffer.slice(-PI_CHILD_OUTPUT_LIMIT_BYTES);
+      lineBuffer = Buffer.from(lineBuffer, "utf8").subarray(-PI_CHILD_OUTPUT_LIMIT_BYTES).toString("utf8");
     }
     const lines = lineBuffer.split("\n");
     lineBuffer = lines.pop() ?? "";
     for (const line of lines) inspectLine(line);
+  };
+
+  child.stdout.on("data", chunk => {
+    outputTail.append(chunk);
+    const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    for (let offset = 0; offset < input.length; offset += 8_192) {
+      const text = stdoutDecoder.write(input.subarray(offset, Math.min(input.length, offset + 8_192)));
+      if (text) consumeStdoutText(text);
+    }
   });
   child.stderr.on("data", chunk => { errorTail.append(chunk); });
   child.stdin.on("error", error => { record(error, state.responseAccepted ? "lifecycle" : "startup"); });
@@ -246,7 +245,7 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
   });
   child.once("close", (code, signal) => {
     state.close = { code, signal };
-    if (!state.exit) state.terminalState = state.failures.some(({ category }) => category === "startup") ? "startup-error" : "closed-without-exit";
+    if (!state.exit) state.terminalState = state.failures.hasCategory("startup") ? "startup-error" : "closed-without-exit";
   });
   const responsePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
     resolveResponse = resolve;
@@ -261,7 +260,9 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
     response = await responsePromise;
     await nextTurn();
   } catch (error) {
-    if (!state.failures.some(({ error: existing }) => existing === error)) {
+    // recordFailure already rejects with the sanitized retained primary error.
+    // Only a synchronous write failure reaches this branch without a record.
+    if (!state.failures.hasAny()) {
       responseSettled.value = true;
       if (responseTimer.value) clearTimeout(responseTimer.value);
       record(error, "protocol");
@@ -274,9 +275,11 @@ export async function probePlanRpc(spec: ProcessLaunch): Promise<PlanRpcProbeRes
     catch (error) { recordCleanupFailure(error); }
   }
   await nextTurn();
+  const tail = stdoutDecoder.end();
+  if (tail) consumeStdoutText(tail);
   classifyLifecycle(state, recordCleanupFailure);
   const failure = combineFailures(state);
   if (failure) throw failure;
   if (!response) throw new Error("Plan RPC probe completed without a response");
-  return { state: response, output: outputTail.toString(), errors: redactText(errorTail.toString(), sensitiveValues) };
+  return { state: response, output: outputTail.text(), errors: errorTail.text() };
 }

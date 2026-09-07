@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { inspect } from "node:util";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
 import { RealPiProcessFactory } from "./support/real-pi-process.js";
 
@@ -126,6 +127,49 @@ test("real Pi diagnostics bound and redact large secret-bearing stderr", async (
     assert.equal(diagnostic.includes(secret), false);
     assert.match(diagnostic, /<redacted>/u);
     assert.equal(real.errors.length, 0, "stderr must not be duplicated into process errors");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real Pi redacts fragmented plaintext, base64, hex, and URL secrets from every error view", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-redaction-"));
+  const probe = path.join(root, "redaction-probe.mjs");
+  const ambientSecrets = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`HOST_SECRET_${index}`, `host secret/${index}+987654321==`])) as Record<string, string>;
+  const secret = ambientSecrets["HOST_SECRET_99"]!;
+  const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), Buffer.from(secret, "utf8").toString("hex"), encodeURIComponent(secret)];
+  await writeFile(probe, `const forms = ${JSON.stringify(forms)}; for (const value of forms) for (const character of value) process.stderr.write(character); process.exit(7);\n`, { mode: 0o600 });
+  const factory = new RealPiProcessFactory(ambientSecrets);
+  try {
+    const real = await factory.spawn(scriptSpec(probe, root, { HOST_SECRET_99: secret }));
+    await real.waitForExit(5_000);
+    const diagnostic = real.diagnostic("secret diagnostic");
+    const rendered = `${real.stderrOutput}\n${diagnostic}`;
+    for (const form of forms) assert.equal(rendered.includes(form), false, `secret form leaked: ${form}`);
+    assert.match(rendered, /<redacted>/u);
+
+    let thrown: unknown;
+    try { real.stdin.write(secret); } catch (error) { thrown = error; }
+    assert.ok(thrown instanceof Error);
+    const surfaces = [thrown.message, JSON.stringify(thrown), inspect(thrown, { depth: 6, showHidden: true }), Object.keys(thrown).join("\\n")].join("\\n");
+    for (const form of forms) assert.equal(surfaces.includes(form), false, `causal error leaked: ${form}`);
+    assert.equal("process" in thrown, false);
+    assert.equal("launch" in thrown, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real Pi diagnostic accumulator reports a valid UTF-8 byte bound under fragmented large streams", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-pi-utf8-bound-"));
+  const probe = path.join(root, "utf8-probe.mjs");
+  await writeFile(probe, "process.stderr.write('€'.repeat(100000), () => process.exit(7));\n", { mode: 0o600 });
+  try {
+    const real = await new RealPiProcessFactory().spawn(scriptSpec(probe, root));
+    await real.waitForExit(5_000);
+    assert.ok(Buffer.byteLength(real.stderrOutput, "utf8") <= 8_192);
+    assert.match(real.stderrOutput, /truncated/u);
+    assert.ok(real.diagnostic("UTF-8 bound").length > 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

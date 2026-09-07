@@ -11,7 +11,16 @@ import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
 import type { PiProcess, PiProcessFactory, ProcessLaunch } from "../src/pi/pi-process.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
-import { BoundedTail, buildPiChildEnvironment, collectSensitiveValues, PI_CHILD_STDERR_LIMIT_BYTES, preparePiChildLaunch, redactText } from "./support/pi-child-support.js";
+import {
+  BoundedRedactionAccumulator,
+  BoundedRedactor,
+  buildPiChildEnvironment,
+  PI_CHILD_OUTPUT_LIMIT_BYTES,
+  PI_CHILD_STDERR_LIMIT_BYTES,
+  preparePiChildLaunch,
+  sanitizeError,
+  sanitizeLaunch,
+} from "./support/pi-child-support.js";
 import { run, runtime, testWorkspaceReadiness } from "./support/fixtures.js";
 
 const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
@@ -25,31 +34,32 @@ class ChildPiProcess extends EventEmitter implements PiProcess {
   readonly stdin: PiProcess["stdin"];
   readonly stdout: PiProcess["stdout"];
   readonly stderr: PiProcess["stderr"];
-  readonly output: string[] = [];
   readonly errors: string[] = [];
-  private readonly stderrTail = new BoundedTail(PI_CHILD_STDERR_LIMIT_BYTES);
-  private readonly redactionValues: readonly string[];
+  private readonly stdoutTail: BoundedRedactionAccumulator;
+  private readonly stderrTail: BoundedRedactionAccumulator;
+  private readonly redactor: BoundedRedactor;
   exitCode: number | null = null;
 
-  constructor(readonly child: ChildProcess, redactionValues: readonly string[]) {
+  constructor(readonly child: ChildProcess, redactor: BoundedRedactor) {
     super();
     if (!child.stdin || !child.stdout || !child.stderr) throw new Error("Pi child did not expose piped stdio");
+    this.redactor = redactor;
+    this.stdoutTail = new BoundedRedactionAccumulator(PI_CHILD_OUTPUT_LIMIT_BYTES, redactor);
+    this.stderrTail = new BoundedRedactionAccumulator(PI_CHILD_STDERR_LIMIT_BYTES, redactor);
     this.stdin = { write: data => child.stdin!.write(data) };
     this.stdout = child.stdout;
     this.stderr = child.stderr;
-    child.stdout.on("data", chunk => {
-      this.output.push(chunk.toString());
-      while (this.output.join("").length > 65_536) this.output.shift();
-    });
+    child.stdout.on("data", chunk => this.stdoutTail.append(chunk));
     child.stderr.on("data", chunk => this.stderrTail.append(chunk));
-    child.stdin.on("error", error => this.errors.push(`stdin: ${redactText(error.message, this.redactionValues)}`));
-    child.once("error", error => this.errors.push(`child: ${redactText(error.message, this.redactionValues)}`));
-    this.redactionValues = redactionValues;
+    child.stdin.on("error", error => this.errors.push(`stdin: ${sanitizeError(error, this.redactor).message}`));
+    child.once("error", error => this.errors.push(`child: ${sanitizeError(error, this.redactor).message}`));
     child.once("exit", (code, signal) => {
-      this.exitCode = code ?? (signal === "SIGTERM" ? 143 : 1);
+      this.exitCode = code;
       this.emit("exit", code, signal);
     });
   }
+
+  get output(): string[] { return [this.stdoutTail.text()]; }
 
   override on(event: "exit", listener: (code: number | null, signal: string | null) => void): this {
     return super.on(event, listener);
@@ -87,8 +97,9 @@ class ChildPiProcessFactory implements PiProcessFactory {
       env: prepared.environment,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    const spawned = new ChildPiProcess(child, collectSensitiveValues(process.env, spec.env));
-    this.launches.push(spec);
+    const redactor = new BoundedRedactor(process.env, spec.env);
+    const spawned = new ChildPiProcess(child, redactor);
+    this.launches.push(sanitizeLaunch(spec, prepared.environment, redactor));
     this.processes.push(spawned);
     onSpawn?.(spawned);
     return spawned;
@@ -240,12 +251,13 @@ async function runRealTuiFooterProbe(options: {
     }),
     stdio: ["pipe", "pipe", "pipe"],
   });
-  let output = "";
-  const stderrTail = new BoundedTail(PI_CHILD_STDERR_LIMIT_BYTES);
-  const sensitiveValues = collectSensitiveValues(process.env, {
+  const redactor = new BoundedRedactor(process.env, {
     HOME: options.homeDir,
     WIKI_HOME: options.wikiHomeDir,
   });
+  const outputTail = new BoundedRedactionAccumulator(PI_CHILD_OUTPUT_LIMIT_BYTES, redactor);
+  let output = "";
+  const stderrTail = new BoundedRedactionAccumulator(PI_CHILD_STDERR_LIMIT_BYTES, redactor);
   let sentExit = false;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let stableFrame: string[] | undefined;
@@ -269,20 +281,24 @@ async function runRealTuiFooterProbe(options: {
       }, 150);
     };
     child.stdout?.on("data", chunk => {
-      output += chunk.toString();
+      outputTail.append(chunk);
+      output = outputTail.snapshot();
       scheduleExitAfterStableFrame();
     });
     child.stderr?.on("data", chunk => { stderrTail.append(chunk); });
     child.once("error", error => {
       clearTimeout(timer);
       if (settleTimer !== undefined) clearTimeout(settleTimer);
-      reject(error);
+      reject(sanitizeError(error, redactor));
     });
     child.once("exit", code => {
       clearTimeout(timer);
       if (settleTimer !== undefined) clearTimeout(settleTimer);
-      if (code !== 0) reject(new Error(`real Pi TUI footer probe exited with ${code ?? "unknown"}`));
-      else resolve({ output, stderr: redactText(stderrTail.toString(), sensitiveValues), frame: stableFrame ?? terminalFrame(output) });
+      if (code !== 0) reject(sanitizeError(new Error(`real Pi TUI footer probe exited with ${code ?? "unknown"}`), redactor));
+      else {
+        output = outputTail.text();
+        resolve({ output, stderr: stderrTail.text(), frame: stableFrame ?? terminalFrame(output) });
+      }
     });
   });
   try { return await ready; }

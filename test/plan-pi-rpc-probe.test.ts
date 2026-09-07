@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { inspect } from "node:util";
 import test from "node:test";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
 import { probePlanRpc } from "./support/plan-pi-rpc-probe.js";
@@ -74,6 +75,42 @@ test("Plan RPC probe preserves malformed RPC as primary and reports real exit fa
       return true;
     },
   );
+});
+
+test("Plan RPC redacts encoded secrets from primary, secondary, aggregate, and inspection paths", async () => {
+  const secret = "Plan Encoded/Secret+246813579==";
+  const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), Buffer.from(secret, "utf8").toString("hex"), encodeURIComponent(secret)];
+  const extensionLine = JSON.stringify({ type: "extension_error", extensionPath: "secret-extension.mjs", error: forms.join(" | ") });
+  const script = `process.stdout.write(${JSON.stringify(responseLine)}); process.stdout.write(${JSON.stringify(extensionLine + "\n")}); process.exit(7);`;
+  let thrown: unknown;
+  try {
+    await probePlanRpc({ ...childSpec(script), env: { OPENAI_API_KEY: secret } });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown instanceof AggregateError);
+  const surfaces = [
+    thrown.message,
+    JSON.stringify(thrown),
+    inspect(thrown, { depth: 8, showHidden: true }),
+    thrown.errors.map(error => error instanceof Error ? `${error.name}:${error.message}` : String(error)).join("\n"),
+  ].join("\n");
+  for (const form of forms) assert.equal(surfaces.includes(form), false, `Plan secret form leaked: ${form}`);
+  assert.match(surfaces, /Plan extension failed to load/u);
+  assert.ok(thrown.errors.length <= 17);
+});
+
+test("Plan RPC retains bounded UTF-8 tails and failure records under protocol flood", async () => {
+  const lines = 5_000;
+  const script = `process.stdout.write(${JSON.stringify(responseLine)}, () => { let index = 0; const write = () => { while (index < ${lines}) { if (!process.stdout.write(JSON.stringify({ type: "extension_error", error: "flood-" + index + "-€" }) + "\\\\n")) return process.stdout.once("drain", write); index += 1; } process.stderr.write("€".repeat(10000), () => process.exit(7)); }; write(); });`;
+  let thrown: unknown;
+  try { await probePlanRpc(childSpec(script)); }
+  catch (error) { thrown = error; }
+  assert.ok(thrown instanceof AggregateError);
+  assert.ok(thrown.errors.length <= 17, `failure records were not bounded: ${thrown.errors.length}`);
+  const messages = thrown.errors.map(error => error instanceof Error ? error.message : String(error)).join("\n");
+  assert.ok(Buffer.byteLength(messages, "utf8") <= 16 * 1024 + 512);
+  assert.match(messages, /omitted \d+ secondary failure record/u);
 });
 
 test("Plan RPC probe preserves startup failure and reports its real exit diagnostic", async () => {
