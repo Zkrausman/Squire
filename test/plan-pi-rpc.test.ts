@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,17 +8,11 @@ import { buildPiCommand } from "../src/pi/pi-command.js";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
 import { buildPlanSystemPrompt } from "../src/plan/plan-instructions.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
+import { probePlanRpc } from "./support/plan-pi-rpc-probe.js";
 import { run, runtime } from "./support/fixtures.js";
 
 const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
 const WIKI_ROOT = "/ticket/runtime/node_modules/@zosmaai/pi-llm-wiki";
-
-function cleanPiEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
-  return {
-    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_"))),
-    ...overrides,
-  };
-}
 
 function launchSpec(root: string, agentDir: string, homeDir: string, wikiHomeDir: string, extensionPaths: readonly string[]): ProcessLaunch {
   const command = buildPiCommand({
@@ -50,71 +43,6 @@ function launchSpec(root: string, agentDir: string, homeDir: string, wikiHomeDir
   return { ...command, env: { ...command.env, PI_OFFLINE: "1" } };
 }
 
-async function waitForChildExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
-  if (child.exitCode !== null) return;
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      child.off("exit", onExit);
-      reject(new Error("Plan RPC child exit timeout"));
-    }, timeoutMs);
-    const onExit = (): void => {
-      clearTimeout(timer);
-      resolve();
-    };
-    child.once("exit", onExit);
-  });
-}
-
-async function terminateChild(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null) return;
-  child.kill("SIGTERM");
-  try {
-    await waitForChildExit(child, 5_000);
-  } catch (error) {
-    if (child.exitCode === null) child.kill("SIGKILL");
-    await waitForChildExit(child, 5_000).catch(() => { throw error; });
-  }
-}
-
-async function probeRpc(spec: ProcessLaunch): Promise<{ state: Record<string, unknown>; output: string; errors: string }> {
-  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: cleanPiEnvironment({ ...spec.env, PI_OFFLINE: "1" }), stdio: ["pipe", "pipe", "pipe"] });
-  let output = "";
-  let errors = "";
-  let settled = false;
-  const result = new Promise<{ state: Record<string, unknown>; output: string; errors: string }>((resolve, reject) => {
-    const timer = setTimeout(() => finish(new Error("real Plan RPC probe timed out")), 20_000);
-    const finish = (error?: Error, state?: Record<string, unknown>): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve({ state: state!, output, errors });
-    };
-    child.stdout.on("data", chunk => {
-      output += chunk.toString();
-      for (const line of output.split("\n").slice(0, -1)) {
-        let record: Record<string, unknown>;
-        try { record = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-        if (record["type"] === "extension_error") finish(new Error(`Plan extension failed to load: ${line}`));
-        if (record["id"] === "probe-state" && record["type"] === "response") {
-          if (record["success"] !== true || !record["data"] || typeof record["data"] !== "object") finish(new Error(`Plan RPC get_state failed: ${line}`));
-          else finish(undefined, record["data"] as Record<string, unknown>);
-        }
-      }
-    });
-    child.stderr.on("data", chunk => { errors += chunk.toString(); });
-    child.stdin.on("error", error => finish(error));
-    child.once("error", error => finish(error));
-    child.once("exit", code => { if (!settled && code !== 0) finish(new Error(`Plan RPC probe exited with ${code ?? "unknown"}`)); });
-    child.stdin.write(`${JSON.stringify({ id: "probe-state", type: "get_state" })}\n`);
-  });
-  try {
-    return await result;
-  } finally {
-    await terminateChild(child);
-  }
-}
-
 test("real Pi RPC loads the materialized Plan extension with the fixed Plan role policy", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-plan-rpc-"));
   const workspace = path.join(root, "workspace");
@@ -139,7 +67,7 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
     const spec: ProcessLaunch = { ...baseSpec, args: [...baseSpec.args, "--extension", probePath] };
     assert.ok(spec.args.includes("--offline"));
     assert.equal(spec.args[spec.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
-    const probe = await probeRpc(spec);
+    const probe = await probePlanRpc(spec);
     assert.equal((probe.state["model"] as Record<string, unknown>)["provider"], "openai-codex");
     assert.equal((probe.state["model"] as Record<string, unknown>)["id"], "gpt-5.6-luna");
     assert.equal(probe.state["thinkingLevel"], "high");
