@@ -7,6 +7,7 @@ import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
 import { buildPiCommand } from "../src/pi/pi-command.js";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
 import { buildPlanSystemPrompt } from "../src/plan/plan-instructions.js";
+import { acquireActualPiResource, type ActualPiResourceLease } from "./support/actual-pi-resource.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
 import { probePlanRpc } from "./support/plan-pi-rpc-probe.js";
 import { run, runtime } from "./support/fixtures.js";
@@ -55,6 +56,7 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
   resolved.pi.executable = PI_CLI;
   resolved.llmWiki.root = WIKI_ROOT;
   const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, wikiInstallation: { root: WIKI_ROOT, installationId: resolved.llmWiki.installationId, version: resolved.llmWiki.version }, runLifecycleAuthority: store });
+  let actualPiResource: ActualPiResourceLease | undefined;
   try {
     const materialized = await materializer.materialize({ runId: "run_example01", runtime: resolved, wikiProfile: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" }, workspace });
     await mkdir(path.join(materialized.wikiHomeDir, ".llm-wiki"), { recursive: true, mode: 0o700 });
@@ -65,6 +67,7 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
     await writeFile(probePath, `export default function (pi) { pi.on("session_start", (_event, context) => context.ui.notify("ACTIVE_TOOLS:" + pi.getActiveTools().join(","), "info")); }\n`, { mode: 0o600 });
     const baseSpec = launchSpec(root, materialized.agentDir, materialized.homeDir, materialized.wikiHomeDir, planExtensions!);
     const spec: ProcessLaunch = { ...baseSpec, args: [...baseSpec.args, "--extension", probePath] };
+    actualPiResource = await acquireActualPiResource();
     assert.ok(spec.args.includes("--offline"));
     assert.equal(spec.args[spec.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
     const probe = await probePlanRpc(spec);
@@ -78,5 +81,8 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
     assert.equal(probe.errors, "");
     assert.match(String(probe.state["sessionFile"]), /sessions/u);
     assert.match(await readFile(materialized.planExtensionPath!, "utf8"), /squire_submit_plan/u);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    try { if (actualPiResource) await actualPiResource.release(); }
+    finally { await rm(root, { recursive: true, force: true }); }
+  }
 });

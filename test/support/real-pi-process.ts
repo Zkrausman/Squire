@@ -112,7 +112,7 @@ export class RealPiProcess extends EventEmitter implements PiProcess {
     child.once("exit", (code, signal) => {
       this.exitObservedAt = Date.now();
       this.exitSignal = signal;
-      this.exitCode = code;
+      this.exitCode = code ?? (signal === "SIGTERM" ? 143 : signal === "SIGKILL" ? 137 : 1);
       this.settle("exited", code, signal);
     });
     child.once("close", () => {

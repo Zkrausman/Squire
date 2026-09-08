@@ -1,30 +1,29 @@
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
 import { BoundedFailureAccumulator } from "./support/pi-child-support.js";
 import { probePlanRpc } from "./support/plan-pi-rpc-probe.js";
 
-const responseLine = `${JSON.stringify({ id: "probe-state", type: "response", command: "get_state", success: true, data: { ok: true } })}\n`;
-const malformedResponseLine = `${JSON.stringify({ id: "probe-state", type: "response", command: "get_state", success: false, error: "primary RPC failure" })}\n`;
-const extensionErrorLine = `${JSON.stringify({ type: "extension_error", extensionPath: "termination-extension.mjs", event: "session_start", error: "termination failure" })}\n`;
+const planRpcFixtureChild = fileURLToPath(new URL("./support/plan-pi-rpc-fixture-child.js", import.meta.url));
+type PlanRpcFixtureMode = "environment" | "graceful-exit" | "spontaneous-exit" | "extension-failure" | "malformed-exit" | "redaction" | "flood" | "late-primary";
 
-function childSpec(script: string): ProcessLaunch {
-  return { command: process.execPath, args: ["-e", script], cwd: process.cwd(), env: {} };
+function childSpec(mode: PlanRpcFixtureMode, data?: string): ProcessLaunch {
+  return { command: process.execPath, args: [planRpcFixtureChild, mode, ...(data === undefined ? [] : [data])], cwd: process.cwd(), env: {} };
 }
 
-function responseThen(scriptAfterResponse: string): ProcessLaunch {
-  return childSpec(`process.stdout.write(${JSON.stringify(responseLine)});${scriptAfterResponse}`);
+function responseThen(mode: "spontaneous-exit"): ProcessLaunch {
+  return childSpec(mode);
 }
 
-function gracefulChild(onEnd: string): ProcessLaunch {
-  return childSpec(`process.stdout.write(${JSON.stringify(responseLine)});process.stdin.resume();process.stdin.on('end',()=>{${onEnd}});`);
+function gracefulChild(mode: "graceful-exit" | "extension-failure"): ProcessLaunch {
+  return childSpec(mode);
 }
 
 test("Plan RPC child uses the exact controller runtime and allowlisted environment", async () => {
-  const script = `const data = { node: process.execPath, path: process.env.PATH, home: process.env.HOME ?? null, secret: process.env.OPENAI_API_KEY ?? null, nodeOptions: process.env.NODE_OPTIONS ?? null, ambientPi: process.env.PI_AMBIENT_BAD ?? null }; process.stdout.write(JSON.stringify({ id: "probe-state", type: "response", command: "get_state", success: true, data }) + "\\n"); process.stdin.resume(); process.stdin.on("end", () => process.exit(0));`;
   const hostilePath = "/tmp/aidev242-hostile-plan-path";
-  const result = await probePlanRpc({ command: process.execPath, args: ["-e", script], cwd: process.cwd(), env: { PATH: hostilePath, OPENAI_API_KEY: "plan-secret-must-not-cross", NODE_OPTIONS: "--require=/tmp/no-such-hook", PI_AMBIENT_BAD: "plan-pi-must-not-cross" } });
+  const result = await probePlanRpc({ ...childSpec("environment"), env: { PATH: hostilePath, OPENAI_API_KEY: "plan-secret-must-not-cross", NODE_OPTIONS: "--require=/tmp/no-such-hook", PI_AMBIENT_BAD: "plan-pi-must-not-cross" } });
   assert.equal(result.state["node"], process.execPath);
   assert.match(String(result.state["path"]), new RegExp(`${process.execPath.slice(0, process.execPath.lastIndexOf("/"))}`));
   assert.doesNotMatch(String(result.state["path"]), new RegExp(hostilePath));
@@ -35,14 +34,14 @@ test("Plan RPC child uses the exact controller runtime and allowlisted environme
 });
 
 test("Plan RPC probe requires controller EOF teardown and an observed zero exit", async () => {
-  const result = await probePlanRpc(gracefulChild("process.exit(0);"));
+  const result = await probePlanRpc(gracefulChild("graceful-exit"));
   assert.deepEqual(result.state, { ok: true });
   assert.equal(result.errors, "");
 });
 
 test("Plan RPC probe rejects a successful response followed by a spontaneous nonzero exit", async () => {
   await assert.rejects(
-    probePlanRpc(responseThen("process.exit(7);")),
+    probePlanRpc(responseThen("spontaneous-exit")),
     error => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /code 7/u);
@@ -53,7 +52,7 @@ test("Plan RPC probe rejects a successful response followed by a spontaneous non
 
 test("Plan RPC probe rejects termination-time extension failure and nonzero exit", async () => {
   await assert.rejects(
-    probePlanRpc(gracefulChild(`process.stdout.write(${JSON.stringify(extensionErrorLine)},()=>process.exit(143));`)),
+    probePlanRpc(gracefulChild("extension-failure")),
     error => {
       assert.ok(error instanceof AggregateError);
       const messages = error.errors.map(value => value instanceof Error ? value.message : String(value)).join("\n");
@@ -65,9 +64,8 @@ test("Plan RPC probe rejects termination-time extension failure and nonzero exit
 });
 
 test("Plan RPC probe preserves malformed RPC as primary and reports real exit failure", async () => {
-  const malformed = childSpec(`process.stdout.write(${JSON.stringify(malformedResponseLine)});process.exit(7);`);
   await assert.rejects(
-    probePlanRpc(malformed),
+    probePlanRpc(childSpec("malformed-exit")),
     error => {
       assert.ok(error instanceof AggregateError);
       assert.match(String(error.errors[0]), /Plan RPC get_state failed/u);
@@ -84,11 +82,9 @@ test("Plan RPC redacts encoded secrets from primary, secondary, aggregate, and i
   const percent = encodeURIComponent(secret);
   const mixedCase = (value: string): string => [...value].map((character, index) => index % 2 === 0 ? character.toUpperCase() : character.toLowerCase()).join("");
   const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), hex, percent, mixedCase(hex), mixedCase(percent)];
-  const extensionLine = JSON.stringify({ type: "extension_error", extensionPath: "secret-extension.mjs", error: forms.join(" | ") });
-  const script = `process.stdout.write(${JSON.stringify(responseLine)}); process.stdout.write(${JSON.stringify(extensionLine + "\n")}); process.exit(7);`;
   let thrown: unknown;
   try {
-    await probePlanRpc({ ...childSpec(script), env: { OPENAI_API_KEY: secret } });
+    await probePlanRpc({ ...childSpec("redaction", secret), env: { OPENAI_API_KEY: secret } });
   } catch (error) {
     thrown = error;
   }
@@ -105,10 +101,8 @@ test("Plan RPC redacts encoded secrets from primary, secondary, aggregate, and i
 });
 
 test("Plan RPC retains bounded UTF-8 tails and failure records under protocol flood", async () => {
-  const lines = 5_000;
-  const script = `process.stdout.write(${JSON.stringify(responseLine)}, () => { let index = 0; const write = () => { while (index < ${lines}) { if (!process.stdout.write(JSON.stringify({ type: "extension_error", error: "flood-" + index + "-€" }) + "\\\\n")) return process.stdout.once("drain", write); index += 1; } process.stderr.write("€".repeat(10000), () => process.exit(7)); }; write(); });`;
   let thrown: unknown;
-  try { await probePlanRpc(childSpec(script)); }
+  try { await probePlanRpc(childSpec("flood")); }
   catch (error) { thrown = error; }
   assert.ok(thrown instanceof AggregateError);
   assert.ok(thrown.errors.length <= 17, `failure records were not bounded: ${thrown.errors.length}`);
@@ -118,11 +112,8 @@ test("Plan RPC retains bounded UTF-8 tails and failure records under protocol fl
 });
 
 test("Plan RPC late primary keeps aggregate metadata, stacks, and causes within the total byte budget", async () => {
-  const secondaryLines = Array.from({ length: 16 }, (_, index) => JSON.stringify({ type: "extension_error", error: `secondary-${index}-${"S".repeat(900)}` }) + "\n").join("");
-  const latePrimary = `${JSON.stringify({ id: "probe-state", type: "response", command: "get_state", success: false, error: "P".repeat(2_000) })}\n`;
-  const script = `const payload = ${JSON.stringify(responseLine + secondaryLines + latePrimary)}; process.stdout.write(payload, () => process.exit(7));`;
   let thrown: unknown;
-  try { await probePlanRpc(childSpec(script)); }
+  try { await probePlanRpc(childSpec("late-primary")); }
   catch (error) { thrown = error; }
   assert.ok(thrown instanceof AggregateError);
   assert.match(String(thrown.errors[0]), /Plan RPC get_state failed/u);

@@ -21,6 +21,7 @@ import {
   sanitizeError,
   sanitizeLaunch,
 } from "./support/pi-child-support.js";
+import { acquireActualPiResource, type ActualPiResourceLease } from "./support/actual-pi-resource.js";
 import { run, runtime, testWorkspaceReadiness } from "./support/fixtures.js";
 
 const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
@@ -39,6 +40,7 @@ class ChildPiProcess extends EventEmitter implements PiProcess {
   private readonly stderrTail: BoundedRedactionAccumulator;
   private readonly redactor: BoundedRedactor;
   exitCode: number | null = null;
+  #exitObserved = false;
 
   constructor(readonly child: ChildProcess, redactor: BoundedRedactor) {
     super();
@@ -54,7 +56,8 @@ class ChildPiProcess extends EventEmitter implements PiProcess {
     child.stdin.on("error", error => this.errors.push(`stdin: ${sanitizeError(error, this.redactor).message}`));
     child.once("error", error => this.errors.push(`child: ${sanitizeError(error, this.redactor).message}`));
     child.once("exit", (code, signal) => {
-      this.exitCode = code;
+      this.#exitObserved = true;
+      this.exitCode = code ?? (signal === "SIGTERM" ? 143 : signal === "SIGKILL" ? 137 : 1);
       this.emit("exit", code, signal);
     });
     child.once("close", () => {
@@ -74,18 +77,43 @@ class ChildPiProcess extends EventEmitter implements PiProcess {
   }
 
   async waitForExit(timeoutMs: number): Promise<void> {
-    if (this.exitCode !== null) return;
+    if (this.#exitObserved || this.child.exitCode !== null || this.child.signalCode !== null) return;
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.off("exit", onExit);
-        reject(new Error("Pi child exit timeout"));
-      }, timeoutMs);
+      let settled = false;
       const onExit = (): void => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        clearTimeout(escalationTimer);
         resolve();
       };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.off("exit", onExit);
+        clearTimeout(escalationTimer);
+        reject(new Error("Pi child exit timeout"));
+      }, timeoutMs);
+      const escalationTimer = setTimeout(() => {
+        if (!settled && !this.#exitObserved && this.child.exitCode === null && this.child.signalCode === null) this.child.kill("SIGKILL");
+      }, Math.max(1, Math.floor(timeoutMs * 0.8)));
       this.once("exit", onExit);
+      if (this.#exitObserved || this.child.exitCode !== null || this.child.signalCode !== null) onExit();
     });
+  }
+}
+
+async function reapChild(process: ChildPiProcess): Promise<void> {
+  if (process.exitCode === null) process.kill("SIGTERM");
+  try {
+    await process.waitForExit(4_000);
+  } catch (firstError) {
+    if (process.exitCode === null) process.kill("SIGKILL");
+    try {
+      await process.waitForExit(1_000);
+    } catch (lastError) {
+      throw new AggregateError([firstError, lastError], "Pi child did not reach observed exit within the fixed cleanup budget");
+    }
   }
 }
 
@@ -253,6 +281,7 @@ async function runRealTuiFooterProbe(options: {
       PI_OFFLINE: "1",
       TERM: "xterm-256color",
     }),
+    detached: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
   const redactor = new BoundedRedactor(process.env, {
@@ -267,7 +296,6 @@ async function runRealTuiFooterProbe(options: {
   let stableFrame: string[] | undefined;
   const ready = new Promise<{ output: string; stderr: string; frame: string[] }>((resolve, reject) => {
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
       reject(new Error("real Pi TUI footer probe timed out"));
     }, 30_000);
     const scheduleExitAfterStableFrame = (): void => {
@@ -307,8 +335,53 @@ async function runRealTuiFooterProbe(options: {
   });
   try { return await ready; }
   catch (error) {
-    if (child.exitCode === null) child.kill("SIGKILL");
+    try { await stopOwnedTuiProcess(child); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "real Pi TUI footer probe cleanup failed"); }
     throw error;
+  }
+}
+
+function signalOwnedTuiProcess(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): boolean {
+  // The process-group signal is issued only through the exact ChildProcess
+  // descriptor created above, while it is still live and still names the
+  // trusted /usr/bin/script launcher. Never discover or kill a parentless PID.
+  if (child.pid === undefined || child.spawnfile !== "/usr/bin/script" || child.exitCode !== null || child.signalCode !== null) return false;
+  try { process.kill(-child.pid, signal); return true; }
+  catch (error) {
+    if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForOwnedTuiExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      child.off("close", onClose);
+      if (error) reject(error); else resolve();
+    };
+    const onExit = (): void => finish();
+    const onClose = (): void => finish();
+    const timer = setTimeout(() => finish(new Error("real Pi TUI child exit timeout")), timeoutMs);
+    child.once("exit", onExit);
+    child.once("close", onClose);
+    if (child.exitCode !== null || child.signalCode !== null) finish();
+  });
+}
+
+async function stopOwnedTuiProcess(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  signalOwnedTuiProcess(child, "SIGTERM");
+  try { await waitForOwnedTuiExit(child, 4_000); }
+  catch (firstError) {
+    signalOwnedTuiProcess(child, "SIGKILL");
+    try { await waitForOwnedTuiExit(child, 1_000); }
+    catch (lastError) { throw new AggregateError([firstError, lastError], "real Pi TUI child did not reach observed exit within the fixed cleanup budget"); }
   }
 }
 
@@ -388,7 +461,9 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
 `, { mode: 0o600 });
 
   let process: ChildPiProcess | undefined;
+  let actualPiResource: ActualPiResourceLease | undefined;
   try {
+    actualPiResource = await acquireActualPiResource();
     const materialized = await materializer.materialize({
       runId: "run_example01",
       runtime: resolvedRuntime,
@@ -406,7 +481,14 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
       mode: "project",
       version: "1.0",
     }) + "\n", { mode: 0o600 });
-    const launched = await runner.launch("run_example01", "implement");
+    let launched: Awaited<ReturnType<typeof runner.launch>>;
+    try {
+      launched = await runner.launch("run_example01", "implement");
+    } catch (error) {
+      const child = factory.processes[0];
+      if (!child) throw error;
+      throw new AggregateError([error, new Error(`actual Pi child startup diagnostics: errors=${JSON.stringify(child.errors)}; output=${JSON.stringify(child.output)}`)], "actual Pi launch failed with child startup diagnostics");
+    }
     process = factory.processes[0];
     const launch = factory.launches[0]!;
     const extensionArguments = launch.args.flatMap((value, index) => value === "--extension" ? [launch.args[index + 1]!] : []);
@@ -450,8 +532,7 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     // the same bounded CI process/IO budget and makes the handshake scheduler-
     // dependent. This is test-support cleanup only: each genuine handshake
     // remains bounded and fail-closed.
-    if (process && process.exitCode === null) process.kill("SIGTERM");
-    if (process) await process.waitForExit(5_000);
+    if (process) await reapChild(process);
     assert.notEqual(process?.exitCode, null, "RPC child must be reaped before the TUI probe");
 
     // The real @zosmaai/pi-llm-wiki extension emitted both status keys during
@@ -487,8 +568,14 @@ test("fresh Squire implement launch loads /ticket llm-wiki before the trusted fo
     assert.doesNotMatch(`${visibleTui}\n${tui.stderr}`, /extension_error|failed to load extension|cannot find module|syntaxerror/iu);
   } finally {
     process ??= factory.processes[0];
-    if (process && process.exitCode === null) process.kill("SIGTERM");
-    if (process) await process.waitForExit(5_000);
-    await rm(root, { recursive: true, force: true });
+    try {
+      if (process) await reapChild(process);
+    } finally {
+      try {
+        if (actualPiResource) await actualPiResource.release();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
   }
 });

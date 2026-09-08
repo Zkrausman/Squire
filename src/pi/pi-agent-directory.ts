@@ -39,6 +39,7 @@ const PREPARATION_RETAINED_AUTH_TEMP = /^\.capture-auth-key\.tmp-[0-9a-f-]{36}$/
 const PREPARATION_RETAINED_ALLOCATION_LOCK = ".allocation-lock";
 const PREPARATION_RETAINED_ALLOCATION_HELD = /^\.allocation-lock-held-[0-9a-f-]{36}$/u;
 const PREPARATION_RETAINED_ALLOCATION_OWNER_FILE = "owner.json";
+const PREPARATION_RETAINED_ALLOCATION_CLAIM_FILE = ".claim";
 const PREPARATION_RETAINED_ALLOCATION_ROOT_MARKER = ".allocation-lock-root";
 const PREPARATION_RETAINED_ALLOCATION_ROOT_MARKER_BYTES = Buffer.from("squire-pi-agent-retention-root-v1\n", "utf8");
 const PREPARATION_TERMINAL_FENCE_ROOT = ".pi-agent-terminal-fences";
@@ -224,6 +225,8 @@ export interface PiAgentDirectoryMaterializerOptions {
   retentionPublicationBarrier?: RetentionPublicationBarrier;
   /** Internal deterministic auth-key handoff seam; omitted in production. */
   retentionAuthCleanupBarrier?: RetentionAuthCleanupBarrier;
+  /** Internal deterministic retained-allocation claim seam; omitted in production. */
+  retentionAllocationClaimBarrier?: RetentionAllocationClaimBarrier;
   /** Maximum retained capture records for one run. */
   maxRetainedCapturesPerRun?: number;
   /** Maximum retained capture records across this runtime root. */
@@ -330,6 +333,7 @@ interface RetentionLimits {
   global: number;
   publicationBarrier: RetentionPublicationBarrier | undefined;
   authCleanupBarrier: RetentionAuthCleanupBarrier | undefined;
+  allocationClaimBarrier: RetentionAllocationClaimBarrier | undefined;
 }
 
 interface RetainedCaptureAllocation {
@@ -411,6 +415,12 @@ export type RetentionAuthCleanupBarrier = (event: {
   stage: "after-observation-before-cleanup";
   temporaryPath: string;
   finalPath: string;
+}) => void | Promise<void>;
+
+/** Internal seam used to synchronize same-run retained-allocation contenders. */
+export type RetentionAllocationClaimBarrier = (event: {
+  stage: "before-claim";
+  directory: string;
 }) => void | Promise<void>;
 
 type TeardownAuthorityGuard = () => Promise<void>;
@@ -1693,6 +1703,7 @@ function retentionLimits(options: PiAgentDirectoryMaterializerOptions): Retentio
     global: positiveInteger(options.maxRetainedCapturesGlobal ?? PREPARATION_RETAINED_GLOBAL_LIMIT, "maximum retained captures globally"),
     publicationBarrier: options.retentionPublicationBarrier,
     authCleanupBarrier: options.retentionAuthCleanupBarrier,
+    allocationClaimBarrier: options.retentionAllocationClaimBarrier,
   };
 }
 
@@ -2314,25 +2325,31 @@ function isRetentionAllocationOwner(value: unknown): value is RetentionAllocatio
     && typeof candidate["createdAt"] === "number" && Number.isSafeInteger(candidate["createdAt"]) && candidate["createdAt"] > 0;
 }
 
-async function readRetentionAllocationOwner(directory: string): Promise<RetentionAllocationOwner | undefined> {
-  const ownerPath = path.join(directory, PREPARATION_RETAINED_ALLOCATION_OWNER_FILE);
+async function readRetentionAllocationOwnerFile(ownerPath: string, name: string): Promise<RetentionAllocationOwner | undefined> {
   let lastError: unknown;
   for (let attempt = 0; attempt < PREPARATION_LOCK_RACE_RETRIES; attempt += 1) {
     try {
       if (await pathKind(ownerPath) === "missing") return undefined;
-      const info = await lstatRequired(ownerPath, "Pi agent-directory retained allocation lock owner");
-      assertPrivateFile(info, "Pi agent-directory retained allocation lock owner");
-      const bytes = await readStableFile(ownerPath, "Pi agent-directory retained allocation lock owner");
+      const info = await lstatRequired(ownerPath, name);
+      assertPrivateFile(info, name);
+      const bytes = await readStableFile(ownerPath, name);
       let value: unknown;
-      try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new Error("Pi agent-directory retained allocation lock owner is not valid JSON"); }
-      if (!isRetentionAllocationOwner(value)) throw new Error("Pi agent-directory retained allocation lock owner is invalid");
+      try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new Error(`${name} is not valid JSON`); }
+      if (!isRetentionAllocationOwner(value)) throw new Error(`${name} is invalid`);
       return value;
     } catch (error) {
       lastError = error;
       if (attempt + 1 < PREPARATION_LOCK_RACE_RETRIES) await waitForDelay(PREPARATION_LOCK_RACE_DELAY_MS);
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("Pi agent-directory retained allocation lock owner is unreadable");
+  throw lastError instanceof Error ? lastError : new Error(`${name} is unreadable`);
+}
+
+async function readRetentionAllocationOwner(directory: string): Promise<RetentionAllocationOwner | undefined> {
+  return readRetentionAllocationOwnerFile(
+    path.join(directory, PREPARATION_RETAINED_ALLOCATION_OWNER_FILE),
+    "Pi agent-directory retained allocation lock owner",
+  );
 }
 
 async function assertRetentionAllocationRootMarker(markerPath: string): Promise<void> {
@@ -2528,22 +2545,23 @@ async function writeFreeRetentionAllocationOwner(directory: string, runId: strin
   await chmod(ownerPath, 0o600);
 }
 
-async function writeHeldRetentionAllocationOwner(directory: string, runId: string): Promise<RetentionAllocationOwner> {
-  const owner: RetentionAllocationOwner = {
-    schemaVersion: 1,
-    kind: PREPARATION_RETAINED_ALLOCATION_KIND,
-    state: "held",
-    runId,
-    token: randomUUID(),
-    pid: process.pid,
-    createdAt: Date.now(),
-  };
-  const ownerPath = retentionAllocationOwnerPath(directory);
-  await writeFile(ownerPath, serializeRetentionAllocationOwner(owner), { mode: 0o600 });
-  const info = await lstatRequired(ownerPath, "Pi agent-directory retained allocation lock owner");
-  assertPrivateFile(info, "Pi agent-directory retained allocation lock owner");
-  await chmod(ownerPath, 0o600);
-  return owner;
+function retentionAllocationClaimPath(directory: string): string {
+  return path.join(directory, PREPARATION_RETAINED_ALLOCATION_CLAIM_FILE);
+}
+
+async function recoverStaleRetentionAllocationClaim(directory: string, force = false): Promise<boolean> {
+  const claimPath = retentionAllocationClaimPath(directory);
+  if (await pathKind(claimPath) === "missing") return false;
+  const claimInfo = await lstatRequired(claimPath, "Pi agent-directory retained allocation claim");
+  assertPrivateFile(claimInfo, "Pi agent-directory retained allocation claim");
+  const owner = await readRetentionAllocationOwnerFile(claimPath, "Pi agent-directory retained allocation claim");
+  if (!owner || owner.state !== "held") throw new PreparationLockRace("Pi agent-directory retained allocation claim is invalid");
+  if (!force && (!isStale(owner.createdAt, PREPARATION_LOCK_STALE_MS) || isProcessAlive(owner.pid))) return false;
+  const before = await lstatRequired(claimPath, "Pi agent-directory retained allocation claim before recovery");
+  assertPrivateFile(before, "Pi agent-directory retained allocation claim before recovery");
+  if (!sameFileStat(claimInfo, before)) throw new PreparationLockRace("Pi agent-directory retained allocation claim changed during recovery");
+  await rm(claimPath, { force: false });
+  return true;
 }
 
 async function allocationLockHeldPath(retainedRoot: string): Promise<string | undefined> {
@@ -2594,6 +2612,7 @@ async function acquireRetentionAllocationLock(
   force = false,
   teardownAuthority?: TeardownAuthorityGuard,
   authCleanupBarrier?: RetentionAuthCleanupBarrier,
+  allocationClaimBarrier?: RetentionAllocationClaimBarrier,
 ): Promise<RetentionAllocationLease> {
   const startedAt = monotonicMilliseconds();
   const timeoutMs = PREPARATION_LOCK_TIMEOUT_MS;
@@ -2603,6 +2622,20 @@ async function acquireRetentionAllocationLock(
     const canonical = path.join(retainedRoot, PREPARATION_RETAINED_ALLOCATION_LOCK);
     const canonicalKind = await pathKind(canonical);
     if (canonicalKind === "directory") {
+      const claimPath = retentionAllocationClaimPath(canonical);
+      const claimKind = await pathKind(claimPath);
+      if (claimKind !== "missing") {
+        if (claimKind !== "file") throw new PreparationLockRace("Pi agent-directory retained allocation claim was replaced");
+        try {
+          if (await recoverStaleRetentionAllocationClaim(canonical, force)) continue;
+        } catch (error) {
+          if (!isTransientLockRace(error)) throw error;
+        }
+        const elapsed = monotonicMilliseconds() - startedAt;
+        if (elapsed >= timeoutMs) throw new Error("Pi agent-directory retained allocation lock acquisition timed out; trusted teardown is required");
+        await waitForDelay(Math.min(PREPARATION_LOCK_POLL_MS, timeoutMs - elapsed), signal);
+        continue;
+      }
       if (await allocationLockHeldPath(retainedRoot)) {
         const elapsed = monotonicMilliseconds() - startedAt;
         if (elapsed >= timeoutMs) throw new Error("Pi agent-directory retained allocation lock acquisition timed out; trusted teardown is required");
@@ -2638,26 +2671,57 @@ async function acquireRetentionAllocationLock(
         await waitForDelay(Math.min(PREPARATION_LOCK_POLL_MS, timeoutMs - elapsed), signal);
         continue;
       }
-      // Publish the held owner before moving the directory. Moving a free
-      // owner and rewriting it afterwards would let a contender observe the
-      // old `free` bytes in the held pathname and reclaim a live lease.
-      const activeOwner = await writeHeldRetentionAllocationOwner(canonical, runId);
-      const claimedInfo = await lstatRequired(canonical, "Pi agent-directory retained allocation lock after claim");
-      assertPrivateDirectory(claimedInfo, "Pi agent-directory retained allocation lock after claim");
-      if (!sameDirectoryIdentity(directoryIdentityOf(info), directoryIdentityOf(claimedInfo))) throw new PreparationLockRace("Pi agent-directory retained allocation lock changed during acquisition");
-      const claimedOwner = await readRetentionAllocationOwner(canonical);
-      if (!claimedOwner || claimedOwner.state !== "held" || claimedOwner.token !== activeOwner.token || claimedOwner.runId !== runId) throw new PreparationLockRace("Pi agent-directory retained allocation lock owner changed during acquisition");
-      const heldPath = path.join(retainedRoot, `${PREPARATION_RETAINED_ALLOCATION_LOCK}-held-${randomUUID()}`);
+      const activeOwner: RetentionAllocationOwner = {
+        schemaVersion: 1,
+        kind: PREPARATION_RETAINED_ALLOCATION_KIND,
+        state: "held",
+        runId,
+        token: randomUUID(),
+        pid: process.pid,
+        createdAt: Date.now(),
+      };
+      await allocationClaimBarrier?.({ stage: "before-claim", directory: canonical });
       try {
-        await rename(canonical, heldPath);
+        await writeFile(claimPath, serializeRetentionAllocationOwner(activeOwner), { flag: "wx", mode: 0o600 });
       } catch (error) {
-        if (isNotFound(error) || isAlreadyExists(error)) throw new PreparationLockRace("Pi agent-directory retained allocation lock changed during acquisition", error);
+        if (isAlreadyExists(error)) continue;
         throw error;
       }
-      const heldInfo = await lstatRequired(heldPath, "Pi agent-directory retained allocation lock");
-      assertPrivateDirectory(heldInfo, "Pi agent-directory retained allocation lock");
-      if (!sameDirectoryIdentity(directoryIdentityOf(info), directoryIdentityOf(heldInfo))) throw new PreparationLockRace("Pi agent-directory retained allocation lock changed during acquisition");
-      return { heldPath, directoryIdentity: directoryIdentityOf(heldInfo), owner: activeOwner };
+      let claimInfo: Awaited<ReturnType<typeof lstat>> | undefined;
+      try {
+        claimInfo = await lstatRequired(claimPath, "Pi agent-directory retained allocation claim");
+        assertPrivateFile(claimInfo, "Pi agent-directory retained allocation claim");
+        const claimedInfo = await lstatRequired(canonical, "Pi agent-directory retained allocation lock after claim");
+        assertPrivateDirectory(claimedInfo, "Pi agent-directory retained allocation lock after claim");
+        if (!sameDirectoryIdentity(directoryIdentityOf(info), directoryIdentityOf(claimedInfo))) throw new PreparationLockRace("Pi agent-directory retained allocation lock changed during acquisition");
+        const claimedOwner = await readRetentionAllocationOwner(canonical);
+        if (!claimedOwner || claimedOwner.state !== "free" || claimedOwner.token !== owner.token) throw new PreparationLockRace("Pi agent-directory retained allocation lock owner changed during acquisition");
+        await rename(claimPath, retentionAllocationOwnerPath(canonical));
+        const heldOwner = await readRetentionAllocationOwner(canonical);
+        if (!heldOwner || heldOwner.state !== "held" || heldOwner.token !== activeOwner.token || heldOwner.runId !== runId) throw new PreparationLockRace("Pi agent-directory retained allocation lock owner changed during acquisition");
+        const heldPath = path.join(retainedRoot, `${PREPARATION_RETAINED_ALLOCATION_LOCK}-held-${randomUUID()}`);
+        try {
+          await rename(canonical, heldPath);
+        } catch (error) {
+          if (isNotFound(error) || isAlreadyExists(error)) throw new PreparationLockRace("Pi agent-directory retained allocation lock changed during acquisition", error);
+          throw error;
+        }
+        const heldInfo = await lstatRequired(heldPath, "Pi agent-directory retained allocation lock");
+        assertPrivateDirectory(heldInfo, "Pi agent-directory retained allocation lock");
+        if (!sameDirectoryIdentity(directoryIdentityOf(info), directoryIdentityOf(heldInfo))) throw new PreparationLockRace("Pi agent-directory retained allocation lock changed during acquisition");
+        return { heldPath, directoryIdentity: directoryIdentityOf(heldInfo), owner: activeOwner };
+      } catch (error) {
+        const remainingClaim = await pathKind(claimPath);
+        if (remainingClaim === "file") {
+          const remainingInfo = await lstatRequired(claimPath, "Pi agent-directory retained allocation claim cleanup");
+          assertPrivateFile(remainingInfo, "Pi agent-directory retained allocation claim cleanup");
+          if (!claimInfo || !sameFileStat(claimInfo, remainingInfo)) throw new PreparationLockRace("Pi agent-directory retained allocation claim changed during cleanup");
+          await rm(claimPath, { force: false });
+        } else if (remainingClaim !== "missing") {
+          throw new PreparationLockRace("Pi agent-directory retained allocation claim was replaced");
+        }
+        throw error;
+      }
     }
     if (canonicalKind !== "missing") throw new Error("Pi agent-directory retained allocation lock is not a directory");
     const recovered = force ? await recoverStaleRetentionAllocationLock(retainedRoot, runId, true) : false;
@@ -3355,7 +3419,7 @@ async function removeRetainedCapturesAfterQuiescence(
   const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier, false, teardownAuthority, limits.authCleanupBarrier);
   await assertTerminalFence(runRoot);
   await teardownAuthority?.();
-  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, runId, signal, true, teardownAuthority, limits.authCleanupBarrier);
+  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, runId, signal, true, teardownAuthority, limits.authCleanupBarrier, limits.allocationClaimBarrier);
   try {
     await clearRetainedDisposalEntries(location.retainedRoot, runId, teardownAuthority);
     await clearRetainedConstructionEntries(
@@ -3562,7 +3626,7 @@ async function freshRetainedPath(
 ): Promise<RetainedCaptureAllocation> {
   const location = await ensureRetentionLocation(runRoot, limits.publicationBarrier, false, undefined, limits.authCleanupBarrier);
   if (!path.isAbsolute(source) || !path.isAbsolute(quarantinePath)) throw new Error(`${name} retained capture paths must be absolute`);
-  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, path.basename(runRoot), undefined, false, undefined, limits.authCleanupBarrier);
+  const allocationLock = await acquireRetentionAllocationLock(location.retainedRoot, path.basename(runRoot), undefined, false, undefined, limits.authCleanupBarrier, limits.allocationClaimBarrier);
   try {
     // Both bounds are checked while the process-independent allocation mutex is
     // held. This closes the last race where two run controllers observed the

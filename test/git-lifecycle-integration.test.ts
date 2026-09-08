@@ -7,6 +7,7 @@ import { DEFAULT_PI_ROLE_PROFILES, type PiRoleConfig } from "../src/pi/pi-config
 import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { validateSessionRegistration } from "../src/pi/session-registry.js";
+import { acquireActualPiResource } from "./support/actual-pi-resource.js";
 import { createGitFixture } from "./support/git-fixture.js";
 import { FakePiProcessFactory, FakeRuntimeResolver } from "./support/fake-pi-process.js";
 import { RealPiProcessFactory } from "./support/real-pi-process.js";
@@ -99,12 +100,17 @@ test("real Git readiness gates an actual Pi launch and ordered teardown", { skip
   const clock = createControllableClock();
   const fixture = await createGitFixture({ clock });
   const factory = new RealPiProcessFactory();
+  const actualPiResource = await acquireActualPiResource();
   t.after(async () => {
-    for (const process of factory.processes) {
-      if (process.exitCode === null) process.kill("SIGKILL");
-      await process.waitForExit(5_000).catch(() => undefined);
+    try {
+      for (const process of factory.processes) {
+        if (process.exitCode === null) process.kill("SIGKILL");
+        await process.waitForExit(5_000).catch(() => undefined);
+      }
+    } finally {
+      try { await actualPiResource.release(); }
+      finally { await fixture.cleanup(); }
     }
-    await fixture.cleanup();
   });
   const runtimeRoot = path.join(fixture.ticketRoot, "runtime");
   const sessionRoot = path.join(fixture.root, "sessions");
