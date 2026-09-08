@@ -67,6 +67,7 @@ interface GitLeaseContext {
   readonly preparation: RunPreparationLease;
   readonly operationId: string;
   readonly preparationOwner: string;
+  readonly retainPreparationOnUnresolvedChild: boolean;
 }
 
 interface WorkspaceObservation {
@@ -138,6 +139,8 @@ interface DisposalIdentityDocument {
 type GitInvoker = (args: readonly string[], overrides?: Partial<Pick<GitCommandOptions, "allowExitCodes" | "allowNetwork" | "passFileDescriptors" | "extraEnv">>) => Promise<GitCommandResult>;
 
 const GIT_LEASE_KEY = "git-workspace";
+const GIT_OPERATION_PREPARATION_PREFIX = "git-operation-";
+const GIT_CREATE_SPEC_PREPARATION_PREFIX = "git-create-spec-";
 const DEFAULT_OPERATION_LEASE_MS = 120_000;
 const DEFAULT_MAX_BUNDLE_BYTES = 1024 * 1024 * 1024;
 const VERIFIER_VERSION = "aidev-222-git-verifier-v1.0";
@@ -220,17 +223,26 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     await this.#assertFilesystemIsolation();
     const paths = logicalGitWorkspacePaths(input.runId);
     const document = buildWorkspaceSpec(input, paths);
-    // Approval is required before an immutable spec is published; provision
-    // repeats it because the source policy/DNS decision is time-sensitive.
-    const source = await this.#sourceAuthorizer.authorize(document.repository);
-    try { this.#assertAuthorizedTransport(document.repository, source); }
-    finally { await source.release?.(); }
-    await this.#assertFilesystemIsolation();
-    const relativePath = `artifacts/git/${input.runId}/workspace-spec.json`;
-    const reference = await this.#writer.writeCreateOnly(relativePath, serializeCanonical(document));
-    if (reference.path !== relativePath || reference.schemaId !== "urn:squire:git-workspace:v1:workspace-spec" || reference.sha256 !== sha256Bytes(serializeCanonical(document))) throw new GitWorkspaceContractError("workspace spec writer returned a substituted reference");
-    await (await this.#validatorPromise).validateSpec(reference, { runId: input.runId, fingerprint: document.fingerprint });
-    return reference;
+    const invocationId = randomUUID();
+    const context = await this.#acquire(input.runId, `create-spec-${invocationId}`, { preparationOwner: `${GIT_CREATE_SPEC_PREPARATION_PREFIX}${invocationId}` });
+    try {
+      // Approval is required before an immutable spec is published; provision
+      // repeats it because the source policy/DNS decision is time-sensitive.
+      const source = await this.#sourceAuthorizer.authorize(document.repository);
+      try {
+        this.#assertAuthorizedTransport(document.repository, source);
+        await this.#authority.assertRunStartAllowed(input.runId, this.#clock.now());
+      } finally { await source.release?.(); }
+      await this.#authority.assertRunStartAllowed(input.runId, this.#clock.now());
+      await this.#assertFilesystemIsolation();
+      const relativePath = `artifacts/git/${input.runId}/workspace-spec.json`;
+      const reference = await this.#writer.writeCreateOnly(relativePath, serializeCanonical(document));
+      await this.#authority.assertRunStartAllowed(input.runId, this.#clock.now());
+      if (reference.path !== relativePath || reference.schemaId !== "urn:squire:git-workspace:v1:workspace-spec" || reference.sha256 !== sha256Bytes(serializeCanonical(document))) throw new GitWorkspaceContractError("workspace spec writer returned a substituted reference");
+      await (await this.#validatorPromise).validateSpec(reference, { runId: input.runId, fingerprint: document.fingerprint });
+      await this.#authority.assertRunStartAllowed(input.runId, this.#clock.now());
+      return reference;
+    } finally { await this.#release(context); }
   }
 
   async provision(runId: string, spec: ContractReference, owner: string): Promise<ReadyGitWorkspace> {
@@ -668,7 +680,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     }
   }
 
-  async #acquire(runId: string, owner: string): Promise<GitLeaseContext> {
+  async #acquire(runId: string, owner: string, options: { readonly preparationOwner?: string } = {}): Promise<GitLeaseContext> {
     if (typeof owner !== "string" || owner.length === 0 || owner.length > 200 || /[\u0000-\u001f\u007f\r\n]/u.test(owner)) throw new Error("Git operation owner is invalid");
     await this.#assertFilesystemIsolation();
     await this.#authority.assertRunStartAllowed(runId, this.#clock.now());
@@ -679,14 +691,16 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       const snapshot = await this.#store.read(runId);
       if (!snapshot) throw new Error("run not found");
       const operationId = snapshot.gitWorkspace?.operation?.operationId ?? `git-${runId}-${randomUUID()}`;
-      const preparationOwner = `git-operation-${operationId}`;
+      const preparationOwner = options.preparationOwner ?? `${GIT_OPERATION_PREPARATION_PREFIX}${operationId}`;
       // The newly acquired generic lease proves that an older Git owner is no
       // longer current. Reap only the preparation lease whose owner is bound
       // to the persisted operation, and only after resolving its exact child.
+      // createSpec supplies a separate invocation owner, so this recovery path
+      // can never classify its live preparation lease as an old Git operation.
       await this.#releaseStaleGitPreparationLease(snapshot, operationId);
       preparation = await this.#authority.acquireRunPreparationLease(runId, preparationOwner, this.#clock.now());
       await this.#authority.assertRunStartAllowed(runId, this.#clock.now());
-      return { runId, owner, lease, preparation, operationId, preparationOwner };
+      return { runId, owner, lease, preparation, operationId, preparationOwner, retainPreparationOnUnresolvedChild: options.preparationOwner === undefined };
     } catch (error) {
       if (preparation) await this.#authority.releaseRunPreparationLease(runId, preparation, this.#clock.now()).catch(() => undefined);
       await this.#store.releaseLease(runId, GIT_LEASE_KEY, owner, lease.fencingToken);
@@ -696,7 +710,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
 
   async #releaseStaleGitPreparationLease(snapshot: RunSnapshot, operationId: string): Promise<void> {
     const operation = snapshot.gitWorkspace?.operation;
-    const candidates = (snapshot.preparationLeases ?? []).filter(lease => lease.state === "held" && lease.owner.startsWith("git-operation-"));
+    const candidates = (snapshot.preparationLeases ?? []).filter(lease => lease.state === "held" && lease.owner.startsWith(GIT_OPERATION_PREPARATION_PREFIX));
     if (!operation) {
       if (candidates.length > 0) throw new StoreConflictError("Git has an orphaned preparation lease without persisted operation proof");
       return;
@@ -724,7 +738,7 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
       // Keep the durable preparation lease with an unresolved Git child so a
       // terminal fence cannot race it. Recovery can release this exact lease
       // after supervisor proof of observed exit.
-      if (!unresolved) await this.#authority.releaseRunPreparationLease(context.runId, context.preparation, this.#clock.now());
+      if (!unresolved || !context.retainPreparationOnUnresolvedChild) await this.#authority.releaseRunPreparationLease(context.runId, context.preparation, this.#clock.now());
     } finally { await this.#store.releaseLease(context.runId, GIT_LEASE_KEY, context.owner, context.lease.fencingToken); }
   }
 
