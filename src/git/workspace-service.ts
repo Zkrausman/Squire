@@ -220,17 +220,20 @@ export class GitWorkspaceService implements GitWorkspaceServicePort, GitWorkspac
     await this.#assertFilesystemIsolation();
     const paths = logicalGitWorkspacePaths(input.runId);
     const document = buildWorkspaceSpec(input, paths);
-    // Approval is required before an immutable spec is published; provision
-    // repeats it because the source policy/DNS decision is time-sensitive.
-    const source = await this.#sourceAuthorizer.authorize(document.repository);
-    try { this.#assertAuthorizedTransport(document.repository, source); }
-    finally { await source.release?.(); }
-    await this.#assertFilesystemIsolation();
-    const relativePath = `artifacts/git/${input.runId}/workspace-spec.json`;
-    const reference = await this.#writer.writeCreateOnly(relativePath, serializeCanonical(document));
-    if (reference.path !== relativePath || reference.schemaId !== "urn:squire:git-workspace:v1:workspace-spec" || reference.sha256 !== sha256Bytes(serializeCanonical(document))) throw new GitWorkspaceContractError("workspace spec writer returned a substituted reference");
-    await (await this.#validatorPromise).validateSpec(reference, { runId: input.runId, fingerprint: document.fingerprint });
-    return reference;
+    const context = await this.#acquire(input.runId, `create-spec-${randomUUID()}`);
+    try {
+      // Approval is required before an immutable spec is published; provision
+      // repeats it because the source policy/DNS decision is time-sensitive.
+      const source = await this.#sourceAuthorizer.authorize(document.repository);
+      try { this.#assertAuthorizedTransport(document.repository, source); }
+      finally { await source.release?.(); }
+      await this.#assertFilesystemIsolation();
+      const relativePath = `artifacts/git/${input.runId}/workspace-spec.json`;
+      const reference = await this.#writer.writeCreateOnly(relativePath, serializeCanonical(document));
+      if (reference.path !== relativePath || reference.schemaId !== "urn:squire:git-workspace:v1:workspace-spec" || reference.sha256 !== sha256Bytes(serializeCanonical(document))) throw new GitWorkspaceContractError("workspace spec writer returned a substituted reference");
+      await (await this.#validatorPromise).validateSpec(reference, { runId: input.runId, fingerprint: document.fingerprint });
+      return reference;
+    } finally { await this.#release(context); }
   }
 
   async provision(runId: string, spec: ContractReference, owner: string): Promise<ReadyGitWorkspace> {
