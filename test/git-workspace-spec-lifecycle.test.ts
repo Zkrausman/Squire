@@ -61,7 +61,7 @@ async function captureLifecycle(fixture: GitFixture): Promise<{ preparation: Run
   const preparation = preparationLeases[0]!;
   assert.equal(preparation.runId, fixture.input.runId);
   assert.equal(preparation.state, "held");
-  assert.ok(preparation.owner.length > 0);
+  assert.match(preparation.owner, /^git-create-spec-[0-9a-f-]{36}$/u);
   assert.ok(preparation.fencingToken > 0);
   const generic = fixture.store.leases.get(`${fixture.input.runId}:git-workspace`);
   assert.ok(generic, "createSpec must hold the generic Git lease at its barrier");
@@ -164,6 +164,125 @@ test("createSpec holds durable preparation across source authorization, publicat
       await assertLifecycleReleased(fixture, lifecycle);
     });
   }
+});
+
+test("competing createSpec invocations keep distinct durable preparation leases through persisted recovery", async t => {
+  const clock = createControllableClock();
+  const fixture = await createGitFixture({ clock });
+  t.after(fixture.cleanup);
+
+  const operationInput = { ...fixture.input, createdAt: "2026-09-01T12:00:00.000Z" };
+  const spec = await fixture.service.createSpec(operationInput);
+  await fixture.service.provision(fixture.input.runId, spec, "persisted-recovery-provision");
+  const current = await fixture.store.read(fixture.input.runId);
+  assert.ok(current?.gitWorkspace?.stage === "ready");
+  const operationId = "persisted-recovery-operation";
+  const persistedOperation = {
+    operationId,
+    owner: `git-operation-${operationId}`,
+    generation: current.gitWorkspace.operationGeneration,
+    step: "fetch" as const,
+    startedAt: new Date(clock.now()).toISOString(),
+  };
+  await fixture.store.compareAndSet(fixture.input.runId, { version: current.version }, snapshot => ({
+    ...snapshot,
+    version: snapshot.version + 1,
+    gitWorkspace: { ...snapshot.gitWorkspace!, operation: persistedOperation },
+  }));
+  const persisted = await fixture.store.read(fixture.input.runId);
+  assert.equal(persisted?.gitWorkspace?.operation?.operationId, operationId, "the race must start from a persisted recoverable Git operation");
+
+  const firstAuthorizationEntered = deferred<void>();
+  const firstAuthorizationRelease = deferred<void>();
+  const competitorPublicationEntered = deferred<void>();
+  const competitorPublicationRelease = deferred<void>();
+  let authorizeCalls = 0;
+  let releaseCalls = 0;
+  const sourceAuthorizer: RepositorySourceAuthorizer = {
+    authorize: async () => {
+      authorizeCalls += 1;
+      if (authorizeCalls === 1) {
+        firstAuthorizationEntered.resolve();
+        await firstAuthorizationRelease.promise;
+      }
+      return grant(fixture, () => { releaseCalls += 1; });
+    },
+  };
+  const realWriter = new FileGitContractWriter(fixture.ticketRoot);
+  let publicationCalls = 0;
+  const service = await createService(fixture, clock, sourceAuthorizer, {
+    artifactWriter: {
+      writeCreateOnly: async (relativePath, bytes) => {
+        const reference = await realWriter.writeCreateOnly(relativePath, bytes);
+        publicationCalls += 1;
+        if (publicationCalls === 1) {
+          competitorPublicationEntered.resolve();
+          await competitorPublicationRelease.promise;
+        }
+        return reference;
+      },
+    },
+  });
+
+  const first = service.createSpec(operationInput);
+  await firstAuthorizationEntered.promise;
+  const firstSnapshot = await fixture.store.read(fixture.input.runId);
+  const firstPreparation = firstSnapshot?.preparationLeases?.[0];
+  assert.ok(firstPreparation);
+  assert.equal(firstSnapshot?.preparationLeases?.length, 1);
+  assert.notEqual(firstPreparation.owner, `git-operation-${operationId}`, "a live createSpec lease must not use the persisted operation identity");
+  assert.match(firstPreparation.owner, /^git-create-spec-[0-9a-f-]{36}$/u);
+  const firstGeneric = fixture.store.leases.get(`${fixture.input.runId}:git-workspace`);
+  assert.ok(firstGeneric);
+  clock.advance(firstGeneric.expiresAt - clock.now() + 1);
+
+  const competitor = service.createSpec(operationInput);
+  await competitorPublicationEntered.promise;
+  const concurrentSnapshot = await fixture.store.read(fixture.input.runId);
+  const concurrentPreparations = concurrentSnapshot?.preparationLeases ?? [];
+  assert.equal(concurrentPreparations.length, 2, "the competing invocation must acquire its own preparation token");
+  const competitorPreparation = concurrentPreparations.find(candidate => candidate.owner !== firstPreparation.owner);
+  assert.ok(competitorPreparation);
+  assert.notEqual(competitorPreparation.owner, firstPreparation.owner);
+  assert.notEqual(competitorPreparation.fencingToken, firstPreparation.fencingToken);
+  assert.match(competitorPreparation.owner, /^git-create-spec-[0-9a-f-]{36}$/u);
+  const competitorGeneric = fixture.store.leases.get(`${fixture.input.runId}:git-workspace`);
+  assert.ok(competitorGeneric);
+  assert.notEqual(competitorGeneric.owner, firstGeneric.owner);
+
+  // A stale/foreign token must not be able to release either live invocation.
+  await fixture.store.releaseRunPreparationLease(fixture.input.runId, { ...firstPreparation, fencingToken: competitorPreparation.fencingToken + 1 }, clock.now());
+  const afterForeignRelease = await fixture.store.read(fixture.input.runId);
+  assert.equal(afterForeignRelease?.preparationLeases?.length, 2);
+  assert.ok(afterForeignRelease?.preparationLeases?.some(candidate => candidate.owner === firstPreparation.owner && candidate.fencingToken === firstPreparation.fencingToken));
+  assert.ok(afterForeignRelease?.preparationLeases?.some(candidate => candidate.owner === competitorPreparation.owner && candidate.fencingToken === competitorPreparation.fencingToken));
+
+  competitorPublicationRelease.resolve();
+  await competitor;
+  assert.equal(releaseCalls, 1, "the competitor must release only its returned source grant");
+  const afterCompetitor = await fixture.store.read(fixture.input.runId);
+  assert.equal(afterCompetitor?.preparationLeases?.some(candidate => candidate.owner === competitorPreparation.owner && candidate.fencingToken === competitorPreparation.fencingToken), false, "the competitor must release its exact replacement token");
+  assert.equal(afterCompetitor?.preparationLeases?.some(candidate => candidate.owner === firstPreparation.owner && candidate.fencingToken === firstPreparation.fencingToken), true, "the competitor must not release the first live invocation token");
+  await assert.rejects(() => fixture.store.acquireRunTerminalFence(fixture.input.runId, "terminal-while-first-paused", clock.now()), /preparation lease remains/u);
+  assert.equal((await fixture.store.read(fixture.input.runId))?.terminalFence, undefined);
+
+  // Releasing the already-stale competitor token remains a no-op for the
+  // first token. Keep a distinct foreign lease through the first settlement to
+  // prove cleanup never bulk-clears a replacement owned by another caller.
+  await fixture.store.releaseRunPreparationLease(fixture.input.runId, competitorPreparation, clock.now());
+  const foreignPreparation = await fixture.store.acquireRunPreparationLease(fixture.input.runId, "foreign-create-spec-replacement", clock.now());
+  firstAuthorizationRelease.resolve();
+  await first;
+  assert.equal(authorizeCalls, 2);
+  assert.equal(releaseCalls, 2, "both returned source grants must be released exactly once");
+  const afterFirst = await fixture.store.read(fixture.input.runId);
+  assert.equal(afterFirst?.preparationLeases?.some(candidate => candidate.owner === firstPreparation.owner && candidate.fencingToken === firstPreparation.fencingToken), false, "the first invocation must release its exact token");
+  assert.equal(afterFirst?.preparationLeases?.some(candidate => candidate.owner === foreignPreparation.owner && candidate.fencingToken === foreignPreparation.fencingToken), true, "the first invocation must not release a foreign token");
+  await assert.rejects(() => fixture.store.acquireRunTerminalFence(fixture.input.runId, "terminal-while-foreign-held", clock.now()), /preparation lease remains/u);
+  await fixture.store.releaseRunPreparationLease(fixture.input.runId, { ...foreignPreparation, fencingToken: foreignPreparation.fencingToken + 1 }, clock.now());
+  assert.equal((await fixture.store.read(fixture.input.runId))?.preparationLeases?.some(candidate => candidate.owner === foreignPreparation.owner && candidate.fencingToken === foreignPreparation.fencingToken), true, "a stale foreign token must not release the foreign lease");
+  await fixture.store.releaseRunPreparationLease(fixture.input.runId, foreignPreparation, clock.now());
+  await assert.doesNotReject(() => fixture.store.acquireRunTerminalFence(fixture.input.runId, "terminal-after-createSpec-settlement", clock.now()));
 });
 
 test("createSpec fails before source or artifact mutation when a terminal fence already exists", async t => {
