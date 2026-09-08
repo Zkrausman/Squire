@@ -152,6 +152,18 @@ export type PreparationCaptureBarrier = (event: {
   name: string;
 }) => void | Promise<void>;
 
+/** Internal seam used to synchronize a deterministic competing reclaim-marker
+ * replacement immediately after the current marker identity is observed. */
+export type PreparationReclaimObservationBarrier = (event: {
+  stage: "after-marker-created";
+  directory: string;
+}) => void | Promise<void>;
+
+export type PreparationReclaimReleaseBarrier = (event: {
+  stage: "after-identity-observation";
+  directory: string;
+}) => void | Promise<void>;
+
 /** Barrier placed immediately after the final no-terminal-fence observation. */
 export type PreparationFenceBarrier = (event: {
   runId: string;
@@ -200,6 +212,10 @@ export interface PiAgentDirectoryMaterializerOptions {
   preparationLockStaleMs?: number;
   /** Internal deterministic synchronization seam; omitted in production. */
   preparationCaptureBarrier?: PreparationCaptureBarrier;
+  /** Internal deterministic reclaim-marker observation seam; omitted in production. */
+  preparationReclaimObservationBarrier?: PreparationReclaimObservationBarrier;
+  /** Internal deterministic reclaim-marker replacement seam; omitted in production. */
+  preparationReclaimReleaseBarrier?: PreparationReclaimReleaseBarrier;
   /** Internal cross-process race seam immediately after the final fence observation. */
   preparationFenceBarrier?: PreparationFenceBarrier;
   /** Durable workflow authority required before materialize/verify and for teardown. */
@@ -291,6 +307,8 @@ interface PreparationLockOwner {
 interface PreparationReclaimOwner {
   schemaVersion: 1;
   kind: typeof PREPARATION_RECLAIM_KIND;
+  runId?: string;
+  requestFingerprint?: string;
   token: string;
   pid: number;
   createdAt: number;
@@ -1166,7 +1184,7 @@ async function verifyCompletedMaterializationLock(
       continue;
     }
     if (observation.state === "stale") {
-      if (await reclaimStalePreparationLock(layout, runId, requestFingerprint, observation, staleMs, options.preparationCaptureBarrier, limits, signal)) continue;
+      if (await reclaimStalePreparationLock(layout, runId, requestFingerprint, observation, staleMs, options.preparationCaptureBarrier, options.preparationReclaimObservationBarrier, options.preparationReclaimReleaseBarrier, limits, signal)) continue;
     } else {
       return;
     }
@@ -1200,7 +1218,7 @@ async function acquirePreparationLock(
       continue;
     }
     if (observation.state === "stale") {
-      if (await reclaimStalePreparationLock(layout, path.basename(layout.runRoot), requestFingerprint, observation, staleMs, options.preparationCaptureBarrier, limits, signal)) continue;
+      if (await reclaimStalePreparationLock(layout, path.basename(layout.runRoot), requestFingerprint, observation, staleMs, options.preparationCaptureBarrier, options.preparationReclaimObservationBarrier, options.preparationReclaimReleaseBarrier, limits, signal)) continue;
       const remaining = timeoutMs - (monotonicMilliseconds() - startedAt);
       if (remaining <= 0) throw new Error("Pi agent-directory preparation lock acquisition timed out");
       await waitForDelay(Math.min(PREPARATION_LOCK_POLL_MS, remaining), signal);
@@ -1391,6 +1409,8 @@ async function reclaimStalePreparationLock(
   candidate: PreparationLockObservation,
   staleMs: number,
   captureBarrier: PreparationCaptureBarrier | undefined,
+  observationBarrier: PreparationReclaimObservationBarrier | undefined,
+  releaseBarrier: PreparationReclaimReleaseBarrier | undefined,
   limits: RetentionLimits,
   signal?: AbortSignal,
 ): Promise<boolean> {
@@ -1410,12 +1430,15 @@ async function reclaimStalePreparationLock(
     reclaimOwner = {
       schemaVersion: PREPARATION_LOCK_SCHEMA_VERSION,
       kind: PREPARATION_RECLAIM_KIND,
+      runId,
+      requestFingerprint,
       token: randomUUID(),
       pid: process.pid,
       createdAt: Date.now(),
     };
     await writePrivateFileAtomically(path.join(reclaimDirectory, PREPARATION_LOCK_RECLAIM_OWNER_FILE), serializeReclaimOwner(reclaimOwner), 0o600, path.resolve(reclaimDirectory, "..", ".."), limits);
     reclaimOwnerWritten = true;
+    await observationBarrier?.({ stage: "after-marker-created", directory: reclaimDirectory });
   } catch (error) {
     if (claimed && reclaimIdentity) {
       await captureAndRetainDirectory(
@@ -1483,13 +1506,17 @@ async function reclaimStalePreparationLock(
     );
     return captured;
   } catch (error) {
+    if (error instanceof PreparationLockRace && reclaimOwner) {
+      const replacement = await classifyReclaimMarkerReplacement(reclaimDirectory, reclaimOwner);
+      if (replacement === "missing" || replacement === "legitimate" || replacement === "retry") return false;
+    }
     if (error instanceof PreparationLockRace) throw error;
     if (isTransientLockRace(error)) return false;
     throw error;
   } finally {
     try {
       if (await pathKind(lockDirectory) === "directory") {
-        await releaseReclaimMarker(reclaimDirectory, reclaimOwner, reclaimIdentity, captureBarrier, limits);
+        await releaseReclaimMarker(reclaimDirectory, reclaimOwner, reclaimIdentity, releaseBarrier, captureBarrier, limits);
       }
     } catch (error) {
       if (error instanceof PreparationLockRace) throw error;
@@ -1570,10 +1597,41 @@ async function assertReclaimMarkerOwnership(
   await assertStableDirectoryIdentity(directory, expectedIdentity, "Pi agent-directory lock reclaim marker");
 }
 
+type ReclaimMarkerReplacement = "missing" | "legitimate" | "retry" | "conflict";
+
+async function classifyReclaimMarkerReplacement(directory: string, expected: PreparationReclaimOwner): Promise<ReclaimMarkerReplacement> {
+  let kind: Awaited<ReturnType<typeof pathKind>>;
+  try { kind = await pathKind(directory); }
+  catch (error) {
+    return isTransientLockRace(error) ? "retry" : "conflict";
+  }
+  if (kind === "missing") return "missing";
+  if (kind !== "directory") return "conflict";
+  try {
+    const info = await lstatRequired(directory, "Pi agent-directory lock reclaim marker");
+    assertPrivateDirectory(info, "Pi agent-directory lock reclaim marker");
+    const identity = directoryIdentityOf(info);
+    await verifyReclaimMarkerEntries(directory, true, identity);
+    const actual = await readReclaimOwner(path.join(directory, PREPARATION_LOCK_RECLAIM_OWNER_FILE));
+    if (actual.runId !== expected.runId || actual.requestFingerprint !== expected.requestFingerprint) return "conflict";
+    // A replacement must be a later, independently-created marker for the
+    // same authenticated request. Same-identity/content changes and a
+    // conflicting request are never treated as a convergence winner; a
+    // completed winner may already have exited before its stale marker is
+    // reconciled.
+    if (sameReclaimOwner(actual, expected) || actual.createdAt < expected.createdAt) return "conflict";
+    await assertStableDirectoryIdentity(directory, identity, "Pi agent-directory lock reclaim marker");
+    return "legitimate";
+  } catch (error) {
+    return isTransientLockRace(error) ? "retry" : "conflict";
+  }
+}
+
 async function releaseReclaimMarker(
   directory: string,
   owner: PreparationReclaimOwner | undefined,
   expectedIdentity: DirectoryIdentity | undefined,
+  releaseBarrier: PreparationReclaimReleaseBarrier | undefined,
   captureBarrier: PreparationCaptureBarrier | undefined,
   limits: RetentionLimits,
 ): Promise<void> {
@@ -1583,13 +1641,17 @@ async function releaseReclaimMarker(
     try {
       const kind = await pathKind(directory);
       if (kind === "missing") return;
-      if (kind !== "directory") throw new Error("Pi agent-directory lock reclaim marker was replaced");
+      if (kind !== "directory") throw new PreparationLockRace("Pi agent-directory lock reclaim marker was replaced");
       const info = await lstatRequired(directory, "Pi agent-directory lock reclaim marker");
       assertPrivateDirectory(info, "Pi agent-directory lock reclaim marker");
       const identity = directoryIdentityOf(info);
       if (expectedIdentity && !sameDirectoryIdentity(identity, expectedIdentity)) {
-        throw new Error("Pi agent-directory lock reclaim marker was replaced");
+        const replacement = await classifyReclaimMarkerReplacement(directory, owner);
+        if (replacement === "missing" || replacement === "legitimate") return;
+        if (replacement === "retry") throw new PreparationLockRace("Pi agent-directory lock reclaim marker replacement is still changing");
+        throw new PreparationLockRace("Pi agent-directory lock reclaim marker was replaced");
       }
+      await releaseBarrier?.({ stage: "after-identity-observation", directory });
       await assertReclaimMarkerOwnership(directory, owner, identity);
       const captured = await captureAndRetainDirectory(
         directory,
@@ -1604,7 +1666,16 @@ async function releaseReclaimMarker(
       if (captured) return;
       return;
     } catch (error) {
-      if (error instanceof PreparationLockRace) throw error;
+      if (error instanceof PreparationLockRace) {
+        const replacement = await classifyReclaimMarkerReplacement(directory, owner);
+        if (replacement === "missing" || replacement === "legitimate") return;
+        if (replacement === "retry") {
+          lastRace = error;
+          if (attempt + 1 < PREPARATION_LOCK_RACE_RETRIES) await waitForDelay(PREPARATION_LOCK_RACE_DELAY_MS);
+          continue;
+        }
+        throw error;
+      }
       if (!isTransientLockRace(error)) throw error;
       lastRace = error;
       if (await pathKind(directory) === "missing") return;
@@ -4006,12 +4077,18 @@ function isPreparationReclaimOwner(value: unknown): value is PreparationReclaimO
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
-  if (keys.join("\\0") !== ["createdAt", "kind", "pid", "schemaVersion", "token"].join("\\0")) return false;
-  return candidate["schemaVersion"] === PREPARATION_LOCK_SCHEMA_VERSION
+  const legacyKeys = ["createdAt", "kind", "pid", "schemaVersion", "token"].join("\\0");
+  const authenticatedKeys = ["createdAt", "kind", "pid", "requestFingerprint", "runId", "schemaVersion", "token"].join("\\0");
+  if (keys.join("\\0") !== legacyKeys && keys.join("\\0") !== authenticatedKeys) return false;
+  const baseValid = candidate["schemaVersion"] === PREPARATION_LOCK_SCHEMA_VERSION
     && candidate["kind"] === PREPARATION_RECLAIM_KIND
     && typeof candidate["token"] === "string" && UUID.test(candidate["token"])
     && typeof candidate["pid"] === "number" && Number.isInteger(candidate["pid"]) && candidate["pid"] > 0
     && typeof candidate["createdAt"] === "number" && Number.isSafeInteger(candidate["createdAt"]) && candidate["createdAt"] > 0;
+  if (!baseValid) return false;
+  return keys.join("\\0") === legacyKeys
+    || (typeof candidate["runId"] === "string" && RUN_ID.test(candidate["runId"])
+      && typeof candidate["requestFingerprint"] === "string" && SHA256.test(candidate["requestFingerprint"]));
 }
 
 async function verifyPreparationLock(
@@ -4135,6 +4212,8 @@ function samePreparationLockOwner(left: PreparationLockOwner, right: Preparation
 function sameReclaimOwner(left: PreparationReclaimOwner, right: PreparationReclaimOwner): boolean {
   return left.schemaVersion === right.schemaVersion
     && left.kind === right.kind
+    && left.runId === right.runId
+    && left.requestFingerprint === right.requestFingerprint
     && left.token === right.token
     && left.pid === right.pid
     && left.createdAt === right.createdAt;

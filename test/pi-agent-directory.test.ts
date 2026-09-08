@@ -867,6 +867,144 @@ test("quarantine replacement survives when the captured directory is moved aside
   }
 });
 
+async function stalePreparationFixture() {
+  const { root, workspace, runtime } = await fixture();
+  const runtimeRoot = path.join(root, "runtime");
+  const runRoot = path.join(runtimeRoot, runtime.runId);
+  const initial = await new PiAgentDirectoryMaterializer({ runtimeRoot, workspace }).materialize({ runId: runtime.runId, runtime, wikiProfile: profile, workspace });
+  const manifestFingerprint = createHash("sha256").update(await readFile(initial.manifestPath)).digest("hex");
+  const requestFingerprint = createHash("sha256").update(`${manifestFingerprint}\\0${path.resolve(workspace)}`).digest("hex");
+  await rm(initial.agentDir, { recursive: true, force: false });
+  const lockDirectory = path.join(runRoot, ".pi-agent-lock");
+  await mkdir(lockDirectory, { recursive: false, mode: 0o700 });
+  await chmod(lockDirectory, 0o700);
+  const old = new Date(Date.now() - 10_000);
+  await writeFile(path.join(lockDirectory, "owner.json"), JSON.stringify({ schemaVersion: 1, kind: "squire-pi-agent-preparation-lock", runId: runtime.runId, token: "00000000-0000-4000-8000-000000000001", pid: 99999999, createdAt: old.getTime(), requestFingerprint }) + "\n", { mode: 0o600 });
+  await writeFile(path.join(lockDirectory, "heartbeat"), "heartbeat\n", { mode: 0o600 });
+  await utimes(lockDirectory, old, old);
+  await utimes(path.join(lockDirectory, "owner.json"), old, old);
+  await utimes(path.join(lockDirectory, "heartbeat"), old, old);
+  return {
+    root,
+    workspace,
+    runtime,
+    runtimeRoot,
+    runRoot,
+    lockDirectory,
+    request: { runId: runtime.runId, runtime, wikiProfile: profile, workspace },
+    requestFingerprint,
+    options: { runtimeRoot, workspace, preparationLockStaleMs: 1_000, preparationLockTimeoutMs: 5_000 },
+  };
+}
+
+test("legitimate competing stale reclaim winners converge after authenticated marker replacement", async () => {
+  const state = await stalePreparationFixture();
+  let observed = false;
+  let released = false;
+  try {
+    const observationBarrier = async ({ directory }: { stage: "after-marker-created"; directory: string }): Promise<void> => {
+      if (observed) return;
+      observed = true;
+      const heartbeat = path.join(path.dirname(directory), "heartbeat");
+      const now = new Date();
+      await utimes(heartbeat, now, now);
+    };
+    const releaseBarrier = async ({ directory }: { stage: "after-identity-observation"; directory: string }): Promise<void> => {
+      if (released) return;
+      released = true;
+      const ownerPath = path.join(directory, "owner.json");
+      const current = JSON.parse(await readFile(ownerPath, "utf8")) as Record<string, unknown>;
+      const captured = path.join(state.root, `.reclaim-captured-${randomUUID()}`);
+      await rename(directory, captured);
+      await mkdir(directory, { recursive: false, mode: 0o700 });
+      await chmod(directory, 0o700);
+      const replacement = { ...current, token: randomUUID(), pid: 99999999, createdAt: Date.now(), runId: state.runtime.runId, requestFingerprint: state.requestFingerprint };
+      await writeFile(ownerPath, `${JSON.stringify(replacement)}\n`, { flag: "wx", mode: 0o600 });
+      await chmod(ownerPath, 0o600);
+      const old = new Date(Date.now() - 10_000);
+      await utimes(directory, old, old);
+      await utimes(ownerPath, old, old);
+      await utimes(path.join(path.dirname(directory), "heartbeat"), old, old);
+    };
+    const materialized = await new PiAgentDirectoryMaterializer({
+      ...state.options,
+      preparationReclaimObservationBarrier: observationBarrier,
+      preparationReclaimReleaseBarrier: releaseBarrier,
+    }).materialize(state.request);
+    assert.equal(materialized.agentDir, path.join(state.runRoot, "pi-agent"));
+    assert.equal(observed, true);
+    assert.equal(released, true);
+    assert.equal((await readdir(state.runRoot)).includes(".pi-agent-lock"), false);
+  } finally {
+    await rm(state.root, { recursive: true, force: true });
+  }
+});
+
+test("hostile reclaim-marker replacement remains fail-closed", async () => {
+  const state = await stalePreparationFixture();
+  let observed = false;
+  try {
+    const observationBarrier = async ({ directory }: { stage: "after-marker-created"; directory: string }): Promise<void> => {
+      if (observed) return;
+      observed = true;
+      const now = new Date();
+      await utimes(path.join(path.dirname(directory), "heartbeat"), now, now);
+    };
+    const releaseBarrier = async ({ directory }: { stage: "after-identity-observation"; directory: string }): Promise<void> => {
+      const captured = path.join(state.root, `.reclaim-hostile-${randomUUID()}`);
+      await rename(directory, captured);
+      await mkdir(directory, { recursive: false, mode: 0o700 });
+      await chmod(directory, 0o700);
+      await writeFile(path.join(directory, "replacement-sentinel"), "hostile\n", { mode: 0o600 });
+    };
+    await assert.rejects(
+      new PiAgentDirectoryMaterializer({
+        ...state.options,
+        preparationReclaimObservationBarrier: observationBarrier,
+        preparationReclaimReleaseBarrier: releaseBarrier,
+      }).materialize(state.request),
+      /reclaim marker was replaced|reclaim marker contains invalid content/iu,
+    );
+    assert.equal(observed, true);
+  } finally {
+    await rm(state.root, { recursive: true, force: true });
+  }
+});
+
+test("conflicting authenticated reclaim-marker replacement remains fail-closed", async () => {
+  const state = await stalePreparationFixture();
+  let observed = false;
+  try {
+    const observationBarrier = async ({ directory }: { stage: "after-marker-created"; directory: string }): Promise<void> => {
+      if (observed) return;
+      observed = true;
+      const now = new Date();
+      await utimes(path.join(path.dirname(directory), "heartbeat"), now, now);
+    };
+    const releaseBarrier = async ({ directory }: { stage: "after-identity-observation"; directory: string }): Promise<void> => {
+      const ownerPath = path.join(directory, "owner.json");
+      const current = JSON.parse(await readFile(ownerPath, "utf8")) as Record<string, unknown>;
+      const captured = path.join(state.root, `.reclaim-conflict-${randomUUID()}`);
+      await rename(directory, captured);
+      await mkdir(directory, { recursive: false, mode: 0o700 });
+      await chmod(directory, 0o700);
+      await writeFile(ownerPath, `${JSON.stringify({ ...current, token: randomUUID(), pid: 99999999, createdAt: Date.now(), requestFingerprint: "f".repeat(64) })}\n`, { flag: "wx", mode: 0o600 });
+      await chmod(ownerPath, 0o600);
+    };
+    await assert.rejects(
+      new PiAgentDirectoryMaterializer({
+        ...state.options,
+        preparationReclaimObservationBarrier: observationBarrier,
+        preparationReclaimReleaseBarrier: releaseBarrier,
+      }).materialize(state.request),
+      /reclaim marker was replaced|reclaim ownership changed/iu,
+    );
+    assert.equal(observed, true);
+  } finally {
+    await rm(state.root, { recursive: true, force: true });
+  }
+});
+
 test("atomic stale reclaim capture preserves a synchronized replacement lock and blocks preparation", async () => {
   const { root, workspace, runtime } = await fixture();
   const runtimeRoot = path.join(root, "runtime");
