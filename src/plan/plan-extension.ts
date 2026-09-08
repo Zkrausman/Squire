@@ -83,7 +83,7 @@ export function registerPlanSubmissionTool(api: PlanExtensionApi, context: PlanE
 export function buildTrustedPlanExtensionSource(): string {
   return String.raw`import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, lstat, realpath, readdir } from "node:fs/promises";
+import { access, mkdir, open, lstat, realpath, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const TOOL = ${JSON.stringify(PLAN_TOOL_NAME)};
@@ -162,6 +162,12 @@ function sameStat(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.nlink === right.nlink && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 function isCode(error, code) { return !!error && typeof error === "object" && error.code === code; }
+function testOnlyBarrierPath(name) {
+  const value = process.env[name];
+  if (value === undefined) return undefined;
+  if (process.env.NODE_ENV !== "test" || !path.isAbsolute(value) || path.resolve(value) !== value || CONTROL.test(value)) throw new Error("unsafe Plan test-only barrier path");
+  return value;
+}
 
 const phaseInput = {
   path: requiredEnv("SQUIRE_PLAN_INPUT_PATH"),
@@ -311,8 +317,22 @@ function validateFilesystemFile(info) {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > FS_MAX_FILE_BYTES) throw new Error("Plan read target is not a bounded single-link regular file");
 }
 async function testOnlyFilesystemWindow() {
-  // Test-only delay gives the adversarial suite a deterministic mutation window;
-  // the controller never supplies this variable and it cannot weaken checks.
+  // Test-only synchronization gives the adversarial suite a deterministic
+  // mutation window; the controller never supplies these variables and they
+  // cannot weaken descriptor-bound checks.
+  const readyPath = testOnlyBarrierPath("SQUIRE_PLAN_TEST_ONLY_READ_READY_PATH");
+  const releasePath = testOnlyBarrierPath("SQUIRE_PLAN_TEST_ONLY_READ_RELEASE_PATH");
+  if ((readyPath === undefined) !== (releasePath === undefined)) throw new Error("Plan test-only read barrier is incomplete");
+  if (readyPath !== undefined && releasePath !== undefined) {
+    await writeFile(readyPath, "ready\\n", { flag: "wx", mode: 0o600 });
+    for (;;) {
+      try { await access(releasePath); break; }
+      catch (error) {
+        if (!isCode(error, "ENOENT")) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    }
+  }
   const testDelay = process.env.NODE_ENV === "test" ? process.env.SQUIRE_PLAN_TEST_ONLY_READ_DELAY_MS : undefined;
   if (testDelay !== undefined) {
     if (!/^[0-9]{1,4}$/u.test(testDelay)) throw new Error("Plan test-only read delay is invalid");

@@ -7,6 +7,7 @@ import { DEFAULT_PI_ROLE_PROFILES, type PiRoleConfig } from "../src/pi/pi-config
 import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
 import { PiRunner } from "../src/pi/pi-runner.js";
 import { validateSessionRegistration } from "../src/pi/session-registry.js";
+import { acquireActualPiResource } from "./support/actual-pi-resource.js";
 import { createGitFixture } from "./support/git-fixture.js";
 import { FakePiProcessFactory, FakeRuntimeResolver } from "./support/fake-pi-process.js";
 import { RealPiProcessFactory } from "./support/real-pi-process.js";
@@ -99,12 +100,17 @@ test("real Git readiness gates an actual Pi launch and ordered teardown", { skip
   const clock = createControllableClock();
   const fixture = await createGitFixture({ clock });
   const factory = new RealPiProcessFactory();
+  const actualPiResource = await acquireActualPiResource();
   t.after(async () => {
-    for (const process of factory.processes) {
-      if (process.exitCode === null) process.kill("SIGKILL");
-      await process.waitForExit(5_000).catch(() => undefined);
+    try {
+      for (const process of factory.processes) {
+        if (process.exitCode === null) process.kill("SIGKILL");
+        await process.waitForExit(5_000).catch(() => undefined);
+      }
+    } finally {
+      try { await actualPiResource.release(); }
+      finally { await fixture.cleanup(); }
     }
-    await fixture.cleanup();
   });
   const runtimeRoot = path.join(fixture.ticketRoot, "runtime");
   const sessionRoot = path.join(fixture.root, "sessions");
@@ -137,7 +143,14 @@ test("real Git readiness gates an actual Pi launch and ordered teardown", { skip
   const prepared = await materializer.materialize({ runId: fixture.input.runId, runtime: resolvedRuntime, wikiProfile: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" }, workspace });
   await mkdir(path.join(prepared.wikiHomeDir, ".llm-wiki"), { recursive: true, mode: 0o700 });
   await writeFile(path.join(prepared.wikiHomeDir, ".llm-wiki", "config.json"), JSON.stringify({ knowledge_format: "okf-0.2", name: "combined Git Pi E2E", topic: "combined Git Pi E2E", mode: "project", version: "1.0" }) + "\n", { mode: 0o600 });
-  const launched = await runner.launch(fixture.input.runId, "implement");
+  let launched: Awaited<ReturnType<typeof runner.launch>>;
+  try {
+    launched = await runner.launch(fixture.input.runId, "implement");
+  } catch (error) {
+    const child = factory.processes[0];
+    if (!child) throw error;
+    throw new AggregateError([error, new Error(child.diagnostic("real Git/Pi child startup diagnostics"))], "real Git/Pi launch failed with child startup diagnostics");
+  }
   const process = factory.processes[0];
   assert.ok(process, "actual Pi process was not created after real Git readiness");
   assert.equal(launched.state.model?.provider, "openai-codex");

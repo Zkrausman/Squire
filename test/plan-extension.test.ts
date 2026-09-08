@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -59,6 +59,17 @@ async function runGeneratedTool(fixture: PlanFixture, toolName: string, input: R
 
 async function assertGeneratedToolRejects(fixture: PlanFixture, toolName: string, input: Record<string, unknown>, expected: RegExp): Promise<void> {
   await assert.rejects(runGeneratedTool(fixture, toolName, input), expected);
+}
+
+async function waitForPath(value: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { await access(value); return; }
+    catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+  }
 }
 
 async function runGeneratedExtension(fixture: PlanFixture, submission: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -213,19 +224,25 @@ test("Plan filesystem tools enforce the project-only descriptor-bound read bound
     const raceBytes = Buffer.alloc(4 * 1024 * 1024, "r");
     await writeFile(racePath, raceBytes, { mode: 0o600 });
     let mutation = 0;
-    const pendingMutations: Promise<void>[] = [];
-    const raceTimer = setInterval(() => {
-      const write = writeFile(racePath, Buffer.alloc(raceBytes.length, mutation++ % 2 === 0 ? "a" : "b"), { mode: 0o600 });
-      pendingMutations.push(write);
-      void write;
-    }, 1);
-    try {
-      for (const [toolName, makeInput] of tools) {
-        await assert.rejects(runGeneratedTool(fixture, toolName, makeInput("race.txt"), { NODE_ENV: "test", SQUIRE_PLAN_TEST_ONLY_READ_DELAY_MS: "100" }), /changed|stable|single-link|identity|directory/u, `${toolName} must reject its race target`);
+    for (const [toolName, makeInput] of tools) {
+      const barrierRoot = path.join(fixture.root, `race-barrier-${mutation}`);
+      await mkdir(barrierRoot, { recursive: true, mode: 0o700 });
+      const readyPath = path.join(barrierRoot, "ready");
+      const releasePath = path.join(barrierRoot, "release");
+      const operation = runGeneratedTool(fixture, toolName, makeInput("race.txt"), {
+        NODE_ENV: "test",
+        SQUIRE_PLAN_TEST_ONLY_READ_READY_PATH: readyPath,
+        SQUIRE_PLAN_TEST_ONLY_READ_RELEASE_PATH: releasePath,
+      });
+      try {
+        await waitForPath(readyPath);
+        await writeFile(racePath, Buffer.alloc(raceBytes.length, mutation++ % 2 === 0 ? "a" : "b"), { mode: 0o600 });
+        await writeFile(releasePath, "release\n", { mode: 0o600 });
+        await assert.rejects(operation, /changed|stable|single-link|identity|directory/u, `${toolName} must reject its race target`);
+      } finally {
+        await writeFile(releasePath, "release\n", { flag: "a", mode: 0o600 }).catch(() => undefined);
+        await operation.catch(() => undefined);
       }
-    } finally {
-      clearInterval(raceTimer);
-      await Promise.allSettled(pendingMutations);
     }
     assert.deepEqual(await readFile(path.join(fixture.workspace, "src", "main.ts")), sourceBefore);
     assert.deepEqual(await readFile(path.join(fixture.workspace, ".llm-wiki", "wiki", "plan.md")), wikiBefore);

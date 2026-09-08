@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +7,9 @@ import { PiAgentDirectoryMaterializer } from "../src/pi/pi-agent-directory.js";
 import { buildPiCommand } from "../src/pi/pi-command.js";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
 import { buildPlanSystemPrompt } from "../src/plan/plan-instructions.js";
+import { acquireActualPiResource, type ActualPiResourceLease } from "./support/actual-pi-resource.js";
 import { InMemoryWorkflowStore } from "./support/in-memory-workflow-store.js";
+import { probePlanRpc } from "./support/plan-pi-rpc-probe.js";
 import { run, runtime } from "./support/fixtures.js";
 
 const PI_CLI = "/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
@@ -43,42 +44,6 @@ function launchSpec(root: string, agentDir: string, homeDir: string, wikiHomeDir
   return { ...command, env: { ...command.env, PI_OFFLINE: "1" } };
 }
 
-async function probeRpc(spec: ProcessLaunch): Promise<{ state: Record<string, unknown>; output: string; errors: string }> {
-  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: { ...process.env, ...spec.env }, stdio: ["pipe", "pipe", "pipe"] });
-  let output = "";
-  let errors = "";
-  let settled = false;
-  const result = await new Promise<{ state: Record<string, unknown>; output: string; errors: string }>((resolve, reject) => {
-    const timer = setTimeout(() => finish(new Error("real Plan RPC probe timed out")), 20_000);
-    const finish = (error?: Error, state?: Record<string, unknown>): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (child.exitCode === null) child.kill("SIGTERM");
-      if (error) reject(error);
-      else resolve({ state: state!, output, errors });
-    };
-    child.stdout.on("data", chunk => {
-      output += chunk.toString();
-      for (const line of output.split("\n").slice(0, -1)) {
-        let record: Record<string, unknown>;
-        try { record = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-        if (record["type"] === "extension_error") finish(new Error(`Plan extension failed to load: ${line}`));
-        if (record["id"] === "probe-state" && record["type"] === "response") {
-          if (record["success"] !== true || !record["data"] || typeof record["data"] !== "object") finish(new Error(`Plan RPC get_state failed: ${line}`));
-          else finish(undefined, record["data"] as Record<string, unknown>);
-        }
-      }
-    });
-    child.stderr.on("data", chunk => { errors += chunk.toString(); });
-    child.once("error", error => finish(error));
-    child.once("exit", code => { if (!settled && code !== 0) finish(new Error(`Plan RPC probe exited with ${code ?? "unknown"}`)); });
-    child.stdin.write(`${JSON.stringify({ id: "probe-state", type: "get_state" })}\n`);
-  });
-  if (child.exitCode === null) child.kill("SIGTERM");
-  return result;
-}
-
 test("real Pi RPC loads the materialized Plan extension with the fixed Plan role policy", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-plan-rpc-"));
   const workspace = path.join(root, "workspace");
@@ -91,6 +56,7 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
   resolved.pi.executable = PI_CLI;
   resolved.llmWiki.root = WIKI_ROOT;
   const materializer = new PiAgentDirectoryMaterializer({ runtimeRoot, workspace, wikiInstallation: { root: WIKI_ROOT, installationId: resolved.llmWiki.installationId, version: resolved.llmWiki.version }, runLifecycleAuthority: store });
+  let actualPiResource: ActualPiResourceLease | undefined;
   try {
     const materialized = await materializer.materialize({ runId: "run_example01", runtime: resolved, wikiProfile: { provider: "openai-codex", model: "gpt-5.6-luna", thinking: "high" }, workspace });
     await mkdir(path.join(materialized.wikiHomeDir, ".llm-wiki"), { recursive: true, mode: 0o700 });
@@ -101,9 +67,10 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
     await writeFile(probePath, `export default function (pi) { pi.on("session_start", (_event, context) => context.ui.notify("ACTIVE_TOOLS:" + pi.getActiveTools().join(","), "info")); }\n`, { mode: 0o600 });
     const baseSpec = launchSpec(root, materialized.agentDir, materialized.homeDir, materialized.wikiHomeDir, planExtensions!);
     const spec: ProcessLaunch = { ...baseSpec, args: [...baseSpec.args, "--extension", probePath] };
+    actualPiResource = await acquireActualPiResource();
     assert.ok(spec.args.includes("--offline"));
     assert.equal(spec.args[spec.args.indexOf("--tools") + 1], "squire_plan_read,squire_plan_grep,squire_plan_find,squire_plan_ls,wiki_recall,squire_submit_plan");
-    const probe = await probeRpc(spec);
+    const probe = await probePlanRpc(spec);
     assert.equal((probe.state["model"] as Record<string, unknown>)["provider"], "openai-codex");
     assert.equal((probe.state["model"] as Record<string, unknown>)["id"], "gpt-5.6-luna");
     assert.equal(probe.state["thinkingLevel"], "high");
@@ -114,5 +81,8 @@ test("real Pi RPC loads the materialized Plan extension with the fixed Plan role
     assert.equal(probe.errors, "");
     assert.match(String(probe.state["sessionFile"]), /sessions/u);
     assert.match(await readFile(materialized.planExtensionPath!, "utf8"), /squire_submit_plan/u);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    try { if (actualPiResource) await actualPiResource.release(); }
+    finally { await rm(root, { recursive: true, force: true }); }
+  }
 });
