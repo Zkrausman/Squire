@@ -7,7 +7,7 @@ const RESOURCE_ROOT = path.join(os.tmpdir(), "squire-aidev242-actual-pi-resource
 // The runtime's actual-Pi startup is a bounded shared CI resource. Two
 // authenticated slots preserve genuine cross-process Pi coverage while
 // preventing unrelated complete-suite workers from overcommitting startup IO.
-const SLOT_COUNT = 2;
+const SLOT_COUNT = 3;
 const ACQUIRE_POLL_MS = 10;
 const ACQUIRE_TIMEOUT_MS = 30_000;
 const RESOURCE_KIND = "squire-aidev242-actual-pi-resource";

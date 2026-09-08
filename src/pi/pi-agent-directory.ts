@@ -68,6 +68,7 @@ const EMPTY_AUTH_BYTES = Buffer.from("{}", "utf8");
 const DEFAULT_RUNTIME_ROOT = "/ticket/runtime";
 const DEFAULT_WORKSPACE = "/ticket/workspace";
 const AUTHORITY_DEFAULT_MATERIALIZERS = new WeakMap<RunQuiescenceAuthority, Map<string, PiAgentDirectoryMaterializer>>();
+const CAPTURE_AUTH_KEY_INITIALIZATIONS = new Map<string, Promise<Buffer>>();
 const RUN_ID = /^run_[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const SAFE_RELATIVE_FILE = /^(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -1950,6 +1951,23 @@ async function readExistingCaptureAuthKey(retainedRoot: string): Promise<Buffer>
 }
 
 async function ensureCaptureAuthKey(
+  retainedRoot: string,
+  barrier?: RetentionPublicationBarrier,
+  forceIncomplete = false,
+  teardownAuthority?: TeardownAuthorityGuard,
+  authCleanupBarrier?: RetentionAuthCleanupBarrier,
+): Promise<Buffer> {
+  const existing = CAPTURE_AUTH_KEY_INITIALIZATIONS.get(retainedRoot);
+  if (existing) return await existing;
+  const initialization = ensureCaptureAuthKeyUnshared(retainedRoot, barrier, forceIncomplete, teardownAuthority, authCleanupBarrier);
+  CAPTURE_AUTH_KEY_INITIALIZATIONS.set(retainedRoot, initialization);
+  try { return await initialization; }
+  finally {
+    if (CAPTURE_AUTH_KEY_INITIALIZATIONS.get(retainedRoot) === initialization) CAPTURE_AUTH_KEY_INITIALIZATIONS.delete(retainedRoot);
+  }
+}
+
+async function ensureCaptureAuthKeyUnshared(
   retainedRoot: string,
   barrier?: RetentionPublicationBarrier,
   forceIncomplete = false,
