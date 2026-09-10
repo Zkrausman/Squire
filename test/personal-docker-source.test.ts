@@ -13,6 +13,11 @@ const exec = promisify(execFile);
 
 type OwnershipRequest = Readonly<{ owner: string; target: string; recursive: boolean }>;
 
+function shellPath(value: string): string {
+  const normalized = value.replaceAll("\\", "/");
+  return normalized.replace(/^([A-Za-z]):/u, (_match, drive: string) => `/${drive.toLowerCase()}`);
+}
+
 class SandboxShim implements CommandPort {
   readonly host = new NodeCommandRunner();
   readonly requests: CommandRequest[] = [];
@@ -42,8 +47,8 @@ class SandboxShim implements CommandPort {
     if (request.args[0] === "exec" && request.args.includes("sh")) {
       const script = request.args[request.args.length - 1]!;
       const translate = (value: string): string => value
-        .replaceAll("/ticket", path.join(this.sandboxRoot, "ticket"))
-        .replaceAll("/tmp/squire-source.bundle", path.join(this.sandboxRoot, "tmp/squire-source.bundle"));
+        .replaceAll("/ticket", shellPath(path.join(this.sandboxRoot, "ticket")))
+        .replaceAll("/tmp/squire-source.bundle", shellPath(path.join(this.sandboxRoot, "tmp/squire-source.bundle")));
       if (script.includes("npm ci --prefix /ticket/runtime")) {
         assert.equal(request.args[1], "-u");
         assert.equal(request.args[2], "1000:1000");
@@ -51,7 +56,10 @@ class SandboxShim implements CommandPort {
         // Execute the conditional runtime setup instead of returning success
         // blindly. This proves repositories without the optional declaration
         // do not fail on Squire-specific CI fixtures.
-        return this.host.run({ command: "sh", args: ["-lc", translate(script)] }, signal);
+        const executable = translate(script)
+          .replace(/npm ci --prefix (\S+) --ignore-scripts --no-audit --no-fund/u, "mkdir -p $1/node_modules")
+          .replace(/^\s*node \S+\/\.github\/validate-ticket-runtime\.mjs$/mu, "  true");
+        return this.host.run({ command: "sh", args: ["-lc", executable] }, signal);
       }
       const ownershipCommand = "chown -R '1000:1000' /ticket";
       const lines = script.split("\n");
@@ -61,9 +69,7 @@ class SandboxShim implements CommandPort {
       // execution rather than running it on the unprivileged test host, while
       // leaving every real Git, filesystem, and permission operation intact.
       const executableScript = lines.filter(line => line !== ownershipCommand).join("\n");
-      const translated = executableScript
-        .replaceAll("/ticket", path.join(this.sandboxRoot, "ticket"))
-        .replaceAll("/tmp/squire-source.bundle", path.join(this.sandboxRoot, "tmp/squire-source.bundle"));
+      const translated = translate(executableScript);
       this.executedShellScripts.push(translated);
       return this.host.run({ command: "sh", args: ["-lc", translated] }, signal);
     }
@@ -128,7 +134,8 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.deepEqual(runtime?.args.slice(0, 5), ["exec", "-u", "1000:1000", "squire-aidev-1-0123456789", "sh"]);
   assert.match(runtime?.args.at(-1) ?? "", /npm ci --prefix \/ticket\/runtime --ignore-scripts --no-audit --no-fund/u);
   assert.match(runtime?.args.at(-1) ?? "", /node \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
-  assert.match(runtime?.args.at(-1) ?? "", /if \[ -f \/ticket\/workspace\/.github\/runtime\/package\.json \] && \[ -f \/ticket\/workspace\/.github\/runtime\/package-lock\.json \] && \[ -f \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \]; then/u);
+  assert.match(runtime?.args.at(-1) ?? "", /if \[ -e \/ticket\/workspace\/.github\/runtime\/package\.json \] \|\| \[ -e \/ticket\/workspace\/.github\/runtime\/package-lock\.json \] \|\| \[ -e \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \]; then/u);
+  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/.github\/runtime\/package-lock\.json/u);
   assert.equal(commands.runtimeRequests.length, 1);
   await assert.rejects(readFile(path.join(sandboxRoot, "ticket/runtime/package.json")), error => (error as NodeJS.ErrnoException).code === "ENOENT");
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
@@ -138,8 +145,51 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   const refs = await git(repository, ["for-each-ref", "--format=%(refname)", "refs/heads/squire-source-"]);
   assert.equal(refs, "");
   const checkout = path.join(sandboxRoot, "ticket/workspace");
-  assert.equal(await readFile(path.join(checkout, "source.txt"), "utf8"), "one\n");
+  assert.equal((await readFile(path.join(checkout, "source.txt"), "utf8")).replaceAll("\r\n", "\n"), "one\n");
   assert.ok((await readdir(path.join(root, "staging", "aidev-1-0123456789"))).includes("source.bundle"));
+});
+
+test("declared ticket runtime is provisioned and incomplete declarations fail closed", async t => {
+  await t.test("complete declaration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "squire-runtime-complete-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const repository = path.join(root, "repository");
+    await exec("git", ["init", "-q", repository]);
+    await git(repository, ["config", "user.name", "Test"]);
+    await git(repository, ["config", "user.email", "test@example.invalid"]);
+    await mkdir(path.join(repository, ".github/runtime"), { recursive: true });
+    await writeFile(path.join(repository, ".github/runtime/package.json"), '{"name":"runtime-fixture","version":"1.0.0","private":true}\n');
+    await writeFile(path.join(repository, ".github/runtime/package-lock.json"), '{"name":"runtime-fixture","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"runtime-fixture","version":"1.0.0"}}}\n');
+    await writeFile(path.join(repository, ".github/validate-ticket-runtime.mjs"), "process.exit(0);\n");
+    await git(repository, ["add", "."]);
+    await git(repository, ["commit", "-qm", "runtime"]);
+
+    const sandboxRoot = path.join(root, "sandbox");
+    const commands = new SandboxShim(sandboxRoot, "squire-aidev-1-runtime-ok");
+    const workspace = new DockerSandboxWorkspace({ commands, bridgeRoot: path.join(root, "bridges"), stagingRoot: path.join(root, "staging") });
+    await workspace.prepare({ runId: "aidev-1-runtime-ok", ticketId: "AIDEV-1", sandbox: "squire-aidev-1-runtime-ok", branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), repositoryPath: repository, sourceRef: "HEAD" });
+    assert.match(await readFile(path.join(sandboxRoot, "ticket/runtime/package.json"), "utf8"), /runtime-fixture/u);
+    assert.equal(commands.runtimeRequests.length, 1);
+  });
+
+  await t.test("partial declaration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "squire-runtime-partial-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const repository = path.join(root, "repository");
+    await exec("git", ["init", "-q", repository]);
+    await git(repository, ["config", "user.name", "Test"]);
+    await git(repository, ["config", "user.email", "test@example.invalid"]);
+    await mkdir(path.join(repository, ".github/runtime"), { recursive: true });
+    await writeFile(path.join(repository, ".github/runtime/package.json"), '{"name":"incomplete","version":"1.0.0"}\n');
+    await git(repository, ["add", "."]);
+    await git(repository, ["commit", "-qm", "incomplete runtime"]);
+
+    const sandboxRoot = path.join(root, "sandbox");
+    const commands = new SandboxShim(sandboxRoot, "squire-aidev-1-runtime-bad");
+    const workspace = new DockerSandboxWorkspace({ commands, bridgeRoot: path.join(root, "bridges"), stagingRoot: path.join(root, "staging") });
+    await assert.rejects(workspace.prepare({ runId: "aidev-1-runtime-bad", ticketId: "AIDEV-1", sandbox: "squire-aidev-1-runtime-bad", branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), repositoryPath: repository, sourceRef: "HEAD" }), /sh failed/u);
+    assert.equal(commands.runtimeRequests.length, 1);
+  });
 });
 
 test("temporary source refs are compare-deleted when bundling fails or is aborted", async t => {

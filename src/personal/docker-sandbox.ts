@@ -107,7 +107,10 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       // Only repositories that declare the pinned ticket runtime need the
       // additional installation. A normal configured checkout must remain
       // usable without Squire's repository-specific CI fixtures.
-      "if [ -f /ticket/workspace/.github/runtime/package.json ] && [ -f /ticket/workspace/.github/runtime/package-lock.json ] && [ -f /ticket/workspace/.github/validate-ticket-runtime.mjs ]; then",
+      "if [ -e /ticket/workspace/.github/runtime/package.json ] || [ -e /ticket/workspace/.github/runtime/package-lock.json ] || [ -e /ticket/workspace/.github/validate-ticket-runtime.mjs ]; then",
+      "  test -f /ticket/workspace/.github/runtime/package.json",
+      "  test -f /ticket/workspace/.github/runtime/package-lock.json",
+      "  test -f /ticket/workspace/.github/validate-ticket-runtime.mjs",
       "  cp /ticket/workspace/.github/runtime/package.json /ticket/runtime/package.json",
       "  cp /ticket/workspace/.github/runtime/package-lock.json /ticket/runtime/package-lock.json",
       "  npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
