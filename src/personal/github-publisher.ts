@@ -101,25 +101,31 @@ export class GitHubPublisher implements PublicationPort {
           // mutation. A correction run must not advance a branch and only then
           // discover that an owner-edited PR body is ambiguous.
           const initialBody = reconcilePullRequestBody(existing.body, input);
-          let confirmed = existing;
-          let body = initialBody;
+          let confirmed: PullRequestRecord;
+          let body: string;
           if (existing.headRefOid !== input.head) {
             // The accepted candidate bundle is the only trusted source for a
-            // prior PR head. Prove that the old head is present and is an
-            // ancestor before asking Git to perform its ordinary fast-forward
-            // check on the remote branch.
+            // prior PR head. Prove ancestry locally, then bind the remote
+            // update to the exact observed head. This lease cannot overwrite
+            // a concurrent branch change and the independent ancestry check
+            // prevents using the lease as an unconditional force push.
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "cat-file", "-e", `${existing.headRefOid}^{commit}`] }, signal);
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "merge-base", "--is-ancestor", existing.headRefOid, input.head] }, signal);
-            await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
+            await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", `--force-with-lease=refs/heads/${input.branch}:${existing.headRefOid}`, remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
             const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
-            if (!refreshed || refreshed.number !== existing.number || refreshed.url !== existing.url || refreshed.headRefOid !== input.head) throw new Error("matching pull request changed during fast-forward publication");
+            if (!samePullRequest(existing, refreshed) || refreshed.headRefOid !== input.head || refreshed.body !== existing.body) throw new Error("matching pull request changed during fast-forward publication");
             confirmed = refreshed;
-            // Re-read and validate the body after the push. A concurrent body
-            // edit must not be silently treated as a valid Squire document.
-            body = reconcilePullRequestBody(confirmed.body, input);
+            body = reconcilePullRequestBody(refreshed.body, input);
+          } else {
+            const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
+            if (!samePullRequest(existing, refreshed) || refreshed.headRefOid !== input.head || refreshed.body !== existing.body) throw new Error("matching pull request changed before body reconciliation");
+            confirmed = refreshed;
+            body = initialBody;
           }
           await this.#editPullRequestBody(input, confirmed.number, body, temporary, ghEnvironment, signal);
-          return { url: confirmed.url, number: confirmed.number, reused: true };
+          const verified = await this.#findPullRequest(input, ghEnvironment, signal);
+          if (!samePullRequest(confirmed, verified) || verified.headRefOid !== input.head || verified.body !== body) throw new Error("matching pull request changed during body reconciliation");
+          return { url: verified.url, number: verified.number, reused: true };
         }
 
         await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
@@ -142,7 +148,9 @@ export class GitHubPublisher implements PublicationPort {
           if (reconciled?.headRefOid === input.head) {
             const body = reconcilePullRequestBody(reconciled.body, input);
             await this.#editPullRequestBody(input, reconciled.number, body, temporary, ghEnvironment, signal);
-            return { url: reconciled.url, number: reconciled.number, reused: true };
+            const verified = await this.#findPullRequest(input, ghEnvironment, signal);
+            if (!samePullRequest(reconciled, verified) || verified.headRefOid !== input.head || verified.body !== body) throw new Error("matching pull request changed during body reconciliation");
+            return { url: verified.url, number: verified.number, reused: true };
           }
           throw error;
         }
@@ -190,6 +198,16 @@ export class GitHubPublisher implements PublicationPort {
     if (values.length === 0) return undefined;
     return parsePullRequestRecord(values[0], input);
   }
+}
+
+function samePullRequest(expected: PullRequestRecord, actual: PullRequestRecord | undefined): actual is PullRequestRecord {
+  return actual !== undefined
+    && actual.url === expected.url
+    && actual.number === expected.number
+    && actual.baseRefName === expected.baseRefName
+    && actual.headRefName === expected.headRefName
+    && sameRepository(actual.headRepositoryOwner, expected.headRepositoryOwner)
+    && sameRepository(actual.headRepository, expected.headRepository);
 }
 
 function publicationEnvironment(additions: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -325,8 +343,9 @@ function reconcilePullRequestBody(body: string, input: PublicationInput): string
   const ticketIndex = uniqueLineIndex(lines, `## ${input.ticket.id}`) ?? invalidBody();
   const validatedIndex = uniqueLineIndex(lines, /^Validated head: `[a-f0-9]{40,64}`$/u) ?? invalidBody();
   const squireHeadings = lines.flatMap((line, index) => /^##\s+Squire phases\s*$/u.test(line) ? [index] : []);
+  const retroHeadings = lines.flatMap((line, index) => /^##\s+Retro\s*$/u.test(line) ? [index] : []);
   const squireIndex = squireHeadings.length === 1 ? squireHeadings[0] : undefined;
-  if (squireIndex === undefined || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
+  if (squireIndex === undefined || retroHeadings.length !== 1 || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
   const nextHeading = lines.findIndex((line, index) => index > squireIndex && /^##\s+/u.test(line));
   const phaseEnd = nextHeading === -1 ? lines.length : nextHeading;
   for (const phase of PERSONAL_PHASES) {

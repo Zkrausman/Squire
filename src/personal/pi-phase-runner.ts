@@ -125,7 +125,7 @@ function buildPrompt(phase: PersonalPhase, inputPath: string, testCommands: read
 function detailsShape(phase: PersonalPhase): string {
   if (phase === "plan") return '{"steps":["ordered actionable step"]}';
   if (phase === "implement") return '{"changes":["implemented change"]}';
-  if (phase === "review") return '{"findings":[]} (empty only when passed)';
+  if (phase === "review") return '{"findings":[]} when passed or {"findings":["concrete finding as a plain string"]} when remediation is required; every findings item must be a string, never an object';
   if (phase === "test") return '{"commands":[{"command":"npm test","exitCode":0,"summary":"passed"}]}';
   return '{"lessons":["concrete lesson"],"followUps":["optional proposed follow-up"]}';
 }

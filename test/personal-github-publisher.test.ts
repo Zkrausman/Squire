@@ -20,8 +20,9 @@ class FakeCommands implements CommandPort {
   readonly requests: CommandRequest[] = [];
   readonly writtenBodies: string[] = [];
   listCalls = 0;
+  currentBody: string | undefined;
   constructor(
-    readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "diverged" | "concurrent" | "multiple",
+    readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "diverged" | "concurrent" | "exact-concurrent" | "multiple",
     readonly mutateRecord?: (record: Record<string, unknown>) => Record<string, unknown>,
   ) {}
   async run(request: CommandRequest): Promise<CommandResult> {
@@ -35,6 +36,8 @@ class FakeCommands implements CommandPort {
         ? (this.listCalls === 1 ? PREVIOUS_HEAD : HEAD)
         : this.behavior === "concurrent"
           ? (this.listCalls === 1 ? PREVIOUS_HEAD : CONCURRENT_HEAD)
+          : this.behavior === "exact-concurrent"
+            ? (this.listCalls === 1 ? HEAD : CONCURRENT_HEAD)
           : this.behavior === "diverged"
             ? PREVIOUS_HEAD
             : HEAD;
@@ -57,17 +60,18 @@ class FakeCommands implements CommandPort {
         "",
         "- old",
         "",
-        "## Retro",
-        "",
-        "- duplicate",
-        "",
       ].join("\n");
-      const record = this.mutateRecord?.({ url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body }) ?? { url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body };
+      const currentBody = this.currentBody ?? body;
+      const record = this.mutateRecord?.({ url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body: currentBody }) ?? { url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body: currentBody };
       return { stdout: exists ? JSON.stringify(this.behavior === "multiple" ? [record, record] : [record]) : "[]", stderr: "" };
     }
     if (request.command === "gh" && (request.args[1] === "create" || request.args[1] === "edit")) {
       const bodyFile = request.args[request.args.indexOf("--body-file") + 1];
-      if (bodyFile) this.writtenBodies.push(await readFile(bodyFile, "utf8"));
+      if (bodyFile) {
+        const written = await readFile(bodyFile, "utf8");
+        this.writtenBodies.push(written);
+        if (request.args[1] === "edit") this.currentBody = written;
+      }
     }
     if (request.command === "gh" && request.args[1] === "create") {
       if (this.behavior === "ambiguous") throw new Error("response lost");
@@ -142,10 +146,11 @@ test("publisher safely fast-forwards one existing PR before reconciling its body
     const commands = new FakeCommands("fast-forward");
     const published = await new GitHubPublisher({ commands, tokens }).publish(await input(directory));
     assert.equal(published.reused, true);
-    assert.equal(commands.listCalls, 2);
+    assert.equal(commands.listCalls, 3);
     const push = commands.requests.find(request => request.args.includes("push"));
     assert.ok(push?.args.includes(`${HEAD}:refs/heads/${BRANCH}`));
-    assert.equal(push?.args.some(argument => argument.includes("force")), false);
+    assert.ok(push?.args.includes(`--force-with-lease=refs/heads/${BRANCH}:${PREVIOUS_HEAD}`));
+    assert.equal(push?.args.includes("--force"), false);
     assert.ok(commands.requests.some(request => request.args.includes("--is-ancestor") && request.args.includes(PREVIOUS_HEAD) && request.args.includes(HEAD)));
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
     assert.equal(commands.writtenBodies.at(-1)?.match(/^## Retro$/gmu)?.length, 1);
@@ -160,10 +165,16 @@ test("publisher rejects divergent or concurrently changed existing PR heads", as
       await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /not an ancestor/);
       assert.equal(commands.requests.some(request => request.args.includes("push")), false);
     });
-    await t.test("concurrent", async () => {
+    await t.test("concurrent fast-forward", async () => {
       const commands = new FakeCommands("concurrent");
       await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /changed during fast-forward publication/);
       assert.equal(commands.requests.filter(request => request.args.includes("push")).length, 1);
+      assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
+    });
+    await t.test("concurrent exact-head reuse", async () => {
+      const commands = new FakeCommands("exact-concurrent");
+      await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /changed before body reconciliation/);
+      assert.equal(commands.requests.some(request => request.args.includes("push")), false);
       assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
     });
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -178,6 +189,7 @@ test("publisher rejects mismatched PR identity, malformed bodies, and multiple m
       ["wrong repository owner", new FakeCommands("fast-forward", record => ({ ...record, headRepositoryOwner: { login: "other-owner" } }))],
       ["wrong repository URL", new FakeCommands("fast-forward", record => ({ ...record, url: "https://github.com/other/repo/pull/7" }))],
       ["malformed body", new FakeCommands("fast-forward", record => ({ ...record, body: "owner text without Squire markers" }))],
+      ["duplicate Retro sections", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\n## Retro\n\n- duplicate\n` }))],
       ["malformed response", new FakeCommands("fast-forward", record => ({ ...record, number: "7" }))],
       ["multiple matches", new FakeCommands("multiple")],
     ];
@@ -214,7 +226,7 @@ test("ambiguous create failure re-queries and reuses the exact PR", async () => 
     const published = await new GitHubPublisher({ commands, tokens }).publish(await input(directory));
     assert.equal(published.reused, true);
     assert.equal(published.number, 7);
-    assert.equal(commands.listCalls, 2);
+    assert.equal(commands.listCalls, 3);
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "create").length, 1);
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
     assert.equal(commands.writtenBodies.at(-1)?.match(/^## Retro$/gmu)?.length, 1);
