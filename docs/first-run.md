@@ -1,6 +1,7 @@
 # First personal Squire run
 
-This page documents a minimal personal setup and run for the committed personal MVP.
+This page documents a minimal first run. Configuration and credentials belong
+to the user's Squire directory, not to a repository checkout.
 
 ## Prerequisites
 
@@ -19,43 +20,69 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 ```
 
-## 2) Copy the example config into the ignored `.squire` directory
+When the checkout declares `.github/runtime/package.json` and
+`.github/runtime/package-lock.json`, Squire provisions that pinned runtime
+inside the ticket sandbox before phases run and validates it with
+`.github/validate-ticket-runtime.mjs`. This keeps the repository-wide test
+command from confusing missing Pi/wiki/TUI prerequisites with product
+failures.
+
+## 2) Create the per-user configuration
+
+The default locations are:
+
+- Windows: `%USERPROFILE%\.squire\config.json`
+- Linux: `$XDG_CONFIG_HOME/squire/config.json` when `XDG_CONFIG_HOME` is set,
+  otherwise `~/.config/squire/config.json`
+
+Create the directory and copy the example there. For example, on Linux:
 
 ```bash
-mkdir -p .squire
-cp squire.config.example.json .squire/squire.config.json
+mkdir -p "$HOME/.config/squire"
+cp squire.config.example.json "$HOME/.config/squire/config.json"
 ```
 
-Edit `.squire/squire.config.json` and set at least:
+On Windows, create `%USERPROFILE%\.squire` and copy the file to
+`%USERPROFILE%\.squire\config.json`.
 
-- `repository.slug` (for this MVP, `zkrausman/personal-mvp-single-ticket`)
-- `repository.path`
-- `repository.sourceRef`
-- `repository.baseBranch`
-- `paths.state`, `paths.bridges`, `paths.staging`
-- `sandbox.template`
-- `sandbox.roleUser`
+Edit at least:
+
+- `repository.slug` (for example, `zkrausman/personal-mvp-single-ticket`)
+- `repository.path` with the explicit path to that checkout
+- `repository.sourceRef` and `repository.baseBranch`
+- `sandbox.template`, `sandbox.roleUser`, and sandbox executable settings
 - `github.tokenCommand`
-- `sandbox.piAuthFile`
 
-`.squire/` is in `.gitignore`, so credentials and generated runtime files are not tracked.
+The example contains the approved model policy. Every profile uses the
+`openai-codex` provider. Plan has two equal deterministic buckets:
+`gpt-6-astra` at medium thinking and `gpt-5.6-sol` at high thinking.
+Implement is `gpt-5.6-luna` at max, Review and Retro are `gpt-5.6-sol` at
+medium, and Test is `gpt-5.6-terra` at high. The controller chooses Plan once
+from the canonical repository/ticket identity and persists the selected and
+resolved profiles; retries do not reroll it.
 
-## 3) Add a dedicated Pi OAuth file
+`state`, `bridges`, and `staging` are simple relative paths and resolve beside
+the selected config file. `sandbox.piExecutable` and
+`sandbox.piAgentDirectory` are paths inside the sandbox and are not host
+resolved.
 
-Create a model-only credential file, for example:
+## 3) Provision dedicated Pi OAuth
+
+Put a model-only Pi OAuth file in the same per-user Squire directory:
 
 ```bash
-cp <your-pi-oauth-file> .squire/pi-auth.json
+cp <your-pi-oauth-file> "$HOME/.config/squire/pi-auth.json"
 ```
 
-Then set `sandbox.piAuthFile` in `.squire/squire.config.json` to `.squire/pi-auth.json`.
+Set `sandbox.piAuthFile` to `pi-auth.json`. On Windows, use the corresponding
+file under `%USERPROFILE%\.squire`. This file may contain only credentials for
+Pi model access. Do not put GitHub or Linear delivery credentials in it, and do
+not commit it.
 
-- This file must only contain credentials for Pi model access.
-- Do **not** put GitHub or Linear delivery credentials here.
+## 4) Configure the host GitHub helper
 
-## 4) Configure host-side GitHub App helper token command
-
-Set `github.tokenCommand` to a command that prints a fresh installation token to stdout, e.g.:
+Set `github.tokenCommand` to a trusted helper that prints a fresh installation
+token, for example:
 
 ```json
 "github": {
@@ -63,17 +90,21 @@ Set `github.tokenCommand` to a command that prints a fresh installation token to
 }
 ```
 
-Squire only uses this token command for host-side publication steps (branch push and PR operations). The token is never passed into sandboxed Pi phase processes.
+The token is used only for host-side publication commands and is never passed
+to sandboxed Pi processes.
 
 ## 5) Run a ticket
 
 ```bash
-npm run squire -- run <ticket> --config .squire/squire.config.json
+npm run squire -- run <ticket>
 ```
+
+Use `SQUIRE_CONFIG=/path/to/config.json` or `--config /path/to/config.json`
+when an explicit config is needed. `--config` wins over `SQUIRE_CONFIG`.
 
 Expected behavior:
 
-- The command creates a single PR URL on success.
-- The PR targets/uses repository `zkrausman/personal-mvp-single-ticket`.
-- The PR remains open and is handed to the owner.
-- Squire never merges the PR.
+- Plan, Implement, Review, Test, and Retro run as separate Pi processes.
+- A single PR URL is printed on success.
+- The PR remains open for the owner; Squire never merges it.
+- Retro lessons and proposed follow-ups appear in one `## Retro` PR section.

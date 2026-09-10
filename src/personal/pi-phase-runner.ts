@@ -3,18 +3,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
 import { validatePhaseResultShape } from "./phase-result.js";
+import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
 import type { PersonalPhase, PhaseInput, PhasePort, PhaseResult } from "./types.js";
 
-export interface PhaseProfile {
-  readonly provider: string;
-  readonly model: string;
-  readonly thinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-}
+export type { PhaseProfile } from "./model-policy.js";
 
 export interface SandboxPiPhaseRunnerOptions {
   readonly commands: CommandPort;
   readonly stagingRoot: string;
-  readonly profiles: Readonly<Record<PersonalPhase, PhaseProfile>>;
   readonly testCommands: readonly string[];
   readonly roleUser?: string;
   readonly piExecutable?: string;
@@ -26,7 +22,6 @@ export interface SandboxPiPhaseRunnerOptions {
 export class SandboxPiPhaseRunner implements PhasePort {
   readonly #commands: CommandPort;
   readonly #stagingRoot: string;
-  readonly #profiles: Readonly<Record<PersonalPhase, PhaseProfile>>;
   readonly #testCommands: readonly string[];
   readonly #roleUser: string;
   readonly #pi: string;
@@ -37,8 +32,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
   constructor(options: SandboxPiPhaseRunnerOptions) {
     this.#commands = options.commands;
     this.#stagingRoot = path.resolve(options.stagingRoot);
-    this.#profiles = options.profiles;
-    this.#testCommands = options.testCommands;
+    this.#testCommands = Object.freeze([...options.testCommands]);
     this.#roleUser = options.roleUser ?? "1000:1000";
     this.#pi = options.piExecutable ?? "pi";
     this.#agentDirectory = options.piAgentDirectory ?? "/ticket/runtime/pi-agent";
@@ -47,6 +41,10 @@ export class SandboxPiPhaseRunner implements PhasePort {
   }
 
   async run(input: PhaseInput, signal?: AbortSignal): Promise<PhaseResult> {
+    // Validate the controller-bound profile before creating any staging or
+    // sandbox artifacts. A malformed profile must not partially launch a
+    // phase with an ambiguous model identity.
+    const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
     const sessionId = randomUUID();
     const phaseDirectory = `/ticket/sessions/${input.phase}`;
     const sessionFile = `${phaseDirectory}/${input.attempt}.jsonl`;
@@ -54,54 +52,63 @@ export class SandboxPiPhaseRunner implements PhasePort {
     const localDirectory = path.join(this.#stagingRoot, input.runId, "phase-inputs");
     const localInput = path.join(localDirectory, `${input.phase}-${input.attempt}.json`);
     await mkdir(localDirectory, { recursive: true, mode: 0o700 });
-    await writeFile(localInput, `${JSON.stringify({ ...input, sessionId, sessionFile }, null, 2)}\n`, { mode: 0o600 });
+    try {
+      await writeFile(localInput, `${JSON.stringify({ ...input, sessionId, sessionFile }, null, 2)}\n`, { mode: 0o600 });
 
-    await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
-    const home = `/ticket/runtime/home/${input.phase}`;
-    const temporary = `/ticket/runtime/tmp/${input.phase}`;
-    const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)} /ticket/artifacts`;
-    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", prepare] }, signal);
+      await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
+      const home = `/ticket/runtime/home/${input.phase}`;
+      const temporary = `/ticket/runtime/tmp/${input.phase}`;
+      const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)} /ticket/artifacts`;
+      await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", prepare] }, signal);
 
-    const profile = this.#profiles[input.phase];
-    const tools = input.phase === "implement"
-      ? "read,grep,find,ls,bash,edit,write"
-      : input.phase === "plan" || input.phase === "retro"
-        ? "read,grep,find,ls"
-        : "read,grep,find,ls,bash";
-    const prompt = buildPrompt(input.phase, inputPath, this.#testCommands);
-    const environment = [
-      "/usr/bin/env", "-i",
-      "PATH=/usr/local/bin:/usr/bin:/bin",
-      `HOME=${home}`,
-      `TMPDIR=${temporary}`,
-      `PI_CODING_AGENT_DIR=${this.#agentDirectory}`,
-      "PI_OFFLINE=1",
-      "PI_TELEMETRY=0",
-      this.#pi,
-      "--print",
-      "--mode", "text",
-      "--session", sessionFile,
-      "--provider", profile.provider,
-      "--model", profile.model,
-      "--thinking", profile.thinking,
-      "--tools", tools,
-      "--no-extensions",
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-themes",
-      "--no-context-files",
-      "--approve",
-      prompt,
-    ];
-    const output = await this.#commands.run({
-      command: this.#sbx,
-      args: ["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment],
-      timeoutMs: this.#timeoutMs,
-      maxOutputBytes: 2 * 1024 * 1024,
-    }, signal);
+      const tools = input.phase === "implement"
+        ? "read,grep,find,ls,bash,edit,write"
+        : input.phase === "plan" || input.phase === "retro"
+          ? "read,grep,find,ls"
+          : "read,grep,find,ls,bash";
+      const prompt = buildPrompt(input.phase, inputPath, this.#testCommands);
+      const environment = [
+        "/usr/bin/env", "-i",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        `HOME=${home}`,
+        `TMPDIR=${temporary}`,
+        `PI_CODING_AGENT_DIR=${this.#agentDirectory}`,
+        "PI_OFFLINE=1",
+        "PI_TELEMETRY=0",
+        this.#pi,
+        "--print",
+        "--mode", "text",
+        "--session", sessionFile,
+        "--provider", profile.provider,
+        "--model", profile.model,
+        "--thinking", profile.thinking,
+        "--tools", tools,
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+        "--approve",
+        prompt,
+      ];
+      const output = await this.#commands.run({
+        command: this.#sbx,
+        args: ["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment],
+        timeoutMs: this.#timeoutMs,
+        maxOutputBytes: 2 * 1024 * 1024,
+      }, signal);
 
-    await rm(localInput, { force: true });
-    return parsePhaseResult(output.stdout, input, sessionId, sessionFile);
+      const result = parsePhaseResult(output.stdout, input, sessionId, sessionFile);
+      // Pi's response schema remains intentionally small. The trusted adapter
+      // attaches the exact profile used for argv so persisted evidence cannot be
+      // confused with mutable runner configuration.
+      return { ...result, profile: { ...profile } };
+    } finally {
+      // Phase inputs can contain ticket text and feedback. Remove the host
+      // staging copy on every exit path, including failed or cancelled Pi
+      // launches, rather than retaining sensitive run material indefinitely.
+      await rm(localInput, { force: true });
+    }
   }
 }
 
@@ -120,14 +127,14 @@ function buildPrompt(phase: PersonalPhase, inputPath: string, testCommands: read
     "Return exactly one JSON object as your final response and no other text.",
     `Use details ${detailsShape(phase)}.`,
     '{"runId":"...","phase":"plan|implement|review|test|retro","attempt":1,"sessionId":"...","sessionFile":"...","inputHead":"40-hex","outputHead":"40-hex","status":"passed|remediation_required|failed","summary":"...","details":{}}',
-    "Copy run/phase/attempt/session/inputHead identities exactly from the input. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
+    "Copy run, phase, attempt, sessionId, and sessionFile exactly from the input. Set inputHead exactly to the input's expectedHead value: result inputHead equals the current phase input's expectedHead, never a prior phase result's inputHead. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
   ].join("\n\n");
 }
 
 function detailsShape(phase: PersonalPhase): string {
   if (phase === "plan") return '{"steps":["ordered actionable step"]}';
   if (phase === "implement") return '{"changes":["implemented change"]}';
-  if (phase === "review") return '{"findings":[]} (empty only when passed)';
+  if (phase === "review") return '{"findings":[]} when passed or {"findings":["concrete finding as a plain string"]} when remediation is required; details.findings[] contains plain strings, never structured objects';
   if (phase === "test") return '{"commands":[{"command":"npm test","exitCode":0,"summary":"passed"}]}';
   return '{"lessons":["concrete lesson"],"followUps":["optional proposed follow-up"]}';
 }
@@ -140,6 +147,10 @@ function parsePhaseResult(raw: string, input: PhaseInput, sessionId: string, ses
   const result = value as PhaseResult;
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt || result.sessionId !== sessionId || result.sessionFile !== sessionFile) throw new Error(`${input.phase} result identity mismatch`);
   if (result.inputHead !== input.expectedHead) throw new Error(`${input.phase} result Git identity mismatch`);
+  if (result.profile) {
+    const expected = input.profile;
+    if (expected && (result.profile.provider !== expected.provider || result.profile.model !== expected.model || result.profile.thinking !== expected.thinking)) throw new Error(`${input.phase} result profile identity mismatch`);
+  }
   return result;
 }
 

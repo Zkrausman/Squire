@@ -1,11 +1,14 @@
 import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { deterministicFeatureBranch } from "./identity.js";
 import { validatePhaseResultShape } from "./phase-result.js";
-import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort } from "./types.js";
+import { canonicalPlanIdentity, PLAN_SELECTION_VERSION, validatePhaseProfile } from "./model-policy.js";
+import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type PlanSelection, type ResolvedPhaseProfiles } from "./types.js";
 
-const STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
+const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
+const OPTIONAL_STATE_KEYS = ["profiles", "planSelection"] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
 const RUN_STEPS = ["preparing", ...PERSONAL_PHASES, "publishing", "complete"] as const;
 
@@ -32,6 +35,7 @@ export class JsonRunStateStore implements RunStatePort {
     const current = await this.#read(target);
     if (!current) throw new Error(`run state does not exist: ${state.runId}`);
     if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+    assertResolvedProfilesUnchanged(current, state);
     const temporary = path.join(this.directory, `.${state.runId}.${randomUUID()}.tmp`);
     const handle = await open(temporary, "wx", 0o600);
     try {
@@ -87,7 +91,7 @@ function encode(state: PersonalRunState): string {
 }
 
 export function validateState(value: unknown): asserts value is PersonalRunState {
-  const state = exactObject(value, STATE_KEYS, "run state");
+  const state = exactObject(value, REQUIRED_STATE_KEYS, "run state", OPTIONAL_STATE_KEYS);
   if (state["schemaVersion"] !== 1 || !integer(state["version"], 1)) throw new Error("invalid run state version");
   if (!text(state["runId"], 128) || !/^[a-z0-9][a-z0-9-]{7,127}$/u.test(state["runId"])) throw new Error("invalid run state runId");
   if (!text(state["ticketId"], 64) || !/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(state["ticketId"])) throw new Error("invalid run state ticketId");
@@ -102,6 +106,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   nullableSha(state["baseSha"], "baseSha");
   nullableSha(state["head"], "head");
   if ((state["baseSha"] === null) !== (state["head"] === null)) throw new Error("run state Git identity is incomplete");
+  validateResolvedProfiles(state);
 
   const attempts = exactObject(state["attempts"], PERSONAL_PHASES, "run state attempts");
   for (const phase of PERSONAL_PHASES) if (!integer(attempts[phase], 0)) throw new Error(`invalid run state ${phase} attempts`);
@@ -117,6 +122,11 @@ export function validateState(value: unknown): asserts value is PersonalRunState
     const phase = key as PersonalPhase;
     validatePhaseResultShape(result, phase);
     if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || result.sessionFile !== `/ticket/sessions/${phase}/${result.attempt}.jsonl`) throw new Error(`run state ${phase} result identity mismatch`);
+    const profiles = state["profiles"] as ResolvedPhaseProfiles | undefined;
+    if (profiles) {
+      if (!result.profile || !sameProfile(result.profile, profiles[phase])) throw new Error(`run state ${phase} profile evidence is missing or does not match the resolved profile`);
+    }
+
   }
 
   if (state["prUrl"] !== null && (!text(state["prUrl"], 2_000) || !/^https:\/\/[^\s]+$/u.test(state["prUrl"]))) throw new Error("invalid run state prUrl");
@@ -143,9 +153,10 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   if (PERSONAL_PHASES.includes(state["step"] as PersonalPhase) && (attempts[state["step"] as PersonalPhase] as number) < 1) throw new Error("active phase has no attempt");
 }
 
-function exactObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
-  const object = subsetObject(value, keys, label);
-  if (Object.keys(object).length !== keys.length) throw new Error(`${label} fields are invalid`);
+function exactObject(value: unknown, keys: readonly string[], label: string, optionalKeys: readonly string[] = []): Record<string, unknown> {
+  const object = subsetObject(value, [...keys, ...optionalKeys], label);
+  if (Object.keys(object).length < keys.length || Object.keys(object).some(key => !keys.includes(key) && !optionalKeys.includes(key))) throw new Error(`${label} fields are invalid`);
+  if (keys.some(key => !Object.prototype.hasOwnProperty.call(object, key))) throw new Error(`${label} fields are invalid`);
   return object;
 }
 
@@ -171,4 +182,62 @@ function nullableSha(value: unknown, label: string): void {
 function validTimestamp(value: string): boolean {
   const parsed = new Date(value);
   return Number.isFinite(parsed.valueOf()) && parsed.toISOString() === value;
+}
+
+function validateResolvedProfiles(state: Record<string, unknown>): void {
+  const profilesValue = state["profiles"];
+  const selectionValue = state["planSelection"];
+  // Published v1 states predate model evidence. They remain readable, but
+  // this branch intentionally does not invent profiles for their old results.
+  if (profilesValue === undefined && selectionValue === undefined) return;
+  if (profilesValue === undefined || selectionValue === undefined) throw new Error("run state resolved profiles and Plan selection must be persisted together");
+  if (!profilesValue || typeof profilesValue !== "object" || Array.isArray(profilesValue)) throw new Error("run state profiles must be an object");
+  const profiles = profilesValue as Record<string, unknown>;
+  if (Object.keys(profiles).length !== PERSONAL_PHASES.length || Object.keys(profiles).some(key => !PERSONAL_PHASES.includes(key as PersonalPhase))) throw new Error("run state profiles fields are invalid");
+  for (const phase of PERSONAL_PHASES) validatePhaseProfile(profiles[phase], `run state profiles.${phase}`);
+
+  if (!selectionValue || typeof selectionValue !== "object" || Array.isArray(selectionValue)) throw new Error("run state Plan selection must be an object");
+  const selection = selectionValue as Record<string, unknown>;
+  const selectionKeys = ["version", "identity", "repository", "ticketId", "digest", "bucket", "profile"];
+  if (Object.keys(selection).length !== selectionKeys.length || Object.keys(selection).some(key => !selectionKeys.includes(key))) throw new Error("run state Plan selection fields are invalid");
+  if (selection["version"] !== PLAN_SELECTION_VERSION || typeof selection["identity"] !== "string" || !/^[a-f0-9]{64}$/u.test(String(selection["digest"]))) throw new Error("run state Plan selection version or digest is invalid");
+  if (selection["bucket"] !== "a" && selection["bucket"] !== "b") throw new Error("run state Plan selection bucket is invalid");
+  const identity = canonicalPlanIdentity(String(state["repository"]), String(state["ticketId"]));
+  if (selection["identity"] !== identity.identity || selection["repository"] !== identity.repository || selection["ticketId"] !== identity.ticketId) throw new Error("run state Plan selection identity mismatch");
+  const expectedDigest = createPlanDigest(identity.identity);
+  if (selection["digest"] !== expectedDigest) throw new Error("run state Plan selection digest mismatch");
+  const expectedBucket = (Number.parseInt(expectedDigest.slice(0, 2), 16) & 1) === 0 ? "a" : "b";
+  if (selection["bucket"] !== expectedBucket || !sameProfile(selection["profile"], profiles["plan"])) throw new Error("run state Plan selection profile mismatch");
+  validatePhaseProfile(selection["profile"], "run state Plan selection profile");
+}
+
+function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  if (current.profiles) {
+    if (!next.profiles || !next.planSelection || !current.planSelection || !sameProfiles(current.profiles, next.profiles) || !sameSelection(current.planSelection, next.planSelection)) throw new Error("resolved phase profiles are immutable");
+    return;
+  }
+  if (next.profiles || next.planSelection) {
+    if (Object.keys(current.results).length > 0) throw new Error("cannot add model evidence to a legacy run state with executed phases");
+  }
+}
+
+function sameProfiles(left: ResolvedPhaseProfiles, right: ResolvedPhaseProfiles): boolean {
+  return PERSONAL_PHASES.every(phase => sameProfile(left[phase], right[phase]));
+}
+
+function sameSelection(left: PlanSelection, right: PlanSelection): boolean {
+  return left.version === right.version && left.identity === right.identity && left.repository === right.repository && left.ticketId === right.ticketId && left.digest === right.digest && left.bucket === right.bucket && sameProfile(left.profile, right.profile);
+}
+
+function sameProfile(left: PhaseProfile | unknown, right: PhaseProfile | unknown): boolean {
+  if (!left || typeof left !== "object" || !right || typeof right !== "object") return false;
+  const a = left as PhaseProfile;
+  const b = right as PhaseProfile;
+  return a.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
+}
+
+function createPlanDigest(identity: string): string {
+  // Kept local so state validation recomputes the persisted identity rather
+  // than trusting a caller-provided digest.
+  return createHash("sha256").update(identity, "utf8").digest("hex");
 }

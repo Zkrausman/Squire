@@ -9,6 +9,7 @@ import test from "node:test";
 import { NodeCommandRunner, type CommandPort, type CommandRequest, type CommandResult } from "../src/personal/command.js";
 import { loadPersonalMvpConfig } from "../src/personal/config.js";
 import { DockerSandboxWorkspace } from "../src/personal/docker-sandbox.js";
+import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
 import { LinearClient } from "../src/personal/linear-client.js";
 import { validatePhaseResultShape } from "../src/personal/phase-result.js";
@@ -38,18 +39,20 @@ const PROFILES: Readonly<Record<PersonalPhase, PhaseProfile>> = {
   test: { provider: "provider", model: "test-model", thinking: "high" },
   retro: { provider: "provider", model: "retro-model", thinking: "medium" },
 };
+const APPROVED_PROFILES = resolvePhaseProfiles("example/repo", "AIDEV-1").profiles;
 
-function phaseInput(phase: PersonalPhase): PhaseInput {
+function phaseInput(phase: PersonalPhase, profiles: Readonly<Record<PersonalPhase, PhaseProfile>> = PROFILES, ticketId = "AIDEV-1"): PhaseInput {
   return {
-    runId: "aidev-1-0123456789",
-    ticket: { id: "AIDEV-1", title: "Small", description: "Change one file" },
+    runId: `${ticketId.toLowerCase()}-0123456789`,
+    ticket: { id: ticketId, title: "Small", description: "Change one file" },
     repository: "example/repo",
     baseBranch: "main",
-    sandbox: "squire-aidev-1-0123456789",
-    branch: deterministicFeatureBranch("example/repo", "AIDEV-1"),
+    sandbox: `squire-${ticketId.toLowerCase()}-0123456789`,
+    branch: deterministicFeatureBranch("example/repo", ticketId),
     phase,
     attempt: 1,
     expectedHead: BASE,
+    profile: profiles[phase],
     previous: {},
     feedback: [],
   };
@@ -125,7 +128,7 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
         return { stdout: "", stderr: "" };
       },
     };
-    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, profiles: PROFILES, testCommands: ["npm test"] });
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     for (const phase of ["plan", "review", "test", "retro", "implement"] as const) await runner.run(phaseInput(phase));
     const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
     assert.equal(launches.length, 5);
@@ -135,14 +138,111 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       assert.equal(launch.args[envIndex + 1], "-i");
       assert.equal(launch.args.includes("PI_OFFLINE=1"), true);
       assert.equal(launch.args.includes("PI_TELEMETRY=0"), true);
+      assert.equal(launch.args[launch.args.indexOf("--provider") + 1], PROFILES[phase].provider);
       assert.equal(launch.args[launch.args.indexOf("--model") + 1], PROFILES[phase].model);
+      assert.equal(launch.args[launch.args.indexOf("--thinking") + 1], PROFILES[phase].thinking);
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
+      assert.match(launch.args.at(-1) ?? "", /Set inputHead exactly to the input's expectedHead value/);
+      if (phase === "review") assert.match(launch.args.at(-1) ?? "", /details\.findings\[\] contains plain strings, never structured objects/);
       const tools = launch.args[launch.args.indexOf("--tools") + 1];
       if (phase === "plan" || phase === "review") assert.equal(tools?.split(",").includes("write"), false);
       if (phase === "retro") assert.deepEqual(tools?.split(","), ["read", "grep", "find", "ls"]);
       if (phase === "implement") assert.equal(tools?.split(",").includes("write"), true);
     }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Pi adapter launches every approved policy triple exactly", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-approved-phase-"));
+  try {
+    let phaseDocument: Record<string, unknown> | undefined;
+    const requests: CommandRequest[] = [];
+    const commands: CommandPort = {
+      async run(request) {
+        requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
+        if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
+        if (request.command === "sbx" && request.args.includes("--print")) {
+          const phase = phaseDocument?.["phase"] as PersonalPhase;
+          return { stdout: JSON.stringify({
+            runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
+          }), stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
+    const phases = ["plan", "implement", "review", "test", "retro"] as const;
+    const results = [];
+    for (const phase of phases) results.push(await runner.run(phaseInput(phase, APPROVED_PROFILES)));
+
+    const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
+    assert.equal(launches.length, phases.length);
+    for (const [index, phase] of phases.entries()) {
+      const launch = launches[index]!;
+      const profile = APPROVED_PROFILES[phase];
+      assert.deepEqual(results[index]?.profile, profile);
+      const providerIndex = launch.args.indexOf("--provider");
+      const modelIndex = launch.args.indexOf("--model");
+      const thinkingIndex = launch.args.indexOf("--thinking");
+      assert.deepEqual(
+        [launch.args[providerIndex + 1], launch.args[modelIndex + 1], launch.args[thinkingIndex + 1]],
+        [profile.provider, profile.model, profile.thinking],
+      );
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Pi adapter launches both deterministic Plan buckets with their exact profiles", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-plan-buckets-"));
+  try {
+    let phaseDocument: Record<string, unknown> | undefined;
+    const requests: CommandRequest[] = [];
+    const commands: CommandPort = {
+      async run(request) {
+        requests.push({ ...request, args: [...request.args] });
+        if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
+        if (request.command === "sbx" && request.args.includes("--print")) {
+          return { stdout: JSON.stringify({
+            runId: phaseDocument?.["runId"], phase: "plan", attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: "plan passed", details: details("plan"),
+          }), stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
+    const tickets = ["AIDEV-1", "AIDEV-2"] as const;
+    const resolved = tickets.map(ticket => resolvePhaseProfiles("example/repo", ticket));
+    const outputs = [];
+    for (const [index, ticket] of tickets.entries()) outputs.push(await runner.run(phaseInput("plan", { plan: resolved[index]!.profiles.plan, implement: resolved[index]!.profiles.implement, review: resolved[index]!.profiles.review, test: resolved[index]!.profiles.test, retro: resolved[index]!.profiles.retro }, ticket)));
+
+    assert.deepEqual(resolved.map(selection => selection.planSelection.bucket), ["b", "a"]);
+    assert.deepEqual(outputs.map(output => output.profile), resolved.map(selection => selection.profiles.plan));
+    const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
+    assert.equal(launches.length, tickets.length);
+    for (const [index, launch] of launches.entries()) {
+      const profile = resolved[index]!.profiles.plan;
+      assert.deepEqual(
+        [launch.args[launch.args.indexOf("--provider") + 1], launch.args[launch.args.indexOf("--model") + 1], launch.args[launch.args.indexOf("--thinking") + 1]],
+        [profile.provider, profile.model, profile.thinking],
+      );
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Pi adapter removes host phase input when a launch fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-cleanup-"));
+  try {
+    const commands: CommandPort = { async run(request) {
+      if (request.args.includes("--print")) throw new Error("Pi launch failed");
+      return { stdout: "", stderr: "" };
+    } };
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
+    await assert.rejects(runner.run(phaseInput("plan")), /Pi launch failed/);
+    await assert.rejects(
+      readFile(path.join(root, "aidev-1-0123456789", "phase-inputs", "plan-1.json")),
+      error => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -155,7 +255,7 @@ test("passing Plan output without actionable steps is rejected", async () => {
       if (request.args.includes("--print")) return { stdout: JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }), stderr: "" };
       return { stdout: "", stderr: "" };
     } };
-    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, profiles: PROFILES, testCommands: ["npm test"] });
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     await assert.rejects(runner.run(phaseInput("plan")), /Plan steps/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

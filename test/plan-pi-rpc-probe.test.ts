@@ -3,7 +3,7 @@ import { inspect } from "node:util";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ProcessLaunch } from "../src/pi/pi-process.js";
-import { BoundedFailureAccumulator } from "./support/pi-child-support.js";
+import { BoundedFailureAccumulator, BoundedRedactor } from "./support/pi-child-support.js";
 import { probePlanRpc } from "./support/plan-pi-rpc-probe.js";
 
 const planRpcFixtureChild = fileURLToPath(new URL("./support/plan-pi-rpc-fixture-child.js", import.meta.url));
@@ -74,6 +74,21 @@ test("Plan RPC probe preserves malformed RPC as primary and reports real exit fa
       return true;
     },
   );
+});
+
+test("Pi redaction preserves lifecycle paths while retaining npm configuration secrets", () => {
+  const registry = "https://user:registry-secret@registry.example";
+  const redactor = new BoundedRedactor({
+    npm_config_registry: registry,
+    npm_command: "test",
+    npm_lifecycle_event: "test",
+    npm_lifecycle_script: "npm test",
+  });
+
+  assert.equal(redactor.redact("/ticket/runtime/tmp/test"), "/ticket/runtime/tmp/test");
+  const rendered = redactor.redact(`registry response: ${registry}`);
+  assert.equal(rendered.includes(registry), false, "npm registry credentials must be redacted without an assignment");
+  assert.match(rendered, /<redacted>/u);
 });
 
 test("Plan RPC redacts encoded secrets from primary, secondary, aggregate, and inspection paths", async () => {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
@@ -52,9 +52,33 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     const sourceBundle = path.join(runStaging, "source.bundle");
     await rm(sourceBundle, { force: true });
 
-    const baseSha = (await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", `${input.sourceRef}^{commit}`] }, signal)).stdout.trim();
+    const baseSha = (await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", "--verify", `${input.sourceRef}^{commit}`] }, signal)).stdout.trim();
     assertSha(baseSha);
-    await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "bundle", "create", sourceBundle, input.sourceRef], timeoutMs: 180_000 }, signal);
+
+    // A remote-tracking ref is not a reliable bundle head for `git clone`.
+    // Pin the already-resolved commit behind a clone-visible temporary branch,
+    // bundle that ref, and compare-delete it even when bundling fails. The
+    // source ref is never reread after resolution, so movement during prepare
+    // cannot change the sandbox base.
+    const bundleRef = `refs/heads/squire-source-${input.runId}-${randomUUID().replaceAll("-", "")}`;
+    let bundleRefCreated = false;
+    try {
+      // The UUID makes a collision unlikely and the zero old-value makes the
+      // create compare-and-set safe for both SHA-1 and SHA-256 repositories.
+      // Complete this tiny host-side mutation before observing cancellation:
+      // if update-ref fails because a colliding ref already exists, ownership
+      // was never established and cleanup must not delete that ref. If the
+      // caller is cancelled while it runs, the following bundle command sees
+      // the cancellation and the established ref is still cleaned up.
+      await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", bundleRef, baseSha, "0".repeat(baseSha.length)] });
+      bundleRefCreated = true;
+      await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "bundle", "create", sourceBundle, bundleRef], timeoutMs: 180_000 }, signal);
+    } finally {
+      // Cleanup is a host-side safety obligation and must still run after an
+      // aborted caller signal, but only after this invocation established the
+      // compare-and-set ref.
+      if (bundleRefCreated) await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", "-d", bundleRef, baseSha] });
+    }
 
     const createArgs = ["create", "--name", input.sandbox];
     if (this.#template) createArgs.push("--template", this.#template);
@@ -74,6 +98,29 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "chmod 0700 /ticket /ticket/workspace /ticket/sessions /ticket/artifacts /ticket/runtime",
     ].join("\n");
     await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", script], timeoutMs: 180_000 }, signal);
+    // Keep repository-controlled Node/npm execution out of the privileged
+    // setup command. The role user owns /ticket after the setup above, so a
+    // declared ticket runtime is installed and validated with the same
+    // pinned commands CI uses, without granting it sandbox-root privileges.
+    const runtimeSetup = [
+      "set -eu",
+      // Only repositories that declare the pinned ticket runtime need the
+      // additional installation. A normal configured checkout must remain
+      // usable without Squire's repository-specific CI fixtures.
+      // `-e` follows symlinks, so include `-L` in the declaration probe and
+      // reject symlinked declarations below. A repository must not bypass the
+      // pinned-runtime contract with a dangling or outside-tree link.
+      "if [ -e /ticket/workspace/.github/runtime/package.json ] || [ -L /ticket/workspace/.github/runtime/package.json ] || [ -e /ticket/workspace/.github/runtime/package-lock.json ] || [ -L /ticket/workspace/.github/runtime/package-lock.json ] || [ -e /ticket/workspace/.github/validate-ticket-runtime.mjs ] || [ -L /ticket/workspace/.github/validate-ticket-runtime.mjs ]; then",
+      "  test -f /ticket/workspace/.github/runtime/package.json && test ! -L /ticket/workspace/.github/runtime/package.json",
+      "  test -f /ticket/workspace/.github/runtime/package-lock.json && test ! -L /ticket/workspace/.github/runtime/package-lock.json",
+      "  test -f /ticket/workspace/.github/validate-ticket-runtime.mjs && test ! -L /ticket/workspace/.github/validate-ticket-runtime.mjs",
+      "  cp /ticket/workspace/.github/runtime/package.json /ticket/runtime/package.json",
+      "  cp /ticket/workspace/.github/runtime/package-lock.json /ticket/runtime/package-lock.json",
+      "  npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
+      "  node /ticket/workspace/.github/validate-ticket-runtime.mjs",
+      "fi",
+    ].join("\n");
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, input.sandbox, "sh", "-lc", runtimeSetup], timeoutMs: 180_000 }, signal);
     if (this.#piAuthFile) {
       await this.#commands.run({ command: this.#sbx, args: ["cp", this.#piAuthFile, `${input.sandbox}:${this.#piAgentDirectory}/auth.json`] }, signal);
       const secureAuth = `chown ${sh(this.#roleUser)} ${sh(`${this.#piAgentDirectory}/auth.json`)}; chmod 0600 ${sh(`${this.#piAgentDirectory}/auth.json`)}`;
