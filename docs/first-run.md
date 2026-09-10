@@ -54,7 +54,7 @@ Edit at least:
 - `sandbox.template`, `sandbox.roleUser`, and sandbox executable settings
 - `github.tokenCommand`
 
-The example contains the approved model policy. Every profile uses the
+The example's canonical policy key is `modelPolicy`. It contains the approved model policy. Every profile uses the
 `openai-codex` provider. Plan has two equal deterministic buckets:
 `gpt-6-astra` at medium thinking and `gpt-5.6-sol` at high thinking.
 Implement is `gpt-5.6-luna` at max, Review and Retro are `gpt-5.6-sol` at
@@ -108,7 +108,8 @@ being silently reclaimed.
 
 A detached run is deliberately not a daemon or crash-perfect supervisor. A
 forced kill or power loss can leave an ambiguous active reservation. `status`
-reports that reservation even when an older terminal run exists. Preserve the
+reports that reservation for either a ticket or run-ID selector, even when an
+older terminal run exists. Preserve the
 state/logs and sandbox, confirm that no controller is still running, then
 perform conservative owner cleanup of the exact reservation rather than
 starting a second run for the same ticket. Normal SIGINT/SIGTERM received

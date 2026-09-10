@@ -55,8 +55,6 @@ export interface PersonalMvpControllerOptions {
   readonly newId?: () => string;
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
-  /** Backward-compatible flat profile map for older embedders. */
-  readonly profiles?: Readonly<Record<PersonalPhase, PhaseProfile>>;
   /** Optional process identity for persisted foreground/background evidence. */
   readonly controllerPid?: number;
   /** Receives persistence failures that cannot be represented in run state. */
@@ -128,8 +126,7 @@ export class PersonalMvpController {
     this.#newId = options.newId ?? randomUUID;
     this.#controllerPid = options.controllerPid;
     this.#onPersistenceError = options.onPersistenceError ?? (() => undefined);
-    if (options.modelPolicy !== undefined && options.profiles !== undefined) throw new Error("controller options must define either modelPolicy or profiles, not both");
-    this.#modelPolicy = validateModelPolicy(options.modelPolicy ?? flatProfilesPolicy(options.profiles) ?? APPROVED_PERSONAL_MODEL_POLICY);
+    this.#modelPolicy = validateModelPolicy(options.modelPolicy ?? APPROVED_PERSONAL_MODEL_POLICY);
   }
 
   /**
@@ -143,7 +140,7 @@ export class PersonalMvpController {
     const resolved = resolvePhaseProfiles(
       request.repository,
       request.ticketId,
-      request.modelPolicy ?? (request.profiles ? flatProfilesPolicy(request.profiles) : this.#modelPolicy),
+      request.modelPolicy ?? this.#modelPolicy,
     );
     const identity = createRunIdentity(request, options.runId ?? this.#newId(), options.runId);
     const startedAt = this.#timestamp();
@@ -250,24 +247,23 @@ export class PersonalMvpController {
     const launchCwd = absolutePath(options.cwd ?? process.cwd(), "launch cwd");
     if (options.signal?.aborted) throw startupAbortReason(options.signal);
     const reservedId = this.#previewRunId(request);
-    const defaultLogs = backgroundLogPaths(options.logsDirectory ?? options.stateDirectory ?? path.dirname(configPath), reservedId);
+    // The child must always receive the exact state root used by this
+    // controller. Falling back to the config path would make a bootstrap
+    // failure unrecordable when an embedder uses a separate state store.
+    const stateDirectory = resolveBackgroundStateDirectory(this.#states, options.stateDirectory);
+    const defaultLogs = backgroundLogPaths(options.logsDirectory ?? stateDirectory, reservedId);
     const stdoutPath = options.stdoutPath !== undefined ? absolutePath(options.stdoutPath, "stdout log path") : defaultLogs.stdoutPath;
     const stderrPath = options.stderrPath !== undefined ? absolutePath(options.stderrPath, "stderr log path") : defaultLogs.stderrPath;
-    const stateDirectory = options.stateDirectory === undefined ? undefined : absolutePath(options.stateDirectory, "state directory");
     // Re-resolve destinations at the launch boundary. This catches ordinary
     // configuration/injection mistakes and symlink retargeting that happened
     // before this check; it is not a continuous ancestor-integrity guarantee.
-    await assertBackgroundDestinationsOutsideRepository(request.repositoryPath, [
-      ...(stateDirectory === undefined ? [] : [stateDirectory]),
-      stdoutPath,
-      stderrPath,
-    ]);
+    await assertBackgroundDestinationsOutsideRepository(request.repositoryPath, [stateDirectory, stdoutPath, stderrPath]);
+    assertBackgroundStateStoreMatches(this.#states, stateDirectory);
     const launchEnvironment: NodeJS.ProcessEnv = {
       ...process.env,
       ...(options.env ?? {}),
     };
-    if (stateDirectory !== undefined) launchEnvironment["SQUIRE_STATE_DIRECTORY"] = stateDirectory;
-    else delete launchEnvironment["SQUIRE_STATE_DIRECTORY"];
+    launchEnvironment["SQUIRE_STATE_DIRECTORY"] = stateDirectory;
 
     if (!/^[a-f0-9]{64}$/u.test(options.launchConfigDigest)) throw new Error("launch config digest is invalid");
     const state = await this.reserve(request, {
@@ -652,7 +648,6 @@ function createRunIdentity(request: RunRequest, suppliedId: string, explicitRunI
 }
 
 function validateRequest(request: RunRequest): void {
-  if (request.modelPolicy !== undefined && request.profiles !== undefined) throw new Error("run request must define either modelPolicy or profiles, not both");
   if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(request.ticketId)) throw new Error("invalid Linear ticket identifier");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(request.repository)) throw new Error("repository must be owner/name");
   if (!request.repositoryPath || !request.sourceRef || !/^[A-Za-z0-9._/-]+$/u.test(request.baseBranch)) throw new Error("invalid repository configuration");
@@ -689,17 +684,6 @@ function resolvedProfile(state: PersonalRunState, phase: PersonalPhase): PhasePr
   const profile = state.profiles?.[phase];
   if (!profile) throw new Error(`run has no resolved ${phase} Pi profile`);
   return profile;
-}
-
-function flatProfilesPolicy(profiles: Readonly<Record<PersonalPhase, PhaseProfile>> | undefined): PersonalModelPolicy | undefined {
-  if (!profiles) return undefined;
-  return {
-    plan: [profiles.plan, profiles.plan],
-    implement: profiles.implement,
-    review: profiles.review,
-    test: profiles.test,
-    retro: profiles.retro,
-  };
 }
 
 function requirePassingResults(state: PersonalRunState): Readonly<Record<PersonalPhase, PhaseResult>> {
@@ -761,6 +745,24 @@ function isWithinPath(parent: string, child: string): boolean {
 function absolutePath(value: string, label: string): string {
   if (!value || value.includes("\0")) throw new Error(`${label} is invalid`);
   return path.resolve(value);
+}
+
+function resolveBackgroundStateDirectory(states: RunStatePort, explicit: string | undefined): string {
+  const storeDirectory = (states as RunStatePort & { readonly directory?: unknown }).directory;
+  const selected = explicit !== undefined
+    ? absolutePath(explicit, "state directory")
+    : typeof storeDirectory === "string"
+      ? absolutePath(storeDirectory, "state directory")
+      : undefined;
+  if (selected === undefined) throw new Error("background state directory is required for child bootstrap recovery");
+  return selected;
+}
+
+function assertBackgroundStateStoreMatches(states: RunStatePort, selected: string): void {
+  const storeDirectory = (states as RunStatePort & { readonly directory?: unknown }).directory;
+  if (typeof storeDirectory === "string" && path.resolve(storeDirectory) !== selected) {
+    throw new Error("background state directory does not match the controller state store");
+  }
 }
 
 function isReservedLaunch(state: PersonalRunState): boolean {

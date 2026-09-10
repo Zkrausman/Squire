@@ -19,7 +19,7 @@
     "piAgentDirectory": "/ticket/runtime/pi-agent",
     "piAuthFile": "pi-auth.json"
   },
-  "profiles": {
+  "modelPolicy": {
     "plan": {
       "buckets": [
         { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "medium" },

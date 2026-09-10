@@ -39,8 +39,6 @@ export interface PersonalMvpConfig {
     readonly piAuthFile?: string;
   };
   /** Normalized policy; Plan is always exactly two equal buckets. */
-  readonly profiles: PersonalModelPolicy;
-  /** Descriptive alias for callers that want to distinguish policy from paths. */
   readonly modelPolicy: PersonalModelPolicy;
   readonly testCommands: readonly string[];
 }
@@ -168,14 +166,8 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
     ? resolveSquireDataDirectory(options)
     : resolveHostPath(base, text(configuredDataDirectory, "dataDirectory"), platform);
 
-  const hasModelPolicy = Object.prototype.hasOwnProperty.call(value, "modelPolicy");
-  const hasProfiles = Object.prototype.hasOwnProperty.call(value, "profiles");
-  if (hasModelPolicy && hasProfiles) throw new Error("configuration must define either modelPolicy or profiles, not both");
-  const policyValue = hasModelPolicy
-    ? value["modelPolicy"]
-    : hasProfiles
-      ? value["profiles"]
-      : undefined;
+  if (Object.prototype.hasOwnProperty.call(value, "profiles")) throw new Error("profiles is not supported; use modelPolicy");
+  const policyValue = value["modelPolicy"];
   const modelPolicy = policyValue === undefined
     ? clonePolicy(APPROVED_PERSONAL_MODEL_POLICY)
     : parseModelPolicy(policyValue);
@@ -227,26 +219,25 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
       ...(template !== undefined ? { template: text(template, "sandbox.template") } : {}),
       ...(piAuthFile !== undefined ? { piAuthFile: resolveHostPath(base, text(piAuthFile, "sandbox.piAuthFile"), platform) } : {}),
     },
-    profiles: modelPolicy,
     modelPolicy,
     testCommands: [...testCommands] as string[],
   };
 }
 
 function parseModelPolicy(value: unknown): PersonalModelPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("profiles must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("modelPolicy must be an object");
   const object = value as Record<string, unknown>;
   const policyKeys = ["plan", "implement", "review", "test", "retro"];
-  if (Object.keys(object).length !== policyKeys.length || Object.keys(object).some(key => !policyKeys.includes(key))) throw new Error("profiles fields are invalid");
+  if (Object.keys(object).length !== policyKeys.length || Object.keys(object).some(key => !policyKeys.includes(key))) throw new Error("modelPolicy fields are invalid");
   const plan = parsePlanBuckets(object["plan"]);
   const result = {
     plan,
-    implement: parseProfile(object["implement"], "profiles.implement"),
-    review: parseProfile(object["review"], "profiles.review"),
-    test: parseProfile(object["test"], "profiles.test"),
-    retro: parseProfile(object["retro"], "profiles.retro"),
+    implement: parseProfile(object["implement"], "modelPolicy.implement"),
+    review: parseProfile(object["review"], "modelPolicy.review"),
+    test: parseProfile(object["test"], "modelPolicy.test"),
+    retro: parseProfile(object["retro"], "modelPolicy.retro"),
   };
-  return validateModelPolicy(result, "profiles");
+  return validateModelPolicy(result, "modelPolicy");
 }
 
 function parsePlanBuckets(value: unknown): readonly [PhaseProfile, PhaseProfile] {
@@ -256,21 +247,21 @@ function parsePlanBuckets(value: unknown): readonly [PhaseProfile, PhaseProfile]
   } else if (value && typeof value === "object" && !Array.isArray(value)) {
     const object = value as Record<string, unknown>;
     if (Object.prototype.hasOwnProperty.call(object, "buckets")) {
-      if (Object.keys(object).length !== 1) throw new Error("profiles.plan fields are invalid");
+      if (Object.keys(object).length !== 1) throw new Error("modelPolicy.plan fields are invalid");
       buckets = object["buckets"];
     } else if (Object.prototype.hasOwnProperty.call(object, "a") || Object.prototype.hasOwnProperty.call(object, "b")) {
-      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "a") || !Object.prototype.hasOwnProperty.call(object, "b")) throw new Error("profiles.plan buckets must be named a and b");
+      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "a") || !Object.prototype.hasOwnProperty.call(object, "b")) throw new Error("modelPolicy.plan buckets must be named a and b");
       buckets = [object["a"], object["b"]];
     } else if (Object.prototype.hasOwnProperty.call(object, "bucketA") || Object.prototype.hasOwnProperty.call(object, "bucketB")) {
-      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "bucketA") || !Object.prototype.hasOwnProperty.call(object, "bucketB")) throw new Error("profiles.plan buckets must include bucketA and bucketB");
+      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "bucketA") || !Object.prototype.hasOwnProperty.call(object, "bucketB")) throw new Error("modelPolicy.plan buckets must include bucketA and bucketB");
       buckets = [object["bucketA"], object["bucketB"]];
     }
     // Accept the pre-policy flat form only as an explicit legacy migration. It
     // does not silently choose a model: both equal buckets are that profile.
     else if (Object.prototype.hasOwnProperty.call(object, "provider") || Object.prototype.hasOwnProperty.call(object, "model") || Object.prototype.hasOwnProperty.call(object, "thinking")) buckets = [value, value];
   }
-  if (!Array.isArray(buckets) || buckets.length !== 2) throw new Error("profiles.plan must contain exactly two buckets");
-  return [parseProfile(buckets[0], "profiles.plan.a"), parseProfile(buckets[1], "profiles.plan.b")];
+  if (!Array.isArray(buckets) || buckets.length !== 2) throw new Error("modelPolicy.plan must contain exactly two buckets");
+  return [parseProfile(buckets[0], "modelPolicy.plan.a"), parseProfile(buckets[1], "modelPolicy.plan.b")];
 }
 
 function parseProfile(value: unknown, label: string): PhaseProfile {

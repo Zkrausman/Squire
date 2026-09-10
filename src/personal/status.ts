@@ -30,6 +30,21 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
   if (RUN_PATTERN.test(selector)) {
     const state = states.read ? await states.read(selector) : undefined;
     if (!state) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
+    // A run-id selector must honor the same reservation authority as a ticket
+    // selector. Otherwise `status <old-run-id>` could hide a replacement or
+    // orphan lock that still prevents a new run for the ticket.
+    if (states.reservationOwner) {
+      let owner: string | undefined;
+      try {
+        owner = await states.reservationOwner(state.ticketId);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${state.ticketId}: ${detail}`);
+      }
+      if (owner && (state.status !== "running" || owner !== state.runId)) {
+        throw new StatusLookupError("ambiguous", `run reservation does not match run ${state.runId}: ${owner}`);
+      }
+    }
     return state;
   }
 

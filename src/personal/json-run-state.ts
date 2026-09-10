@@ -198,10 +198,6 @@ export class JsonRunStateStore implements RunStatePort {
     return matches.sort(compareStates);
   }
 
-  async findByRunId(runId: string): Promise<PersonalRunState | undefined> {
-    return this.read(runId);
-  }
-
   async read(runId: string): Promise<PersonalRunState | undefined> {
     return this.#read(this.#path(runId), runId);
   }

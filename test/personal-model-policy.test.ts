@@ -73,7 +73,7 @@ test("config paths resolve beside the selected user config, never beside a repos
       linear: { apiKeyEnv: "LINEAR_API_KEY" },
       github: { tokenCommand: ["./token-helper"] },
       sandbox: { roleUser: "1000:1000", piExecutable: "/usr/local/bin/pi", piAgentDirectory: "/ticket/runtime/pi-agent", piAuthFile: "pi-auth.json" },
-      profiles: policy,
+      modelPolicy: policy,
       testCommands: ["npm test"],
     }));
     const loaded = await loadPersonalMvpConfig(configPath);
@@ -101,7 +101,7 @@ test("omitted model policy resolves to a detached copy of the approved defaults"
     }));
     const loaded = await loadPersonalMvpConfig(file);
     assert.deepEqual(loaded.modelPolicy, policy);
-    assert.deepEqual(loaded.profiles, policy);
+    assert.equal(Object.prototype.hasOwnProperty.call(loaded, "profiles"), false);
     assert.notEqual(loaded.modelPolicy, policy);
     assert.notEqual(loaded.modelPolicy.plan, policy.plan);
     assert.notEqual(loaded.modelPolicy.plan[0], policy.plan[0]);
@@ -209,6 +209,8 @@ test("data directory accepts only canonical JSON and environment names", async (
     const file = path.join(root, "config.json");
     await writeFile(file, JSON.stringify({ ...base, runtimeDataDirectory: path.join(root, "alias") }));
     await assert.rejects(loadPersonalMvpConfig(file), /runtimeDataDirectory is not supported/);
+    await writeFile(file, JSON.stringify({ ...base, profiles: policy }));
+    await assert.rejects(loadPersonalMvpConfig(file), /profiles is not supported/);
     await writeFile(file, JSON.stringify({ ...base, paths: { logs: path.join(root, "logs") } }));
     await assert.rejects(loadPersonalMvpConfig(file), /paths.logs is not supported/);
     await writeFile(file, JSON.stringify(base));
@@ -239,7 +241,7 @@ test("implicit config loading works without repository config and ignores a loca
       linear: { apiKeyEnv: "LINEAR_API_KEY" },
       github: { tokenCommand: ["token-helper"] },
       sandbox: { roleUser: "1000:1000", piExecutable: "/usr/local/bin/pi", piAgentDirectory: "/ticket/runtime/pi-agent" },
-      profiles: policy,
+      modelPolicy: policy,
       testCommands: ["npm test"],
     }));
 

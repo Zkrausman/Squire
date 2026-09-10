@@ -285,7 +285,7 @@ test("configuration requires an external GitHub token command", async () => {
       linear: { apiKeyEnv: "LINEAR_API_KEY" },
       github: { tokenCommand: ["token-helper", "--installation", "123"] },
       sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/runtime/pi-agent" },
-      profiles: PROFILES,
+      modelPolicy: { plan: [PROFILES.plan, PROFILES.plan], implement: PROFILES.implement, review: PROFILES.review, test: PROFILES.test, retro: PROFILES.retro },
       testCommands: ["npm test"],
     }));
     const config = await loadPersonalMvpConfig(file);

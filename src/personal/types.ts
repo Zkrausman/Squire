@@ -166,8 +166,6 @@ export interface RunRequest {
   readonly baseBranch: string;
   /** Optional caller-supplied policy; the approved policy is used otherwise. */
   readonly modelPolicy?: PersonalModelPolicy;
-  /** Backward-compatible flat profiles input; new callers should use modelPolicy. */
-  readonly profiles?: Readonly<Record<PersonalPhase, PhaseProfile>>;
 }
 
 export interface TicketPort {

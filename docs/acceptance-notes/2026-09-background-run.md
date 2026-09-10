@@ -12,11 +12,12 @@ squire status <returned-run-id>
 ```
 
 Focused automated coverage exercises detached argv/options (`windowsHide`,
-ignored stdin, and no shell), a real short-lived detached Node fixture with
-file-backed stdout/stderr, cross-process serialized state updates, conservative
-reservation release races, pre-handoff SIGINT/SIGTERM interruption, bootstrap
-failure fallback, status control escaping, orphan-reservation reporting, and
-duplicate-ticket rejection. These tests verify launch options, not a human
+ignored stdin, and no shell), a short-lived launcher parent whose detached
+child outlives it with file-backed stdout/stderr, cross-process serialized state
+updates, conservative reservation release races, pre-handoff SIGINT/SIGTERM
+interruption, bootstrap failure fallback, status control escaping,
+orphan-reservation reporting for ticket and run-ID selectors, and duplicate-
+ticket rejection. These tests verify launch options, not a human
 observation that Windows displayed no console window. A provisioned
 Windows/Linux run should still record that manual no-window observation and the
 open, unmerged PR URL in this note.

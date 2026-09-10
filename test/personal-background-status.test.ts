@@ -8,6 +8,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { NodeBackgroundLauncher } from "../src/personal/background-launcher.js";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
+import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
 import { formatRunStatus, findRunState, StatusLookupError } from "../src/personal/status.js";
 import { main, parseArguments } from "../src/personal/cli.js";
 import type { PersonalRunState, RunRequest } from "../src/personal/types.js";
@@ -76,6 +77,53 @@ test("legacy status explicitly reports unavailable timing and model evidence", a
   assert.match(output, /Elapsed: unavailable/);
   assert.match(output, /Model: unavailable/);
   assert.match(output, /Current HEAD: unavailable/);
+});
+
+test("status renders persisted phase, timing, model, head, error, PR, and log evidence", () => {
+  const output = formatRunStatus({
+    schemaVersion: 1,
+    version: 4,
+    runId: "aidev-1-status1234",
+    ticketId: "AIDEV-1",
+    ticketTitle: "Status fields",
+    status: "completed",
+    step: "review",
+    lifecycle: "completed",
+    executionMode: "background",
+    startedAt: "2026-09-10T00:00:00.000Z",
+    endedAt: "2026-09-10T01:01:01.000Z",
+    controllerPid: 4321,
+    stdoutPath: "/home/user/.local/state/squire/logs/out.log",
+    stderrPath: "/home/user/.local/state/squire/logs/err.log",
+    repositoryPath: "/work/repo",
+    sourceRef: "main",
+    launchConfigDigest: "a".repeat(64),
+    sandbox: "squire-aidev-1-status1234",
+    repository: "example/repo",
+    baseBranch: "main",
+    baseSha: "b".repeat(40),
+    branch: "squire/aidev-1-status1234",
+    profiles: resolvePhaseProfiles("example/repo", "AIDEV-1").profiles,
+    head: "c".repeat(40),
+    sessions: {},
+    attempts: { plan: 1, implement: 1, review: 2, test: 1, retro: 1 },
+    results: {},
+    remediations: { review: 1, test: 0 },
+    prUrl: "https://github.com/example/repo/pull/12",
+    lastError: "a terminal diagnostic",
+    updatedAt: "2026-09-10T01:01:01.000Z",
+  }, new Date("2026-09-11T00:00:00.000Z"));
+  assert.match(output, /Phase: review/);
+  assert.match(output, /Attempt: 2/);
+  assert.match(output, /Provider: openai-codex/);
+  assert.match(output, /Model: gpt-5\.6-sol/);
+  assert.match(output, /Thinking: medium/);
+  assert.match(output, /Elapsed: 1h 1m 1s \(3661000 ms\)/);
+  assert.match(output, new RegExp(`Current HEAD: ${"c".repeat(40)}`));
+  assert.match(output, /Terminal error: a terminal diagnostic/);
+  assert.match(output, /PR URL: https:\/\/github\.com\/example\/repo\/pull\/12/);
+  assert.match(output, /Stdout log: \/home\/user\/\.local\/state\/squire\/logs\/out\.log/);
+  assert.match(output, /Stderr log: \/home\/user\/\.local\/state\/squire\/logs\/err\.log/);
 });
 
 test("detached launcher uses file descriptors, no shell/window, and unrefs after spawn", async () => {
@@ -215,6 +263,46 @@ test("real detached child outlives launch handoff and inherits stdout/stderr log
   }
 });
 
+test("a short-lived launcher parent exits before the detached child and logs survive", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-parent-detached-"));
+  try {
+    const marker = path.join(root, "finished.txt");
+    const stdoutPath = path.join(root, "stdout.log");
+    const stderrPath = path.join(root, "stderr.log");
+    const parentExit = await spawnExit(process.execPath, [
+      path.resolve("fixtures/background-launch-parent.mjs"), marker, stdoutPath, stderrPath, "800",
+    ]);
+    assert.equal(parentExit, 0);
+    await assert.rejects(access(marker));
+    await waitForFile(marker);
+    assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
+    assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("background bootstrap transport follows the JSON store when no override is supplied", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-state-transport-"));
+  try {
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    let launchEnvironment: NodeJS.ProcessEnv | undefined;
+    await controller(states).startBackground(REQUEST, {
+      launcher: { async launch(request) {
+        launchEnvironment = request.env;
+        return { pid: 777 };
+      } },
+      cliPath: path.resolve("dist/src/personal/cli.js"),
+      configPath: path.resolve("squire.config.example.json"),
+      logsDirectory: path.join(root, "logs"),
+      launchConfigDigest: "d".repeat(64),
+    });
+    assert.equal(launchEnvironment?.["SQUIRE_STATE_DIRECTORY"], states.directory);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("background parent performs no post-spawn state write and child validates immutable identity", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-single-writer-"));
   try {
@@ -321,8 +409,14 @@ test("two detached claimants admit exactly one owner before ticket and workspace
     const effects = (await readFile(sideEffects, "utf8")).trim().split("\n");
     assert.deepEqual(effects, ["ticket", "workspace"]);
     const messages = await Promise.all(results.map(file => readFile(file, "utf8")));
-    assert.equal(messages.filter(message => /version must advance by one/.test(message)).length, 1);
-    assert.equal(messages.filter(message => /stop after workspace side effect/.test(message)).length, 1);
+    // The losing claimant observes the already-started state and must stop;
+    // it must not reload that state and run a second ticket/workspace side
+    // effect. The exact diagnostic is intentionally not part of the contract.
+    assert.equal(messages.filter(message => /reserved run claim is no longer available|version must advance by one/u.test(message)).length, 1);
+    assert.equal(messages.filter(message => /stop after workspace side effect/u.test(message)).length, 1);
+    const winner = await states.read(reserved.runId);
+    assert.equal(winner?.status, "failed");
+    assert.equal(winner?.lastError, "stop after workspace side effect");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -727,6 +821,7 @@ test("status reports orphan reservations over older terminal state", async () =>
     await mkdir(path.join(root, "locks"), { recursive: true });
     await writeFile(path.join(root, "locks", "aidev-1.lock"), "aidev-1-orphan123\n", "utf8");
     await assert.rejects(findRunState(states, REQUEST.ticketId), (error: unknown) => error instanceof StatusLookupError && error.code === "ambiguous");
+    await assert.rejects(findRunState(states, old.runId), (error: unknown) => error instanceof StatusLookupError && error.code === "ambiguous");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

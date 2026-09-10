@@ -46,7 +46,7 @@ path.
 
 The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
 
-The approved personal policy is fixed in the example: Plan bucket A is
+The canonical JSON policy key is `modelPolicy`; the approved personal policy is fixed in the example: Plan bucket A is
 `openai-codex/gpt-6-astra` at `medium`, bucket B is
 `openai-codex/gpt-5.6-sol` at `high`, Implement is
 `openai-codex/gpt-5.6-luna` at `max`, Review and Retro are
@@ -56,6 +56,6 @@ canonical repository/ticket identity exactly once; the selection digest and
 all five resolved phase profiles are persisted with the run and each phase
 result records the profile that actually launched Pi.
 
-Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the `logs` directory beneath `dataDirectory`. `status` reads only persisted JSON records and reservation ownership; it does not contact Linear, Git, Docker, Pi, or GitHub. State writes are versioned and serialized per run, while reservation reserve/release operations use a short-lived per-ticket boundary; malformed or orphan reservations are reported as ambiguous rather than reclaimed. A detached child is intentionally not a crash-perfect supervisor: a forced kill or power loss can leave an ambiguous reservation. Do not delete or reuse that run's sandbox; inspect the log and state, and remove the exact reservation only after confirming no controller remains.
+Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the `logs` directory beneath `dataDirectory`. `status` reads only persisted JSON records and reservation ownership; it does not contact Linear, Git, Docker, Pi, or GitHub. State writes are versioned and serialized per run, while reservation reserve/release operations use a short-lived per-ticket boundary; malformed or orphan reservations are reported as ambiguous rather than reclaimed. A detached child is intentionally not a crash-perfect supervisor: a forced kill or power loss can leave an ambiguous reservation, and `status` reports it for either a ticket or run-ID selector. Do not delete or reuse that run's sandbox; inspect the log and state, and remove the exact reservation only after confirming no controller remains.
 
 > Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.
