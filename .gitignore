@@ -1,4 +1,5 @@
 node_modules/
 dist/
+.squire/
 .llm-wiki/meta/log.md
 .llm-wiki/wiki/log.md

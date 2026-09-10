@@ -1,6 +1,8 @@
 # Squire MVP Architecture
 
-- **Status:** Accepted technical design candidate
+> **Historical design notice (2026-09-10):** This document predates the approved single-user scope reset. Where it conflicts with [Squire Personal MVP](personal-mvp.md), the personal MVP is authoritative. Platform-scale custody, recovery, approval, Herdr, and multi-controller details are deferred.
+
+- **Status:** Historical technical design
 - **Owner ticket:** AIDEV-214
 - **Last updated:** 2026-09-01
 

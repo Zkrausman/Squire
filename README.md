@@ -1,21 +1,32 @@
 # Squire
 
-Squire is an AI delivery platform designed to take one software ticket through a controlled **Plan → Implement → Review → Test** workflow and produce a merge-ready pull request for a human to merge.
+Squire is a personal AI delivery tool intended to take one software ticket through **Plan → Implement → Review → Test → Retro**, open a pull request, and leave the merge to its human owner.
 
-The project is currently building its MVP. The foundation includes strict workflow contracts, durable orchestration state, isolated top-level Pi sessions, and run-scoped model and wiki configuration.
+## Current MVP
 
-## What’s coming
+The approved first milestone is deliberately small:
 
-The remaining MVP work will connect those foundations into a complete delivery path:
+```bash
+squire run AIDEV-123
+```
 
-- a ticket-private Git repository and worktree;
-- a persistent Docker Sandbox for each ticket;
-- ticket intake, scheduling, and crash recovery;
-- verified bundle export, branch publication, and pull-request creation;
-- approval policy with a human-only merge boundary;
-- an end-to-end workflow validation; and
-- an epic closeout cycle for final testing and a knowledge/process retrospective.
+One trusted local controller will fetch the ticket, create one Docker Sandbox, run five independent Pi phase processes, require Review, Test, and Retro to pass the current Git HEAD, and create or reuse one pull request. Retro runs read-only after Test with a fresh session, records lessons and proposed follow-ups, and publishes them in the PR body. Squire does not turn those follow-ups into Linear issues or mutate a wiki. Docker Sandbox is the host isolation boundary; same-ticket phases share that trust boundary. Ambiguous failures stop for the owner rather than invoking production-scale recovery or compensation.
 
-See [the MVP requirements](docs/mvp-requirements.md), [architecture](docs/mvp-architecture.md), and [ticket path](docs/mvp-ticket-path.md) for the current design.
+See the authoritative [Personal MVP plan](docs/personal-mvp.md) and [scope audit](docs/audits/2026-09-personal-mvp-scope-audit.md). The older [requirements](docs/mvp-requirements.md), [architecture](docs/mvp-architecture.md), and [ticket path](docs/mvp-ticket-path.md) are retained as historical design context where they conflict with the approved personal MVP.
 
-> Squire is under active development and is not yet ready for production use.
+## Developer preview
+
+For a complete first-run walkthrough, see [`docs/first-run.md`](docs/first-run.md).
+
+```bash
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build
+mkdir -p .squire
+cp squire.config.example.json .squire/squire.config.json
+# Edit .squire/squire.config.json (repository, sandbox, and token settings), then set LINEAR_API_KEY.
+npm run squire -- run AIDEV-123 --config .squire/squire.config.json
+```
+
+The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
+
+> Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.

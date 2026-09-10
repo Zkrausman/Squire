@@ -1,0 +1,36 @@
+{
+  "repository": {
+    "slug": "OWNER/REPOSITORY",
+    "path": ".",
+    "sourceRef": "refs/remotes/origin/main",
+    "baseBranch": "main"
+  },
+  "paths": {
+    "state": ".squire/state",
+    "bridges": ".squire/bridges",
+    "staging": ".squire/staging"
+  },
+  "linear": {
+    "apiKeyEnv": "LINEAR_API_KEY"
+  },
+  "github": {
+    "tokenCommand": ["squire-github-app-token"]
+  },
+  "sandbox": {
+    "template": "squire-personal-mvp:latest",
+    "roleUser": "1000:1000",
+    "piExecutable": "/usr/local/bin/pi",
+    "piAgentDirectory": "/ticket/runtime/pi-agent",
+    "piAuthFile": ".squire/pi-auth.json"
+  },
+  "profiles": {
+    "plan": { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "medium" },
+    "implement": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
+    "review": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "medium" },
+    "test": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
+    "retro": { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "medium" }
+  },
+  "testCommands": [
+    "npm test"
+  ]
+}

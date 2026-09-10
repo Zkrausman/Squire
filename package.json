@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "squire": "./dist/src/personal/cli.js"
+  },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "validate:contracts": "node scripts/validate-contracts.mjs",
+    "squire": "node dist/src/personal/cli.js",
     "test": "npm run build && node --test test/contracts.test.mjs dist/test/*.test.js"
   },
   "devDependencies": {
