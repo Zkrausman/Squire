@@ -122,6 +122,8 @@ test("Pi adapter launches exact profiles under env -i and denies Plan/Review wri
       const launch = launches[index]!;
       const envIndex = launch.args.indexOf("/usr/bin/env");
       assert.equal(launch.args[envIndex + 1], "-i");
+      assert.equal(launch.args.includes("PI_OFFLINE=1"), true);
+      assert.equal(launch.args.includes("PI_TELEMETRY=0"), true);
       assert.equal(launch.args[launch.args.indexOf("--model") + 1], PROFILES[phase].model);
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
