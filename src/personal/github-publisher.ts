@@ -45,6 +45,17 @@ export interface GitHubPublisherOptions {
   readonly ghExecutable?: string;
 }
 
+interface PullRequestRecord {
+  readonly url: string;
+  readonly number: number;
+  readonly baseRefName: string;
+  readonly headRefName: string;
+  readonly headRefOid: string;
+  readonly headRepositoryOwner: string;
+  readonly headRepository: string;
+  readonly body: string;
+}
+
 /** Verifies locally, then supplies a short-lived token only to host git/gh publication commands. */
 export class GitHubPublisher implements PublicationPort {
   readonly #commands: CommandPort;
@@ -86,16 +97,28 @@ export class GitHubPublisher implements PublicationPort {
         const remote = `https://github.com/${input.repository}.git`;
         const existing = await this.#findPullRequest(input, ghEnvironment, signal);
         if (existing) {
+          // Validate and prepare the body before the first possible remote
+          // mutation. A correction run must not advance a branch and only then
+          // discover that an owner-edited PR body is ambiguous.
+          const initialBody = reconcilePullRequestBody(existing.body, input);
           let confirmed = existing;
+          let body = initialBody;
           if (existing.headRefOid !== input.head) {
+            // The accepted candidate bundle is the only trusted source for a
+            // prior PR head. Prove that the old head is present and is an
+            // ancestor before asking Git to perform its ordinary fast-forward
+            // check on the remote branch.
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "cat-file", "-e", `${existing.headRefOid}^{commit}`] }, signal);
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "merge-base", "--is-ancestor", existing.headRefOid, input.head] }, signal);
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
             const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
             if (!refreshed || refreshed.number !== existing.number || refreshed.url !== existing.url || refreshed.headRefOid !== input.head) throw new Error("matching pull request changed during fast-forward publication");
             confirmed = refreshed;
+            // Re-read and validate the body after the push. A concurrent body
+            // edit must not be silently treated as a valid Squire document.
+            body = reconcilePullRequestBody(confirmed.body, input);
           }
-          await this.#reconcilePullRequestBody(input, confirmed, temporary, ghEnvironment, signal);
+          await this.#editPullRequestBody(input, confirmed.number, body, temporary, ghEnvironment, signal);
           return { url: confirmed.url, number: confirmed.number, reused: true };
         }
 
@@ -110,13 +133,15 @@ export class GitHubPublisher implements PublicationPort {
             timeoutMs: 120_000,
             sensitive: true,
           }, signal);
-          const url = created.stdout.trim().split(/\s+/u).find(value => /^https:\/\/github\.com\/[^\s]+\/pull\/\d+$/u.test(value));
-          if (!url) throw new Error("gh did not return a pull-request URL");
-          return { url, reused: false };
+          const url = created.stdout.trim().split(/\s+/u).find(value => pullRequestNumber(value, input.repository) !== undefined);
+          const number = url === undefined ? undefined : pullRequestNumber(url, input.repository);
+          if (!url || number === undefined) throw new Error("gh did not return a pull-request URL");
+          return { url, number, reused: false };
         } catch (error) {
           const reconciled = await this.#findPullRequest(input, ghEnvironment, signal);
           if (reconciled?.headRefOid === input.head) {
-            await this.#reconcilePullRequestBody(input, reconciled, temporary, ghEnvironment, signal);
+            const body = reconcilePullRequestBody(reconciled.body, input);
+            await this.#editPullRequestBody(input, reconciled.number, body, temporary, ghEnvironment, signal);
             return { url: reconciled.url, number: reconciled.number, reused: true };
           }
           throw error;
@@ -131,29 +156,31 @@ export class GitHubPublisher implements PublicationPort {
     }
   }
 
-  async #reconcilePullRequestBody(
+  async #editPullRequestBody(
     input: PublicationInput,
-    pullRequest: { readonly url: string; readonly number: number; readonly body: string },
+    number: number,
+    body: string,
     temporary: string,
     environment: NodeJS.ProcessEnv,
     signal?: AbortSignal,
   ): Promise<void> {
     const bodyPath = path.join(temporary, "pull-request-reconciled.md");
-    await writeFile(bodyPath, reconcilePullRequestBody(pullRequest.body, input), { mode: 0o600 });
+    await writeFile(bodyPath, body, { mode: 0o600 });
     await this.#commands.run({
       command: this.#gh,
-      args: ["pr", "edit", String(pullRequest.number), "--repo", input.repository, "--body-file", bodyPath],
+      args: ["pr", "edit", String(number), "--repo", input.repository, "--body-file", bodyPath],
       env: environment,
       timeoutMs: 120_000,
       sensitive: true,
     }, signal);
   }
 
-  async #findPullRequest(input: PublicationInput, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<{ url: string; number: number; headRefOid: string; body: string } | undefined> {
+  async #findPullRequest(input: PublicationInput, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<PullRequestRecord | undefined> {
     const listed = await this.#commands.run({
       command: this.#gh,
-      args: ["pr", "list", "--repo", input.repository, "--state", "open", "--base", input.baseBranch, "--head", input.branch, "--json", "url,number,headRefOid,body"],
+      args: ["pr", "list", "--repo", input.repository, "--state", "open", "--base", input.baseBranch, "--head", input.branch, "--json", "url,number,baseRefName,headRefName,headRefOid,headRepositoryOwner,headRepository,body"],
       env: environment,
+      maxOutputBytes: 2 * 1024 * 1024,
       sensitive: true,
     }, signal);
     let values: unknown;
@@ -161,10 +188,7 @@ export class GitHubPublisher implements PublicationPort {
     if (!Array.isArray(values)) throw new Error("gh returned malformed pull-request list");
     if (values.length > 1) throw new Error("multiple matching pull requests require owner intervention");
     if (values.length === 0) return undefined;
-    const value = values[0] as Record<string, unknown>;
-    const headRefOid = value["headRefOid"];
-    if (typeof headRefOid !== "string" || !/^[a-f0-9]{40,64}$/u.test(headRefOid) || typeof value["url"] !== "string" || typeof value["number"] !== "number" || typeof value["body"] !== "string") throw new Error("matching pull request has an unexpected identity or body");
-    return { url: value["url"], number: value["number"], headRefOid, body: value["body"] };
+    return parsePullRequestRecord(values[0], input);
   }
 }
 
@@ -174,6 +198,81 @@ function publicationEnvironment(additions: NodeJS.ProcessEnv): NodeJS.ProcessEnv
     if (process.env[key] !== undefined) environment[key] = process.env[key];
   }
   return { ...environment, ...additions };
+}
+
+function parsePullRequestRecord(value: unknown, input: PublicationInput): PullRequestRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("matching pull request has an unexpected identity or body");
+  const object = value as Record<string, unknown>;
+  const url = object["url"];
+  const number = object["number"];
+  const baseRefName = object["baseRefName"];
+  const headRefName = object["headRefName"];
+  const headRefOid = object["headRefOid"];
+  const body = object["body"];
+  const headRepositoryOwner = pullRequestOwner(object["headRepositoryOwner"]);
+  const headRepository = pullRequestRepository(object["headRepository"]);
+  if (
+    typeof url !== "string"
+    || !Number.isSafeInteger(number) || (number as number) < 1
+    || typeof baseRefName !== "string"
+    || typeof headRefName !== "string"
+    || typeof headRefOid !== "string" || !/^[a-f0-9]{40,64}$/u.test(headRefOid)
+    || typeof body !== "string" || body.length > 1_900_000
+    || !headRepositoryOwner
+    || !headRepository
+    || pullRequestNumber(url, input.repository) !== number
+    || baseRefName !== input.baseBranch
+    || headRefName !== input.branch
+    || !sameRepository(headRepository, input.repository)
+    || !sameRepository(`${headRepositoryOwner}/${repositoryName(input.repository)}`, input.repository)
+  ) throw new Error("matching pull request has an unexpected identity or body");
+  return {
+    url,
+    number: number as number,
+    baseRefName,
+    headRefName,
+    headRefOid,
+    headRepositoryOwner,
+    headRepository,
+    body,
+  };
+}
+
+function pullRequestOwner(value: unknown): string | undefined {
+  if (typeof value === "string" && /^[A-Za-z0-9_.-]+$/u.test(value)) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const object = value as Record<string, unknown>;
+  const login = object["login"] ?? object["name"];
+  return typeof login === "string" && /^[A-Za-z0-9_.-]+$/u.test(login) ? login : undefined;
+}
+
+function pullRequestRepository(value: unknown): string | undefined {
+  if (typeof value === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value)) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const object = value as Record<string, unknown>;
+  const nameWithOwner = object["nameWithOwner"];
+  if (typeof nameWithOwner === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(nameWithOwner)) return nameWithOwner;
+  const name = object["name"];
+  const owner = pullRequestOwner(object["owner"]);
+  return typeof name === "string" && /^[A-Za-z0-9_.-]+$/u.test(name) && owner ? `${owner}/${name}` : undefined;
+}
+
+function pullRequestNumber(value: string, repository: string): number | undefined {
+  let url: URL;
+  try { url = new URL(value); } catch { return undefined; }
+  if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com" || url.username || url.password || url.search || url.hash) return undefined;
+  const match = /^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)$/u.exec(url.pathname);
+  if (!match || `${match[1]}/${match[2]}`.toLowerCase() !== repository.toLowerCase()) return undefined;
+  const number = Number(match[3]);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+}
+
+function repositoryName(repository: string): string {
+  return repository.slice(repository.indexOf("/") + 1);
+}
+
+function sameRepository(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 function pullRequestBody(input: PublicationInput): string {
@@ -186,11 +285,11 @@ function pullRequestBody(input: PublicationInput): string {
     "",
     "## Squire phases",
     "",
-    `- Plan: ${input.phases.plan.summary}`,
-    `- Implement: ${input.phases.implement.summary}`,
-    `- Review: ${input.phases.review.summary}`,
-    `- Test: ${input.phases.test.summary}`,
-    `- Retro: ${input.phases.retro.summary}`,
+    `- Plan: ${markdownInline(input.phases.plan.summary)}`,
+    `- Implement: ${markdownInline(input.phases.implement.summary)}`,
+    `- Review: ${markdownInline(input.phases.review.summary)}`,
+    `- Test: ${markdownInline(input.phases.test.summary)}`,
+    `- Retro: ${markdownInline(input.phases.retro.summary)}`,
     "",
     "> Squire does not merge pull requests. The owner retains the final decision.",
     "",
@@ -220,19 +319,32 @@ function markdownListItem(value: string): string {
 }
 
 function reconcilePullRequestBody(body: string, input: PublicationInput): string {
-  let reconciled = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
-  reconciled = replaceUniqueLine(reconciled, `## ${input.ticket.id}`, `## ${input.ticket.id}`);
-  reconciled = replaceUniqueLine(reconciled, /^Validated head: `[a-f0-9]{40,64}`$/u, `Validated head: \`${input.head}\``);
-  for (const phase of PERSONAL_PHASES) reconciled = replaceUniqueLine(reconciled, new RegExp(`^- ${capitalize(phase)}: .+$`, "u"), `- ${capitalize(phase)}: ${input.phases[phase].summary}`);
-  return reconcileRetroSection(reconciled, retroSection(input));
+  if (body.length > 1_900_000) throw new Error("matching pull request has an unexpected Squire body");
+  const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+  const invalidBody = (): never => { throw new Error("matching pull request has an unexpected Squire body"); };
+  const ticketIndex = uniqueLineIndex(lines, `## ${input.ticket.id}`) ?? invalidBody();
+  const validatedIndex = uniqueLineIndex(lines, /^Validated head: `[a-f0-9]{40,64}`$/u) ?? invalidBody();
+  const squireHeadings = lines.flatMap((line, index) => /^##\s+Squire phases\s*$/u.test(line) ? [index] : []);
+  const squireIndex = squireHeadings.length === 1 ? squireHeadings[0] : undefined;
+  if (squireIndex === undefined || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
+  const nextHeading = lines.findIndex((line, index) => index > squireIndex && /^##\s+/u.test(line));
+  const phaseEnd = nextHeading === -1 ? lines.length : nextHeading;
+  for (const phase of PERSONAL_PHASES) {
+    const matches = lines.flatMap((line, index) => index > squireIndex && index < phaseEnd && new RegExp(`^- ${capitalize(phase)}: .+$`, "u").test(line) ? [index] : []);
+    if (matches.length !== 1) return invalidBody();
+    lines[matches[0]!] = `- ${capitalize(phase)}: ${markdownInline(input.phases[phase].summary)}`;
+  }
+  lines[validatedIndex] = `Validated head: \`${input.head}\``;
+  return reconcileRetroSection(lines.join("\n"), retroSection(input));
 }
 
-function replaceUniqueLine(body: string, expected: string | RegExp, replacement: string): string {
-  const lines = body.split("\n");
+function uniqueLineIndex(lines: readonly string[], expected: string | RegExp): number | undefined {
   const matches = lines.flatMap((line, index) => (typeof expected === "string" ? line === expected : expected.test(line)) ? [index] : []);
-  if (matches.length !== 1) throw new Error("matching pull request has an unexpected Squire body");
-  lines[matches[0]!] = replacement;
-  return lines.join("\n");
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function markdownInline(value: string): string {
+  return value.replaceAll("\r\n", " ").replaceAll("\r", " ").replaceAll("\n", " ");
 }
 
 function capitalize(value: PersonalPhase): string {
@@ -257,6 +369,8 @@ function reconcileRetroSection(body: string, section: string): string {
 
 function validatePublication(input: PublicationInput): void {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(input.repository)) throw new Error("invalid GitHub repository");
+  if (!/^[A-Za-z0-9._/-]+$/u.test(input.baseBranch) || input.baseBranch.includes("..") || input.baseBranch.startsWith("/") || input.baseBranch.endsWith("/")) throw new Error("invalid publication base branch");
+  if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(input.ticket.id)) throw new Error("invalid publication ticket");
   if (!/^squire\/[a-z0-9][a-z0-9._/-]{1,127}$/u.test(input.branch) || input.branch.includes("..")) throw new Error("invalid publication branch");
   if (!/^[a-f0-9]{40,64}$/u.test(input.head) || input.bundle.head !== input.head || input.bundle.branch !== input.branch) throw new Error("invalid publication identity");
   for (const phase of PERSONAL_PHASES) {

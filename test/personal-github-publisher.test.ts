@@ -20,7 +20,10 @@ class FakeCommands implements CommandPort {
   readonly requests: CommandRequest[] = [];
   readonly writtenBodies: string[] = [];
   listCalls = 0;
-  constructor(readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "diverged" | "concurrent") {}
+  constructor(
+    readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "diverged" | "concurrent" | "multiple",
+    readonly mutateRecord?: (record: Record<string, unknown>) => Record<string, unknown>,
+  ) {}
   async run(request: CommandRequest): Promise<CommandResult> {
     this.requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
     if (request.command === "git" && request.args.includes("rev-parse")) return { stdout: `${HEAD}\n`, stderr: "" };
@@ -59,7 +62,8 @@ class FakeCommands implements CommandPort {
         "- duplicate",
         "",
       ].join("\n");
-      return { stdout: exists ? JSON.stringify([{ url: "https://github.com/example/repo/pull/7", number: 7, headRefOid, body }]) : "[]", stderr: "" };
+      const record = this.mutateRecord?.({ url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body }) ?? { url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body };
+      return { stdout: exists ? JSON.stringify(this.behavior === "multiple" ? [record, record] : [record]) : "[]", stderr: "" };
     }
     if (request.command === "gh" && (request.args[1] === "create" || request.args[1] === "edit")) {
       const bodyFile = request.args[request.args.indexOf("--body-file") + 1];
@@ -162,6 +166,28 @@ test("publisher rejects divergent or concurrently changed existing PR heads", as
       assert.equal(commands.requests.filter(request => request.args.includes("push")).length, 1);
       assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
     });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("publisher rejects mismatched PR identity, malformed bodies, and multiple matches before mutation", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    const cases: readonly [string, FakeCommands][] = [
+      ["wrong base", new FakeCommands("fast-forward", record => ({ ...record, baseRefName: "develop" }))],
+      ["wrong head", new FakeCommands("fast-forward", record => ({ ...record, headRefName: "squire/other-ticket" }))],
+      ["wrong repository owner", new FakeCommands("fast-forward", record => ({ ...record, headRepositoryOwner: { login: "other-owner" } }))],
+      ["wrong repository URL", new FakeCommands("fast-forward", record => ({ ...record, url: "https://github.com/other/repo/pull/7" }))],
+      ["malformed body", new FakeCommands("fast-forward", record => ({ ...record, body: "owner text without Squire markers" }))],
+      ["malformed response", new FakeCommands("fast-forward", record => ({ ...record, number: "7" }))],
+      ["multiple matches", new FakeCommands("multiple")],
+    ];
+    for (const [name, commands] of cases) {
+      await t.test(name, async () => {
+        await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /unexpected identity or body|multiple matching|unexpected Squire body/);
+        assert.equal(commands.requests.some(request => request.args.includes("push")), false);
+        assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
+      });
+    }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
