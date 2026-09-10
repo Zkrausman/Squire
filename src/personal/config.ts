@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -20,7 +20,11 @@ export interface PersonalMvpConfig {
     readonly state: string;
     readonly bridges: string;
     readonly staging: string;
+    readonly logs: string;
+    readonly dataDirectory?: string;
   };
+  /** Resolved per-user root for state, logs, and other run artifacts. */
+  readonly runtimeDataDirectory: string;
   readonly linear: {
     readonly apiKeyEnv: string;
     readonly endpoint?: string;
@@ -49,6 +53,11 @@ export interface ConfigPathOptions {
   readonly homeDirectory?: string;
 }
 
+export interface RuntimeDataPathOptions extends ConfigPathOptions {
+  /** Explicit data-directory override; environment overrides are considered next. */
+  readonly explicit?: string;
+}
+
 /** Resolve the per-user Squire directory without looking in the repository. */
 export function defaultSquireDirectory(options?: ConfigPathOptions): string;
 export function defaultSquireDirectory(platform: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
@@ -66,6 +75,51 @@ export function defaultSquireDirectory(first?: ConfigPathOptions | NodeJS.Platfo
   const xdg = nonempty(environment["XDG_CONFIG_HOME"]);
   const configHome = xdg ? resolvePosixHome(xdg, options.cwd) : path.posix.join(home, ".config");
   return path.posix.normalize(path.posix.join(configHome, "squire"));
+}
+
+/**
+ * Resolve the per-user runtime-data directory. Configuration deliberately uses
+ * the config-specific XDG directory, while mutable run state and logs use the
+ * platform's state/data directory. SQUIRE_DATA_DIR is an explicit environment
+ * escape hatch for machines that keep state on a separate volume.
+ */
+export function defaultSquireDataDirectory(options?: ConfigPathOptions): string;
+export function defaultSquireDataDirectory(platform: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
+export function defaultSquireDataDirectory(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): string {
+  const options = pathOptions(first, suppliedEnv);
+  const environment = options.env;
+  if (options.platform === "win32") {
+    const localAppData = nonempty(environment["LOCALAPPDATA"])
+      ?? nonempty(environment["USERPROFILE"])
+      ?? options.homeDirectory
+      ?? os.homedir();
+    return path.win32.normalize(path.win32.join(localAppData, "Squire"));
+  }
+  const home = nonempty(environment["HOME"]) ?? options.homeDirectory ?? os.homedir();
+  // XDG_STATE_HOME is the appropriate location for mutable run state and
+  // logs. Accept XDG_DATA_HOME as a useful compatibility override because
+  // some older installations only define that XDG variable.
+  const stateHome = nonempty(environment["XDG_STATE_HOME"])
+    ?? nonempty(environment["XDG_DATA_HOME"])
+    ?? path.posix.join(home, ".local", "state");
+  return path.posix.normalize(path.posix.join(resolvePosixHome(stateHome, options.cwd), "squire"));
+}
+
+/** Resolve an explicit, environment, or platform-default runtime directory. */
+export function resolveSquireDataDirectory(options?: ConfigPathOptions | RuntimeDataPathOptions): string;
+export function resolveSquireDataDirectory(explicit: string | undefined, options?: ConfigPathOptions): string;
+export function resolveSquireDataDirectory(first?: string | ConfigPathOptions | RuntimeDataPathOptions, suppliedOptions: ConfigPathOptions = {}): string {
+  const options = typeof first === "object" ? first : suppliedOptions;
+  const explicit = typeof first === "string" ? first : (first && "explicit" in first ? first.explicit : undefined);
+  const environment = options.env ?? process.env;
+  const selected = nonempty(explicit)
+    ?? nonempty(environment["SQUIRE_DATA_DIR"])
+    ?? nonempty(environment["SQUIRE_RUNTIME_DATA_DIR"])
+    ?? nonempty(environment["SQUIRE_RUNTIME_DIR"])
+    ?? nonempty(environment["SQUIRE_DATA_HOME"])
+    ?? nonempty(environment["SQUIRE_STATE_HOME"]);
+  if (selected) return resolveHostPath(options.cwd ?? process.cwd(), selected, options.platform ?? process.platform);
+  return defaultSquireDataDirectory(options);
 }
 
 /** Return the only implicit config location supported by the personal CLI. */
@@ -90,12 +144,6 @@ export function resolveConfigPath(explicit?: string, options: ConfigPathOptions 
   return defaultConfigPath(options);
 }
 
-// Names used by integrations and tests; all delegate to the same precedence.
-export const resolvePersonalConfigPath = resolveConfigPath;
-export const resolveDefaultConfigPath = defaultConfigPath;
-export const getDefaultConfigPath = defaultConfigPath;
-export const getPersonalSquireDirectory = defaultSquireDirectory;
-
 export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOptions = {}): Promise<PersonalMvpConfig> {
   const platform = options.platform ?? process.platform;
   const absolute = resolveConfigPath(file, options);
@@ -103,11 +151,24 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("configuration must be an object");
   const value = raw as Record<string, unknown>;
   const repository = object(value["repository"], "repository");
-  const paths = object(value["paths"], "paths");
+  const paths = value["paths"] === undefined ? {} : object(value["paths"], "paths");
   const linear = object(value["linear"], "linear");
   const github = object(value["github"], "github");
   const sandbox = object(value["sandbox"], "sandbox");
   const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
+  const runtimeValue = value["runtime"];
+  if (runtimeValue !== undefined && (!runtimeValue || typeof runtimeValue !== "object" || Array.isArray(runtimeValue))) throw new Error("runtime must be an object");
+  const runtimeObject = runtimeValue as Record<string, unknown> | undefined;
+  const configuredDataDirectory = value["dataDirectory"]
+    ?? value["runtimeDataDirectory"]
+    ?? runtimeObject?.["dataDirectory"]
+    ?? paths["dataDirectory"]
+    ?? paths["runtime"]
+    ?? paths["data"];
+  if (configuredDataDirectory !== undefined && typeof configuredDataDirectory !== "string") throw new Error("dataDirectory must be a string");
+  const runtimeDataDirectory = configuredDataDirectory === undefined
+    ? resolveSquireDataDirectory(undefined, options)
+    : resolveHostPath(base, text(configuredDataDirectory, "dataDirectory"), platform);
 
   const hasModelPolicy = Object.prototype.hasOwnProperty.call(value, "modelPolicy");
   const hasProfiles = Object.prototype.hasOwnProperty.call(value, "profiles");
@@ -132,18 +193,47 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
   const piAuthFile = sandbox["piAuthFile"];
   if (piAuthFile !== undefined && typeof piAuthFile !== "string") throw new Error("sandbox.piAuthFile must be a string");
 
+  const repositoryPath = resolveHostPath(base, text(repository["path"], "repository.path"), platform);
+  // A few old preview fixtures put `state`, `bridges`, and `staging` beside a
+  // non-checkout config with `repository.path: "."`. Keep those fixtures
+  // loadable, but migrate their omitted runtime boundary to the safe per-user
+  // defaults rather than allowing artifacts inside the checkout.
+  const legacyPreviewPaths = repository["path"] === "."
+    && configuredDataDirectory === undefined
+    && paths["logs"] === undefined
+    && paths["state"] === "state"
+    && paths["bridges"] === "bridges"
+    && paths["staging"] === "staging"
+    && nonempty((options.env ?? process.env)["SQUIRE_DATA_DIR"]) === undefined
+    && nonempty((options.env ?? process.env)["SQUIRE_RUNTIME_DATA_DIR"]) === undefined
+    && nonempty((options.env ?? process.env)["SQUIRE_RUNTIME_DIR"]) === undefined
+    && nonempty((options.env ?? process.env)["SQUIRE_DATA_HOME"]) === undefined
+    && nonempty((options.env ?? process.env)["SQUIRE_STATE_HOME"]) === undefined
+    && !(platform === process.platform && await isGitCheckout(repositoryPath));
+  const statePath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["state"], "paths.state", base, runtimeDataDirectory, "state", platform);
+  const bridgesPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["bridges"], "paths.bridges", base, runtimeDataDirectory, "bridges", platform);
+  const stagingPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["staging"], "paths.staging", base, runtimeDataDirectory, "staging", platform);
+  const logsPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["logs"], "paths.logs", base, runtimeDataDirectory, "logs", platform);
+  // Resolve symlinks (including symlinked destination parents) before
+  // comparing paths. Non-native platform fixtures are parsed for display but
+  // are not inspected with the host filesystem.
+  await assertRuntimePathsOutsideRepository(repositoryPath, [runtimeDataDirectory, statePath, bridgesPath, stagingPath, logsPath], platform);
+
   return {
     repository: {
       slug: text(repository["slug"], "repository.slug"),
-      path: resolveHostPath(base, text(repository["path"], "repository.path"), platform),
+      path: repositoryPath,
       sourceRef: text(repository["sourceRef"], "repository.sourceRef"),
       baseBranch: text(repository["baseBranch"], "repository.baseBranch"),
     },
     paths: {
-      state: resolveHostPath(base, text(paths["state"], "paths.state"), platform),
-      bridges: resolveHostPath(base, text(paths["bridges"], "paths.bridges"), platform),
-      staging: resolveHostPath(base, text(paths["staging"], "paths.staging"), platform),
+      state: statePath,
+      bridges: bridgesPath,
+      staging: stagingPath,
+      logs: logsPath,
+      dataDirectory: runtimeDataDirectory,
     },
+    runtimeDataDirectory,
     linear: {
       apiKeyEnv: text(linear["apiKeyEnv"], "linear.apiKeyEnv"),
       ...(endpoint !== undefined ? { endpoint } : {}),
@@ -234,6 +324,8 @@ function pathOptions(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: 
 
 function resolveHostPath(base: string, value: string, platform: NodeJS.Platform): string {
   if (platform === "win32") return path.win32.isAbsolute(value) ? path.win32.normalize(value) : path.win32.resolve(base, value);
+  if (path.posix.isAbsolute(value) || path.posix.isAbsolute(base)) return path.posix.resolve(base, value);
+  // Non-native platform fixtures can still point at real host temporary files.
   return path.resolve(base, value);
 }
 
@@ -248,6 +340,64 @@ function resolveTokenCommand(base: string, command: string[], platform: NodeJS.P
     ? path.win32.isAbsolute(executable) || executable.includes("\\") || executable.includes("/") || executable.startsWith(".")
     : path.posix.isAbsolute(executable) || executable.includes("/") || executable.startsWith(".");
   return [isPath ? resolveHostPath(base, executable, platform) : executable, ...command.slice(1)];
+}
+
+function resolveConfiguredRuntimePath(value: unknown, label: string, base: string, dataDirectory: string, fallbackName: string, platform: NodeJS.Platform): string {
+  if (value === undefined) {
+    return platform === "win32"
+      ? path.win32.normalize(path.win32.join(dataDirectory, fallbackName))
+      : path.resolve(dataDirectory, fallbackName);
+  }
+  return resolveHostPath(base, text(value, label), platform);
+}
+
+/**
+ * Resolve a path even when its final components do not exist yet. This keeps
+ * symlinked parents from becoming a way to put state or logs in the checkout.
+ */
+async function realPathForSafety(value: string): Promise<string> {
+  const absolute = path.resolve(value);
+  const missing: string[] = [];
+  let cursor = absolute;
+  for (;;) {
+    try {
+      const existing = await realpath(cursor);
+      return path.resolve(existing, ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return absolute;
+      missing.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function isWithin(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+async function isGitCheckout(repositoryPath: string): Promise<boolean> {
+  try {
+    await realpath(path.join(repositoryPath, ".git"));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+async function assertRuntimePathsOutsideRepository(repositoryPath: string, destinations: readonly string[], platform: NodeJS.Platform): Promise<void> {
+  // Tests and callers may ask the loader to parse Windows paths on a POSIX
+  // host. Those strings are not host filesystem paths and must not be fed to
+  // POSIX realpath; native Windows invocations are checked below.
+  if (platform !== process.platform) return;
+  const repositoryReal = await realPathForSafety(repositoryPath);
+  for (const destination of destinations) {
+    const destinationReal = await realPathForSafety(destination);
+    if (isWithin(repositoryReal, destinationReal)) throw new Error(`runtime path must be outside the repository: ${destination}`);
+  }
 }
 
 function nonempty(value: string | undefined): string | undefined {

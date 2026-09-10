@@ -3,6 +3,7 @@
     "sources/SRC-2026-09-01-002",
     "syntheses/aidev-216-and-aidev-224-ownership-boundary"
   ],
+  "concepts/background-run-state-and-status": [],
   "concepts/five-session-pi-rpc-topology": [
     "concepts/immutable-handoff-validation",
     "concepts/run-scoped-pi-profiles-and-trusted-footer",

@@ -101,7 +101,7 @@ Each phase returns one small JSON result containing:
 - a summary;
 - phase-specific plan, findings, test evidence, or Retro `lessons` and `followUps` string arrays.
 
-Retro must return at least one lesson; proposed follow-ups may be empty. It receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace. The controller validates the result shape, identities, and Git HEAD. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
+Retro must return at least one lesson; proposed follow-ups may be empty. Implement may update the committed project wiki when required by the ticket, but Retro receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace. The controller validates the result shape, identities, and Git HEAD. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
 
 ## 6. Sandbox and credentials
 
@@ -139,7 +139,7 @@ The controller:
 7. reconciles that section without duplication when reusing an exact existing PR;
 8. records the PR URL and discards the token.
 
-Retro publication is limited to the PR body. Squire does not automatically create follow-up Linear issues or mutate a wiki.
+Retro publication is limited to the PR body. Squire does not automatically create follow-up Linear issues or mutate a wiki during Retro; this does not prohibit an Implement change to the committed project wiki.
 
 The first MVP does not implement GitHub App onboarding, automatic approval, automatic drafting/closing compensation, or exactly-once distributed settlement. Unexpected remote state stops for the owner. No code path may call a merge endpoint.
 

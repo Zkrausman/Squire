@@ -8,7 +8,8 @@
   "paths": {
     "state": "state",
     "bridges": "bridges",
-    "staging": "staging"
+    "staging": "staging",
+    "logs": "logs"
   },
   "linear": {
     "apiKeyEnv": "LINEAR_API_KEY"

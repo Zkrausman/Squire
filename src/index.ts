@@ -41,6 +41,8 @@ export * from "./personal/identity.js";
 export * from "./personal/model-policy.js";
 export * from "./personal/phase-result.js";
 export * from "./personal/controller.js";
+export * from "./personal/background-launcher.js";
+export * from "./personal/status.js";
 export * from "./personal/config.js";
 export * from "./personal/json-run-state.js";
 export * from "./personal/linear-client.js";

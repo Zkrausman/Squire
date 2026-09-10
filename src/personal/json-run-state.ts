@@ -1,16 +1,35 @@
-import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { deterministicFeatureBranch } from "./identity.js";
 import { validatePhaseResultShape } from "./phase-result.js";
 import { canonicalPlanIdentity, PLAN_SELECTION_VERSION, validatePhaseProfile } from "./model-policy.js";
-import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type PlanSelection, type ResolvedPhaseProfiles } from "./types.js";
+import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type PlanSelection, type ResolvedPhaseProfiles, type RunExecutionMode, type RunLifecycle, type RunLaunchState, type RunPreparationState } from "./types.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
-const OPTIONAL_STATE_KEYS = ["profiles", "planSelection"] as const;
+const OPTIONAL_STATE_KEYS = [
+  "profiles",
+  "planSelection",
+  "lifecycle",
+  "launchState",
+  "preparationState",
+  "executionMode",
+  "startedAt",
+  "endedAt",
+  "controllerPid",
+  "stdoutPath",
+  "stderrPath",
+  "repositoryPath",
+  "sourceRef",
+  "launchConfigDigest",
+] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
-const RUN_STEPS = ["preparing", ...PERSONAL_PHASES, "publishing", "complete"] as const;
+const RUN_STEPS = ["launching", "preparing", ...PERSONAL_PHASES, "publishing", "complete"] as const;
+const RUN_LIFECYCLES = ["launching", "preparing", "running", "publishing", "completed", "failed", "interrupted"] as const;
+const RUN_LAUNCH_STATES = ["reserved", "started", "failed"] as const;
+const RUN_PREPARATION_STATES = ["pending", "started", "ready", "failed"] as const;
+const EXECUTION_MODES = ["foreground", "background"] as const;
 
 export class JsonRunStateStore implements RunStatePort {
   constructor(readonly directory: string) {}
@@ -19,52 +38,137 @@ export class JsonRunStateStore implements RunStatePort {
     validateState(state);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const target = this.#path(state.runId);
-    const handle = await open(target, "wx", 0o600);
+    await atomicCreate(target, encode(state), this.directory, state.runId);
+  }
+
+  /**
+   * Atomically reserve a ticket and publish its first state. The lock is a
+   * short-lived ownership marker, not a lease: it is removed only after this
+   * run has recorded a terminal state. An unknown lock is intentionally
+   * treated as ambiguous and requires owner intervention.
+   */
+  async reserve(state: PersonalRunState): Promise<void> {
+    validateState(state);
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    const locks = path.join(this.directory, "locks");
+    await mkdir(locks, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(locks, `${state.ticketId.toLowerCase()}.lock`);
+    let lockHandle;
+    let lockAcquired = false;
     try {
-      await handle.writeFile(encode(state));
-      await handle.sync();
-    } finally {
-      await handle.close();
+      lockHandle = await open(lockPath, "wx", 0o600);
+      lockAcquired = true;
+      await lockHandle.writeFile(`${state.runId}\n`, "utf8");
+      await lockHandle.sync();
+      await lockHandle.close();
+      lockHandle = undefined;
+    } catch (error) {
+      await lockHandle?.close().catch(() => undefined);
+      if (lockAcquired) await unlink(lockPath).catch(() => undefined);
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Never reclaim here, even if the owner's state appears terminal. The
+      // previous owner may be between its final ownership check and unlink;
+      // deleting/recreating the pathname would let that release delete a new
+      // owner's reservation. A terminal lock is conservatively ambiguous
+      // until its exact owner completes release or an operator intervenes.
+      throw new Error(`ticket already has an active or ambiguous reservation: ${state.ticketId}`);
+    }
+
+    try {
+      // A manually removed/stale lock must not make an already-running state
+      // invisible. The lock now serializes this scan against another reserve.
+      const active = (await this.findByTicket(state.ticketId)).filter(candidate => candidate.status === "running");
+      if (active.length > 0) throw new Error(`ticket already has an active run: ${state.ticketId}`);
+      await atomicCreate(this.#path(state.runId), encode(state), this.directory, state.runId);
+    } catch (error) {
+      await unlink(lockPath).catch(() => undefined);
+      throw error;
     }
   }
 
   async save(state: PersonalRunState): Promise<void> {
     validateState(state);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const target = this.#path(state.runId);
-    const current = await this.#read(target);
-    if (!current) throw new Error(`run state does not exist: ${state.runId}`);
-    if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
-    assertResolvedProfilesUnchanged(current, state);
-    const temporary = path.join(this.directory, `.${state.runId}.${randomUUID()}.tmp`);
-    const handle = await open(temporary, "wx", 0o600);
+    const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
     try {
-      await handle.writeFile(encode(state));
-      await handle.sync();
-      await handle.close();
-      await rename(temporary, target);
-    } catch (error) {
-      await handle.close().catch(() => undefined);
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw error;
+      // The version check and replacement are one serialized operation across
+      // processes. A crashed writer leaves the update lock in place and fails
+      // closed rather than allowing a stale writer to overwrite newer truth.
+      const target = this.#path(state.runId);
+      const current = await this.#read(target);
+      if (!current) throw new Error(`run state does not exist: ${state.runId}`);
+      if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+      assertResolvedProfilesUnchanged(current, state);
+      assertLaunchIdentityUnchanged(current, state);
+      const temporary = path.join(this.directory, `.${state.runId}.${randomUUID()}.tmp`);
+      const handle = await open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(encode(state));
+        await handle.sync();
+        await handle.close();
+        await rename(temporary, target);
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
+    } finally {
+      await releaseUpdate();
     }
   }
 
   async findActive(ticketId: string): Promise<PersonalRunState | undefined> {
+    const matches = (await this.findByTicket(ticketId)).filter(state => state.status === "running");
+    if (matches.length > 1) throw new Error(`multiple active runs found for ${ticketId}`);
+    return matches[0];
+  }
+
+  async findByTicket(ticketId: string): Promise<readonly PersonalRunState[]> {
+    if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(ticketId)) throw new Error("invalid Linear ticket identifier");
+    return (await this.list()).filter(state => state.ticketId === ticketId);
+  }
+
+  async list(): Promise<readonly PersonalRunState[]> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const files = await readdir(this.directory);
     const matches: PersonalRunState[] = [];
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
       const state = await this.#read(path.join(this.directory, file));
-      if (state?.ticketId === ticketId && state.status === "running") matches.push(state);
+      if (state) matches.push(state);
     }
-    if (matches.length > 1) throw new Error(`multiple active runs found for ${ticketId}`);
-    return matches[0];
+    return matches.sort(compareStates);
+  }
+
+  async findLatestByTicket(ticketId: string): Promise<PersonalRunState | undefined> {
+    return (await this.findByTicket(ticketId))[0];
+  }
+
+  async findByRunId(runId: string): Promise<PersonalRunState | undefined> {
+    return this.read(runId);
   }
 
   async read(runId: string): Promise<PersonalRunState | undefined> {
     return this.#read(this.#path(runId));
+  }
+
+  async reservationOwner(ticketId: string): Promise<string | undefined> {
+    if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(ticketId)) throw new Error("invalid Linear ticket identifier");
+    return readLock(path.join(this.directory, "locks", `${ticketId.toLowerCase()}.lock`));
+  }
+
+  async release(ticketId: string, runId: string): Promise<void> {
+    if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(ticketId)) throw new Error("invalid Linear ticket identifier");
+    if (!/^[a-z0-9][a-z0-9-]{7,127}$/u.test(runId)) throw new Error("invalid run id");
+    const lockPath = path.join(this.directory, "locks", `${ticketId.toLowerCase()}.lock`);
+    const owner = await readLock(lockPath);
+    if (owner === undefined) return;
+    if (owner !== runId) throw new Error(`ticket reservation is owned by another run: ${ticketId}`);
+    const state = await this.read(runId);
+    if (!state) throw new Error(`cannot release an ambiguous ticket reservation: ${ticketId}`);
+    if (state.ticketId !== ticketId) throw new Error(`ticket reservation identity mismatch: ${ticketId}`);
+    if (state.status === "running") throw new Error(`cannot release an active ticket reservation: ${ticketId}`);
+    await unlink(lockPath);
   }
 
   #path(runId: string): string {
@@ -86,6 +190,53 @@ export class JsonRunStateStore implements RunStatePort {
   }
 }
 
+async function atomicCreate(target: string, contents: string, directory: string, identity: string): Promise<void> {
+  const temporary = path.join(directory, `.${identity}.${randomUUID()}.tmp`);
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+    await handle.close();
+    try {
+      // A hard-link publish is atomic and does not replace a pre-existing run
+      // state, unlike rename on POSIX. The temporary name is removed below.
+      await link(temporary, target);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function readLock(file: string): Promise<string | undefined> {
+  let value: string;
+  try {
+    value = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  const owner = value.trim();
+  return owner.length > 0 ? owner : undefined;
+}
+
+function compareStates(left: PersonalRunState, right: PersonalRunState): number {
+  const leftTime = timestampForOrdering(left);
+  const rightTime = timestampForOrdering(right);
+  if (leftTime !== rightTime) return rightTime - leftTime;
+  if (left.version !== right.version) return right.version - left.version;
+  return right.runId.localeCompare(left.runId);
+}
+
+function timestampForOrdering(state: PersonalRunState): number {
+  const candidate = state.startedAt ?? state.updatedAt;
+  const value = Date.parse(candidate);
+  return Number.isFinite(value) ? value : 0;
+}
+
 function encode(state: PersonalRunState): string {
   return `${JSON.stringify(state, null, 2)}\n`;
 }
@@ -99,6 +250,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   if (!text(state["ticketTitle"], 2_000)) throw new Error("invalid run state ticketTitle");
   if (typeof state["status"] !== "string" || !RUN_STATUSES.includes(state["status"] as (typeof RUN_STATUSES)[number])) throw new Error("invalid run state status");
   if (typeof state["step"] !== "string" || !RUN_STEPS.includes(state["step"] as (typeof RUN_STEPS)[number])) throw new Error("invalid run state step");
+  validateLifecycleMetadata(state);
   if (state["sandbox"] !== `squire-${state["runId"]}`) throw new Error("run state sandbox identity mismatch");
   if (!text(state["repository"], 256) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(state["repository"])) throw new Error("invalid run state repository");
   if (!text(state["baseBranch"], 256) || !/^[A-Za-z0-9._/-]+$/u.test(state["baseBranch"]) || state["baseBranch"].includes("..")) throw new Error("invalid run state baseBranch");
@@ -149,7 +301,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   } else if (state["step"] === "complete") {
     throw new Error("only completed state may use the complete step");
   }
-  if (state["step"] !== "preparing" && state["baseSha"] === null) throw new Error("started run has no Git identity");
+  if (state["step"] !== "preparing" && state["step"] !== "launching" && state["baseSha"] === null) throw new Error("started run has no Git identity");
   if (PERSONAL_PHASES.includes(state["step"] as PersonalPhase) && (attempts[state["step"] as PersonalPhase] as number) < 1) throw new Error("active phase has no attempt");
 }
 
@@ -184,6 +336,45 @@ function validTimestamp(value: string): boolean {
   return Number.isFinite(parsed.valueOf()) && parsed.toISOString() === value;
 }
 
+function validateLifecycleMetadata(state: Record<string, unknown>): void {
+  const metadataKeys = ["lifecycle", "launchState", "preparationState", "executionMode", "startedAt", "endedAt", "controllerPid", "stdoutPath", "stderrPath"];
+  const hasMetadata = metadataKeys.some(key => Object.prototype.hasOwnProperty.call(state, key));
+  if (!hasMetadata) return; // Published v1 state files did not have launch metadata.
+
+  const lifecycle = state["lifecycle"];
+  if (lifecycle !== undefined && (typeof lifecycle !== "string" || !RUN_LIFECYCLES.includes(lifecycle as RunLifecycle))) throw new Error("invalid run state lifecycle");
+  const launchState = state["launchState"];
+  if (launchState !== undefined && (typeof launchState !== "string" || !RUN_LAUNCH_STATES.includes(launchState as RunLaunchState))) throw new Error("invalid run state launch state");
+  const preparationState = state["preparationState"];
+  if (preparationState !== undefined && (typeof preparationState !== "string" || !RUN_PREPARATION_STATES.includes(preparationState as RunPreparationState))) throw new Error("invalid run state preparation state");
+  const executionMode = state["executionMode"];
+  if (executionMode !== undefined && (typeof executionMode !== "string" || !EXECUTION_MODES.includes(executionMode as RunExecutionMode))) throw new Error("invalid run state execution mode");
+  const startedAt = state["startedAt"];
+  if (startedAt !== undefined && (typeof startedAt !== "string" || !validTimestamp(startedAt))) throw new Error("invalid run state startedAt");
+  const endedAt = state["endedAt"];
+  if (endedAt !== undefined && endedAt !== null && (typeof endedAt !== "string" || !validTimestamp(endedAt))) throw new Error("invalid run state endedAt");
+  const controllerPid = state["controllerPid"];
+  if (controllerPid !== undefined && controllerPid !== null && (!Number.isSafeInteger(controllerPid) || (controllerPid as number) < 1)) throw new Error("invalid run state controller PID");
+  for (const key of ["stdoutPath", "stderrPath", "repositoryPath"] as const) {
+    const value = state[key];
+    if (value !== undefined && value !== null && (typeof value !== "string" || value.length === 0 || value.length > 4_000 || (!path.posix.isAbsolute(value) && !path.win32.isAbsolute(value)))) throw new Error(`invalid run state ${key}`);
+  }
+  if (state["sourceRef"] !== undefined && !text(state["sourceRef"], 1_000)) throw new Error("invalid run state sourceRef");
+  if (state["launchConfigDigest"] !== undefined && (typeof state["launchConfigDigest"] !== "string" || !/^[a-f0-9]{64}$/u.test(state["launchConfigDigest"]))) throw new Error("invalid run state launch config digest");
+
+  const status = state["status"] as string;
+  if (status === "running" && endedAt !== undefined && endedAt !== null) throw new Error("running state has an end timestamp");
+  if ((status === "completed" || status === "failed" || status === "interrupted") && (endedAt === undefined || endedAt === null)) throw new Error("terminal state has no end timestamp");
+  if (status === "completed" && lifecycle !== undefined && lifecycle !== "completed") throw new Error("completed state has an invalid lifecycle");
+  if (status === "failed" && lifecycle !== undefined && lifecycle !== "failed") throw new Error("failed state has an invalid lifecycle");
+  if (status === "interrupted" && lifecycle !== undefined && lifecycle !== "interrupted") throw new Error("interrupted state has an invalid lifecycle");
+  if (status === "running" && lifecycle !== undefined && ["completed", "failed", "interrupted"].includes(lifecycle as string)) throw new Error("running state has a terminal lifecycle");
+  if (launchState === "reserved" && executionMode !== undefined && executionMode !== "background") throw new Error("only background runs may be launch-reserved");
+  if (launchState === "failed" && status === "running") throw new Error("running state has a failed launch");
+  if (lifecycle === "launching" && state["step"] !== "launching") throw new Error("launching lifecycle has a different step");
+  if (lifecycle === "completed" && state["step"] !== "complete") throw new Error("completed lifecycle has a different step");
+}
+
 function validateResolvedProfiles(state: Record<string, unknown>): void {
   const profilesValue = state["profiles"];
   const selectionValue = state["planSelection"];
@@ -209,6 +400,28 @@ function validateResolvedProfiles(state: Record<string, unknown>): void {
   const expectedBucket = (Number.parseInt(expectedDigest.slice(0, 2), 16) & 1) === 0 ? "a" : "b";
   if (selection["bucket"] !== expectedBucket || !sameProfile(selection["profile"], profiles["plan"])) throw new Error("run state Plan selection profile mismatch");
   validatePhaseProfile(selection["profile"], "run state Plan selection profile");
+}
+
+function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigDigest"] as const) {
+    if (current[key] !== next[key]) throw new Error("background launch identity is immutable");
+  }
+}
+
+async function acquireUpdateLock(directory: string, runId: string): Promise<() => Promise<void>> {
+  const locks = path.join(directory, "update-locks");
+  await mkdir(locks, { recursive: true, mode: 0o700 });
+  const lock = path.join(locks, `${runId}.lock`);
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lock, { mode: 0o700 });
+      return async () => { await rmdir(lock); };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  }
+  throw new Error(`run state update is locked or ambiguous: ${runId}`);
 }
 
 function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
