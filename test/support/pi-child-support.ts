@@ -33,7 +33,10 @@ const CONTROLLED_ENV_KEYS = [
   "SQUIRE_PLAN_REQUIRED_VALIDATION_COMMAND_IDS",
 ] as const;
 
-const SENSITIVE_NAME = /(?:key|token|secret|password|credential|authorization|cookie|proxy|cert|session|ssh|npm|node_options|node_path|extra_ca)/iu;
+// Match secret-bearing names, but not npm's non-secret lifecycle/configuration
+// metadata (for example npm_lifecycle_event=test), which can be embedded in
+// otherwise safe controller-owned paths.
+const SENSITIVE_NAME = /(?:key|token|secret|password|credential|authorization|cookie|proxy|cert|session|ssh|node_options|node_path|extra_ca)/iu;
 const SENSITIVE_ASSIGNMENT = /((?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|PROXY|CERT|SESSION|SSH|NODE_OPTIONS|NODE_PATH)[A-Z0-9_]*|api[-_]?key|access[-_]?token|password)\s*["']?\s*[:=]\s*["']?)([^\s,"'}]+)/gu;
 
 export interface PreparedPiChildLaunch {
