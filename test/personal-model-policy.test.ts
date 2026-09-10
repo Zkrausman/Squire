@@ -81,3 +81,39 @@ test("config paths resolve beside the selected user config, never beside a repos
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("implicit config loading works without repository config and ignores a local decoy", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-implicit-config-"));
+  try {
+    const home = path.join(root, "home");
+    const repository = path.join(root, "repository");
+    const userDirectory = path.join(home, ".config", "squire");
+    const configPath = path.join(userDirectory, "config.json");
+    await mkdir(userDirectory, { recursive: true });
+    await mkdir(repository, { recursive: true });
+    await writeFile(configPath, JSON.stringify({
+      repository: { slug: "example/repo", path: path.relative(userDirectory, repository), sourceRef: "main", baseBranch: "main" },
+      paths: { state: "state", bridges: "bridges", staging: "staging" },
+      linear: { apiKeyEnv: "LINEAR_API_KEY" },
+      github: { tokenCommand: ["token-helper"] },
+      sandbox: { roleUser: "1000:1000", piExecutable: "/usr/local/bin/pi", piAgentDirectory: "/ticket/runtime/pi-agent" },
+      profiles: policy,
+      testCommands: ["npm test"],
+    }));
+
+    const options = { platform: "linux" as const, env: { HOME: home }, cwd: repository };
+    const withoutLocalConfig = await loadPersonalMvpConfig(undefined, options);
+    assert.equal(withoutLocalConfig.repository.slug, "example/repo");
+    assert.equal(withoutLocalConfig.repository.path, repository);
+    assert.equal(withoutLocalConfig.paths.state, path.join(userDirectory, "state"));
+
+    await mkdir(path.join(repository, ".squire"), { recursive: true });
+    await writeFile(path.join(repository, ".squire", "config.json"), JSON.stringify({ repository: { slug: "decoy/repository" } }));
+    const withIgnoredDecoy = await loadPersonalMvpConfig(undefined, options);
+    assert.equal(withIgnoredDecoy.repository.slug, "example/repo");
+    assert.equal(withIgnoredDecoy.repository.path, repository);
+    assert.equal(withIgnoredDecoy.paths.state, path.join(userDirectory, "state"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PersonalMvpController } from "../src/personal/controller.js";
+import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
 import type { CandidateBundle, PersonalPhase, PersonalRunState, PhaseInput, PhaseResult, PublicationInput, RunStatePort, WorkspacePort } from "../src/personal/types.js";
 
@@ -50,17 +51,18 @@ function createHarness(runPhase: (input: PhaseInput, workspace: MemoryWorkspace)
   const states = new MemoryStates();
   const workspace = new MemoryWorkspace();
   const calls: PersonalPhase[] = [];
+  const inputs: PhaseInput[] = [];
   const publications: PublicationInput[] = [];
   const controller = new PersonalMvpController({
     tickets: { async get(id) { return { id, title: "Small change", description: "Make one focused change", url: "https://linear.example/AIDEV-1" }; } },
     workspaces: workspace,
-    phases: { async run(input) { calls.push(input.phase); return runPhase(input, workspace); } },
+    phases: { async run(input) { calls.push(input.phase); inputs.push(input); return runPhase(input, workspace); } },
     publication: { async publish(input) { publications.push(input); return { url: "https://github.com/example/repo/pull/1", number: 1, reused: false }; } },
     states,
     now: () => new Date("2026-09-10T00:00:00.000Z"),
     newId: () => "01234567-89ab-cdef-0123-456789abcdef",
   });
-  return { controller, states, workspace, calls, publications };
+  return { controller, states, workspace, calls, inputs, publications };
 }
 
 const REQUEST = { ticketId: "AIDEV-1", repository: "example/repo", repositoryPath: "/source/repo", sourceRef: "refs/remotes/origin/main", baseBranch: "main" } as const;
@@ -161,6 +163,39 @@ test("Review remediation returns once to Implement and reruns Review and Test at
   const result = await harness.controller.run(REQUEST);
   assert.equal(result.status, "completed");
   assert.equal(result.head, REMEDIATED);
+  assert.equal(result.remediations.review, 1);
+  assert.deepEqual(harness.calls, ["plan", "implement", "review", "implement", "review", "test", "retro"]);
+});
+
+test("approved resolved profiles remain unchanged through remediation and persisted evidence", async () => {
+  const resolved = resolvePhaseProfiles(REQUEST.repository, REQUEST.ticketId);
+  let firstReview = true;
+  let implementations = 0;
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      implementations += 1;
+      workspace.head = implementations === 1 ? IMPLEMENTED : REMEDIATED;
+    }
+    if (input.phase === "review" && firstReview) {
+      firstReview = false;
+      return phaseResult(input, workspace.head, "remediation_required", ["fix the review finding"]);
+    }
+    return phaseResult(input, workspace.head);
+  });
+  const result = await harness.controller.run(REQUEST);
+
+  assert.deepEqual(result.profiles, resolved.profiles);
+  assert.deepEqual(result.planSelection, resolved.planSelection);
+  assert.deepEqual(harness.states.state?.profiles, resolved.profiles);
+  assert.deepEqual(harness.states.state?.planSelection, resolved.planSelection);
+  assert.deepEqual(
+    harness.inputs.map(input => input.profile),
+    harness.inputs.map(input => resolved.profiles[input.phase]),
+  );
+  for (const phase of ["plan", "implement", "review", "test", "retro"] as const) {
+    assert.deepEqual(result.results[phase]?.profile, resolved.profiles[phase]);
+    assert.deepEqual(harness.states.state?.results[phase]?.profile, resolved.profiles[phase]);
+  }
   assert.equal(result.remediations.review, 1);
   assert.deepEqual(harness.calls, ["plan", "implement", "review", "implement", "review", "test", "retro"]);
 });

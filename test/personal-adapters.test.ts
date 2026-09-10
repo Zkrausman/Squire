@@ -9,6 +9,7 @@ import test from "node:test";
 import { NodeCommandRunner, type CommandPort, type CommandRequest, type CommandResult } from "../src/personal/command.js";
 import { loadPersonalMvpConfig } from "../src/personal/config.js";
 import { DockerSandboxWorkspace } from "../src/personal/docker-sandbox.js";
+import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
 import { LinearClient } from "../src/personal/linear-client.js";
 import { validatePhaseResultShape } from "../src/personal/phase-result.js";
@@ -38,8 +39,9 @@ const PROFILES: Readonly<Record<PersonalPhase, PhaseProfile>> = {
   test: { provider: "provider", model: "test-model", thinking: "high" },
   retro: { provider: "provider", model: "retro-model", thinking: "medium" },
 };
+const APPROVED_PROFILES = resolvePhaseProfiles("example/repo", "AIDEV-1").profiles;
 
-function phaseInput(phase: PersonalPhase): PhaseInput {
+function phaseInput(phase: PersonalPhase, profiles: Readonly<Record<PersonalPhase, PhaseProfile>> = PROFILES): PhaseInput {
   return {
     runId: "aidev-1-0123456789",
     ticket: { id: "AIDEV-1", title: "Small", description: "Change one file" },
@@ -50,7 +52,7 @@ function phaseInput(phase: PersonalPhase): PhaseInput {
     phase,
     attempt: 1,
     expectedHead: BASE,
-    profile: PROFILES[phase],
+    profile: profiles[phase],
     previous: {},
     feedback: [],
   };
@@ -145,6 +147,44 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       if (phase === "plan" || phase === "review") assert.equal(tools?.split(",").includes("write"), false);
       if (phase === "retro") assert.deepEqual(tools?.split(","), ["read", "grep", "find", "ls"]);
       if (phase === "implement") assert.equal(tools?.split(",").includes("write"), true);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Pi adapter launches every approved policy triple exactly", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-approved-phase-"));
+  try {
+    let phaseDocument: Record<string, unknown> | undefined;
+    const requests: CommandRequest[] = [];
+    const commands: CommandPort = {
+      async run(request) {
+        requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
+        if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
+        if (request.command === "sbx" && request.args.includes("--print")) {
+          const phase = phaseDocument?.["phase"] as PersonalPhase;
+          return { stdout: JSON.stringify({
+            runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
+          }), stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
+    const phases = ["plan", "implement", "review", "test", "retro"] as const;
+    for (const phase of phases) await runner.run(phaseInput(phase, APPROVED_PROFILES));
+
+    const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
+    assert.equal(launches.length, phases.length);
+    for (const [index, phase] of phases.entries()) {
+      const launch = launches[index]!;
+      const profile = APPROVED_PROFILES[phase];
+      const providerIndex = launch.args.indexOf("--provider");
+      const modelIndex = launch.args.indexOf("--model");
+      const thinkingIndex = launch.args.indexOf("--thinking");
+      assert.deepEqual(
+        [launch.args[providerIndex + 1], launch.args[modelIndex + 1], launch.args[thinkingIndex + 1]],
+        [profile.provider, profile.model, profile.thinking],
+      );
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
