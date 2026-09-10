@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
 import { validatePhaseResultShape } from "./phase-result.js";
-import { PERSONAL_PHASES, type PublicationInput, type PublicationPort, type PublicationResult, type RetroPhaseResult } from "./types.js";
+import { PERSONAL_PHASES, type PersonalPhase, type PublicationInput, type PublicationPort, type PublicationResult, type RetroPhaseResult } from "./types.js";
 
 export interface GitHubTokenProvider {
   getToken(signal?: AbortSignal): Promise<string>;
@@ -83,13 +83,22 @@ export class GitHubPublisher implements PublicationPort {
         GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${authorization}`,
       });
       try {
+        const remote = `https://github.com/${input.repository}.git`;
         const existing = await this.#findPullRequest(input, ghEnvironment, signal);
         if (existing) {
-          await this.#reconcilePullRequestBody(input, existing, temporary, ghEnvironment, signal);
-          return { url: existing.url, number: existing.number, reused: true };
+          let confirmed = existing;
+          if (existing.headRefOid !== input.head) {
+            await this.#commands.run({ command: this.#git, args: ["-C", checkout, "cat-file", "-e", `${existing.headRefOid}^{commit}`] }, signal);
+            await this.#commands.run({ command: this.#git, args: ["-C", checkout, "merge-base", "--is-ancestor", existing.headRefOid, input.head] }, signal);
+            await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
+            const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
+            if (!refreshed || refreshed.number !== existing.number || refreshed.url !== existing.url || refreshed.headRefOid !== input.head) throw new Error("matching pull request changed during fast-forward publication");
+            confirmed = refreshed;
+          }
+          await this.#reconcilePullRequestBody(input, confirmed, temporary, ghEnvironment, signal);
+          return { url: confirmed.url, number: confirmed.number, reused: true };
         }
 
-        const remote = `https://github.com/${input.repository}.git`;
         await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
         const bodyPath = path.join(temporary, "pull-request.md");
         await writeFile(bodyPath, pullRequestBody(input), { mode: 0o600 });
@@ -106,7 +115,7 @@ export class GitHubPublisher implements PublicationPort {
           return { url, reused: false };
         } catch (error) {
           const reconciled = await this.#findPullRequest(input, ghEnvironment, signal);
-          if (reconciled) {
+          if (reconciled?.headRefOid === input.head) {
             await this.#reconcilePullRequestBody(input, reconciled, temporary, ghEnvironment, signal);
             return { url: reconciled.url, number: reconciled.number, reused: true };
           }
@@ -130,7 +139,7 @@ export class GitHubPublisher implements PublicationPort {
     signal?: AbortSignal,
   ): Promise<void> {
     const bodyPath = path.join(temporary, "pull-request-reconciled.md");
-    await writeFile(bodyPath, reconcileRetroSection(pullRequest.body, retroSection(input)), { mode: 0o600 });
+    await writeFile(bodyPath, reconcilePullRequestBody(pullRequest.body, input), { mode: 0o600 });
     await this.#commands.run({
       command: this.#gh,
       args: ["pr", "edit", String(pullRequest.number), "--repo", input.repository, "--body-file", bodyPath],
@@ -140,7 +149,7 @@ export class GitHubPublisher implements PublicationPort {
     }, signal);
   }
 
-  async #findPullRequest(input: PublicationInput, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<{ url: string; number: number; body: string } | undefined> {
+  async #findPullRequest(input: PublicationInput, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<{ url: string; number: number; headRefOid: string; body: string } | undefined> {
     const listed = await this.#commands.run({
       command: this.#gh,
       args: ["pr", "list", "--repo", input.repository, "--state", "open", "--base", input.baseBranch, "--head", input.branch, "--json", "url,number,headRefOid,body"],
@@ -153,8 +162,9 @@ export class GitHubPublisher implements PublicationPort {
     if (values.length > 1) throw new Error("multiple matching pull requests require owner intervention");
     if (values.length === 0) return undefined;
     const value = values[0] as Record<string, unknown>;
-    if (value["headRefOid"] !== input.head || typeof value["url"] !== "string" || typeof value["number"] !== "number" || typeof value["body"] !== "string") throw new Error("matching pull request has an unexpected identity or body");
-    return { url: value["url"], number: value["number"], body: value["body"] };
+    const headRefOid = value["headRefOid"];
+    if (typeof headRefOid !== "string" || !/^[a-f0-9]{40,64}$/u.test(headRefOid) || typeof value["url"] !== "string" || typeof value["number"] !== "number" || typeof value["body"] !== "string") throw new Error("matching pull request has an unexpected identity or body");
+    return { url: value["url"], number: value["number"], headRefOid, body: value["body"] };
   }
 }
 
@@ -207,6 +217,26 @@ function retroSection(input: PublicationInput): string {
 
 function markdownListItem(value: string): string {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replaceAll("\n", "\n  ");
+}
+
+function reconcilePullRequestBody(body: string, input: PublicationInput): string {
+  let reconciled = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  reconciled = replaceUniqueLine(reconciled, `## ${input.ticket.id}`, `## ${input.ticket.id}`);
+  reconciled = replaceUniqueLine(reconciled, /^Validated head: `[a-f0-9]{40,64}`$/u, `Validated head: \`${input.head}\``);
+  for (const phase of PERSONAL_PHASES) reconciled = replaceUniqueLine(reconciled, new RegExp(`^- ${capitalize(phase)}: .+$`, "u"), `- ${capitalize(phase)}: ${input.phases[phase].summary}`);
+  return reconcileRetroSection(reconciled, retroSection(input));
+}
+
+function replaceUniqueLine(body: string, expected: string | RegExp, replacement: string): string {
+  const lines = body.split("\n");
+  const matches = lines.flatMap((line, index) => (typeof expected === "string" ? line === expected : expected.test(line)) ? [index] : []);
+  if (matches.length !== 1) throw new Error("matching pull request has an unexpected Squire body");
+  lines[matches[0]!] = replacement;
+  return lines.join("\n");
+}
+
+function capitalize(value: PersonalPhase): string {
+  return `${value[0]!.toUpperCase()}${value.slice(1)}`;
 }
 
 function reconcileRetroSection(body: string, section: string): string {

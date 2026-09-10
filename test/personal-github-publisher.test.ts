@@ -11,6 +11,8 @@ import type { PersonalPhase, PhaseResult, PublicationInput } from "../src/person
 
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
+const PREVIOUS_HEAD = "c".repeat(40);
+const CONCURRENT_HEAD = "d".repeat(40);
 const TOKEN = `ghs_${"x".repeat(40)}`;
 const BRANCH = deterministicFeatureBranch("example/repo", "AIDEV-1");
 
@@ -18,14 +20,46 @@ class FakeCommands implements CommandPort {
   readonly requests: CommandRequest[] = [];
   readonly writtenBodies: string[] = [];
   listCalls = 0;
-  constructor(readonly behavior: "existing" | "create" | "ambiguous") {}
+  constructor(readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "diverged" | "concurrent") {}
   async run(request: CommandRequest): Promise<CommandResult> {
     this.requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
     if (request.command === "git" && request.args.includes("rev-parse")) return { stdout: `${HEAD}\n`, stderr: "" };
+    if (request.command === "git" && request.args.includes("merge-base") && this.behavior === "diverged") throw new Error("not an ancestor");
     if (request.command === "gh" && request.args[1] === "list") {
       this.listCalls += 1;
-      const exists = this.behavior === "existing" || (this.behavior === "ambiguous" && this.listCalls > 1);
-      return { stdout: exists ? JSON.stringify([{ url: "https://github.com/example/repo/pull/7", number: 7, headRefOid: HEAD, body: "Owner notes\n\n## Retro\n\n- old\n\n## Retro\n\n- duplicate\n" }]) : "[]", stderr: "" };
+      const exists = this.behavior !== "create" && (this.behavior !== "ambiguous" || this.listCalls > 1);
+      const headRefOid = this.behavior === "fast-forward"
+        ? (this.listCalls === 1 ? PREVIOUS_HEAD : HEAD)
+        : this.behavior === "concurrent"
+          ? (this.listCalls === 1 ? PREVIOUS_HEAD : CONCURRENT_HEAD)
+          : this.behavior === "diverged"
+            ? PREVIOUS_HEAD
+            : HEAD;
+      const body = [
+        "## AIDEV-1",
+        "",
+        "Validated head: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`",
+        "",
+        "## Squire phases",
+        "",
+        "- Plan: old plan",
+        "- Implement: old implement",
+        "- Review: old review",
+        "- Test: old test",
+        "- Retro: old retro",
+        "",
+        "Owner notes",
+        "",
+        "## Retro",
+        "",
+        "- old",
+        "",
+        "## Retro",
+        "",
+        "- duplicate",
+        "",
+      ].join("\n");
+      return { stdout: exists ? JSON.stringify([{ url: "https://github.com/example/repo/pull/7", number: 7, headRefOid, body }]) : "[]", stderr: "" };
     }
     if (request.command === "gh" && (request.args[1] === "create" || request.args[1] === "edit")) {
       const bodyFile = request.args[request.args.indexOf("--body-file") + 1];
@@ -95,6 +129,39 @@ test("publisher reuses one exact existing PR without pushing or merging", async 
     assert.match(commands.writtenBodies[0] ?? "", /- Keep phase isolation explicit/);
     assert.match(commands.writtenBodies[0] ?? "", /- \[ \] Document the next proof run/);
     assertTokenScope(commands.requests);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("publisher safely fast-forwards one existing PR before reconciling its body", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    const commands = new FakeCommands("fast-forward");
+    const published = await new GitHubPublisher({ commands, tokens }).publish(await input(directory));
+    assert.equal(published.reused, true);
+    assert.equal(commands.listCalls, 2);
+    const push = commands.requests.find(request => request.args.includes("push"));
+    assert.ok(push?.args.includes(`${HEAD}:refs/heads/${BRANCH}`));
+    assert.equal(push?.args.some(argument => argument.includes("force")), false);
+    assert.ok(commands.requests.some(request => request.args.includes("--is-ancestor") && request.args.includes(PREVIOUS_HEAD) && request.args.includes(HEAD)));
+    assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
+    assert.equal(commands.writtenBodies.at(-1)?.match(/^## Retro$/gmu)?.length, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("publisher rejects divergent or concurrently changed existing PR heads", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    await t.test("diverged", async () => {
+      const commands = new FakeCommands("diverged");
+      await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /not an ancestor/);
+      assert.equal(commands.requests.some(request => request.args.includes("push")), false);
+    });
+    await t.test("concurrent", async () => {
+      const commands = new FakeCommands("concurrent");
+      await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /changed during fast-forward publication/);
+      assert.equal(commands.requests.filter(request => request.args.includes("push")).length, 1);
+      assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
+    });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
