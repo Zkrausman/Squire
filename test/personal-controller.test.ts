@@ -42,7 +42,8 @@ function phaseResult(input: PhaseInput, head: string, status: PhaseResult["statu
   if (input.phase === "plan") return { ...common, phase: "plan", details: { steps: ["Make the focused change"] } };
   if (input.phase === "implement") return { ...common, phase: "implement", details: { changes: ["Changed the requested file"] } };
   if (input.phase === "review") return { ...common, phase: "review", details: { findings: status === "remediation_required" ? feedback : [] } };
-  return { ...common, phase: "test", details: { commands: [{ command: "npm test", exitCode: status === "remediation_required" ? 1 : 0, summary: feedback[0] ?? status }] } };
+  if (input.phase === "test") return { ...common, phase: "test", details: { commands: [{ command: "npm test", exitCode: status === "remediation_required" ? 1 : 0, summary: feedback[0] ?? status }] } };
+  return { ...common, phase: "retro", details: { lessons: ["Keep exact HEAD gates explicit"], followUps: feedback } };
 }
 
 function createHarness(runPhase: (input: PhaseInput, workspace: MemoryWorkspace) => Promise<PhaseResult>) {
@@ -76,11 +77,71 @@ test("personal controller completes one ticket and publishes only fresh passing 
   assert.equal(result.head, IMPLEMENTED);
   assert.equal(result.branch, deterministicFeatureBranch(REQUEST.repository, REQUEST.ticketId));
   assert.equal(result.prUrl, "https://github.com/example/repo/pull/1");
-  assert.deepEqual(harness.calls, ["plan", "implement", "review", "test"]);
-  assert.equal(harness.workspace.cleanChecks, 7);
+  assert.deepEqual(harness.calls, ["plan", "implement", "review", "test", "retro"]);
+  assert.equal(harness.workspace.cleanChecks, 9);
   assert.equal(harness.publications.length, 1);
   assert.equal(harness.publications[0]?.phases.review.outputHead, IMPLEMENTED);
   assert.equal(harness.publications[0]?.phases.test.outputHead, IMPLEMENTED);
+  assert.equal(harness.publications[0]?.phases.retro.outputHead, IMPLEMENTED);
+});
+
+test("Retro receives the tested HEAD and all prior phase results in its own recorded attempt", async () => {
+  let retroInput: PhaseInput | undefined;
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") workspace.head = IMPLEMENTED;
+    if (input.phase === "retro") retroInput = input;
+    return phaseResult(input, workspace.head);
+  });
+  const result = await harness.controller.run(REQUEST);
+  assert.equal(retroInput?.expectedHead, IMPLEMENTED);
+  assert.deepEqual(Object.keys(retroInput?.previous ?? {}).sort(), ["implement", "plan", "review", "test"]);
+  assert.equal(result.attempts.retro, 1);
+  assert.equal(result.sessions.retro, "retro-1");
+  assert.deepEqual(result.results.retro?.details, { lessons: ["Keep exact HEAD gates explicit"], followUps: [] });
+});
+
+test("failed or malformed Retro stops visibly without publication and still checks cleanliness afterward", async t => {
+  await t.test("failed result", async () => {
+    const harness = createHarness(async (input, workspace) => {
+      if (input.phase === "implement") workspace.head = IMPLEMENTED;
+      return phaseResult(input, workspace.head, input.phase === "retro" ? "failed" : "passed");
+    });
+    await assert.rejects(harness.controller.run(REQUEST), /retro failed/);
+    assert.equal(harness.states.state?.status, "failed");
+    assert.equal(harness.publications.length, 0);
+  });
+  await t.test("malformed output error", async () => {
+    const harness = createHarness(async (input, workspace) => {
+      if (input.phase === "implement") workspace.head = IMPLEMENTED;
+      if (input.phase === "retro") throw new Error("retro wrote malformed result JSON");
+      return phaseResult(input, workspace.head);
+    });
+    await assert.rejects(harness.controller.run(REQUEST), /malformed result JSON/);
+    assert.equal(harness.workspace.cleanChecks, 9);
+    assert.equal(harness.publications.length, 0);
+  });
+});
+
+test("Retro workspace or HEAD changes fail closed before publication", async t => {
+  await t.test("dirty workspace", async () => {
+    const harness = createHarness(async (input, workspace) => {
+      if (input.phase === "implement") workspace.head = IMPLEMENTED;
+      if (input.phase === "retro") workspace.clean = false;
+      return phaseResult(input, workspace.head);
+    });
+    await assert.rejects(harness.controller.run(REQUEST), /uncommitted changes/);
+    assert.equal(harness.states.state?.results.retro, undefined);
+    assert.equal(harness.publications.length, 0);
+  });
+  await t.test("changed HEAD", async () => {
+    const harness = createHarness(async (input, workspace) => {
+      if (input.phase === "implement") workspace.head = IMPLEMENTED;
+      if (input.phase === "retro") workspace.head = REMEDIATED;
+      return phaseResult(input, workspace.head);
+    });
+    await assert.rejects(harness.controller.run(REQUEST), /retro changed Git HEAD/);
+    assert.equal(harness.publications.length, 0);
+  });
 });
 
 test("Review remediation returns once to Implement and reruns Review and Test at the new HEAD", async () => {
@@ -101,7 +162,7 @@ test("Review remediation returns once to Implement and reruns Review and Test at
   assert.equal(result.status, "completed");
   assert.equal(result.head, REMEDIATED);
   assert.equal(result.remediations.review, 1);
-  assert.deepEqual(harness.calls, ["plan", "implement", "review", "implement", "review", "test"]);
+  assert.deepEqual(harness.calls, ["plan", "implement", "review", "implement", "review", "test", "retro"]);
 });
 
 test("Test remediation reruns Implement, fresh Review, and Test", async () => {
@@ -121,7 +182,7 @@ test("Test remediation reruns Implement, fresh Review, and Test", async () => {
   const result = await harness.controller.run(REQUEST);
   assert.equal(result.status, "completed");
   assert.equal(result.remediations.test, 1);
-  assert.deepEqual(harness.calls, ["plan", "implement", "review", "test", "implement", "review", "test"]);
+  assert.deepEqual(harness.calls, ["plan", "implement", "review", "test", "implement", "review", "test", "retro"]);
 });
 
 test("a stale gate fails closed and persists a useful error", async () => {
@@ -164,7 +225,7 @@ test("an active run prevents starting the same ticket twice", async () => {
   harness.states.state = {
     schemaVersion: 1, version: 1, runId: "aidev-1-existing", ticketId: "AIDEV-1", ticketTitle: "existing", status: "running", step: "plan",
     sandbox: "squire-aidev-1-existing", repository: "example/repo", baseBranch: "main", baseSha: BASE, branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), head: BASE,
-    sessions: {}, attempts: { plan: 1, implement: 0, review: 0, test: 0 }, results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: null, updatedAt: "2026-09-10T00:00:00.000Z",
+    sessions: {}, attempts: { plan: 1, implement: 0, review: 0, test: 0, retro: 0 }, results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: null, updatedAt: "2026-09-10T00:00:00.000Z",
   };
   await assert.rejects(harness.controller.run(REQUEST), /already has an active run/);
 });

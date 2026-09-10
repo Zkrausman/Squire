@@ -134,7 +134,8 @@ export function validateState(value: unknown): asserts value is PersonalRunState
     const implementation = results["implement"] as import("./types.js").ImplementPhaseResult;
     const review = results["review"] as import("./types.js").ReviewPhaseResult;
     const test = results["test"] as import("./types.js").TestPhaseResult;
-    if (implementation.outputHead !== state["head"] || review.inputHead !== state["head"] || review.outputHead !== state["head"] || test.inputHead !== state["head"] || test.outputHead !== state["head"]) throw new Error("completed state has stale gates");
+    const retro = results["retro"] as import("./types.js").RetroPhaseResult;
+    if (implementation.outputHead !== state["head"] || review.inputHead !== state["head"] || review.outputHead !== state["head"] || test.inputHead !== state["head"] || test.outputHead !== state["head"] || retro.inputHead !== state["head"] || retro.outputHead !== state["head"]) throw new Error("completed state has stale gates");
   } else if (state["step"] === "complete") {
     throw new Error("only completed state may use the complete step");
   }

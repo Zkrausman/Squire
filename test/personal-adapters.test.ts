@@ -36,6 +36,7 @@ const PROFILES: Readonly<Record<PersonalPhase, PhaseProfile>> = {
   implement: { provider: "provider", model: "implement-model", thinking: "high" },
   review: { provider: "provider", model: "review-model", thinking: "medium" },
   test: { provider: "provider", model: "test-model", thinking: "high" },
+  retro: { provider: "provider", model: "retro-model", thinking: "medium" },
 };
 
 function phaseInput(phase: PersonalPhase): PhaseInput {
@@ -58,7 +59,8 @@ function details(phase: PersonalPhase): object {
   if (phase === "plan") return { steps: ["make change"] };
   if (phase === "implement") return { changes: ["changed file"] };
   if (phase === "review") return { findings: [] };
-  return { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] };
+  if (phase === "test") return { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] };
+  return { lessons: ["keep the gates explicit"], followUps: [] };
 }
 
 test("Node command runner closes stdin for non-interactive child processes", async () => {
@@ -105,7 +107,7 @@ test("Docker Sandbox adapter uses exact create/copy/exec argv and exposes no pub
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("Pi adapter launches exact profiles under env -i and denies Plan/Review write tools", async () => {
+test("Pi adapter launches exact profiles under env -i and gives Retro only read-only repository tools", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-"));
   try {
     let phaseDocument: Record<string, unknown> | undefined;
@@ -124,10 +126,10 @@ test("Pi adapter launches exact profiles under env -i and denies Plan/Review wri
       },
     };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, profiles: PROFILES, testCommands: ["npm test"] });
-    for (const phase of ["plan", "review", "test", "implement"] as const) await runner.run(phaseInput(phase));
+    for (const phase of ["plan", "review", "test", "retro", "implement"] as const) await runner.run(phaseInput(phase));
     const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
-    assert.equal(launches.length, 4);
-    for (const [index, phase] of (["plan", "review", "test", "implement"] as const).entries()) {
+    assert.equal(launches.length, 5);
+    for (const [index, phase] of (["plan", "review", "test", "retro", "implement"] as const).entries()) {
       const launch = launches[index]!;
       const envIndex = launch.args.indexOf("/usr/bin/env");
       assert.equal(launch.args[envIndex + 1], "-i");
@@ -138,6 +140,7 @@ test("Pi adapter launches exact profiles under env -i and denies Plan/Review wri
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
       const tools = launch.args[launch.args.indexOf("--tools") + 1];
       if (phase === "plan" || phase === "review") assert.equal(tools?.split(",").includes("write"), false);
+      if (phase === "retro") assert.deepEqual(tools?.split(","), ["read", "grep", "find", "ls"]);
       if (phase === "implement") assert.equal(tools?.split(",").includes("write"), true);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -161,6 +164,14 @@ test("passing Review and Test require their structured phase evidence", () => {
   const common = { runId: "aidev-1-run", attempt: 1, sessionId: "session", sessionFile: "/ticket/sessions/review/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "passed" };
   assert.throws(() => validatePhaseResultShape({ ...common, phase: "review" }, "review"), /fields|details/);
   assert.throws(() => validatePhaseResultShape({ ...common, phase: "test", sessionFile: "/ticket/sessions/test/1.jsonl", details: { commands: [] } }, "test"), /Test commands/);
+});
+
+test("Retro output requires meaningful lessons, exact fields, and no remediation status", () => {
+  const common = { runId: "aidev-1-run", phase: "retro", attempt: 1, sessionId: "retro-session", sessionFile: "/ticket/sessions/retro/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "retro passed" };
+  validatePhaseResultShape({ ...common, details: { lessons: ["keep it small"], followUps: [] } }, "retro");
+  assert.throws(() => validatePhaseResultShape({ ...common, details: { lessons: [], followUps: [] } }, "retro"), /Retro lessons/);
+  assert.throws(() => validatePhaseResultShape({ ...common, details: { lessons: ["lesson"], followUps: [], extra: true } }, "retro"), /fields/);
+  assert.throws(() => validatePhaseResultShape({ ...common, status: "remediation_required", details: { lessons: ["lesson"], followUps: [] } }, "retro"), /cannot request remediation/);
 });
 
 test("configuration requires an external GitHub token command", async () => {
