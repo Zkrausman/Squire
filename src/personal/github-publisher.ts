@@ -377,13 +377,27 @@ function markdownListItem(value: string): string {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replaceAll("\n", "\n  ");
 }
 
+const VALIDATED_HEAD_LINE = /^Validated head: `([a-f0-9]{40,64})`$/u;
+const VALIDATED_HEAD_LIKE_LINE = /^\s*Validated\s+head\s*:/iu;
+
+function validatedHeadMarker(lines: readonly string[]): { readonly index: number; readonly head: string } | undefined {
+  // Treat malformed marker-shaped lines as authoritative input too. Accepting
+  // one valid marker alongside an owner-edited malformed duplicate would make
+  // the body ambiguous and could allow reconciliation against the wrong
+  // publication history.
+  const markerIndices = lines.flatMap((line, index) => VALIDATED_HEAD_LIKE_LINE.test(line) ? [index] : []);
+  if (markerIndices.length !== 1) return undefined;
+  const index = markerIndices[0]!;
+  const match = VALIDATED_HEAD_LINE.exec(lines[index] ?? "");
+  return match ? { index, head: match[1]! } : undefined;
+}
+
 function pullRequestValidatedHead(body: string): string {
   if (body.length > 1_900_000) throw new Error("matching pull request has an unexpected Squire body");
   const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-  const index = uniqueLineIndex(lines, /^Validated head: `[a-f0-9]{40,64}`$/u);
-  const match = index === undefined ? undefined : /^Validated head: `([a-f0-9]{40,64})`$/u.exec(lines[index] ?? "");
-  if (!match) throw new Error("matching pull request has an unexpected Squire body");
-  return match[1]!;
+  const marker = validatedHeadMarker(lines);
+  if (!marker) throw new Error("matching pull request has an unexpected Squire body");
+  return marker.head;
 }
 
 function reconcilePullRequestBody(body: string, input: PublicationInput, expectedValidatedHead: string): string {
@@ -391,9 +405,9 @@ function reconcilePullRequestBody(body: string, input: PublicationInput, expecte
   const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
   const invalidBody = (): never => { throw new Error("matching pull request has an unexpected Squire body"); };
   const ticketIndex = uniqueLineIndex(lines, `## ${input.ticket.id}`) ?? invalidBody();
-  const validatedIndex = uniqueLineIndex(lines, /^Validated head: `[a-f0-9]{40,64}`$/u) ?? invalidBody();
-  const validatedMatch = /^Validated head: `([a-f0-9]{40,64})`$/u.exec(lines[validatedIndex] ?? "");
-  if (!validatedMatch || validatedMatch[1] !== expectedValidatedHead) return invalidBody();
+  const marker = validatedHeadMarker(lines) ?? invalidBody();
+  const validatedIndex = marker.index;
+  if (marker.head !== expectedValidatedHead) return invalidBody();
   const squireHeadings = lines.flatMap((line, index) => /^##\s+Squire phases\s*$/u.test(line) ? [index] : []);
   const retroHeadings = lines.flatMap((line, index) => /^##\s+Retro\s*$/iu.test(line) ? [index] : []);
   const squireIndex = squireHeadings.length === 1 ? squireHeadings[0] : undefined;

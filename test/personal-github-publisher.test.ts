@@ -236,6 +236,7 @@ test("publisher rejects mismatched PR identity, malformed bodies, and multiple m
       ["wrong repository owner", new FakeCommands("fast-forward", record => ({ ...record, headRepositoryOwner: { login: "other-owner" } }))],
       ["wrong repository URL", new FakeCommands("fast-forward", record => ({ ...record, url: "https://github.com/other/repo/pull/7" }))],
       ["malformed body", new FakeCommands("fast-forward", record => ({ ...record, body: "owner text without Squire markers" }))],
+      ["malformed duplicate validated head marker", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\nValidated head: not-a-sha\n` }))],
       ["unexpected validated head", new FakeCommands("fast-forward", record => ({ ...record, body: String(record["body"]).replace(/Validated head: `[^`]+`/u, `Validated head: \`${"e".repeat(40)}\``) }))],
       ["candidate validated head on old PR", new FakeCommands("fast-forward", record => ({ ...record, body: String(record["body"]).replace(/Validated head: `[^`]+`/u, `Validated head: \`${HEAD}\``) }))],
       ["Retro before Squire phases", new FakeCommands("fast-forward", record => {
