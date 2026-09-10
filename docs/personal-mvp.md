@@ -6,6 +6,13 @@
 - **Approved:** 2026-09-10
 - **Supersedes for the first usable release:** the prior six-ticket hardening path through AIDEV-254, AIDEV-239, AIDEV-251, AIDEV-224, AIDEV-253, and AIDEV-225
 
+## Architecture diagrams
+
+- [Current workflow model](diagrams/squire-current-workflow-model.tldraw) is the locked authoritative as-is flow delivered with AIDEV-259.
+- [Confirmed white-glove Plan architecture](diagrams/squire-confirmed-whiteglove-plan-architecture.tldraw) is the locked agreed next-state design tracked by AIDEV-261 and its implementation tickets.
+
+The current-state diagram remains distinct from the confirmed next-state plan so future architecture discussion cannot silently rewrite evidence of the shipped workflow.
+
 ## 1. Product goal
 
 The first usable Squire is a single-user local tool that takes one explicitly selected Linear ticket through Plan → Implement → independent Review → Test → Retro and opens one pull request for the owner to merge.
