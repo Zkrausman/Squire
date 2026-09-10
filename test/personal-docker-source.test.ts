@@ -120,8 +120,12 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.match(setup?.args.at(-1) ?? "", /chown -R '1000:1000' \/ticket/u);
   const runtime = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.some(argument => argument.includes("npm ci --prefix /ticket/runtime")));
   assert.deepEqual(runtime?.args.slice(0, 5), ["exec", "-u", "1000:1000", "squire-aidev-1-0123456789", "sh"]);
+  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/\.github\/runtime\/package\.json/u);
+  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/\.github\/runtime\/package-lock\.json/u);
+  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
   assert.match(runtime?.args.at(-1) ?? "", /npm ci --prefix \/ticket\/runtime --ignore-scripts --no-audit --no-fund/u);
   assert.match(runtime?.args.at(-1) ?? "", /node \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
+  assert.equal((runtime?.args.at(-1) ?? "").includes("if [ -f"), false);
   assert.equal(commands.runtimeRequests.length, 1);
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
   assert.equal(commands.executedShellScripts.some(script => script.split("\n").some(line => line.includes("chown"))), false);

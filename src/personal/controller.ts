@@ -59,6 +59,7 @@ export class PersonalMvpController {
     this.#states = options.states;
     this.#now = options.now ?? (() => new Date());
     this.#newId = options.newId ?? randomUUID;
+    if (options.modelPolicy !== undefined && options.profiles !== undefined) throw new Error("controller options must define either modelPolicy or profiles, not both");
     this.#modelPolicy = validateModelPolicy(options.modelPolicy ?? flatProfilesPolicy(options.profiles) ?? APPROVED_PERSONAL_MODEL_POLICY);
   }
 
@@ -259,6 +260,7 @@ function initialState(runId: string, sandbox: string, branch: string, ticket: Ti
 }
 
 function validateRequest(request: RunRequest): void {
+  if (request.modelPolicy !== undefined && request.profiles !== undefined) throw new Error("run request must define either modelPolicy or profiles, not both");
   if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(request.ticketId)) throw new Error("invalid Linear ticket identifier");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(request.repository)) throw new Error("repository must be owner/name");
   if (!request.repositoryPath || !request.sourceRef || !/^[A-Za-z0-9._/-]+$/u.test(request.baseBranch)) throw new Error("invalid repository configuration");

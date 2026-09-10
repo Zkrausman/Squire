@@ -301,7 +301,10 @@ function pullRequestOwner(value: unknown): string | undefined {
   if (typeof value === "string" && /^[A-Za-z0-9_.-]+$/u.test(value)) return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const object = value as Record<string, unknown>;
-  const login = object["login"] ?? object["name"];
+  // GitHub CLI identifies repository owners by `login`. Do not fall back to a
+  // display/name field: accepting one would weaken the source-repository
+  // identity check for a response that is not the expected CLI shape.
+  const login = object["login"];
   return typeof login === "string" && /^[A-Za-z0-9_.-]+$/u.test(login) ? login : undefined;
 }
 
