@@ -9,7 +9,7 @@ import { CommandGitHubTokenProvider, GitHubPublisher } from "./github-publisher.
 import { JsonRunStateStore } from "./json-run-state.js";
 import { LinearClient } from "./linear-client.js";
 import { SandboxPiPhaseRunner } from "./pi-phase-runner.js";
-import { findRunState, formatRunStatus, StatusLookupError } from "./status.js";
+import { findRunState, formatRunStatus, sanitizeTerminalText, StatusLookupError } from "./status.js";
 import type { RunRequest, TicketPort } from "./types.js";
 
 const TICKET_PATTERN = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
@@ -82,34 +82,60 @@ export function parseArguments(argv: readonly string[]): ParsedArguments | undef
 }
 
 async function runCommand(parsed: ParsedRunArguments): Promise<number> {
-  const loaded = await loadBoundPersonalMvpConfig(parsed.config).catch(error => {
-    writeError(error);
-    return undefined;
-  });
-  if (!loaded) return 1;
-  const { config, digest: configDigest } = loaded;
-  const controller = createController(config);
-  const request = requestFromConfig(config, parsed.ticketId);
+  // Install the background-startup handlers before loading configuration. A
+  // signal cannot create a durable run before reservation, but once startup
+  // reaches that boundary it must be recorded as interrupted until spawn is
+  // confirmed.
+  const startupAbort = parsed.background ? new AbortController() : undefined;
+  const startupInterrupt = (): void => startupAbort?.abort(new Error("operator interrupted background startup"));
+  if (startupAbort) {
+    process.once("SIGINT", startupInterrupt);
+    process.once("SIGTERM", startupInterrupt);
+  }
 
-  if (parsed.background) {
+  try {
+    const launchEnvironment = parsed.background ? { ...process.env } : undefined;
+    const loaded = await (parsed.background
+      ? loadBoundPersonalMvpConfig(parsed.config, { env: launchEnvironment! })
+      : loadBoundPersonalMvpConfig(parsed.config)).catch(error => {
+      writeError(error);
+      return undefined;
+    });
+    if (!loaded) return 1;
+    const { config, digest: configDigest } = loaded;
+    const controller = createController(config);
+    const request = requestFromConfig(config, parsed.ticketId);
+
+    if (parsed.background) {
+      try {
+        const launchOptions: StartBackgroundOptions = {
+          cliPath: fileURLToPath(import.meta.url),
+          configPath: parsed.config,
+          stateDirectory: config.paths.state,
+          logsDirectory: path.join(config.dataDirectory, "logs"),
+          cwd: process.cwd(),
+          launchConfigDigest: configDigest,
+          ...(launchEnvironment !== undefined ? { env: launchEnvironment } : {}),
+          signal: startupAbort!.signal,
+        };
+        const started = await controller.startBackground(request, launchOptions);
+        // The run ID is the only synchronous result. Status can be polled while
+        // the detached child performs credential, ticket, and workspace work.
+        process.stdout.write(`${started.runId}\n`);
+        return 0;
+      } catch (error) {
+        writeError(error);
+        return 1;
+      }
+    }
+
     const abortController = new AbortController();
-    const interrupt = (): void => abortController.abort(new Error("operator interrupted background startup"));
+    const interrupt = (): void => abortController.abort(new Error("operator interrupted the run"));
     process.once("SIGINT", interrupt);
     process.once("SIGTERM", interrupt);
     try {
-      const launchOptions: StartBackgroundOptions = {
-        cliPath: fileURLToPath(import.meta.url),
-        configPath: parsed.config,
-        stateDirectory: config.paths.state,
-        logsDirectory: path.join(config.dataDirectory, "logs"),
-        cwd: process.cwd(),
-        launchConfigDigest: configDigest,
-        signal: abortController.signal,
-      };
-      const started = await controller.startBackground(request, launchOptions);
-      // The run ID is the only synchronous result. Status can be polled while
-      // the detached child performs credential, ticket, and workspace work.
-      process.stdout.write(`${started.runId}\n`);
+      const result = await controller.run(request, abortController.signal);
+      process.stdout.write(`${sanitizeTerminalText(result.prUrl ?? "")}\n`);
       return 0;
     } catch (error) {
       writeError(error);
@@ -118,22 +144,11 @@ async function runCommand(parsed: ParsedRunArguments): Promise<number> {
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);
     }
-  }
-
-  const abortController = new AbortController();
-  const interrupt = (): void => abortController.abort(new Error("operator interrupted the run"));
-  process.once("SIGINT", interrupt);
-  process.once("SIGTERM", interrupt);
-  try {
-    const result = await controller.run(request, abortController.signal);
-    process.stdout.write(`${result.prUrl ?? ""}\n`);
-    return 0;
-  } catch (error) {
-    writeError(error);
-    return 1;
   } finally {
-    process.removeListener("SIGINT", interrupt);
-    process.removeListener("SIGTERM", interrupt);
+    if (startupAbort) {
+      process.removeListener("SIGINT", startupInterrupt);
+      process.removeListener("SIGTERM", startupInterrupt);
+    }
   }
 }
 
@@ -145,14 +160,17 @@ async function runReservedCommand(parsed: ParsedReservedArguments): Promise<numb
   try {
     const loaded = await loadBoundPersonalMvpConfig(parsed.config);
     if (loaded.digest !== parsed.reservedConfigDigest) throw new Error("reserved launch configuration changed before child bootstrap");
-    const controller = createController(loaded.config);
+    const stateDirectory = childStateDirectoryOverride();
+    const controller = createController(loaded.config, stateDirectory);
     await controller.runReserved(requestFromConfig(loaded.config, parsed.ticketId), parsed.reservedRunId, parsed.reservedConfigDigest, abortController.signal);
     return 0;
   } catch (error) {
     // Always consult the original state directory. This is a no-op after the
     // controller already persisted a terminal result, and covers config/state
-    // path changes or failures before the reserved state is claimed.
-    await recordBootstrapFailure(parsed.reservedRunId, error, abortController.signal.aborted);
+    // path changes or failures before the reserved state is claimed. The
+    // ticket and digest checks keep an unrelated child from terminalizing a
+    // reservation merely because it knows a run ID.
+    await recordBootstrapFailure(parsed.reservedRunId, parsed.ticketId, parsed.reservedConfigDigest, error, abortController.signal.aborted);
     // This is captured by the background stderr descriptor. The controller
     // has already attempted to persist the terminal state.
     writeError(error);
@@ -163,16 +181,19 @@ async function runReservedCommand(parsed: ParsedReservedArguments): Promise<numb
   }
 }
 
-async function recordBootstrapFailure(runId: string, error: unknown, interrupted: boolean): Promise<void> {
+async function recordBootstrapFailure(runId: string, ticketId: string, launchConfigDigest: string, error: unknown, interrupted: boolean): Promise<void> {
   const directory = process.env["SQUIRE_STATE_DIRECTORY"];
-  if (!directory) return;
+  if (!directory || !path.isAbsolute(directory) || directory.includes("\0")) return;
+  if (!runId.startsWith(`${ticketId.toLowerCase()}-`)) return;
   try {
     const states = new JsonRunStateStore(directory);
     const state = await states.read(runId);
+    if (state?.launchConfigDigest !== launchConfigDigest) return;
     // Bootstrap failure belongs only to an unclaimed launch. A child that
     // loses the reserved->started CAS must not overwrite the winning owner.
     if (!state || state.status !== "running" || state.launchState !== "reserved" || state.controllerPid !== null || state.lifecycle !== "launching" || state.step !== "launching" || state.preparationState !== "pending") return;
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000) || "background controller bootstrap failed";
+    const endedAt = new Date().toISOString();
     const terminal = {
       ...state,
       version: state.version + 1,
@@ -180,15 +201,15 @@ async function recordBootstrapFailure(runId: string, error: unknown, interrupted
       lifecycle: interrupted ? "interrupted" as const : "failed" as const,
       launchState: "failed" as const,
       ...(state.preparationState === "pending" ? { preparationState: "failed" as const } : {}),
-      endedAt: new Date().toISOString(),
+      endedAt,
       lastError: message,
-      updatedAt: new Date().toISOString(),
+      updatedAt: endedAt,
     };
     await states.save(terminal);
     await states.release(state.ticketId, state.runId);
   } catch (persistenceError) {
     const message = persistenceError instanceof Error ? persistenceError.message : String(persistenceError);
-    process.stderr.write(`Squire state persistence warning: ${message}\n`);
+    process.stderr.write(`Squire state persistence warning: ${sanitizeTerminalText(message)}\n`);
   }
 }
 
@@ -232,7 +253,7 @@ function parseReservedArguments(argv: readonly string[]): ParsedReservedArgument
   return { ...parsed, reservedRunId, reservedConfigDigest };
 }
 
-function createController(config: PersonalMvpConfig): PersonalMvpController {
+function createController(config: PersonalMvpConfig, stateDirectory = config.paths.state): PersonalMvpController {
   const commands = new NodeCommandRunner();
   const apiKey = process.env[config.linear.apiKeyEnv];
   const tickets: TicketPort = apiKey
@@ -267,12 +288,19 @@ function createController(config: PersonalMvpConfig): PersonalMvpController {
         args: config.github.tokenCommand.slice(1),
       }),
     }),
-    states: new JsonRunStateStore(config.paths.state),
+    states: new JsonRunStateStore(stateDirectory),
     onPersistenceError: error => {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`Squire state persistence warning: ${message}\n`);
+      process.stderr.write(`Squire state persistence warning: ${sanitizeTerminalText(message)}\n`);
     },
   });
+}
+
+function childStateDirectoryOverride(): string | undefined {
+  const value = process.env["SQUIRE_STATE_DIRECTORY"];
+  if (value === undefined) return undefined;
+  if (!value || value.includes("\0") || !path.isAbsolute(value)) throw new Error("SQUIRE_STATE_DIRECTORY must be an absolute path");
+  return path.resolve(value);
 }
 
 function requestFromConfig(config: PersonalMvpConfig, ticketId: string): RunRequest {
@@ -287,7 +315,7 @@ function requestFromConfig(config: PersonalMvpConfig, ticketId: string): RunRequ
 
 function writeError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`Squire stopped: ${message}\n`);
+  process.stderr.write(`Squire stopped: ${sanitizeTerminalText(message)}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

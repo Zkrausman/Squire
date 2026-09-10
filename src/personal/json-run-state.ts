@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -30,6 +30,8 @@ const RUN_LIFECYCLES = ["launching", "preparing", "running", "publishing", "comp
 const RUN_LAUNCH_STATES = ["reserved", "started", "failed"] as const;
 const RUN_PREPARATION_STATES = ["pending", "started", "ready", "failed"] as const;
 const EXECUTION_MODES = ["foreground", "background"] as const;
+const TICKET_ID_PATTERN = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
+const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{7,127}$/u;
 
 export class JsonRunStateStore implements RunStatePort {
   constructor(readonly directory: string) {}
@@ -50,40 +52,50 @@ export class JsonRunStateStore implements RunStatePort {
   async reserve(state: PersonalRunState): Promise<void> {
     validateState(state);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const locks = path.join(this.directory, "locks");
-    await mkdir(locks, { recursive: true, mode: 0o700 });
-    const lockPath = path.join(locks, `${state.ticketId.toLowerCase()}.lock`);
-    let lockHandle;
-    let lockAcquired = false;
-    try {
-      lockHandle = await open(lockPath, "wx", 0o600);
-      lockAcquired = true;
-      await lockHandle.writeFile(`${state.runId}\n`, "utf8");
-      await lockHandle.sync();
-      await lockHandle.close();
-      lockHandle = undefined;
-    } catch (error) {
-      await lockHandle?.close().catch(() => undefined);
-      if (lockAcquired) await unlink(lockPath).catch(() => undefined);
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      // Never reclaim here, even if the owner's state appears terminal. The
-      // previous owner may be between its final ownership check and unlink;
-      // deleting/recreating the pathname would let that release delete a new
-      // owner's reservation. A terminal lock is conservatively ambiguous
-      // until its exact owner completes release or an operator intervenes.
-      throw new Error(`ticket already has an active or ambiguous reservation: ${state.ticketId}`);
-    }
+    // The reservation pathname is held for the whole run, while this separate
+    // short-lived boundary serializes reserve/release against one another.
+    // Without it, an old releaser can read its owner, a replacement can be
+    // installed, and the old releaser can unlink the replacement.
+    return withTicketOperation(this.directory, state.ticketId, async () => {
+      const locks = path.join(this.directory, "locks");
+      await mkdir(locks, { recursive: true, mode: 0o700 });
+      const lockPath = path.join(locks, `${state.ticketId.toLowerCase()}.lock`);
+      let lockHandle;
+      let lockAcquired = false;
+      try {
+        lockHandle = await open(lockPath, "wx", 0o600);
+        lockAcquired = true;
+        await lockHandle.writeFile(`${state.runId}\n`, "utf8");
+        await lockHandle.sync();
+        await lockHandle.close();
+        lockHandle = undefined;
+      } catch (error) {
+        await lockHandle?.close().catch(() => undefined);
+        if (lockAcquired) await unlink(lockPath).catch(() => undefined);
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        // Never reclaim here, even if the owner's state appears terminal. The
+        // previous owner may be between its final ownership check and unlink;
+        // deleting/recreating the pathname would let that release delete a new
+        // owner's reservation. A terminal lock is conservatively ambiguous
+        // until its exact owner completes release or an operator intervenes.
+        throw new Error(`ticket already has an active or ambiguous reservation: ${state.ticketId}`);
+      }
 
-    try {
-      // A manually removed/stale lock must not make an already-running state
-      // invisible. The lock now serializes this scan against another reserve.
-      const active = (await this.findByTicket(state.ticketId)).filter(candidate => candidate.status === "running");
-      if (active.length > 0) throw new Error(`ticket already has an active run: ${state.ticketId}`);
-      await atomicCreate(this.#path(state.runId), encode(state), this.directory, state.runId);
-    } catch (error) {
-      await unlink(lockPath).catch(() => undefined);
-      throw error;
-    }
+      try {
+        // A manually removed/stale lock must not make an already-running state
+        // invisible. The operation boundary serializes this scan against
+        // reserve and release in every Squire process.
+        const active = (await this.findByTicket(state.ticketId)).filter(candidate => candidate.status === "running");
+        if (active.length > 0) throw new Error(`ticket already has an active run: ${state.ticketId}`);
+        await atomicCreate(this.#path(state.runId), encode(state), this.directory, state.runId);
+      } catch (error) {
+        // Only remove a reservation whose owner is still this run. If an
+        // operator or a non-Squire process replaced it, fail closed and leave
+        // the ambiguity visible rather than deleting another owner's lock.
+        await removeReservationIfOwned(lockPath, state.runId).catch(() => undefined);
+        throw error;
+      }
+    });
   }
 
   async save(state: PersonalRunState): Promise<void> {
@@ -124,7 +136,7 @@ export class JsonRunStateStore implements RunStatePort {
   }
 
   async findByTicket(ticketId: string): Promise<readonly PersonalRunState[]> {
-    if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(ticketId)) throw new Error("invalid Linear ticket identifier");
+    assertTicketId(ticketId);
     return (await this.list()).filter(state => state.ticketId === ticketId);
   }
 
@@ -140,10 +152,6 @@ export class JsonRunStateStore implements RunStatePort {
     return matches.sort(compareStates);
   }
 
-  async findLatestByTicket(ticketId: string): Promise<PersonalRunState | undefined> {
-    return (await this.findByTicket(ticketId))[0];
-  }
-
   async findByRunId(runId: string): Promise<PersonalRunState | undefined> {
     return this.read(runId);
   }
@@ -153,27 +161,33 @@ export class JsonRunStateStore implements RunStatePort {
   }
 
   async reservationOwner(ticketId: string): Promise<string | undefined> {
-    if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(ticketId)) throw new Error("invalid Linear ticket identifier");
-    return readLock(path.join(this.directory, "locks", `${ticketId.toLowerCase()}.lock`));
+    assertTicketId(ticketId);
+    return withTicketOperation(this.directory, ticketId, async () => readLock(this.#reservationPath(ticketId)));
   }
 
   async release(ticketId: string, runId: string): Promise<void> {
-    if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(ticketId)) throw new Error("invalid Linear ticket identifier");
-    if (!/^[a-z0-9][a-z0-9-]{7,127}$/u.test(runId)) throw new Error("invalid run id");
-    const lockPath = path.join(this.directory, "locks", `${ticketId.toLowerCase()}.lock`);
-    const owner = await readLock(lockPath);
-    if (owner === undefined) return;
-    if (owner !== runId) throw new Error(`ticket reservation is owned by another run: ${ticketId}`);
-    const state = await this.read(runId);
-    if (!state) throw new Error(`cannot release an ambiguous ticket reservation: ${ticketId}`);
-    if (state.ticketId !== ticketId) throw new Error(`ticket reservation identity mismatch: ${ticketId}`);
-    if (state.status === "running") throw new Error(`cannot release an active ticket reservation: ${ticketId}`);
-    await unlink(lockPath);
+    assertTicketId(ticketId);
+    if (!RUN_ID_PATTERN.test(runId)) throw new Error("invalid run id");
+    return withTicketOperation(this.directory, ticketId, async () => {
+      const lockPath = this.#reservationPath(ticketId);
+      const owner = await readLock(lockPath);
+      if (owner === undefined) return;
+      if (owner !== runId) throw new Error(`ticket reservation is owned by another run: ${ticketId}`);
+      const state = await this.read(runId);
+      if (!state) throw new Error(`cannot release an ambiguous ticket reservation: ${ticketId}`);
+      if (state.ticketId !== ticketId) throw new Error(`ticket reservation identity mismatch: ${ticketId}`);
+      if (state.status === "running") throw new Error(`cannot release an active ticket reservation: ${ticketId}`);
+      await removeReservationIfOwned(lockPath, runId);
+    });
   }
 
   #path(runId: string): string {
-    if (!/^[a-z0-9][a-z0-9-]{7,127}$/u.test(runId)) throw new Error("invalid run id");
+    if (!RUN_ID_PATTERN.test(runId)) throw new Error("invalid run id");
     return path.join(this.directory, `${runId}.json`);
+  }
+
+  #reservationPath(ticketId: string): string {
+    return path.join(this.directory, "locks", `${ticketId.toLowerCase()}.lock`);
   }
 
   async #read(file: string): Promise<PersonalRunState | undefined> {
@@ -219,8 +233,71 @@ async function readLock(file: string): Promise<string | undefined> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
-  const owner = value.trim();
-  return owner.length > 0 ? owner : undefined;
+  // A reservation is an ownership record, not a best-effort hint. Empty,
+  // multi-line, whitespace-padded, and invalid IDs are all ambiguous. In
+  // particular, do not turn a malformed lock into "no reservation" while an
+  // older terminal state is still readable.
+  const owner = value.endsWith("\n") ? value.slice(0, -1) : value;
+  if (!RUN_ID_PATTERN.test(owner)) throw new Error(`ambiguous ticket reservation record: ${file}`);
+  return owner;
+}
+
+async function removeReservationIfOwned(file: string, expectedOwner: string): Promise<void> {
+  const owner = await readLock(file);
+  if (owner === undefined) return;
+  if (owner !== expectedOwner) throw new Error("ticket reservation ownership changed during release");
+  try {
+    await unlink(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+async function withTicketOperation<T>(directory: string, ticketId: string, operation: () => Promise<T>): Promise<T> {
+  const release = await acquireTicketOperation(directory, ticketId);
+  try {
+    return await operation();
+  } finally {
+    await release();
+  }
+}
+
+async function acquireTicketOperation(directory: string, ticketId: string): Promise<() => Promise<void>> {
+  const operations = path.join(directory, "ticket-operations");
+  await mkdir(operations, { recursive: true, mode: 0o700 });
+  const lockPath = path.join(operations, `${ticketId.toLowerCase()}.lock`);
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    let handle: FileHandle;
+    try {
+      handle = await open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(`${process.pid}-${randomUUID()}\n`, "utf8");
+        await handle.sync();
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await unlink(lockPath).catch(() => undefined);
+        throw error;
+      }
+      return async () => {
+        await handle.close().catch(() => undefined);
+        await unlink(lockPath).catch(error => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // A live reserve/release operation is normally only a few filesystem
+      // calls. Waiting briefly makes overlapping operations serialize instead
+      // of reporting a false ambiguity; a crashed operation remains stuck and
+      // fails closed after the bounded wait.
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  }
+  throw new Error(`ticket operation is locked or ambiguous: ${ticketId}`);
+}
+
+function assertTicketId(ticketId: string): void {
+  if (!TICKET_ID_PATTERN.test(ticketId)) throw new Error("invalid Linear ticket identifier");
 }
 
 function compareStates(left: PersonalRunState, right: PersonalRunState): number {
@@ -403,7 +480,7 @@ function validateResolvedProfiles(state: Record<string, unknown>): void {
 }
 
 function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
-  for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigDigest"] as const) {
+  for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {
     if (current[key] !== next[key]) throw new Error("background launch identity is immutable");
   }
 }

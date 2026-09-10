@@ -51,7 +51,7 @@ test("malformed model policy never falls back to a different profile", () => {
 });
 
 test("config resolver uses per-user Windows/Linux defaults and explicit precedence", () => {
-  assert.equal(defaultConfigPath("win32", { USERPROFILE: "C:\\Users\\zkrau" }), "C:\\Users\\zkrau\\.squire\\config.json");
+  assert.equal(defaultConfigPath({ platform: "win32", env: { USERPROFILE: "C:\\Users\\zkrau" } }), "C:\\Users\\zkrau\\.squire\\config.json");
   assert.equal(defaultConfigPath({ platform: "linux", env: { XDG_CONFIG_HOME: "/tmp/config", HOME: "/home/user" } }), "/tmp/config/squire/config.json");
   assert.equal(defaultConfigPath({ platform: "linux", env: { HOME: "/home/user" } }), "/home/user/.config/squire/config.json");
   assert.equal(resolveConfigPath(undefined, { platform: "win32", env: { SQUIRE_CONFIG: "env\\\\config.json", USERPROFILE: "C:\\Users\\zkrau" }, cwd: "C:\\checkout" }), "C:\\checkout\\env\\config.json");
@@ -91,7 +91,8 @@ test("omitted model policy resolves to a detached copy of the approved defaults"
   try {
     const file = path.join(root, "config.json");
     await writeFile(file, JSON.stringify({
-      repository: { slug: "example/repo", path: ".", sourceRef: "main", baseBranch: "main" },
+      repository: { slug: "example/repo", path: "repository", sourceRef: "main", baseBranch: "main" },
+      dataDirectory: path.join(root, "data"),
       paths: { state: "state", bridges: "bridges", staging: "staging" },
       linear: { apiKeyEnv: "LINEAR_API_KEY" },
       github: { tokenCommand: ["token-helper"] },
@@ -215,6 +216,9 @@ test("data directory accepts only canonical JSON and environment names", async (
     assert.equal(loaded.dataDirectory, path.join(root, "canonical"));
     assert.equal(loaded.paths.state, path.join(root, "canonical", "state"));
     assert.deepEqual(Object.keys(loaded.paths).sort(), ["bridges", "staging", "state"]);
+
+    await writeFile(file, JSON.stringify({ ...base, repository: { ...base.repository, path: "." }, paths: { state: "state", bridges: "bridges", staging: "staging" } }));
+    await assert.rejects(loadPersonalMvpConfig(file, { env: { HOME: path.join(root, "home") } }), /runtime path must be outside the repository/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

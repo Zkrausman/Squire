@@ -58,21 +58,19 @@ export interface LoadedPersonalMvpConfig {
 }
 
 /** Resolve the per-user Squire directory without looking in the repository. */
-export function defaultSquireDirectory(options?: ConfigPathOptions): string;
-export function defaultSquireDirectory(platform: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
-export function defaultSquireDirectory(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): string {
-  const options = pathOptions(first, suppliedEnv);
-  const environment = options.env;
-  if (options.platform === "win32") {
+export function defaultSquireDirectory(options: ConfigPathOptions = {}): string {
+  const resolved = pathOptions(options);
+  const environment = resolved.env;
+  if (resolved.platform === "win32") {
     const userProfile = nonempty(environment["USERPROFILE"])
       ?? (nonempty(environment["HOMEDRIVE"]) && nonempty(environment["HOMEPATH"]) ? `${environment["HOMEDRIVE"]}${environment["HOMEPATH"]}` : undefined)
-      ?? options.homeDirectory
+      ?? resolved.homeDirectory
       ?? os.homedir();
     return path.win32.normalize(path.win32.join(userProfile, ".squire"));
   }
-  const home = nonempty(environment["HOME"]) ?? options.homeDirectory ?? os.homedir();
+  const home = nonempty(environment["HOME"]) ?? resolved.homeDirectory ?? os.homedir();
   const xdg = nonempty(environment["XDG_CONFIG_HOME"]);
-  const configHome = xdg ? resolvePosixHome(xdg, options.cwd) : path.posix.join(home, ".config");
+  const configHome = xdg ? resolvePosixHome(xdg, resolved.cwd) : path.posix.join(home, ".config");
   return path.posix.normalize(path.posix.join(configHome, "squire"));
 }
 
@@ -108,12 +106,10 @@ export function resolveSquireDataDirectory(options: ConfigPathOptions = {}): str
 }
 
 /** Return the only implicit config location supported by the personal CLI. */
-export function defaultConfigPath(options?: ConfigPathOptions): string;
-export function defaultConfigPath(platform: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
-export function defaultConfigPath(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): string {
-  const options = pathOptions(first, suppliedEnv);
-  const directory = defaultSquireDirectory(options);
-  return options.platform === "win32"
+export function defaultConfigPath(options: ConfigPathOptions = {}): string {
+  const resolved = pathOptions(options);
+  const directory = defaultSquireDirectory(resolved);
+  return resolved.platform === "win32"
     ? path.win32.join(directory, "config.json")
     : path.posix.join(directory, "config.json");
 }
@@ -135,10 +131,16 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
 
 /** Read the selected file once; parsing and launch binding use these exact bytes. */
 export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigPathOptions = {}): Promise<LoadedPersonalMvpConfig> {
-  const absolute = resolveConfigPath(file, options);
-  const bytes = await readConfigBytes(absolute, options.env ?? process.env);
+  // Resolve all environment-dependent paths from one launch-time snapshot as
+  // well as parsing/hashing one byte buffer. This keeps a test or embedding
+  // that mutates process.env during an asynchronous read from changing the
+  // child bootstrap roots without changing its config digest.
+  const environment = { ...(options.env ?? process.env) };
+  const boundOptions: ConfigPathOptions = { ...options, env: environment };
+  const absolute = resolveConfigPath(file, boundOptions);
+  const bytes = await readConfigBytes(absolute, environment);
   return {
-    config: await parsePersonalMvpConfig(bytes, absolute, options),
+    config: await parsePersonalMvpConfig(bytes, absolute, boundOptions),
     digest: createHash("sha256").update(bytes).digest("hex"),
   };
 }
@@ -150,15 +152,15 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   const value = raw as Record<string, unknown>;
   const repository = object(value["repository"], "repository");
   const paths = value["paths"] === undefined ? {} : object(value["paths"], "paths");
+  const allowedPathKeys = ["state", "bridges", "staging"] as const;
+  const unknownPath = Object.keys(paths).find(key => !allowedPathKeys.includes(key as (typeof allowedPathKeys)[number]));
+  if (unknownPath !== undefined) throw new Error(`paths.${unknownPath} is not supported; use dataDirectory`);
   const linear = object(value["linear"], "linear");
   const github = object(value["github"], "github");
   const sandbox = object(value["sandbox"], "sandbox");
   const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
-  for (const alias of ["runtimeDataDirectory", "runtime"] as const) {
+  for (const alias of ["runtimeDataDirectory", "runtime", "data", "logs"] as const) {
     if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use dataDirectory`);
-  }
-  for (const alias of ["dataDirectory", "runtime", "data", "logs"] as const) {
-    if (Object.prototype.hasOwnProperty.call(paths, alias)) throw new Error(`paths.${alias} is not supported; use dataDirectory`);
   }
   const configuredDataDirectory = value["dataDirectory"];
   if (configuredDataDirectory !== undefined && typeof configuredDataDirectory !== "string") throw new Error("dataDirectory must be a string");
@@ -190,20 +192,9 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   if (piAuthFile !== undefined && typeof piAuthFile !== "string") throw new Error("sandbox.piAuthFile must be a string");
 
   const repositoryPath = resolveHostPath(base, text(repository["path"], "repository.path"), platform);
-  // A few old preview fixtures put `state`, `bridges`, and `staging` beside a
-  // non-checkout config with `repository.path: "."`. Keep those fixtures
-  // loadable, but migrate their omitted runtime boundary to the safe per-user
-  // defaults rather than allowing artifacts inside the checkout.
-  const legacyPreviewPaths = repository["path"] === "."
-    && configuredDataDirectory === undefined
-    && paths["state"] === "state"
-    && paths["bridges"] === "bridges"
-    && paths["staging"] === "staging"
-    && nonempty((options.env ?? process.env)["SQUIRE_DATA_DIR"]) === undefined
-    && !(platform === process.platform && await isGitCheckout(repositoryPath));
-  const statePath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["state"], "paths.state", base, dataDirectory, "state", platform);
-  const bridgesPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["bridges"], "paths.bridges", base, dataDirectory, "bridges", platform);
-  const stagingPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["staging"], "paths.staging", base, dataDirectory, "staging", platform);
+  const statePath = resolveConfiguredRuntimePath(paths["state"], "paths.state", base, dataDirectory, "state", platform);
+  const bridgesPath = resolveConfiguredRuntimePath(paths["bridges"], "paths.bridges", base, dataDirectory, "bridges", platform);
+  const stagingPath = resolveConfiguredRuntimePath(paths["staging"], "paths.staging", base, dataDirectory, "staging", platform);
   const logsPath = platform === "win32" ? path.win32.join(dataDirectory, "logs") : path.resolve(dataDirectory, "logs");
   // Resolve symlinks (including symlinked destination parents) before
   // comparing paths. Non-native platform fixtures are parsed for display but
@@ -306,9 +297,9 @@ function text(value: unknown, label: string): string {
   return value;
 }
 
-function pathOptions(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): Required<Pick<ConfigPathOptions, "platform" | "env" | "cwd">> & Pick<ConfigPathOptions, "homeDirectory"> {
-  if (typeof first === "string") return { platform: first, env: suppliedEnv ?? process.env, cwd: process.cwd() };
-  return { platform: first?.platform ?? process.platform, env: first?.env ?? process.env, cwd: first?.cwd ?? process.cwd(), ...(first?.homeDirectory !== undefined ? { homeDirectory: first.homeDirectory } : {}) };
+function pathOptions(options: ConfigPathOptions): Required<Pick<ConfigPathOptions, "platform" | "env" | "cwd">> & Pick<ConfigPathOptions, "homeDirectory"> {
+  if (!options || typeof options !== "object" || Array.isArray(options)) throw new Error("config path options must be an object");
+  return { platform: options.platform ?? process.platform, env: options.env ?? process.env, cwd: options.cwd ?? process.cwd(), ...(options.homeDirectory !== undefined ? { homeDirectory: options.homeDirectory } : {}) };
 }
 
 function resolveHostPath(base: string, value: string, platform: NodeJS.Platform): string {
@@ -365,16 +356,6 @@ async function realPathForSafety(value: string): Promise<string> {
 function isWithin(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-
-async function isGitCheckout(repositoryPath: string): Promise<boolean> {
-  try {
-    await realpath(path.join(repositoryPath, ".git"));
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return false;
-    throw error;
-  }
 }
 
 async function assertRuntimePathsOutsideRepository(repositoryPath: string, destinations: readonly string[], platform: NodeJS.Platform): Promise<void> {

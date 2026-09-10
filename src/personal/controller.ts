@@ -190,6 +190,10 @@ export class PersonalMvpController {
       if (loaded.status !== "running" || loaded.launchState !== "reserved" || loaded.controllerPid !== null || loaded.lifecycle !== "launching" || loaded.step !== "launching" || loaded.preparationState !== "pending") {
         throw new Error(`run is not in the exact reserved launch state: ${runId}`);
       }
+      // A signal received while the child was still loading its immutable
+      // bootstrap inputs must not turn into a claimed workflow. The CLI's
+      // fallback terminalizer can still see the untouched reservation.
+      if (signal?.aborted) throw startupAbortReason(signal);
 
       const context = this.#context(loaded);
       // This CAS is the ownership claim. A conflict is terminal for this
@@ -202,6 +206,12 @@ export class PersonalMvpController {
         preparationState: "started",
       });
       this.#contexts.set(runId, context);
+      if (signal?.aborted) {
+        const reason = startupAbortReason(signal);
+        await this.#recordTerminal(context, reason, true);
+        this.#contexts.delete(runId);
+        throw reason;
+      }
       return await this.#executeReserved(context, request, signal);
     } finally {
       this.#reservedClaims.delete(runId);
@@ -233,10 +243,19 @@ export class PersonalMvpController {
     const launcher = options.launcher ?? new NodeBackgroundLauncher();
     const cliPath = absolutePath(options.cliPath, "CLI path");
     const configPath = absolutePath(options.configPath, "config path");
+    const launchCwd = absolutePath(options.cwd ?? process.cwd(), "launch cwd");
+    if (options.signal?.aborted) throw startupAbortReason(options.signal);
     const reservedId = this.#previewRunId(request);
     const defaultLogs = backgroundLogPaths(options.logsDirectory ?? options.stateDirectory ?? path.dirname(configPath), reservedId);
     const stdoutPath = options.stdoutPath !== undefined ? absolutePath(options.stdoutPath, "stdout log path") : defaultLogs.stdoutPath;
     const stderrPath = options.stderrPath !== undefined ? absolutePath(options.stderrPath, "stderr log path") : defaultLogs.stderrPath;
+    const stateDirectory = options.stateDirectory === undefined ? undefined : absolutePath(options.stateDirectory, "state directory");
+    const launchEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...(options.env ?? {}),
+    };
+    if (stateDirectory !== undefined) launchEnvironment["SQUIRE_STATE_DIRECTORY"] = stateDirectory;
+    else delete launchEnvironment["SQUIRE_STATE_DIRECTORY"];
 
     if (!/^[a-f0-9]{64}$/u.test(options.launchConfigDigest)) throw new Error("launch config digest is invalid");
     const state = await this.reserve(request, {
@@ -247,14 +266,19 @@ export class PersonalMvpController {
       controllerPid: null,
       launchConfigDigest: options.launchConfigDigest,
     });
+    if (options.signal?.aborted) {
+      const reason = startupAbortReason(options.signal);
+      await this.failReserved(state.runId, reason, true).catch(error => this.#reportPersistenceError(error));
+      throw reason;
+    }
     const launchRequest: BackgroundLaunchRequest = {
       executable: options.executable ?? process.execPath,
       args: [cliPath, "run", request.ticketId, "--config", configPath, "--reserved-run-id", state.runId, "--reserved-config-sha256", options.launchConfigDigest],
-      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-      env: {
-        ...(options.env ?? {}),
-        ...(options.stateDirectory !== undefined ? { SQUIRE_STATE_DIRECTORY: absolutePath(options.stateDirectory, "state directory") } : {}),
-      },
+      cwd: launchCwd,
+      // Capture the launch environment now. In particular, a relative or
+      // default data-directory resolution must not change between reservation
+      // and the detached child's bootstrap.
+      env: launchEnvironment,
       stdoutPath,
       stderrPath,
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
@@ -264,6 +288,10 @@ export class PersonalMvpController {
 
     let launched: Awaited<ReturnType<BackgroundLauncher["launch"]>>;
     try {
+      // Recheck immediately before delegating to an injected launcher as well
+      // as inside NodeBackgroundLauncher. This closes the ordinary
+      // pre-handoff window for launchers that do not perform their own check.
+      if (options.signal?.aborted) throw startupAbortReason(options.signal);
       launched = await launcher.launch(launchRequest);
     } catch (error) {
       // No spawn confirmation means this parent still owns launch failure
@@ -642,6 +670,10 @@ export function backgroundLogPaths(logsDirectory: string, runId: string): Backgr
 function absolutePath(value: string, label: string): string {
   if (!value || value.includes("\0")) throw new Error(`${label} is invalid`);
   return path.resolve(value);
+}
+
+function startupAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("operator interrupted background startup");
 }
 
 // Keep this import type referenced in generated declarations without exposing a

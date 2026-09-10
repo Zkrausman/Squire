@@ -119,6 +119,27 @@ test("completed state requires every latest phase and exact Review/Test/Retro in
   assert.throws(() => validateState({ ...valid, attempts: { ...valid.attempts, implement: 2 } }), /latest passing phase/);
 });
 
+test("launch identity and log destinations cannot be changed by a later writer", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-identity-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const initial = {
+      ...state(),
+      executionMode: "background" as const,
+      stdoutPath: path.join(directory, "stdout.log"),
+      stderrPath: path.join(directory, "stderr.log"),
+      repositoryPath: path.join(directory, "repository"),
+      sourceRef: "refs/remotes/origin/main",
+      launchConfigDigest: "a".repeat(64),
+    };
+    await store.create(initial);
+    await assert.rejects(store.save({ ...initial, version: 2, sourceRef: "refs/remotes/origin/other" }), /background launch identity is immutable/);
+    await assert.rejects(store.save({ ...initial, version: 2, stdoutPath: path.join(directory, "other.log") }), /background launch identity is immutable/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a corrupted state file fails closed instead of hiding an active run", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-"));
   try {

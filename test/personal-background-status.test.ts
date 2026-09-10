@@ -424,6 +424,36 @@ test("child bootstrap failure persists through the original state-directory fall
   }
 });
 
+test("bootstrap fallback cannot terminalize a reservation with a different ticket or digest", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-identity-"));
+  try {
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    const digest = "1".repeat(64);
+    const reserved = await controller(states).reserve({ ...REQUEST, ticketId: "AIDEV-2" }, { executionMode: "background", launchConfigDigest: digest });
+    const missingConfig = path.join(root, "missing-config.json");
+    const wrongTicketExit = await spawnExit(process.execPath, [
+      path.resolve("dist/src/personal/cli.js"), "run", REQUEST.ticketId,
+      "--config", missingConfig,
+      "--reserved-run-id", reserved.runId,
+      "--reserved-config-sha256", digest,
+    ], { ...process.env, SQUIRE_STATE_DIRECTORY: states.directory });
+    assert.equal(wrongTicketExit, 1);
+    assert.equal((await states.read(reserved.runId))?.status, "running");
+
+    const matchingTicket = { ...REQUEST, ticketId: "AIDEV-2" };
+    const wrongDigestExit = await spawnExit(process.execPath, [
+      path.resolve("dist/src/personal/cli.js"), "run", matchingTicket.ticketId,
+      "--config", missingConfig,
+      "--reserved-run-id", reserved.runId,
+      "--reserved-config-sha256", "2".repeat(64),
+    ], { ...process.env, SQUIRE_STATE_DIRECTORY: states.directory });
+    assert.equal(wrongDigestExit, 1);
+    assert.equal((await states.read(reserved.runId))?.status, "running");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("status reports orphan reservations over older terminal state", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-orphan-"));
   try {
@@ -434,6 +464,24 @@ test("status reports orphan reservations over older terminal state", async () =>
     await mkdir(path.join(root, "locks"), { recursive: true });
     await writeFile(path.join(root, "locks", "aidev-1.lock"), "aidev-1-orphan123\n", "utf8");
     await assert.rejects(findRunState(states, REQUEST.ticketId), (error: unknown) => error instanceof StatusLookupError && error.code === "ambiguous");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("status reports empty or malformed reservation records as ambiguous", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-malformed-lock-"));
+  try {
+    const states = new JsonRunStateStore(root);
+    const old = await controller(states).reserve(REQUEST);
+    await states.save({ ...old, version: 2, status: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.000Z", lastError: "failed", updatedAt: "2026-09-10T00:00:01.000Z" });
+    await states.release(REQUEST.ticketId, old.runId);
+    await mkdir(path.join(root, "locks"), { recursive: true });
+    const lock = path.join(root, "locks", "aidev-1.lock");
+    for (const value of ["", "not-a-run\n", "aidev-1-orphan123\nextra\n"]) {
+      await writeFile(lock, value, "utf8");
+      await assert.rejects(findRunState(states, REQUEST.ticketId), (error: unknown) => error instanceof StatusLookupError && error.code === "ambiguous");
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

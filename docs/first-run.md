@@ -70,7 +70,10 @@ defaults to `%LOCALAPPDATA%\\Squire` on Windows and `$XDG_STATE_HOME/squire`
 relative to the selected config file. Squire rejects data destinations inside
 the repository, including destinations reached through symlinks.
 `sandbox.piExecutable` and `sandbox.piAgentDirectory` are paths inside the
-sandbox and are not host resolved.
+sandbox and are not host resolved. During preparation, Squire resolves
+`repository.sourceRef` once, pins that commit for the clone, and verifies the
+sandbox starts at that exact SHA; it does not snapshot a mutable ref before the
+background reservation.
 
 ## 3) Run in the foreground or background
 
@@ -98,6 +101,10 @@ current phase/attempt, selected provider/model/thinking, elapsed time, HEAD,
 terminal error, pull-request URL, and log paths. A completed or stopped run's
 elapsed time is frozen from its persisted end timestamp; old v1 records without
 start-time/model evidence display `unavailable` rather than invented values.
+Status escapes control characters in ticket, model, error, URL, and log-path
+values. Reserve/release operations are serialized per ticket, and empty,
+malformed, or orphan reservation records are reported as ambiguous instead of
+being silently reclaimed.
 
 A detached run is deliberately not a daemon or crash-perfect supervisor. A
 forced kill or power loss can leave an ambiguous active reservation. `status`

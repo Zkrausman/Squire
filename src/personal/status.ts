@@ -9,7 +9,7 @@ export class StatusLookupError extends Error {
   readonly code: StatusLookupErrorCode;
 
   constructor(code: StatusLookupErrorCode, message: string) {
-    super(message);
+    super(sanitizeTerminalText(message));
     this.name = "StatusLookupError";
     this.code = code;
   }
@@ -36,7 +36,13 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
   const candidates = states.findByTicket
     ? [...await states.findByTicket(selector)]
     : await fallbackTicketStates(states, selector);
-  const owner = states.reservationOwner ? await states.reservationOwner(selector) : undefined;
+  let owner: string | undefined;
+  try {
+    owner = states.reservationOwner ? await states.reservationOwner(selector) : undefined;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${selector}: ${detail}`);
+  }
   if (candidates.length === 0) {
     if (owner) throw new StatusLookupError("ambiguous", `run reservation exists without a readable state: ${owner}`);
     throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
@@ -96,13 +102,18 @@ export function formatElapsed(state: PersonalRunState, now: Date = new Date()): 
   return `${formatDuration(milliseconds)} (${milliseconds} ms)`;
 }
 
-function display(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, character => {
+/** Escape untrusted text before putting it on a human-readable terminal line. */
+export function sanitizeTerminalText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, character => {
     if (character === "\r") return "\\r";
     if (character === "\n") return "\\n";
     const code = character.codePointAt(0)!;
     return code <= 0xff ? `\\x${code.toString(16).padStart(2, "0")}` : `\\u{${code.toString(16)}}`;
   });
+}
+
+function display(value: string): string {
+  return sanitizeTerminalText(value);
 }
 
 function formatDuration(milliseconds: number): string {

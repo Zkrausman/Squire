@@ -279,7 +279,8 @@ test("configuration requires an external GitHub token command", async () => {
   try {
     const file = path.join(root, "config.json");
     await writeFile(file, JSON.stringify({
-      repository: { slug: "example/repo", path: ".", sourceRef: "main", baseBranch: "main" },
+      repository: { slug: "example/repo", path: "repository", sourceRef: "main", baseBranch: "main" },
+      dataDirectory: path.join(root, "data"),
       paths: { state: "state", bridges: "bridges", staging: "staging" },
       linear: { apiKeyEnv: "LINEAR_API_KEY" },
       github: { tokenCommand: ["token-helper", "--installation", "123"] },
