@@ -61,18 +61,22 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     // source ref is never reread after resolution, so movement during prepare
     // cannot change the sandbox base.
     const bundleRef = `refs/heads/squire-source-${input.runId}-${randomUUID().replaceAll("-", "")}`;
-    // A command can write the ref and then be terminated before its promise
-    // settles. Mark the cleanup obligation before invoking update-ref so that
-    // cancellation cannot strand the clone-visible ref.
-    const bundleRefCreated = true;
+    let bundleRefCreated = false;
     try {
       // The UUID makes a collision unlikely and the zero old-value makes the
       // create compare-and-set safe for both SHA-1 and SHA-256 repositories.
-      await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", bundleRef, baseSha, "0".repeat(baseSha.length)] }, signal);
+      // Complete this tiny host-side mutation before observing cancellation:
+      // if update-ref fails because a colliding ref already exists, ownership
+      // was never established and cleanup must not delete that ref. If the
+      // caller is cancelled while it runs, the following bundle command sees
+      // the cancellation and the established ref is still cleaned up.
+      await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", bundleRef, baseSha, "0".repeat(baseSha.length)] });
+      bundleRefCreated = true;
       await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "bundle", "create", sourceBundle, bundleRef], timeoutMs: 180_000 }, signal);
     } finally {
       // Cleanup is a host-side safety obligation and must still run after an
-      // aborted caller signal.
+      // aborted caller signal, but only after this invocation established the
+      // compare-and-set ref.
       if (bundleRefCreated) await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", "-d", bundleRef, baseSha] });
     }
 

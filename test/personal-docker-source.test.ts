@@ -158,6 +158,46 @@ test("temporary source refs are compare-deleted when bundling fails or is aborte
     assert.ok(commands.requests.some(request => request.command === "git" && request.args.includes("update-ref") && request.args.includes("-d")));
   });
 
+  await t.test("ref-creation collision is not cleaned up as owned", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "squire-source-collision-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const repository = path.join(root, "repository");
+    await exec("git", ["init", "-q", repository]);
+    await git(repository, ["config", "user.name", "Test"]);
+    await git(repository, ["config", "user.email", "test@example.invalid"]);
+    await writeFile(path.join(repository, "source.txt"), "pinned\n");
+    await git(repository, ["add", "source.txt"]);
+    await git(repository, ["commit", "-qm", "first"]);
+    const first = await git(repository, ["rev-parse", "HEAD"]);
+    await git(repository, ["update-ref", "refs/remotes/origin/main", first]);
+
+    const sandboxRoot = path.join(root, "sandbox");
+    const commands = new SandboxShim(sandboxRoot, "squire-aidev-1-0123456789");
+    let collidingRef: string | undefined;
+    const collidingCommands: CommandPort = {
+      async run(request, signal) {
+        if (request.command === "git" && request.args.includes("update-ref") && !request.args.includes("-d")) {
+          const updateRefIndex = request.args.indexOf("update-ref");
+          collidingRef = request.args[updateRefIndex + 1];
+          if (collidingRef) await git(repository, ["update-ref", collidingRef, first]);
+        }
+        return commands.run(request, signal);
+      },
+    };
+    const workspace = new DockerSandboxWorkspace({ commands: collidingCommands, bridgeRoot: path.join(root, "bridges"), stagingRoot: path.join(root, "staging") });
+    await assert.rejects(workspace.prepare({
+      runId: "aidev-1-0123456789",
+      ticketId: "AIDEV-1",
+      sandbox: "squire-aidev-1-0123456789",
+      branch: deterministicFeatureBranch("example/repo", "AIDEV-1"),
+      repositoryPath: repository,
+      sourceRef: "refs/remotes/origin/main",
+    }));
+    assert.ok(collidingRef);
+    assert.equal(await git(repository, ["rev-parse", collidingRef]), first);
+    assert.equal(commands.requests.some(request => request.command === "git" && request.args.includes("update-ref") && request.args.includes("-d")), false);
+  });
+
   await t.test("abort during bundle", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "squire-source-abort-"));
     t.after(() => rm(root, { recursive: true, force: true }));
