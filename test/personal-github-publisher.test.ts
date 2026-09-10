@@ -44,7 +44,7 @@ class FakeCommands implements CommandPort {
       const body = [
         "## AIDEV-1",
         "",
-        "Validated head: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`",
+        `Validated head: \`${headRefOid}\``,
         "",
         "## Squire phases",
         "",
@@ -62,6 +62,7 @@ class FakeCommands implements CommandPort {
         "",
       ].join("\n");
       const currentBody = this.currentBody ?? body;
+      if (this.currentBody === undefined) this.currentBody = currentBody;
       const record = this.mutateRecord?.({ url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body: currentBody }) ?? { url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body: currentBody };
       return { stdout: exists ? JSON.stringify(this.behavior === "multiple" ? [record, record] : [record]) : "[]", stderr: "" };
     }
@@ -189,6 +190,12 @@ test("publisher rejects mismatched PR identity, malformed bodies, and multiple m
       ["wrong repository owner", new FakeCommands("fast-forward", record => ({ ...record, headRepositoryOwner: { login: "other-owner" } }))],
       ["wrong repository URL", new FakeCommands("fast-forward", record => ({ ...record, url: "https://github.com/other/repo/pull/7" }))],
       ["malformed body", new FakeCommands("fast-forward", record => ({ ...record, body: "owner text without Squire markers" }))],
+      ["unexpected validated head", new FakeCommands("fast-forward", record => ({ ...record, body: String(record["body"]).replace(/Validated head: `[^`]+`/u, `Validated head: \`${"e".repeat(40)}\``) }))],
+      ["Retro before Squire phases", new FakeCommands("fast-forward", record => {
+        const body = String(record["body"]);
+        const retro = body.indexOf("\n## Retro");
+        return { ...record, body: `${body.slice(retro + 1)}\n\n${body.slice(0, retro)}` };
+      })],
       ["duplicate Retro sections", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\n## Retro\n\n- duplicate\n` }))],
       ["malformed response", new FakeCommands("fast-forward", record => ({ ...record, number: "7" }))],
       ["multiple matches", new FakeCommands("multiple")],

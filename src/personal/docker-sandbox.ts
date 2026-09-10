@@ -61,12 +61,14 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     // source ref is never reread after resolution, so movement during prepare
     // cannot change the sandbox base.
     const bundleRef = `refs/heads/squire-source-${input.runId}-${randomUUID().replaceAll("-", "")}`;
-    let bundleRefCreated = false;
+    // A command can write the ref and then be terminated before its promise
+    // settles. Mark the cleanup obligation before invoking update-ref so that
+    // cancellation cannot strand the clone-visible ref.
+    const bundleRefCreated = true;
     try {
       // The UUID makes a collision unlikely and the zero old-value makes the
       // create compare-and-set safe for both SHA-1 and SHA-256 repositories.
       await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", bundleRef, baseSha, "0".repeat(baseSha.length)] }, signal);
-      bundleRefCreated = true;
       await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "bundle", "create", sourceBundle, bundleRef], timeoutMs: 180_000 }, signal);
     } finally {
       // Cleanup is a host-side safety obligation and must still run after an

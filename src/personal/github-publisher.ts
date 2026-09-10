@@ -100,7 +100,7 @@ export class GitHubPublisher implements PublicationPort {
           // Validate and prepare the body before the first possible remote
           // mutation. A correction run must not advance a branch and only then
           // discover that an owner-edited PR body is ambiguous.
-          const initialBody = reconcilePullRequestBody(existing.body, input);
+          const initialBody = reconcilePullRequestBody(existing.body, input, [existing.headRefOid, input.head]);
           let confirmed: PullRequestRecord;
           let body: string;
           if (existing.headRefOid !== input.head) {
@@ -115,7 +115,7 @@ export class GitHubPublisher implements PublicationPort {
             const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
             if (!samePullRequest(existing, refreshed) || refreshed.headRefOid !== input.head || refreshed.body !== existing.body) throw new Error("matching pull request changed during fast-forward publication");
             confirmed = refreshed;
-            body = reconcilePullRequestBody(refreshed.body, input);
+            body = reconcilePullRequestBody(refreshed.body, input, [existing.headRefOid, input.head]);
           } else {
             const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
             if (!samePullRequest(existing, refreshed) || refreshed.headRefOid !== input.head || refreshed.body !== existing.body) throw new Error("matching pull request changed before body reconciliation");
@@ -146,7 +146,7 @@ export class GitHubPublisher implements PublicationPort {
         } catch (error) {
           const reconciled = await this.#findPullRequest(input, ghEnvironment, signal);
           if (reconciled?.headRefOid === input.head) {
-            const body = reconcilePullRequestBody(reconciled.body, input);
+            const body = reconcilePullRequestBody(reconciled.body, input, [reconciled.headRefOid, input.head]);
             await this.#editPullRequestBody(input, reconciled.number, body, temporary, ghEnvironment, signal);
             const verified = await this.#findPullRequest(input, ghEnvironment, signal);
             if (!samePullRequest(reconciled, verified) || verified.headRefOid !== input.head || verified.body !== body) throw new Error("matching pull request changed during body reconciliation");
@@ -336,16 +336,18 @@ function markdownListItem(value: string): string {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replaceAll("\n", "\n  ");
 }
 
-function reconcilePullRequestBody(body: string, input: PublicationInput): string {
+function reconcilePullRequestBody(body: string, input: PublicationInput, acceptedValidatedHeads: readonly string[]): string {
   if (body.length > 1_900_000) throw new Error("matching pull request has an unexpected Squire body");
   const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
   const invalidBody = (): never => { throw new Error("matching pull request has an unexpected Squire body"); };
   const ticketIndex = uniqueLineIndex(lines, `## ${input.ticket.id}`) ?? invalidBody();
   const validatedIndex = uniqueLineIndex(lines, /^Validated head: `[a-f0-9]{40,64}`$/u) ?? invalidBody();
+  const validatedMatch = /^Validated head: `([a-f0-9]{40,64})`$/u.exec(lines[validatedIndex] ?? "");
+  if (!validatedMatch || !acceptedValidatedHeads.includes(validatedMatch[1]!)) return invalidBody();
   const squireHeadings = lines.flatMap((line, index) => /^##\s+Squire phases\s*$/u.test(line) ? [index] : []);
   const retroHeadings = lines.flatMap((line, index) => /^##\s+Retro\s*$/u.test(line) ? [index] : []);
   const squireIndex = squireHeadings.length === 1 ? squireHeadings[0] : undefined;
-  if (squireIndex === undefined || retroHeadings.length !== 1 || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
+  if (squireIndex === undefined || retroHeadings.length !== 1 || retroHeadings[0]! <= squireIndex || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
   const nextHeading = lines.findIndex((line, index) => index > squireIndex && /^##\s+/u.test(line));
   const phaseEnd = nextHeading === -1 ? lines.length : nextHeading;
   for (const phase of PERSONAL_PHASES) {
