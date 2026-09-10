@@ -11,9 +11,13 @@ import { deterministicFeatureBranch } from "../src/personal/identity.js";
 
 const exec = promisify(execFile);
 
+type OwnershipRequest = Readonly<{ owner: string; target: string; recursive: boolean }>;
+
 class SandboxShim implements CommandPort {
   readonly host = new NodeCommandRunner();
   readonly requests: CommandRequest[] = [];
+  readonly ownershipRequests: OwnershipRequest[] = [];
+  readonly executedShellScripts: string[] = [];
   constructor(readonly sandboxRoot: string, readonly sandbox: string) {}
 
   async run(request: CommandRequest, signal?: AbortSignal): Promise<CommandResult> {
@@ -36,9 +40,18 @@ class SandboxShim implements CommandPort {
     }
     if (request.args[0] === "exec" && request.args.includes("sh")) {
       const script = request.args[request.args.length - 1]!;
-      const translated = script
+      const ownershipCommand = "chown -R '1000:1000' /ticket";
+      const lines = script.split("\n");
+      assert.equal(lines.filter(line => line === ownershipCommand).length, 1, "production must request the expected privileged ownership setup");
+      this.ownershipRequests.push({ owner: "1000:1000", target: "/ticket", recursive: true });
+      // `chown` is a privileged sandbox setup operation. Model its successful
+      // execution rather than running it on the unprivileged test host, while
+      // leaving every real Git, filesystem, and permission operation intact.
+      const executableScript = lines.filter(line => line !== ownershipCommand).join("\n");
+      const translated = executableScript
         .replaceAll("/ticket", path.join(this.sandboxRoot, "ticket"))
         .replaceAll("/tmp/squire-source.bundle", path.join(this.sandboxRoot, "tmp/squire-source.bundle"));
+      this.executedShellScripts.push(translated);
       return this.host.run({ command: "sh", args: ["-lc", translated] }, signal);
     }
     if (request.args[0] === "exec" && request.args.includes("git")) {
@@ -95,6 +108,12 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.equal(prepared.baseSha, first);
   assert.equal(prepared.head, first);
   assert.notEqual(first, localHead);
+  const setup = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.includes("sh"));
+  assert.deepEqual(setup?.args.slice(0, 5), ["exec", "-u", "root", "squire-aidev-1-0123456789", "sh"]);
+  assert.match(setup?.args.at(-1) ?? "", /chown -R '1000:1000' \/ticket/u);
+  assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
+  assert.equal(commands.executedShellScripts.some(script => script.split("\n").some(line => line.includes("chown"))), false);
+  assert.equal(commands.executedShellScripts.some(script => script.includes("chmod 0700")), true);
   assert.equal(await git(repository, ["rev-parse", "refs/remotes/origin/main"]), localHead);
   const refs = await git(repository, ["for-each-ref", "--format=%(refname)", "refs/heads/squire-source-"]);
   assert.equal(refs, "");
