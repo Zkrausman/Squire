@@ -1,6 +1,8 @@
 # Squire MVP Ticket Path
 
-_Last updated: 2026-09-01_
+> **Superseded on 2026-09-10:** The first-run path is now the single vertical-slice ticket [AIDEV-255](https://linear.app/geltagentictrading/issue/AIDEV-255/deliver-one-personal-ticket-end-to-end-with-squire-run). The graph below is retained as historical context and is not the current execution order.
+
+_Last updated: 2026-09-10_
 
 ## Linear scope
 

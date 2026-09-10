@@ -1,6 +1,8 @@
 # Squire MVP Product and Technical Requirements
 
-_Last updated: 2026-09-01_
+> **Historical requirements notice (2026-09-10):** The approved first release is the smaller [Squire Personal MVP](personal-mvp.md). This document remains design history; requirements for an AI Orchestrator, five mandatory Herdr tabs, automated approval, hardened custody, and broad recovery do not block AIDEV-255.
+
+_Last updated: 2026-09-10_
 
 ## 1. Product intent
 
