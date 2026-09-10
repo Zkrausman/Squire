@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir, type FileHandle } from "node:fs/promises";
+import { access, mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -92,6 +92,7 @@ export class JsonRunStateStore implements RunStatePort {
         // Only remove a reservation whose owner is still this run. If an
         // operator or a non-Squire process replaced it, fail closed and leave
         // the ambiguity visible rather than deleting another owner's lock.
+        await waitForTicketOperationBarrier("reserve-before-failed-cleanup");
         await removeReservationIfOwned(lockPath, state.runId).catch(() => undefined);
         throw error;
       }
@@ -173,6 +174,7 @@ export class JsonRunStateStore implements RunStatePort {
       const owner = await readLock(lockPath);
       if (owner === undefined) return;
       if (owner !== runId) throw new Error(`ticket reservation is owned by another run: ${ticketId}`);
+      await waitForTicketOperationBarrier("release-after-owner-read");
       const state = await this.read(runId);
       if (!state) throw new Error(`cannot release an ambiguous ticket reservation: ${ticketId}`);
       if (state.ticketId !== ticketId) throw new Error(`ticket reservation identity mismatch: ${ticketId}`);
@@ -294,6 +296,31 @@ async function acquireTicketOperation(directory: string, ticketId: string): Prom
     }
   }
   throw new Error(`ticket operation is locked or ambiguous: ${ticketId}`);
+}
+
+async function waitForTicketOperationBarrier(stage: "reserve-before-failed-cleanup" | "release-after-owner-read"): Promise<void> {
+  if (process.env["NODE_ENV"] !== "test" || process.env["SQUIRE_TEST_ONLY_TICKET_OPERATION_STAGE"] !== stage) return;
+  const ready = testOnlyBarrierPath("SQUIRE_TEST_ONLY_TICKET_OPERATION_READY_PATH");
+  const release = testOnlyBarrierPath("SQUIRE_TEST_ONLY_TICKET_OPERATION_RELEASE_PATH");
+  if ((ready === undefined) !== (release === undefined)) throw new Error("ticket operation test-only barrier is incomplete");
+  if (ready === undefined || release === undefined) return;
+  await writeFile(ready, "ready\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  for (;;) {
+    try {
+      await access(release);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+  }
+}
+
+function testOnlyBarrierPath(name: string): string | undefined {
+  const value = process.env[name];
+  if (value === undefined) return undefined;
+  if (!path.isAbsolute(value) || path.resolve(value) !== value || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) throw new Error(`unsafe ticket operation test-only barrier path: ${name}`);
+  return value;
 }
 
 function assertTicketId(ticketId: string): void {

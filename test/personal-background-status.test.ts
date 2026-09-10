@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -386,17 +386,96 @@ test("cross-process state CAS admits exactly one writer at the same version", as
   }
 });
 
-test("terminal reservation release cannot delete a concurrently acquired new owner", async () => {
+test("cross-process ticket operations serialize two old releases around a replacement reservation", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-release-race-"));
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states).reserve(REQUEST);
     await states.save({ ...old, version: 2, status: "interrupted", lifecycle: "interrupted", endedAt: "2026-09-10T00:00:01.000Z", lastError: "stopped", updatedAt: "2026-09-10T00:00:01.000Z" });
-    const nextController = controller(states, new Date("2026-09-10T00:00:02.000Z"), "21234567-89ab-cdef-0123-456789abcdef");
-    const [, firstReserve] = await Promise.allSettled([states.release(REQUEST.ticketId, old.runId), nextController.reserve(REQUEST)]);
-    const next = firstReserve.status === "fulfilled" ? firstReserve.value : await nextController.reserve(REQUEST);
-    assert.equal(await states.reservationOwner(REQUEST.ticketId), next.runId);
-    await assert.rejects(controller(states, new Date(), "31234567-89ab-cdef-0123-456789abcdef").reserve(REQUEST), /active or ambiguous reservation/);
+    const replacement = derivedReservationState(old, "aidev-1-2123456789", "2026-09-10T00:00:02.000Z");
+    const inputs = path.join(root, "inputs");
+    await mkdir(inputs);
+    const replacementFile = path.join(inputs, "replacement.json");
+    await writeFile(replacementFile, JSON.stringify(replacement), "utf8");
+
+    const firstReady = path.join(root, "first-release-ready");
+    const firstRelease = path.join(root, "first-release-go");
+    const firstResult = path.join(root, "first-release-result");
+    const first = startReservationRaceWorker({
+      mode: "release", directory: root, ticketId: REQUEST.ticketId, runId: old.runId, resultFile: firstResult,
+      env: {
+        SQUIRE_TEST_ONLY_TICKET_OPERATION_STAGE: "release-after-owner-read",
+        SQUIRE_TEST_ONLY_TICKET_OPERATION_READY_PATH: firstReady,
+        SQUIRE_TEST_ONLY_TICKET_OPERATION_RELEASE_PATH: firstRelease,
+      },
+    });
+    await waitForFile(firstReady);
+
+    const secondCaller = path.join(root, "second-release-caller");
+    const secondResult = path.join(root, "second-release-result");
+    const second = startReservationRaceWorker({ mode: "release", directory: root, ticketId: REQUEST.ticketId, runId: old.runId, callerReady: secondCaller, resultFile: secondResult });
+    const replacementCaller = path.join(root, "replacement-caller");
+    const replacementResult = path.join(root, "replacement-result");
+    const reserve = startReservationRaceWorker({ mode: "reserve", directory: root, ticketId: REQUEST.ticketId, runId: replacement.runId, stateFile: replacementFile, callerReady: replacementCaller, resultFile: replacementResult });
+    // Both old-owner release and replacement calls have been submitted while
+    // the first releaser is paused after its ownership read.
+    await Promise.all([waitForFile(secondCaller), waitForFile(replacementCaller)]);
+    await writeFile(firstRelease, "go\n", "utf8");
+
+    const [firstExit, secondExit, replacementExit] = await Promise.all([first, second, reserve]);
+    assert.equal(firstExit, 0);
+    assert.equal(replacementExit, 0);
+    assert.ok(secondExit === 0 || secondExit === 2);
+    assert.equal((await states.reservationOwner(REQUEST.ticketId)), replacement.runId);
+    assert.equal((await states.read(replacement.runId))?.status, "running");
+    assert.match(await readFile(replacementResult, "utf8"), /^fulfilled\n$/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed reservation cleanup cannot remove a replacement acquired by another process", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-failed-reservation-race-"));
+  try {
+    const states = new JsonRunStateStore(root);
+    const active = await controller(states).reserve(REQUEST);
+    await unlink(path.join(root, "locks", "aidev-1.lock"));
+    const failedReservation = derivedReservationState(active, "aidev-1-2123456789", "2026-09-10T00:00:01.000Z");
+    const replacement = derivedReservationState(active, "aidev-1-3123456789", "2026-09-10T00:00:02.000Z");
+    const inputs = path.join(root, "inputs");
+    await mkdir(inputs);
+    const failedFile = path.join(inputs, "failed-reservation.json");
+    const replacementFile = path.join(inputs, "replacement.json");
+    await writeFile(failedFile, JSON.stringify(failedReservation), "utf8");
+    await writeFile(replacementFile, JSON.stringify(replacement), "utf8");
+
+    const failedReady = path.join(root, "failed-cleanup-ready");
+    const failedRelease = path.join(root, "failed-cleanup-go");
+    const failedResult = path.join(root, "failed-reservation-result");
+    const failed = startReservationRaceWorker({
+      mode: "reserve", directory: root, ticketId: REQUEST.ticketId, runId: failedReservation.runId, stateFile: failedFile, resultFile: failedResult,
+      env: {
+        SQUIRE_TEST_ONLY_TICKET_OPERATION_STAGE: "reserve-before-failed-cleanup",
+        SQUIRE_TEST_ONLY_TICKET_OPERATION_READY_PATH: failedReady,
+        SQUIRE_TEST_ONLY_TICKET_OPERATION_RELEASE_PATH: failedRelease,
+      },
+    });
+    await waitForFile(failedReady);
+    await states.save({ ...active, version: 2, status: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.500Z", lastError: "stopped", updatedAt: "2026-09-10T00:00:01.500Z" });
+
+    const replacementCaller = path.join(root, "replacement-caller");
+    const replacementResult = path.join(root, "replacement-result");
+    const reserve = startReservationRaceWorker({ mode: "reserve", directory: root, ticketId: REQUEST.ticketId, runId: replacement.runId, stateFile: replacementFile, callerReady: replacementCaller, resultFile: replacementResult });
+    await waitForFile(replacementCaller);
+    await writeFile(failedRelease, "go\n", "utf8");
+
+    const [failedExit, replacementExit] = await Promise.all([failed, reserve]);
+    assert.equal(failedExit, 2);
+    assert.equal(replacementExit, 0);
+    assert.match(await readFile(failedResult, "utf8"), /ticket already has an active run/);
+    assert.match(await readFile(replacementResult, "utf8"), /^fulfilled\n$/u);
+    assert.equal(await states.reservationOwner(REQUEST.ticketId), replacement.runId);
+    assert.equal((await states.read(replacement.runId))?.status, "running");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -502,6 +581,58 @@ test("status escapes CR LF C0 C1 and ESC in external strings", () => {
   assert.match(output, /Title: spoof\\r\\nStatus: completed\\x1b\[2J\\x85/);
   assert.match(output, /Terminal error: bad\\x00\\nerror\\x1b/);
 });
+
+function derivedReservationState(base: PersonalRunState, runId: string, startedAt: string): PersonalRunState {
+  return {
+    ...base,
+    version: 1,
+    runId,
+    sandbox: `squire-${runId}`,
+    status: "running",
+    step: "preparing",
+    lifecycle: "preparing",
+    launchState: "started",
+    preparationState: "pending",
+    startedAt,
+    endedAt: null,
+    controllerPid: null,
+    lastError: null,
+    prUrl: null,
+    updatedAt: startedAt,
+  };
+}
+
+type ReservationRaceWorkerOptions = {
+  readonly mode: "release" | "reserve";
+  readonly directory: string;
+  readonly ticketId: string;
+  readonly runId: string;
+  readonly stateFile?: string;
+  readonly callerReady?: string;
+  readonly resultFile: string;
+  readonly env?: NodeJS.ProcessEnv;
+};
+
+function startReservationRaceWorker(options: ReservationRaceWorkerOptions): Promise<number | null> {
+  const child = nodeSpawn(process.execPath, [
+    path.resolve("fixtures/run-reservation-race-worker.mjs"),
+    options.mode,
+    options.directory,
+    options.ticketId,
+    options.runId,
+    options.stateFile ?? "",
+    options.callerReady ?? "",
+    options.resultFile,
+  ], {
+    env: { ...process.env, ...(options.env ?? {}), NODE_ENV: "test" },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", code => resolve(code));
+  });
+}
 
 async function waitForFile(file: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
