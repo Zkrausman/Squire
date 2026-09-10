@@ -174,9 +174,10 @@ export class PersonalMvpController {
     const expectedHead = requireHead(context.state);
     const attempt = context.state.attempts[phase] + 1;
     await context.persist({ step: phase, attempts: { ...context.state.attempts, [phase]: attempt } });
-    const input: PhaseInput = {
+    const expectedProfile = Object.freeze({ ...resolvedProfile(context.state, phase) });
+    const input: PhaseInput = Object.freeze({
       runId: context.state.runId,
-      ticket,
+      ticket: Object.freeze({ ...ticket }),
       repository: request.repository,
       baseBranch: request.baseBranch,
       sandbox: context.state.sandbox,
@@ -184,10 +185,13 @@ export class PersonalMvpController {
       phase,
       attempt,
       expectedHead,
-      profile: resolvedProfile(context.state, phase),
-      previous: context.state.results,
-      feedback: phaseFeedback,
-    };
+      profile: expectedProfile,
+      // A phase adapter is untrusted with respect to controller state. Give it
+      // detached, immutable inputs so a retained reference cannot mutate the
+      // resolved policy or prior evidence between persistence boundaries.
+      previous: structuredClone(context.state.results),
+      feedback: Object.freeze([...phaseFeedback]),
+    });
     if (phase !== "implement") {
       await this.#workspaces.assertClean(context.state.sandbox, signal);
       const startingHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
@@ -207,7 +211,9 @@ export class PersonalMvpController {
     // A port may omit the additive evidence field, but an explicitly supplied
     // value must be validated rather than treated as missing. This prevents a
     // malformed profile from being silently replaced by the controller.
-    const evidencedResult: PhaseResult = result.profile === undefined ? { ...result, profile: input.profile } : result;
+    const evidencedResult: PhaseResult = result.profile === undefined
+      ? { ...structuredClone(result), profile: { ...expectedProfile } }
+      : structuredClone(result);
     validatePhaseResult(evidencedResult, input, observedHead);
     if (evidencedResult.status === "failed") throw new Error(`${phase} failed: ${evidencedResult.summary}`);
     if (phase === "implement" && evidencedResult.status !== "passed") throw new Error("Implement must return passed or failed");

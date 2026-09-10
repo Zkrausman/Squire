@@ -229,6 +229,22 @@ test("Pi adapter launches both deterministic Plan buckets with their exact profi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Pi adapter removes host phase input when a launch fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-cleanup-"));
+  try {
+    const commands: CommandPort = { async run(request) {
+      if (request.args.includes("--print")) throw new Error("Pi launch failed");
+      return { stdout: "", stderr: "" };
+    } };
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
+    await assert.rejects(runner.run(phaseInput("plan")), /Pi launch failed/);
+    await assert.rejects(
+      readFile(path.join(root, "aidev-1-0123456789", "phase-inputs", "plan-1.json")),
+      error => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("passing Plan output without actionable steps is rejected", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-"));
   try {

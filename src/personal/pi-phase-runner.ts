@@ -32,7 +32,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
   constructor(options: SandboxPiPhaseRunnerOptions) {
     this.#commands = options.commands;
     this.#stagingRoot = path.resolve(options.stagingRoot);
-    this.#testCommands = options.testCommands;
+    this.#testCommands = Object.freeze([...options.testCommands]);
     this.#roleUser = options.roleUser ?? "1000:1000";
     this.#pi = options.piExecutable ?? "pi";
     this.#agentDirectory = options.piAgentDirectory ?? "/ticket/runtime/pi-agent";
@@ -41,6 +41,10 @@ export class SandboxPiPhaseRunner implements PhasePort {
   }
 
   async run(input: PhaseInput, signal?: AbortSignal): Promise<PhaseResult> {
+    // Validate the controller-bound profile before creating any staging or
+    // sandbox artifacts. A malformed profile must not partially launch a
+    // phase with an ambiguous model identity.
+    const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
     const sessionId = randomUUID();
     const phaseDirectory = `/ticket/sessions/${input.phase}`;
     const sessionFile = `${phaseDirectory}/${input.attempt}.jsonl`;
@@ -48,58 +52,63 @@ export class SandboxPiPhaseRunner implements PhasePort {
     const localDirectory = path.join(this.#stagingRoot, input.runId, "phase-inputs");
     const localInput = path.join(localDirectory, `${input.phase}-${input.attempt}.json`);
     await mkdir(localDirectory, { recursive: true, mode: 0o700 });
-    await writeFile(localInput, `${JSON.stringify({ ...input, sessionId, sessionFile }, null, 2)}\n`, { mode: 0o600 });
+    try {
+      await writeFile(localInput, `${JSON.stringify({ ...input, sessionId, sessionFile }, null, 2)}\n`, { mode: 0o600 });
 
-    await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
-    const home = `/ticket/runtime/home/${input.phase}`;
-    const temporary = `/ticket/runtime/tmp/${input.phase}`;
-    const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)} /ticket/artifacts`;
-    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", prepare] }, signal);
+      await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
+      const home = `/ticket/runtime/home/${input.phase}`;
+      const temporary = `/ticket/runtime/tmp/${input.phase}`;
+      const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)} /ticket/artifacts`;
+      await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", prepare] }, signal);
 
-    const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
-    const tools = input.phase === "implement"
-      ? "read,grep,find,ls,bash,edit,write"
-      : input.phase === "plan" || input.phase === "retro"
-        ? "read,grep,find,ls"
-        : "read,grep,find,ls,bash";
-    const prompt = buildPrompt(input.phase, inputPath, this.#testCommands);
-    const environment = [
-      "/usr/bin/env", "-i",
-      "PATH=/usr/local/bin:/usr/bin:/bin",
-      `HOME=${home}`,
-      `TMPDIR=${temporary}`,
-      `PI_CODING_AGENT_DIR=${this.#agentDirectory}`,
-      "PI_OFFLINE=1",
-      "PI_TELEMETRY=0",
-      this.#pi,
-      "--print",
-      "--mode", "text",
-      "--session", sessionFile,
-      "--provider", profile.provider,
-      "--model", profile.model,
-      "--thinking", profile.thinking,
-      "--tools", tools,
-      "--no-extensions",
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-themes",
-      "--no-context-files",
-      "--approve",
-      prompt,
-    ];
-    const output = await this.#commands.run({
-      command: this.#sbx,
-      args: ["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment],
-      timeoutMs: this.#timeoutMs,
-      maxOutputBytes: 2 * 1024 * 1024,
-    }, signal);
+      const tools = input.phase === "implement"
+        ? "read,grep,find,ls,bash,edit,write"
+        : input.phase === "plan" || input.phase === "retro"
+          ? "read,grep,find,ls"
+          : "read,grep,find,ls,bash";
+      const prompt = buildPrompt(input.phase, inputPath, this.#testCommands);
+      const environment = [
+        "/usr/bin/env", "-i",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        `HOME=${home}`,
+        `TMPDIR=${temporary}`,
+        `PI_CODING_AGENT_DIR=${this.#agentDirectory}`,
+        "PI_OFFLINE=1",
+        "PI_TELEMETRY=0",
+        this.#pi,
+        "--print",
+        "--mode", "text",
+        "--session", sessionFile,
+        "--provider", profile.provider,
+        "--model", profile.model,
+        "--thinking", profile.thinking,
+        "--tools", tools,
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+        "--approve",
+        prompt,
+      ];
+      const output = await this.#commands.run({
+        command: this.#sbx,
+        args: ["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment],
+        timeoutMs: this.#timeoutMs,
+        maxOutputBytes: 2 * 1024 * 1024,
+      }, signal);
 
-    await rm(localInput, { force: true });
-    const result = parsePhaseResult(output.stdout, input, sessionId, sessionFile);
-    // Pi's response schema remains intentionally small. The trusted adapter
-    // attaches the exact profile used for argv so persisted evidence cannot be
-    // confused with mutable runner configuration.
-    return { ...result, profile: { ...profile } };
+      const result = parsePhaseResult(output.stdout, input, sessionId, sessionFile);
+      // Pi's response schema remains intentionally small. The trusted adapter
+      // attaches the exact profile used for argv so persisted evidence cannot be
+      // confused with mutable runner configuration.
+      return { ...result, profile: { ...profile } };
+    } finally {
+      // Phase inputs can contain ticket text and feedback. Remove the host
+      // staging copy on every exit path, including failed or cancelled Pi
+      // launches, rather than retaining sensitive run material indefinitely.
+      await rm(localInput, { force: true });
+    }
   }
 }
 
