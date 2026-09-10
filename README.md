@@ -16,12 +16,15 @@ See the authoritative [Personal MVP plan](docs/personal-mvp.md) and [scope audit
 
 ## Developer preview
 
+For a complete first-run walkthrough, see [`docs/first-run.md`](docs/first-run.md).
+
 ```bash
-npm ci
+npm ci --ignore-scripts --no-audit --no-fund
 npm run build
-cp squire.config.example.json squire.config.json
-# Edit repository paths, sandbox template, and github.tokenCommand; then set LINEAR_API_KEY.
-npm run squire -- run AIDEV-123
+mkdir -p .squire
+cp squire.config.example.json .squire/squire.config.json
+# Edit .squire/squire.config.json (repository, sandbox, and token settings), then set LINEAR_API_KEY.
+npm run squire -- run AIDEV-123 --config .squire/squire.config.json
 ```
 
 The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
