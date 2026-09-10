@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { constants } from "node:fs";
 import { mkdir, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
@@ -54,10 +55,10 @@ export class NodeBackgroundLauncher implements BackgroundLauncher {
       // Append makes a relaunch/diagnostic invocation preserve the first
       // launch error instead of silently truncating it. The descriptors are
       // closed by the parent immediately after spawn confirmation.
-      stdout = await open(stdoutPath, "a", 0o600);
+      stdout = await openLog(stdoutPath);
       await stdout.chmod(0o600);
       throwIfAborted(request.signal);
-      stderr = await open(stderrPath, "a", 0o600);
+      stderr = await openLog(stderrPath);
       await stderr.chmod(0o600);
       throwIfAborted(request.signal);
       const child = this.#spawn(request.executable, [...request.args], {
@@ -129,6 +130,15 @@ function validateRequest(request: BackgroundLaunchRequest): void {
   if (!request.executable || request.executable.includes("\0")) throw new Error("background executable is invalid");
   if (request.args.some(argument => argument.includes("\0"))) throw new Error("background argument contains NUL");
   if (!path.isAbsolute(request.stdoutPath) || !path.isAbsolute(request.stderrPath)) throw new Error("background log paths must be absolute");
+}
+
+async function openLog(file: string): Promise<FileHandle> {
+  // O_NOFOLLOW rejects only a final-component symlink. It does not establish
+  // ancestor-integrity or hardlink protection.
+  const flags = process.platform === "win32"
+    ? "a"
+    : constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW;
+  return open(file, flags, 0o600);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

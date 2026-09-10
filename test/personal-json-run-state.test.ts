@@ -151,3 +151,29 @@ test("a corrupted state file fails closed instead of hiding an active run", asyn
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("a valid run-id filename cannot alias another run", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-identity-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const first = state();
+    await store.create(first);
+    const alias = "aidev-1-9876543210";
+    await writeFile(path.join(directory, `${alias}.json`), JSON.stringify(first));
+    await assert.rejects(store.read(alias), /filename\/runId mismatch/);
+    await assert.rejects(store.findByTicket("AIDEV-1"), /filename\/runId mismatch/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("every JSON state filename must contain a valid run ID", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-filename-"));
+  try {
+    await writeFile(path.join(directory, "not_a_run.json"), JSON.stringify(state()));
+    const store = new JsonRunStateStore(directory);
+    await assert.rejects(store.list(), /invalid run state filename: not_a_run\.json/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

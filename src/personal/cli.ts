@@ -188,10 +188,13 @@ async function recordBootstrapFailure(runId: string, ticketId: string, launchCon
   try {
     const states = new JsonRunStateStore(directory);
     const state = await states.read(runId);
-    if (state?.launchConfigDigest !== launchConfigDigest) return;
+    if (state?.ticketId !== ticketId || state.launchConfigDigest !== launchConfigDigest) return;
     // Bootstrap failure belongs only to an unclaimed launch. A child that
     // loses the reserved->started CAS must not overwrite the winning owner.
-    if (!state || state.status !== "running" || state.launchState !== "reserved" || state.controllerPid !== null || state.lifecycle !== "launching" || state.step !== "launching" || state.preparationState !== "pending") return;
+    if (state.status !== "running" || state.launchState !== "reserved" || state.controllerPid !== null || state.lifecycle !== "launching" || state.step !== "launching" || state.preparationState !== "pending") return;
+    // The state file alone is not ownership evidence. Missing, malformed, or
+    // replaced reservation records remain ambiguous and are not terminalized.
+    if (await states.reservationOwner(state.ticketId) !== state.runId) return;
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000) || "background controller bootstrap failed";
     const endedAt = new Date().toISOString();
     const terminal = {

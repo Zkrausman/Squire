@@ -108,7 +108,7 @@ export class JsonRunStateStore implements RunStatePort {
       // processes. A crashed writer leaves the update lock in place and fails
       // closed rather than allowing a stale writer to overwrite newer truth.
       const target = this.#path(state.runId);
-      const current = await this.#read(target);
+      const current = await this.#read(target, state.runId);
       if (!current) throw new Error(`run state does not exist: ${state.runId}`);
       if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
       assertResolvedProfilesUnchanged(current, state);
@@ -147,7 +147,9 @@ export class JsonRunStateStore implements RunStatePort {
     const matches: PersonalRunState[] = [];
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
-      const state = await this.#read(path.join(this.directory, file));
+      const filenameRunId = file.slice(0, -".json".length);
+      if (!RUN_ID_PATTERN.test(filenameRunId)) throw new Error(`invalid run state filename: ${file}`);
+      const state = await this.#read(path.join(this.directory, file), filenameRunId);
       if (state) matches.push(state);
     }
     return matches.sort(compareStates);
@@ -158,7 +160,7 @@ export class JsonRunStateStore implements RunStatePort {
   }
 
   async read(runId: string): Promise<PersonalRunState | undefined> {
-    return this.#read(this.#path(runId));
+    return this.#read(this.#path(runId), runId);
   }
 
   async reservationOwner(ticketId: string): Promise<string | undefined> {
@@ -192,7 +194,7 @@ export class JsonRunStateStore implements RunStatePort {
     return path.join(this.directory, "locks", `${ticketId.toLowerCase()}.lock`);
   }
 
-  async #read(file: string): Promise<PersonalRunState | undefined> {
+  async #read(file: string, expectedRunId: string): Promise<PersonalRunState | undefined> {
     let raw: string;
     try {
       raw = await readFile(file, "utf8");
@@ -202,6 +204,7 @@ export class JsonRunStateStore implements RunStatePort {
     }
     const value: unknown = JSON.parse(raw);
     validateState(value);
+    if (value.runId !== expectedRunId) throw new Error("run state filename/runId mismatch");
     return value;
   }
 }

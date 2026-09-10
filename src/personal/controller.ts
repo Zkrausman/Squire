@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 import {
   NodeBackgroundLauncher,
@@ -187,6 +188,9 @@ export class PersonalMvpController {
       if (!loaded) throw new Error(`reserved run state not found: ${runId}`);
       if (loaded.ticketId !== request.ticketId || loaded.repository !== request.repository || loaded.repositoryPath !== request.repositoryPath || loaded.sourceRef !== request.sourceRef || loaded.baseBranch !== request.baseBranch || loaded.launchConfigDigest !== launchConfigDigest) throw new Error("reserved run configuration identity mismatch");
       if (loaded.executionMode !== "background") throw new Error("reserved child execution requires a background run");
+      if (this.#states.reservationOwner && await this.#states.reservationOwner(loaded.ticketId) !== runId) {
+        throw new Error(`reserved run reservation ownership mismatch: ${runId}`);
+      }
       if (loaded.status !== "running" || loaded.launchState !== "reserved" || loaded.controllerPid !== null || loaded.lifecycle !== "launching" || loaded.step !== "launching" || loaded.preparationState !== "pending") {
         throw new Error(`run is not in the exact reserved launch state: ${runId}`);
       }
@@ -250,6 +254,14 @@ export class PersonalMvpController {
     const stdoutPath = options.stdoutPath !== undefined ? absolutePath(options.stdoutPath, "stdout log path") : defaultLogs.stdoutPath;
     const stderrPath = options.stderrPath !== undefined ? absolutePath(options.stderrPath, "stderr log path") : defaultLogs.stderrPath;
     const stateDirectory = options.stateDirectory === undefined ? undefined : absolutePath(options.stateDirectory, "state directory");
+    // Re-resolve destinations at the launch boundary. This catches ordinary
+    // configuration/injection mistakes and symlink retargeting that happened
+    // before this check; it is not a continuous ancestor-integrity guarantee.
+    await assertBackgroundDestinationsOutsideRepository(request.repositoryPath, [
+      ...(stateDirectory === undefined ? [] : [stateDirectory]),
+      stdoutPath,
+      stderrPath,
+    ]);
     const launchEnvironment: NodeJS.ProcessEnv = {
       ...process.env,
       ...(options.env ?? {}),
@@ -665,6 +677,39 @@ export function backgroundLogPaths(logsDirectory: string, runId: string): Backgr
     stdoutPath: path.join(root, `${runId}.stdout.log`),
     stderrPath: path.join(root, `${runId}.stderr.log`),
   };
+}
+
+async function assertBackgroundDestinationsOutsideRepository(repositoryPath: string, destinations: readonly string[]): Promise<void> {
+  const repositoryReal = await realPathForSafety(repositoryPath);
+  for (const destination of destinations) {
+    const destinationReal = await realPathForSafety(destination);
+    if (isWithinPath(repositoryReal, destinationReal)) throw new Error(`background destination must be outside the repository: ${destination}`);
+  }
+}
+
+async function realPathForSafety(value: string): Promise<string> {
+  const absolute = path.resolve(value);
+  const missing: string[] = [];
+  let cursor = absolute;
+  for (;;) {
+    try {
+      const existing = await realpath(cursor);
+      return path.resolve(existing, ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return absolute;
+      missing.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function isWithinPath(parent: string, child: string): boolean {
+  const comparableParent = process.platform === "win32" ? parent.toLowerCase() : parent;
+  const comparableChild = process.platform === "win32" ? child.toLowerCase() : child;
+  const relative = path.relative(comparableParent, comparableChild);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function absolutePath(value: string, label: string): string {

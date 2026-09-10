@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -112,6 +112,30 @@ test("detached launcher uses file descriptors, no shell/window, and unrefs after
       assert.equal((await stat(stderrPath)).mode & 0o777, 0o600);
     }
     assert.equal(await readFile(stdoutPath, "utf8"), "");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("POSIX log opening rejects a final-component symlink", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-log-link-"));
+  try {
+    const target = path.join(root, "target.log");
+    const stdoutPath = path.join(root, "stdout.log");
+    await writeFile(target, "sentinel\n", "utf8");
+    await symlink(target, stdoutPath, "file");
+    let spawned = false;
+    const launcher = new NodeBackgroundLauncher({
+      spawn: (() => { spawned = true; throw new Error("spawn must not be reached"); }) as unknown as typeof nodeSpawn,
+    });
+    await assert.rejects(launcher.launch({
+      executable: process.execPath,
+      args: [],
+      stdoutPath,
+      stderrPath: path.join(root, "stderr.log"),
+    }), (error: unknown) => (error as NodeJS.ErrnoException).code === "ELOOP");
+    assert.equal(spawned, false);
+    assert.equal(await readFile(target, "utf8"), "sentinel\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -269,6 +293,30 @@ test("two detached claimants admit exactly one owner before ticket and workspace
     const messages = await Promise.all(results.map(file => readFile(file, "utf8")));
     assert.equal(messages.filter(message => /version must advance by one/.test(message)).length, 1);
     assert.equal(messages.filter(message => /stop after workspace side effect/.test(message)).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a detached child must own the exact reservation before adapter calls", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-owner-"));
+  try {
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    const digest = "8".repeat(64);
+    let ticketCalls = 0;
+    const run = new PersonalMvpController({
+      states,
+      tickets: { async get() { ticketCalls += 1; throw new Error("ticket adapter must not be called"); } },
+      workspaces: {} as never,
+      phases: {} as never,
+      publication: {} as never,
+    });
+    const reserved = await run.reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    await writeFile(path.join(states.directory, "locks", "aidev-1.lock"), "aidev-1-replacement123\n", "utf8");
+    await assert.rejects(run.runReserved(REQUEST, reserved.runId, digest), /reservation ownership mismatch/);
+    assert.equal(ticketCalls, 0);
+    assert.equal((await states.read(reserved.runId))?.launchState, "reserved");
+    assert.equal((await states.read(reserved.runId))?.version, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -528,6 +576,75 @@ test("bootstrap fallback cannot terminalize a reservation with a different ticke
     ], { ...process.env, SQUIRE_STATE_DIRECTORY: states.directory });
     assert.equal(wrongDigestExit, 1);
     assert.equal((await states.read(reserved.runId))?.status, "running");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap fallback requires its reservation to be present and unchanged", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-owner-"));
+  try {
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    const digest = "3".repeat(64);
+    const cases = [
+      { ticketId: "AIDEV-3", id: "31234567-89ab-cdef-0123-456789abcdef", replacement: undefined },
+      { ticketId: "AIDEV-4", id: "41234567-89ab-cdef-0123-456789abcdef", replacement: "aidev-4-replacement123" },
+    ] as const;
+    for (const item of cases) {
+      const request = { ...REQUEST, ticketId: item.ticketId };
+      const reserved = await controller(states, new Date("2026-09-10T00:00:00.000Z"), item.id).reserve(request, { executionMode: "background", launchConfigDigest: digest });
+      const lock = path.join(states.directory, "locks", `${item.ticketId.toLowerCase()}.lock`);
+      if (item.replacement === undefined) await unlink(lock);
+      else await writeFile(lock, `${item.replacement}\n`, "utf8");
+      const exit = await spawnExit(process.execPath, [
+        path.resolve("dist/src/personal/cli.js"), "run", item.ticketId,
+        "--config", path.join(root, "missing-config.json"),
+        "--reserved-run-id", reserved.runId,
+        "--reserved-config-sha256", digest,
+      ], { ...process.env, SQUIRE_STATE_DIRECTORY: states.directory });
+      assert.equal(exit, 1);
+      assert.equal((await states.read(reserved.runId))?.status, "running");
+      assert.equal((await states.read(reserved.runId))?.version, 1);
+      assert.equal(await states.reservationOwner(item.ticketId), item.replacement);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("background launch rejects direct and resolved destinations inside the repository", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-paths-"));
+  try {
+    const repository = path.join(root, "repository");
+    const repositoryRuntime = path.join(repository, "runtime");
+    await mkdir(repositoryRuntime, { recursive: true });
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    const request = { ...REQUEST, repositoryPath: repository };
+    const launch = (stateDirectory: string, logsDirectory: string) => controller(states).startBackground(request, {
+      launcher: { async launch() { return { pid: 1 }; } },
+      cliPath: path.resolve("dist/src/personal/cli.js"),
+      configPath: path.resolve("squire.config.example.json"),
+      stateDirectory,
+      logsDirectory,
+      launchConfigDigest: "9".repeat(64),
+    });
+
+    await assert.rejects(launch(states.directory, path.join(repository, "logs")), /outside the repository/);
+    assert.deepEqual(await states.findByTicket(request.ticketId), []);
+
+    const linkedRuntime = path.join(root, "linked-runtime");
+    try {
+      await symlink(repositoryRuntime, linkedRuntime, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        t.skip("directory symlinks are unavailable");
+        return;
+      }
+      throw error;
+    }
+    await assert.rejects(launch(path.join(linkedRuntime, "state"), path.join(root, "logs")), /outside the repository/);
+    await assert.rejects(launch(states.directory, path.join(linkedRuntime, "logs")), /outside the repository/);
+    assert.deepEqual(await states.findByTicket(request.ticketId), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
