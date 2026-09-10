@@ -104,17 +104,15 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     // pinned commands CI uses, without granting it sandbox-root privileges.
     const runtimeSetup = [
       "set -eu",
-      // The repository's declared ticket runtime is a prerequisite, not an
-      // optional optimization. Skipping it would let npm test accidentally
-      // exercise the image's ambient Pi/TUI installation and misclassify a
-      // missing prerequisite as a product regression.
-      "test -f /ticket/workspace/.github/runtime/package.json",
-      "test -f /ticket/workspace/.github/runtime/package-lock.json",
-      "test -f /ticket/workspace/.github/validate-ticket-runtime.mjs",
-      "cp /ticket/workspace/.github/runtime/package.json /ticket/runtime/package.json",
-      "cp /ticket/workspace/.github/runtime/package-lock.json /ticket/runtime/package-lock.json",
-      "npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
-      "node /ticket/workspace/.github/validate-ticket-runtime.mjs",
+      // Only repositories that declare the pinned ticket runtime need the
+      // additional installation. A normal configured checkout must remain
+      // usable without Squire's repository-specific CI fixtures.
+      "if [ -f /ticket/workspace/.github/runtime/package.json ] && [ -f /ticket/workspace/.github/runtime/package-lock.json ] && [ -f /ticket/workspace/.github/validate-ticket-runtime.mjs ]; then",
+      "  cp /ticket/workspace/.github/runtime/package.json /ticket/runtime/package.json",
+      "  cp /ticket/workspace/.github/runtime/package-lock.json /ticket/runtime/package-lock.json",
+      "  npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
+      "  node /ticket/workspace/.github/validate-ticket-runtime.mjs",
+      "fi",
     ].join("\n");
     await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, input.sandbox, "sh", "-lc", runtimeSetup], timeoutMs: 180_000 }, signal);
     if (this.#piAuthFile) {

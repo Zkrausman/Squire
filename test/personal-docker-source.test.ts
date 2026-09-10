@@ -41,11 +41,17 @@ class SandboxShim implements CommandPort {
     }
     if (request.args[0] === "exec" && request.args.includes("sh")) {
       const script = request.args[request.args.length - 1]!;
+      const translate = (value: string): string => value
+        .replaceAll("/ticket", path.join(this.sandboxRoot, "ticket"))
+        .replaceAll("/tmp/squire-source.bundle", path.join(this.sandboxRoot, "tmp/squire-source.bundle"));
       if (script.includes("npm ci --prefix /ticket/runtime")) {
         assert.equal(request.args[1], "-u");
         assert.equal(request.args[2], "1000:1000");
         this.runtimeRequests.push(script);
-        return { stdout: "", stderr: "" };
+        // Execute the conditional runtime setup instead of returning success
+        // blindly. This proves repositories without the optional declaration
+        // do not fail on Squire-specific CI fixtures.
+        return this.host.run({ command: "sh", args: ["-lc", translate(script)] }, signal);
       }
       const ownershipCommand = "chown -R '1000:1000' /ticket";
       const lines = script.split("\n");
@@ -120,13 +126,11 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.match(setup?.args.at(-1) ?? "", /chown -R '1000:1000' \/ticket/u);
   const runtime = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.some(argument => argument.includes("npm ci --prefix /ticket/runtime")));
   assert.deepEqual(runtime?.args.slice(0, 5), ["exec", "-u", "1000:1000", "squire-aidev-1-0123456789", "sh"]);
-  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/\.github\/runtime\/package\.json/u);
-  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/\.github\/runtime\/package-lock\.json/u);
-  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
   assert.match(runtime?.args.at(-1) ?? "", /npm ci --prefix \/ticket\/runtime --ignore-scripts --no-audit --no-fund/u);
   assert.match(runtime?.args.at(-1) ?? "", /node \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
-  assert.equal((runtime?.args.at(-1) ?? "").includes("if [ -f"), false);
+  assert.match(runtime?.args.at(-1) ?? "", /if \[ -f \/ticket\/workspace\/.github\/runtime\/package\.json \] && \[ -f \/ticket\/workspace\/.github\/runtime\/package-lock\.json \] && \[ -f \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \]; then/u);
   assert.equal(commands.runtimeRequests.length, 1);
+  await assert.rejects(readFile(path.join(sandboxRoot, "ticket/runtime/package.json")), error => (error as NodeJS.ErrnoException).code === "ENOENT");
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
   assert.equal(commands.executedShellScripts.some(script => script.split("\n").some(line => line.includes("chown"))), false);
   assert.equal(commands.executedShellScripts.some(script => script.includes("chmod 0700")), true);
