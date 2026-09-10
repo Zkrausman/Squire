@@ -143,8 +143,25 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       assert.equal(launch.args[launch.args.indexOf("--thinking") + 1], PROFILES[phase].thinking);
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
-      assert.match(launch.args.at(-1) ?? "", /Set inputHead exactly to the input's expectedHead value/);
-      if (phase === "review") assert.match(launch.args.at(-1) ?? "", /details\.findings\[\] contains plain strings, never structured objects/);
+      const prompt = launch.args.at(-1) ?? "";
+      assert.match(prompt, /Set inputHead exactly to the input's expectedHead value/);
+      assert.equal(prompt.includes(`"phase":"${phase}"`), true);
+      const advertisedStatuses = phase === "review" || phase === "test" ? "passed|remediation_required|failed" : "passed|failed";
+      assert.equal(prompt.includes(`"status":"${advertisedStatuses}"`), true);
+      if (phase === "review") {
+        assert.match(prompt, /source code, tests, committed documentation, and committed project-wiki changes/);
+        assert.match(prompt, /remediation_required is reserved for a concrete repository defect, missing required repository change, or false committed claim/);
+        assert.match(prompt, /Implement can correct in this sandbox before Test, Retro, and host-side publication/);
+        assert.match(prompt, /Pending current-run host or live-environment evidence/);
+        assert.match(prompt, /status polling, manual console observation, completion, post-publication CI, or open-PR evidence/);
+        assert.match(prompt, /must not alone cause remediation_required/);
+        assert.match(prompt, /False committed claims that such evidence already exists remain repository defects/);
+        assert.match(prompt, /details\.findings\[\] contains plain strings, never structured objects/);
+      }
+      if (phase === "implement") {
+        assert.match(prompt, /Return passed when complete or failed with a clear explanation when the requested work cannot be completed/);
+        assert.match(prompt, /Implement must never return remediation_required/);
+      }
       const tools = launch.args[launch.args.indexOf("--tools") + 1];
       if (phase === "plan" || phase === "review") assert.equal(tools?.split(",").includes("write"), false);
       if (phase === "retro") assert.deepEqual(tools?.split(","), ["read", "grep", "find", "ls"]);
@@ -264,6 +281,11 @@ test("passing Review and Test require their structured phase evidence", () => {
   const common = { runId: "aidev-1-run", attempt: 1, sessionId: "session", sessionFile: "/ticket/sessions/review/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "passed" };
   assert.throws(() => validatePhaseResultShape({ ...common, phase: "review" }, "review"), /fields|details/);
   assert.throws(() => validatePhaseResultShape({ ...common, phase: "test", sessionFile: "/ticket/sessions/test/1.jsonl", details: { commands: [] } }, "test"), /Test commands/);
+});
+
+test("Implement remediation_required remains rejected", () => {
+  const result = { runId: "aidev-1-run", phase: "implement", attempt: 1, sessionId: "implement-session", sessionFile: "/ticket/sessions/implement/1.jsonl", inputHead: BASE, outputHead: BASE, status: "remediation_required", summary: "cannot supply future live evidence", details: { changes: ["repository work completed"] } };
+  assert.throws(() => validatePhaseResultShape(result, "implement"), /Implement cannot request remediation/);
 });
 
 test("Retro output requires meaningful lessons, exact fields, and no remediation status", () => {

@@ -40,6 +40,13 @@ squire status <returned-run-id>       # poll through completed
 # record the resulting open, unmerged PR URL and Windows no-window observation
 ```
 
+This committed note records repository-verifiable coverage and the live
+acceptance procedure; it is not current-run completion evidence. Current-run
+polling, manual platform observation, completion, and open/unmerged PR identity
+become observable only after publication and must be recorded externally
+against the Linear ticket or PR. Never mutate the accepted branch solely to
+backfill that evidence.
+
 ## Preserved prior failure evidence
 
 The recovered run reported two real-Pi startup integration failures. Those
