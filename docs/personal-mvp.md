@@ -93,15 +93,16 @@ Each phase receives:
 - relevant output from the preceding phase;
 - a fixed result path.
 
-Each phase returns one small JSON result containing:
+Pi returns one reduced JSON payload containing only:
 
-- run, phase, attempt, and session identity;
-- input and output Git HEAD;
+- the output Git HEAD;
 - `passed`, `remediation_required`, or `failed`;
 - a summary;
-- phase-specific plan, findings, test evidence, or Retro `lessons` and `followUps` string arrays.
+- phase-specific plan, changes, findings, test evidence, or Retro `lessons` and `followUps` string arrays.
 
-Retro must return at least one lesson; proposed follow-ups may be empty. Implement may update the committed project wiki when required by the ticket, but Retro receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace. The controller validates the result shape, identities, and Git HEAD. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
+The adapter treats those fields as untrusted and validates their exact shape and phase semantics. It constructs the complete persisted `PhaseResult` by adding run, phase, attempt, session, and input-HEAD identity from the trusted phase launch plus the exact validated model profile used in Pi's argv. Older full-envelope responses are accepted only as compatibility echoes: every present trusted field must exactly match the adapter-owned value, and unknown fields are rejected. The controller independently reconciles the model-supplied output HEAD with the observed Git HEAD. Pi's raw JSONL session remains unchanged as audit evidence; the adapter-attested full result is the canonical workflow state.
+
+Retro must return at least one lesson; proposed follow-ups may be empty. Implement may update the committed project wiki when required by the ticket, but Retro receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace. The full public and persisted phase contract remains unchanged. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
 
 ## 6. Sandbox and credentials
 

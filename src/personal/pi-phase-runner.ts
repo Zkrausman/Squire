@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
-import { validatePhaseResultShape } from "./phase-result.js";
+import { validatePhaseResultPayloadShape, validatePhaseResultShape } from "./phase-result.js";
 import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
 import type { PersonalPhase, PhaseInput, PhasePort, PhaseResult } from "./types.js";
 
@@ -98,11 +98,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
         maxOutputBytes: 2 * 1024 * 1024,
       }, signal);
 
-      const result = parsePhaseResult(output.stdout, input, sessionId, sessionFile);
-      // Pi's response schema remains intentionally small. The trusted adapter
-      // attaches the exact profile used for argv so persisted evidence cannot be
-      // confused with mutable runner configuration.
-      return { ...result, profile: { ...profile } };
+      return parsePhaseResult(output.stdout, input, sessionId, sessionFile, profile);
     } finally {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
@@ -127,8 +123,8 @@ function buildPrompt(phase: PersonalPhase, inputPath: string, testCommands: read
     `Read your complete JSON input from ${inputPath}.`,
     "Return exactly one JSON object as your final response and no other text.",
     `Use details ${detailsShape(phase)}.`,
-    `{"runId":"...","phase":"${phase}","attempt":1,"sessionId":"...","sessionFile":"...","inputHead":"40-hex","outputHead":"40-hex","status":"${statuses}","summary":"...","details":{}}`,
-    "Copy run, phase, attempt, sessionId, and sessionFile exactly from the input. Set inputHead exactly to the input's expectedHead value: result inputHead equals the current phase input's expectedHead, never a prior phase result's inputHead. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
+    `{"outputHead":"40-hex","status":"${statuses}","summary":"...","details":{}}`,
+    "Return only outputHead, status, summary, and the phase-specific details. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
   ].join("\n\n");
 }
 
@@ -140,19 +136,48 @@ function detailsShape(phase: PersonalPhase): string {
   return '{"lessons":["concrete lesson"],"followUps":["optional proposed follow-up"]}';
 }
 
-function parsePhaseResult(raw: string, input: PhaseInput, sessionId: string, sessionFile: string): PhaseResult {
+function parsePhaseResult(raw: string, input: PhaseInput, sessionId: string, sessionFile: string, profile: PhaseProfile): PhaseResult {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new Error(`${input.phase} wrote malformed result JSON`); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${input.phase} result is not an object`);
-  validatePhaseResultShape(value, input.phase);
-  const result = value as PhaseResult;
-  if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt || result.sessionId !== sessionId || result.sessionFile !== sessionFile) throw new Error(`${input.phase} result identity mismatch`);
-  if (result.inputHead !== input.expectedHead) throw new Error(`${input.phase} result Git identity mismatch`);
-  if (result.profile) {
-    const expected = input.profile;
-    if (expected && (result.profile.provider !== expected.provider || result.profile.model !== expected.model || result.profile.thinking !== expected.thinking)) throw new Error(`${input.phase} result profile identity mismatch`);
-  }
+  validatePhaseResultPayloadShape(value, input.phase);
+  const payload = value;
+
+  if (
+    (hasOwn(payload, "runId") && payload.runId !== input.runId)
+    || (hasOwn(payload, "phase") && payload.phase !== input.phase)
+    || (hasOwn(payload, "attempt") && payload.attempt !== input.attempt)
+    || (hasOwn(payload, "sessionId") && payload.sessionId !== sessionId)
+    || (hasOwn(payload, "sessionFile") && payload.sessionFile !== sessionFile)
+  ) throw new Error(`${input.phase} result identity mismatch`);
+  if (hasOwn(payload, "inputHead") && payload.inputHead !== input.expectedHead) throw new Error(`${input.phase} result Git identity mismatch`);
+  const echoedProfile = payload.profile;
+  if (hasOwn(payload, "profile") && (
+    echoedProfile === undefined
+    || echoedProfile.provider !== profile.provider
+    || echoedProfile.model !== profile.model
+    || echoedProfile.thinking !== profile.thinking
+  )) throw new Error(`${input.phase} result profile identity mismatch`);
+
+  const result: unknown = {
+    runId: input.runId,
+    phase: input.phase,
+    attempt: input.attempt,
+    sessionId,
+    sessionFile,
+    inputHead: input.expectedHead,
+    outputHead: payload.outputHead,
+    status: payload.status,
+    summary: payload.summary,
+    details: payload.details,
+    profile: { ...profile },
+  };
+  validatePhaseResultShape(result, input.phase);
   return result;
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function sh(value: string): string {

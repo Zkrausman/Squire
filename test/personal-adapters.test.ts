@@ -66,6 +66,38 @@ function details(phase: PersonalPhase): object {
   return { lessons: ["keep the gates explicit"], followUps: [] };
 }
 
+function reducedPayload(phase: PersonalPhase): Record<string, unknown> {
+  return { outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase) };
+}
+
+async function runPiOutput(
+  phase: PersonalPhase,
+  stdout: (document: Record<string, unknown>) => string,
+): Promise<{ result: Awaited<ReturnType<SandboxPiPhaseRunner["run"]>>; document: Record<string, unknown>; launch: CommandRequest }> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-payload-"));
+  let document: Record<string, unknown> | undefined;
+  let launch: CommandRequest | undefined;
+  const commands: CommandPort = {
+    async run(request) {
+      if (request.command === "sbx" && request.args[0] === "cp") document = JSON.parse(await readFile(request.args[1]!, "utf8"));
+      if (request.command === "sbx" && request.args.includes("--print")) {
+        launch = { ...request, args: [...request.args] };
+        assert.ok(document);
+        return { stdout: stdout(document), stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    },
+  };
+  try {
+    const result = await new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] }).run(phaseInput(phase));
+    assert.ok(document);
+    assert.ok(launch);
+    return { result, document, launch };
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 test("Node command runner closes stdin for non-interactive child processes", async () => {
   const result = await new NodeCommandRunner().run({
     command: process.execPath,
@@ -144,8 +176,10 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
       const prompt = launch.args.at(-1) ?? "";
-      assert.match(prompt, /Set inputHead exactly to the input's expectedHead value/);
-      assert.equal(prompt.includes(`"phase":"${phase}"`), true);
+      assert.match(prompt, /Return only outputHead, status, summary, and the phase-specific details/);
+      for (const trustedField of ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "profile"]) {
+        assert.equal(prompt.includes(`"${trustedField}":`), false);
+      }
       const advertisedStatuses = phase === "review" || phase === "test" ? "passed|remediation_required|failed" : "passed|failed";
       assert.equal(prompt.includes(`"status":"${advertisedStatuses}"`), true);
       if (phase === "review") {
@@ -168,6 +202,95 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       if (phase === "implement") assert.equal(tools?.split(",").includes("write"), true);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Pi adapter constructs a complete trusted envelope when all echoes are omitted", async () => {
+  const { result, document, launch } = await runPiOutput("implement", () => JSON.stringify(reducedPayload("implement")));
+  assert.deepEqual(result, {
+    runId: document["runId"],
+    phase: "implement",
+    attempt: document["attempt"],
+    sessionId: document["sessionId"],
+    sessionFile: document["sessionFile"],
+    inputHead: document["expectedHead"],
+    outputHead: BASE,
+    status: "passed",
+    summary: "implement passed",
+    details: { changes: ["changed file"] },
+    profile: PROFILES.implement,
+  });
+  assert.equal(launch.args[launch.args.indexOf("--session") + 1], result.sessionFile);
+  validatePhaseResultShape(result, "implement");
+});
+
+test("Pi adapter accepts each exact trusted compatibility echo", async t => {
+  const echoes: ReadonlyArray<readonly [string, (document: Record<string, unknown>) => unknown]> = [
+    ["runId", document => document["runId"]],
+    ["phase", document => document["phase"]],
+    ["attempt", document => document["attempt"]],
+    ["sessionId", document => document["sessionId"]],
+    ["sessionFile", document => document["sessionFile"]],
+    ["inputHead", document => document["expectedHead"]],
+    ["profile", document => document["profile"]],
+  ];
+  for (const [field, expected] of echoes) {
+    await t.test(field, async () => {
+      const { result } = await runPiOutput("implement", document => JSON.stringify({ ...reducedPayload("implement"), [field]: expected(document) }));
+      validatePhaseResultShape(result, "implement");
+    });
+  }
+});
+
+test("Pi adapter rejects every contradictory trusted compatibility echo", async t => {
+  const contradictions: ReadonlyArray<readonly [string, unknown, RegExp]> = [
+    ["runId", "aidev-elsewhere", /identity mismatch/],
+    ["phase", "review", /identity mismatch/],
+    ["attempt", 2, /identity mismatch/],
+    // This is the preserved UUID typo from the failed AIDEV-259 transcript.
+    ["sessionId", "599bb18e-042d-4c90-b056-475d9f9f216", /identity mismatch/],
+    ["sessionFile", "/ticket/sessions/implement/99.jsonl", /identity mismatch/],
+    ["inputHead", "b".repeat(40), /Git identity mismatch/],
+  ];
+  for (const [field, contradiction, message] of contradictions) {
+    await t.test(field, async () => {
+      await assert.rejects(
+        runPiOutput("implement", () => JSON.stringify({ ...reducedPayload("implement"), [field]: contradiction })),
+        message,
+      );
+    });
+  }
+
+  for (const [component, contradiction] of [["provider", "other-provider"], ["model", "other-model"], ["thinking", "low"]] as const) {
+    await t.test(`profile.${component}`, async () => {
+      await assert.rejects(
+        runPiOutput("implement", () => JSON.stringify({
+          ...reducedPayload("implement"),
+          profile: { ...PROFILES.implement, [component]: contradiction },
+        })),
+        /profile identity mismatch/,
+      );
+    });
+  }
+});
+
+test("Pi adapter rejects malformed or non-exact reduced payloads", async t => {
+  const cases: ReadonlyArray<readonly [string, PersonalPhase, string, RegExp]> = [
+    ["malformed JSON", "plan", "{", /malformed result JSON/],
+    ["unknown field", "plan", JSON.stringify({ ...reducedPayload("plan"), surprise: true }), /payload fields are invalid/],
+    ["empty summary", "plan", JSON.stringify({ ...reducedPayload("plan"), summary: " " }), /summary is invalid/],
+    ["invalid outputHead", "plan", JSON.stringify({ ...reducedPayload("plan"), outputHead: "not-a-head" }), /Git identity is invalid/],
+    ["invalid Plan details", "plan", JSON.stringify({ ...reducedPayload("plan"), details: { steps: [] } }), /Plan steps/],
+    ["invalid Review details", "review", JSON.stringify({ ...reducedPayload("review"), details: { findings: ["unresolved"] } }), /passing Review/],
+    ["invalid Test details", "test", JSON.stringify({ ...reducedPayload("test"), details: { commands: [{ command: "npm test", exitCode: 1, summary: "failed" }] } }), /passing Test/],
+    ["invalid Retro details", "retro", JSON.stringify({ ...reducedPayload("retro"), details: { lessons: [], followUps: [] } }), /Retro lessons/],
+    ["legacy Implement commit/checks details", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { commit: BASE, checks: ["npm test"] } }), /implement details fields are invalid/],
+    ["Implement remediation_required", "implement", JSON.stringify({ ...reducedPayload("implement"), status: "remediation_required" }), /Implement cannot request remediation/],
+  ];
+  for (const [name, phase, response, message] of cases) {
+    await t.test(name, async () => {
+      await assert.rejects(runPiOutput(phase, () => response), message);
+    });
+  }
 });
 
 test("Pi adapter launches every approved policy triple exactly", async () => {
