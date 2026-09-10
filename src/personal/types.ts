@@ -141,6 +141,8 @@ export interface PersonalRunState {
   readonly sourceRef?: string;
   /** Exact commit bound for a background launch when the workspace supports it. */
   readonly sourceSha?: string;
+  /** Absolute config pathname bound at detached handoff; additive for legacy state. */
+  readonly launchConfigPath?: string;
   readonly launchConfigDigest?: string;
   readonly sandbox: string;
   readonly repository: string;

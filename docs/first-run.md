@@ -71,11 +71,13 @@ over the JSON value. If both are omitted, it defaults to
 relative to the selected config file. Squire rejects data destinations inside
 the repository, including destinations reached through symlinks.
 `sandbox.piExecutable` and `sandbox.piAgentDirectory` are paths inside the
-sandbox and are not host resolved. For a background run, Squire resolves
-`repository.sourceRef` before detached handoff, persists that source SHA, and
-child preparation verifies that the ref still names the bound commit before
-pinning it for the clone. A moved mutable ref therefore fails visibly instead
-of silently starting from a different source commit.
+sandbox and are not host resolved. For a background run, Squire binds the
+exact selected config bytes and absolute config pathname, resolves
+`repository.sourceRef` before detached handoff, and persists that source SHA.
+Child preparation verifies that the ref still names the bound commit before
+creating workspace resources or pinning it for the clone. A moved mutable ref
+therefore fails visibly instead of silently starting from a different source
+commit.
 
 ## 3) Run in the foreground or background
 

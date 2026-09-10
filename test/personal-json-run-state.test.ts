@@ -203,6 +203,25 @@ test("reserved source commits bind once before a child claim", async () => {
   }
 });
 
+test("generic source binding cannot mutate a reservation after ownership replacement", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-source-owner-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const reserved = reservedState(directory);
+    await store.reserve(reserved);
+    const replacement = "aidev-1-replacement123";
+    await writeFile(path.join(directory, "locks", "aidev-1.lock"), `${replacement}\n`, "utf8");
+    await assert.rejects(
+      store.save({ ...reserved, version: 2, sourceSha: BASE, updatedAt: "2026-09-10T00:00:01.000Z" }),
+      /reserved source binding does not belong to run/,
+    );
+    assert.equal((await store.read(reserved.runId))?.sourceSha, undefined);
+    assert.equal(await store.reservationOwner(reserved.ticketId), replacement);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("reserved claims reject invalid controller PIDs and non-started lifecycle targets", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-claim-target-"));
   try {

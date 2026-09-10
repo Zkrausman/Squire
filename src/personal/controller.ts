@@ -43,6 +43,7 @@ export interface PersonalRunMetadata {
   readonly stdoutPath?: string | null;
   readonly stderrPath?: string | null;
   readonly controllerPid?: number | null;
+  readonly launchConfigPath?: string;
   readonly launchConfigDigest?: string;
 }
 
@@ -150,6 +151,7 @@ export class PersonalMvpController {
       ...(options.stdoutPath !== undefined ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath !== undefined ? { stderrPath: options.stderrPath } : {}),
       controllerPid: options.controllerPid ?? (executionMode === "foreground" ? this.#controllerPid ?? null : null),
+      ...(options.launchConfigPath !== undefined ? { launchConfigPath: options.launchConfigPath } : {}),
       ...(options.launchConfigDigest !== undefined ? { launchConfigDigest: options.launchConfigDigest } : {}),
     });
 
@@ -177,8 +179,9 @@ export class PersonalMvpController {
    * Execute one already-reserved identity. The detached child uses this path;
    * it never creates a second run or reselects the Plan model bucket.
    */
-  async runReserved(request: RunRequest, runId: string, launchConfigDigest: string, signal?: AbortSignal): Promise<PersonalRunState> {
+  async runReserved(request: RunRequest, runId: string, launchConfigDigest: string, signal?: AbortSignal, launchConfigPath?: string): Promise<PersonalRunState> {
     validateRequest(request);
+    const boundConfigPath = launchConfigPath === undefined ? undefined : absolutePath(launchConfigPath, "config path");
     if (this.#reservedClaims.has(runId)) throw new Error(`reserved run is already being claimed: ${runId}`);
     this.#reservedClaims.add(runId);
     try {
@@ -186,7 +189,15 @@ export class PersonalMvpController {
       // parent invocation and is not authority to enter detached execution.
       const loaded = await this.#readState(runId);
       if (!loaded) throw new Error(`reserved run state not found: ${runId}`);
-      if (loaded.ticketId !== request.ticketId || loaded.repository !== request.repository || loaded.repositoryPath !== request.repositoryPath || loaded.sourceRef !== request.sourceRef || loaded.baseBranch !== request.baseBranch || loaded.launchConfigDigest !== launchConfigDigest) throw new Error("reserved run configuration identity mismatch");
+      if (
+        loaded.ticketId !== request.ticketId
+        || loaded.repository !== request.repository
+        || loaded.repositoryPath !== request.repositoryPath
+        || loaded.sourceRef !== request.sourceRef
+        || loaded.baseBranch !== request.baseBranch
+        || loaded.launchConfigDigest !== launchConfigDigest
+        || (loaded.launchConfigPath !== undefined && boundConfigPath !== undefined && loaded.launchConfigPath !== boundConfigPath)
+      ) throw new Error("reserved run configuration identity mismatch");
       if (loaded.executionMode !== "background") throw new Error("reserved child execution requires a background run");
       if (loaded.status !== "running" || loaded.launchState !== "reserved" || loaded.controllerPid !== null || loaded.lifecycle !== "launching" || loaded.step !== "launching" || loaded.preparationState !== "pending") {
         throw new Error(`run is not in the exact reserved launch state: ${runId}`);
@@ -246,7 +257,9 @@ export class PersonalMvpController {
     const cliPath = absolutePath(options.cliPath, "CLI path");
     const configPath = absolutePath(options.configPath, "config path");
     const launchCwd = absolutePath(options.cwd ?? process.cwd(), "launch cwd");
-    if (options.signal?.aborted) throw startupAbortReason(options.signal);
+    // Do not discard an already-aborted startup before reservation. Once the
+    // selected config and state root are known, an interrupted invocation must
+    // still publish a visible terminal launch record.
     const reservedId = this.#previewRunId(request);
     // The child must always receive the exact state root used by this
     // controller. Falling back to the config path would make a bootstrap
@@ -274,9 +287,11 @@ export class PersonalMvpController {
       stdoutPath,
       stderrPath,
       controllerPid: null,
+      launchConfigPath: configPath,
       launchConfigDigest: options.launchConfigDigest,
     });
     try {
+      if (options.signal?.aborted) throw startupAbortReason(options.signal);
       // A mutable branch or tag must not be resolved for the first time by a
       // detached child. Bind the commit while the reservation is still
       // unclaimed, then make preparation verify that the ref still names it.
@@ -613,7 +628,7 @@ function initialState(
   profiles: NonNullable<PersonalRunState["profiles"]>,
   planSelection: NonNullable<PersonalRunState["planSelection"]>,
   startedAt: string,
-  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "launchConfigDigest">,
+  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "launchConfigPath" | "launchConfigDigest">,
 ): PersonalRunState {
   const background = metadata.executionMode === "background";
   return {
@@ -637,6 +652,7 @@ function initialState(
     stderrPath: metadata.stderrPath ?? null,
     repositoryPath: request.repositoryPath,
     sourceRef: request.sourceRef,
+    ...(metadata.launchConfigPath !== undefined ? { launchConfigPath: metadata.launchConfigPath } : {}),
     ...(metadata.launchConfigDigest !== undefined ? { launchConfigDigest: metadata.launchConfigDigest } : {}),
     sandbox,
     repository: request.repository,

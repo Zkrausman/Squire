@@ -262,6 +262,20 @@ test("CLI accepts background/status options in either documented order and rejec
   assert.equal(parseArguments(["run", "AIDEV-1", "--background", "--background"]), undefined);
 });
 
+test("status lookup supports a read-only embedder without reservation inspection", async () => {
+  const state: PersonalRunState = {
+    schemaVersion: 1, version: 1, runId: "aidev-1-embedded123", ticketId: "AIDEV-1", ticketTitle: "Embedded", status: "running", step: "preparing",
+    sandbox: "squire-aidev-1-embedded123", repository: "example/repo", baseBranch: "main", baseSha: null, branch: "squire/aidev-1-333bc53d", head: null,
+    sessions: {}, attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 }, results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: null, updatedAt: "2026-09-10T00:00:00.000Z",
+  };
+  const states = {
+    async read(runId: string) { return runId === state.runId ? state : undefined; },
+    async findByTicket(ticketId: string) { return ticketId === state.ticketId ? [state] : []; },
+  } as never;
+  assert.equal((await findRunState(states, state.runId)).runId, state.runId);
+  assert.equal((await findRunState(states, state.ticketId)).runId, state.runId);
+});
+
 test("status lookup reports a missing or ambiguous selector with a useful code", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-errors-"));
   try {
@@ -488,6 +502,8 @@ test("background parent performs no post-spawn state write and child validates i
     assert.equal(afterParent?.version, 1);
     assert.equal(afterParent?.launchState, "reserved");
     assert.equal(afterParent?.controllerPid, null);
+    assert.equal(afterParent?.launchConfigPath, path.resolve("squire.config.example.json"));
+    await assert.rejects(run.runReserved(REQUEST, launched.runId, digest, undefined, path.resolve("another-config.json")), /configuration identity mismatch/);
     await assert.rejects(run.runReserved({ ...REQUEST, sourceRef: "changed" }, launched.runId, digest), /configuration identity mismatch/);
     await assert.rejects(run.runReserved(REQUEST, launched.runId, "d".repeat(64)), /configuration identity mismatch/);
     await assert.rejects(run.runReserved(REQUEST, launched.runId, digest), /credential lookup failed/);
@@ -667,6 +683,21 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
 
     const states = new JsonRunStateStore(path.join(root, "state"));
     const run = controller(states);
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort(new Error("operator interrupted before launch"));
+    await assert.rejects(run.startBackground({ ...REQUEST, ticketId: "AIDEV-2" }, {
+      cliPath: path.resolve("dist/src/personal/cli.js"),
+      configPath: path.resolve("squire.config.example.json"),
+      stateDirectory: states.directory,
+      logsDirectory: path.join(root, "logs"),
+      launchConfigDigest: "9".repeat(64),
+      signal: alreadyAborted.signal,
+    }), /operator interrupted before launch/);
+    const preHandoff = (await states.findByTicket("AIDEV-2"))[0]!;
+    assert.equal(preHandoff.status, "interrupted");
+    assert.equal(preHandoff.launchState, "failed");
+    assert.equal(await states.reservationOwner("AIDEV-2"), undefined);
+
     const abort = new AbortController();
     const launcher = {
       async launch(request: Parameters<NodeBackgroundLauncher["launch"]>[0]): Promise<never> {

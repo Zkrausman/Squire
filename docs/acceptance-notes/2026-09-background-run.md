@@ -1,16 +1,16 @@
 # AIDEV-259 background-run acceptance note
 
-## Implement evidence (2026-09-10)
+## Implement evidence (2026-09-11)
 
-The focused background/status suite ran on Linux after the historical run-ID
-fix:
+The focused background/status suite ran on Linux after the launch-identity and
+source-before-workspace fixes:
 
 ```text
 node --test dist/test/personal-background-status.test.js
-31 passed, 0 failed
+36 passed, 0 failed
 
 npm test
-360 passed, 1 skipped, 0 failed
+398 passed, 1 skipped, 0 failed
 ```
 
 The real-process fixtures verified that a short-lived parent returns before its

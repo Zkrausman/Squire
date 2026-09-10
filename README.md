@@ -58,11 +58,14 @@ all five resolved phase profiles are persisted with the run and each phase
 result records the profile that actually launched Pi.
 
 Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the
-`logs` directory beneath `dataDirectory`. Before handoff, the production Docker
-workspace resolves `repository.sourceRef` to one commit and persists that source
-SHA; child preparation verifies the ref still names the bound commit before
-creating the sandbox. `status` reads only persisted JSON records and reservation
-ownership; it does not contact Linear, Git, Docker, Pi, or GitHub. State writes
+`logs` directory beneath `dataDirectory`. The detached child is bound to the
+exact selected config bytes and its absolute config pathname, so relative
+configuration paths cannot silently resolve against another copy. Before
+handoff, the production Docker workspace resolves `repository.sourceRef` to one
+commit and persists that source SHA; child preparation verifies the ref still
+names the bound commit before creating bridge, staging, or sandbox resources.
+`status` reads only persisted JSON records and reservation ownership; it does
+not contact Linear, Git, Docker, Pi, or GitHub. State writes
 are versioned and serialized per run, while reservation reserve/release
 operations use a short-lived per-ticket boundary; malformed or orphan
 reservations are reported as ambiguous rather than reclaimed. A detached child

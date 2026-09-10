@@ -162,7 +162,7 @@ async function runReservedCommand(parsed: ParsedReservedArguments): Promise<numb
     if (loaded.digest !== parsed.reservedConfigDigest) throw new Error("reserved launch configuration changed before child bootstrap");
     const stateDirectory = childStateDirectoryOverride();
     const controller = createController(loaded.config, stateDirectory);
-    await controller.runReserved(requestFromConfig(loaded.config, parsed.ticketId), parsed.reservedRunId, parsed.reservedConfigDigest, abortController.signal);
+    await controller.runReserved(requestFromConfig(loaded.config, parsed.ticketId), parsed.reservedRunId, parsed.reservedConfigDigest, abortController.signal, parsed.config);
     return 0;
   } catch (error) {
     // Always consult the original state directory. This is a no-op after the
@@ -170,7 +170,7 @@ async function runReservedCommand(parsed: ParsedReservedArguments): Promise<numb
     // path changes or failures before the reserved state is claimed. The
     // ticket and digest checks keep an unrelated child from terminalizing a
     // reservation merely because it knows a run ID.
-    await recordBootstrapFailure(parsed.reservedRunId, parsed.ticketId, parsed.reservedConfigDigest, error, abortController.signal.aborted);
+    await recordBootstrapFailure(parsed.reservedRunId, parsed.ticketId, parsed.reservedConfigDigest, parsed.config, error, abortController.signal.aborted);
     // This is captured by the background stderr descriptor. The controller
     // has already attempted to persist the terminal state.
     writeError(error);
@@ -181,7 +181,7 @@ async function runReservedCommand(parsed: ParsedReservedArguments): Promise<numb
   }
 }
 
-async function recordBootstrapFailure(runId: string, ticketId: string, launchConfigDigest: string, error: unknown, interrupted: boolean): Promise<void> {
+async function recordBootstrapFailure(runId: string, ticketId: string, launchConfigDigest: string, configPath: string, error: unknown, interrupted: boolean): Promise<void> {
   const directory = process.env["SQUIRE_STATE_DIRECTORY"];
   if (!directory || !path.isAbsolute(directory) || directory.includes("\0")) return;
   if (!runId.startsWith(`${ticketId.toLowerCase()}-`)) return;
@@ -189,6 +189,7 @@ async function recordBootstrapFailure(runId: string, ticketId: string, launchCon
     const states = new JsonRunStateStore(directory);
     const state = await states.read(runId);
     if (state?.ticketId !== ticketId || state.launchConfigDigest !== launchConfigDigest) return;
+    if (state.launchConfigPath !== undefined && path.resolve(configPath) !== state.launchConfigPath) return;
     // Bootstrap failure belongs only to an unclaimed launch. A child that
     // loses the reserved->started CAS must not overwrite the winning owner.
     if (state.status !== "running" || state.launchState !== "reserved" || state.controllerPid !== null || state.lifecycle !== "launching" || state.step !== "launching" || state.preparationState !== "pending") return;

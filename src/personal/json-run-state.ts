@@ -24,6 +24,7 @@ const OPTIONAL_STATE_KEYS = [
   "repositoryPath",
   "sourceRef",
   "sourceSha",
+  "launchConfigPath",
   "launchConfigDigest",
 ] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
@@ -104,21 +105,38 @@ export class JsonRunStateStore implements RunStatePort {
   async save(state: PersonalRunState): Promise<void> {
     validateState(state);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
-    try {
-      // The version check and replacement are one serialized operation across
-      // processes. A crashed writer leaves the update lock in place and fails
-      // closed rather than allowing a stale writer to overwrite newer truth.
-      const target = this.#path(state.runId);
-      const current = await this.#read(target, state.runId);
-      if (!current) throw new Error(`run state does not exist: ${state.runId}`);
-      if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
-      assertResolvedProfilesUnchanged(current, state);
-      assertLaunchIdentityUnchanged(current, state);
-      await this.#replaceState(target, state);
-    } finally {
-      await releaseUpdate();
-    }
+    const target = this.#path(state.runId);
+    // Source binding is a launch-ownership transition, not an ordinary
+    // per-run update. Decide whether the proposed state needs that stronger
+    // boundary from a snapshot, then recheck the authoritative state while the
+    // ticket operation is held. The snapshot is only an optimization; it is
+    // never used as the version or ownership decision.
+    const observed = await this.#read(target, state.runId);
+    const sourceBinding = observed?.sourceSha === undefined && state.sourceSha !== undefined;
+    const save = async (): Promise<void> => {
+      const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
+      try {
+        // The version check and replacement are one serialized operation across
+        // processes. A crashed writer leaves the update lock in place and
+        // fails closed rather than allowing a stale writer to overwrite newer
+        // truth.
+        const current = await this.#read(target, state.runId);
+        if (!current) throw new Error(`run state does not exist: ${state.runId}`);
+        if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+        assertResolvedProfilesUnchanged(current, state);
+        assertLaunchIdentityUnchanged(current, state);
+        if (sourceBinding && (current.sourceSha === undefined || current.sourceSha !== state.sourceSha)) {
+          if (!isReservedLaunch(current) || await readLock(this.#reservationPath(state.ticketId)) !== state.runId) {
+            throw new Error(`reserved source binding does not belong to run: ${state.runId}`);
+          }
+        }
+        await this.#replaceState(target, state);
+      } finally {
+        await releaseUpdate();
+      }
+    };
+    if (sourceBinding) return withTicketOperation(this.directory, state.ticketId, save);
+    return save();
   }
 
   /**
@@ -607,7 +625,7 @@ function validTimestamp(value: string): boolean {
 }
 
 function validateLifecycleMetadata(state: Record<string, unknown>): void {
-  const metadataKeys = ["lifecycle", "launchState", "preparationState", "executionMode", "startedAt", "endedAt", "controllerPid", "stdoutPath", "stderrPath", "repositoryPath", "sourceRef", "sourceSha", "launchConfigDigest"];
+  const metadataKeys = ["lifecycle", "launchState", "preparationState", "executionMode", "startedAt", "endedAt", "controllerPid", "stdoutPath", "stderrPath", "repositoryPath", "sourceRef", "sourceSha", "launchConfigPath", "launchConfigDigest"];
   const hasMetadata = metadataKeys.some(key => Object.prototype.hasOwnProperty.call(state, key));
   if (!hasMetadata) return; // Published v1 state files did not have launch metadata.
 
@@ -625,7 +643,7 @@ function validateLifecycleMetadata(state: Record<string, unknown>): void {
   if (endedAt !== undefined && endedAt !== null && (typeof endedAt !== "string" || !validTimestamp(endedAt))) throw new Error("invalid run state endedAt");
   const controllerPid = state["controllerPid"];
   if (controllerPid !== undefined && controllerPid !== null && (!Number.isSafeInteger(controllerPid) || (controllerPid as number) < 1)) throw new Error("invalid run state controller PID");
-  for (const key of ["stdoutPath", "stderrPath", "repositoryPath"] as const) {
+  for (const key of ["stdoutPath", "stderrPath", "repositoryPath", "launchConfigPath"] as const) {
     const value = state[key];
     if (value !== undefined && value !== null && (typeof value !== "string" || value.length === 0 || value.length > 4_000 || (!path.posix.isAbsolute(value) && !path.win32.isAbsolute(value)))) throw new Error(`invalid run state ${key}`);
   }
@@ -674,7 +692,7 @@ function validateResolvedProfiles(state: Record<string, unknown>): void {
 }
 
 function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
-  for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {
+  for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigPath", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {
     if (current[key] !== next[key]) throw new Error("background launch identity is immutable");
   }
   if (current.sourceSha !== next.sourceSha && !(current.sourceSha === undefined && next.sourceSha !== undefined && isReservedLaunch(current))) {

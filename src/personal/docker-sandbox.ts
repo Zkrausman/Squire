@@ -52,6 +52,12 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     validateName(input.sandbox, "sandbox");
     validateBranch(input.branch);
     const repositoryPath = path.resolve(input.repositoryPath);
+    // Resolve and compare the source identity before touching bridge, staging,
+    // or sandbox resources. A moved mutable ref must fail closed without even
+    // preparing a workspace for the wrong commit.
+    const baseSha = await this.resolveSource({ repositoryPath, sourceRef: input.sourceRef }, signal);
+    if (input.expectedBaseSha !== undefined && input.expectedBaseSha !== baseSha) throw new Error("configured source ref changed after background reservation");
+
     const runStaging = path.join(this.#stagingRoot, input.runId);
     const bridge = path.join(this.#bridgeRoot, input.runId);
     await rm(bridge, { recursive: true, force: true });
@@ -59,9 +65,6 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     await mkdir(runStaging, { recursive: true, mode: 0o700 });
     const sourceBundle = path.join(runStaging, "source.bundle");
     await rm(sourceBundle, { force: true });
-
-    const baseSha = await this.resolveSource({ repositoryPath, sourceRef: input.sourceRef }, signal);
-    if (input.expectedBaseSha !== undefined && input.expectedBaseSha !== baseSha) throw new Error("configured source ref changed after background reservation");
 
     // A remote-tracking ref is not a reliable bundle head for `git clone`.
     // Pin the already-resolved commit behind a clone-visible temporary branch,
