@@ -41,11 +41,12 @@ squire status <returned-run-id>       # poll through completed
 ```
 
 This committed note records repository-verifiable coverage and the live
-acceptance procedure; it is not current-run completion evidence. Current-run
-polling, manual platform observation, completion, and open/unmerged PR identity
-become observable only after publication and must be recorded externally
-against the Linear ticket or PR. Never mutate the accepted branch solely to
-backfill that evidence.
+acceptance procedure; it is not current-run completion evidence. Launch and
+no-window behavior are observed when the run starts, and progress polling is
+observed while it runs. Completion, the open/unmerged PR identity, and
+post-publication CI follow later. After publication, record the complete
+evidence package externally against the Linear ticket or PR; never mutate the
+accepted branch solely to backfill that evidence.
 
 ## Preserved prior failure evidence
 

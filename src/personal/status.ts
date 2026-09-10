@@ -35,29 +35,29 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
     // different, readable active run; the ticket selector will still return
     // that replacement. Do not apply that exception to a second running
     // record or to an owner that cannot be proved active and on this ticket.
-    if (states.reservationOwner) {
-      let owner: string | undefined;
+    let owner: string | undefined;
+    try {
+      owner = states.reservationOwner ? await states.reservationOwner(state.ticketId) : undefined;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${state.ticketId}: ${detail}`);
+    }
+    if (state.status === "running") {
+      if (owner !== state.runId) {
+        throw new StatusLookupError("ambiguous", `run reservation does not match active run ${state.runId}: ${owner ?? "absent"}`);
+      }
+    } else if (owner === state.runId) {
+      throw new StatusLookupError("ambiguous", `run reservation does not match terminal run ${state.runId}`);
+    } else if (owner) {
+      let replacement: PersonalRunState | undefined;
       try {
-        owner = await states.reservationOwner(state.ticketId);
+        replacement = states.read ? await states.read(owner) : undefined;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${state.ticketId}: ${detail}`);
+        throw new StatusLookupError("ambiguous", `replacement run is unreadable for ${state.ticketId}: ${detail}`);
       }
-      if (owner && owner === state.runId) {
-        if (state.status !== "running") throw new StatusLookupError("ambiguous", `run reservation does not match terminal run ${state.runId}`);
-      } else if (owner && state.status === "running") {
-        throw new StatusLookupError("ambiguous", `run reservation does not match active run ${state.runId}: ${owner}`);
-      } else if (owner) {
-        let replacement: PersonalRunState | undefined;
-        try {
-          replacement = states.read ? await states.read(owner) : undefined;
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new StatusLookupError("ambiguous", `replacement run is unreadable for ${state.ticketId}: ${detail}`);
-        }
-        if (!replacement || replacement.ticketId !== state.ticketId || replacement.status !== "running") {
-          throw new StatusLookupError("ambiguous", `run reservation does not match a readable active run for ${state.ticketId}: ${owner}`);
-        }
+      if (!replacement || replacement.ticketId !== state.ticketId || replacement.status !== "running") {
+        throw new StatusLookupError("ambiguous", `run reservation does not match a readable active run for ${state.ticketId}: ${owner}`);
       }
     }
     return state;
@@ -79,10 +79,13 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
   }
   const active = candidates.filter(state => state.status === "running");
   if (active.length > 1) throw new StatusLookupError("ambiguous", `multiple active runs found for ${selector}`);
-  // A lock is meaningful even when an older terminal state exists. Only an
-  // exact active-state owner reconciles it; every other combination is an
-  // orphan/stale reservation that status must report rather than hide.
-  if (owner && (active.length !== 1 || active[0]!.runId !== owner)) {
+  // A lock is meaningful even when an older terminal state exists, and an
+  // active state is authoritative only while its exact reservation remains.
+  // Every other combination is ambiguous and must not be hidden.
+  if (active.length === 1 && owner !== active[0]!.runId) {
+    throw new StatusLookupError("ambiguous", `run reservation does not match a readable active state: ${owner ?? "absent"}`);
+  }
+  if (owner && active.length === 0) {
     throw new StatusLookupError("ambiguous", `run reservation does not match a readable active state: ${owner}`);
   }
   return [...(active.length === 1 ? active : candidates)].sort(compareStates)[0]!;

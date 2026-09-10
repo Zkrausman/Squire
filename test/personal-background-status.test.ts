@@ -241,6 +241,23 @@ test("status lookup reports a missing or ambiguous selector with a useful code",
   }
 });
 
+test("a running background state without its reservation is ambiguous by run ID and ticket", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-missing-reservation-"));
+  try {
+    const states = new JsonRunStateStore(root);
+    const reserved = await controller(states).reserve(REQUEST, {
+      executionMode: "background",
+      launchConfigDigest: "a".repeat(64),
+    });
+    await unlink(path.join(root, "locks", `${REQUEST.ticketId.toLowerCase()}.lock`));
+
+    await assert.rejects(findRunState(states, reserved.runId), (error: unknown) => error instanceof StatusLookupError && error.code === "ambiguous");
+    await assert.rejects(findRunState(states, REQUEST.ticketId), (error: unknown) => error instanceof StatusLookupError && error.code === "ambiguous");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("exact historical run IDs remain readable beside a valid replacement reservation", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-replacement-"));
   try {
