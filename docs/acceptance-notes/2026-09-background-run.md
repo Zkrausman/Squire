@@ -1,26 +1,44 @@
 # AIDEV-259 background-run acceptance note
 
-The live Linear/Docker Sandbox/GitHub environment was not provisioned in this
-implementation sandbox. Consequently no live ticket, run ID, polling trace, or
-PR URL is claimed here. The required live proof remains:
+## Implement evidence (2026-09-10)
+
+The focused background/status suite ran on Linux after the historical run-ID
+fix:
+
+```text
+node --test dist/test/personal-background-status.test.js
+31 passed, 0 failed
+
+npm test
+360 passed, 1 skipped, 0 failed
+```
+
+The real-process fixtures verified that a short-lived parent returns before its
+detached child completes and that both inherited file-backed logs survive the
+parent exit. The status fixture verified exact historical run-ID lookup beside
+a readable active replacement, while ticket lookup still selects the active
+replacement. The tests also cover detached argv/options (`windowsHide`,
+ignored stdin, and no shell), serialized state updates, conservative
+reservation races, pre-handoff SIGINT/SIGTERM interruption, bootstrap failure
+fallback, status control escaping, orphan-reservation reporting, and
+duplicate-ticket rejection. These are Linux automated observations; they do
+not claim a manual Windows no-window observation.
+
+## Live Linear/Docker/GitHub evidence
+
+No authorized live ticket was run from this implementation sandbox. It has no
+per-user Squire configuration, Linear credential, Pi executable, or GitHub
+installation-token helper/authentication, so there is no genuine ticket ID,
+background run ID, completion-polling trace, or open unmerged PR URL to record.
+The live acceptance gate remains pending on the provisioned host. The required
+operator evidence is:
 
 ```bash
 squire run <approved-ticket> --background
-squire status <approved-ticket>
-squire status <returned-run-id>
-# confirm the resulting PR is open and unmerged
+squire status <approved-ticket>       # record launching/preparing progress
+squire status <returned-run-id>       # poll through completed
+# record the resulting open, unmerged PR URL and Windows no-window observation
 ```
-
-Focused automated coverage exercises detached argv/options (`windowsHide`,
-ignored stdin, and no shell), a short-lived launcher parent whose detached
-child outlives it with file-backed stdout/stderr, cross-process serialized state
-updates, conservative reservation release races, pre-handoff SIGINT/SIGTERM
-interruption, bootstrap failure fallback, status control escaping,
-orphan-reservation reporting for ticket and run-ID selectors, and duplicate-
-ticket rejection. These tests verify launch options, not a human
-observation that Windows displayed no console window. A provisioned
-Windows/Linux run should still record that manual no-window observation and the
-open, unmerged PR URL in this note.
 
 ## Preserved prior failure evidence
 

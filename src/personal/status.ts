@@ -30,9 +30,11 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
   if (RUN_PATTERN.test(selector)) {
     const state = states.read ? await states.read(selector) : undefined;
     if (!state) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
-    // A run-id selector must honor the same reservation authority as a ticket
-    // selector. Otherwise `status <old-run-id>` could hide a replacement or
-    // orphan lock that still prevents a new run for the ticket.
+    // An exact run ID identifies one persisted record. A terminal historical
+    // record remains readable when its ticket has since been reserved by a
+    // different, readable active run; the ticket selector will still return
+    // that replacement. Do not apply that exception to a second running
+    // record or to an owner that cannot be proved active and on this ticket.
     if (states.reservationOwner) {
       let owner: string | undefined;
       try {
@@ -41,8 +43,21 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
         const detail = error instanceof Error ? error.message : String(error);
         throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${state.ticketId}: ${detail}`);
       }
-      if (owner && (state.status !== "running" || owner !== state.runId)) {
-        throw new StatusLookupError("ambiguous", `run reservation does not match run ${state.runId}: ${owner}`);
+      if (owner && owner === state.runId) {
+        if (state.status !== "running") throw new StatusLookupError("ambiguous", `run reservation does not match terminal run ${state.runId}`);
+      } else if (owner && state.status === "running") {
+        throw new StatusLookupError("ambiguous", `run reservation does not match active run ${state.runId}: ${owner}`);
+      } else if (owner) {
+        let replacement: PersonalRunState | undefined;
+        try {
+          replacement = states.read ? await states.read(owner) : undefined;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new StatusLookupError("ambiguous", `replacement run is unreadable for ${state.ticketId}: ${detail}`);
+        }
+        if (!replacement || replacement.ticketId !== state.ticketId || replacement.status !== "running") {
+          throw new StatusLookupError("ambiguous", `run reservation does not match a readable active run for ${state.ticketId}: ${owner}`);
+        }
       }
     }
     return state;

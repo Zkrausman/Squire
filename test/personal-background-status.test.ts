@@ -241,6 +241,49 @@ test("status lookup reports a missing or ambiguous selector with a useful code",
   }
 });
 
+test("exact historical run IDs remain readable beside a valid replacement reservation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-replacement-"));
+  try {
+    const states = new JsonRunStateStore(root);
+    const old = await controller(states, new Date("2026-09-10T00:00:00.000Z"), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").reserve(REQUEST);
+    const oldEndedAt = "2026-09-10T00:00:01.000Z";
+    await states.save({
+      ...old,
+      version: 2,
+      status: "failed",
+      lifecycle: "failed",
+      endedAt: oldEndedAt,
+      lastError: "old run failed",
+      updatedAt: oldEndedAt,
+    });
+    await states.release(REQUEST.ticketId, old.runId);
+
+    const replacement = await controller(states, new Date("2026-09-10T00:01:00.000Z"), "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").reserve(REQUEST, {
+      executionMode: "background",
+      launchConfigDigest: "a".repeat(64),
+    });
+    assert.equal((await findRunState(states, old.runId)).runId, old.runId);
+    assert.equal((await findRunState(states, replacement.runId)).runId, replacement.runId);
+    assert.equal((await findRunState(states, REQUEST.ticketId)).runId, replacement.runId);
+
+    const replacementEndedAt = "2026-09-10T00:01:01.000Z";
+    await states.save({
+      ...replacement,
+      version: 2,
+      status: "failed",
+      lifecycle: "failed",
+      launchState: "failed",
+      preparationState: "failed",
+      endedAt: replacementEndedAt,
+      lastError: "test cleanup",
+      updatedAt: replacementEndedAt,
+    });
+    await states.release(REQUEST.ticketId, replacement.runId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("real detached child outlives launch handoff and inherits stdout/stderr logs", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-detached-"));
   try {

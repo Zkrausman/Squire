@@ -107,10 +107,11 @@ malformed, or orphan reservation records are reported as ambiguous instead of
 being silently reclaimed.
 
 A detached run is deliberately not a daemon or crash-perfect supervisor. A
-forced kill or power loss can leave an ambiguous active reservation. `status`
-reports that reservation for either a ticket or run-ID selector, even when an
-older terminal run exists. Preserve the
-state/logs and sandbox, confirm that no controller is still running, then
+forced kill or power loss can leave an ambiguous active reservation. Ticket
+`status` reports that reservation even when an older terminal run exists. An
+exact historical run-ID selector remains readable beside a different readable
+active replacement; a missing or inactive owner is still reported as ambiguous.
+Preserve the state/logs and sandbox, confirm that no controller is still running, then
 perform conservative owner cleanup of the exact reservation rather than
 starting a second run for the same ticket. Normal SIGINT/SIGTERM received
 before child handoff is persisted as an interrupted launch and releases the
