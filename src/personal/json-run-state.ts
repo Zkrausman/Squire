@@ -2,6 +2,7 @@ import { access, mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { deterministicFeatureBranch } from "./identity.js";
 import { validatePhaseResultShape } from "./phase-result.js";
 import { canonicalPlanIdentity, PLAN_SELECTION_VERSION, validatePhaseProfile } from "./model-policy.js";
@@ -113,21 +114,64 @@ export class JsonRunStateStore implements RunStatePort {
       if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
       assertResolvedProfilesUnchanged(current, state);
       assertLaunchIdentityUnchanged(current, state);
-      const temporary = path.join(this.directory, `.${state.runId}.${randomUUID()}.tmp`);
-      const handle = await open(temporary, "wx", 0o600);
-      try {
-        await handle.writeFile(encode(state));
-        await handle.sync();
-        await handle.close();
-        await rename(temporary, target);
-      } catch (error) {
-        await handle.close().catch(() => undefined);
-        await rm(temporary, { force: true }).catch(() => undefined);
-        throw error;
-      }
+      await this.#replaceState(target, state);
     } finally {
       await releaseUpdate();
     }
+  }
+
+  /**
+   * Claim the reserved-to-started transition while holding both the existing
+   * per-ticket operation boundary and the existing per-run version lock.
+   */
+  async claimReserved(state: PersonalRunState): Promise<void> {
+    validateState(state);
+    if (!isStartedChild(state)) throw new Error("reserved run claim target is invalid");
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    return withTicketOperation(this.directory, state.ticketId, async () => {
+      const lockPath = this.#reservationPath(state.ticketId);
+      if (await readLock(lockPath) !== state.runId) throw new Error(`reserved run reservation ownership mismatch: ${state.runId}`);
+      const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
+      try {
+        const target = this.#path(state.runId);
+        const current = await this.#read(target, state.runId);
+        if (!current) throw new Error(`run state does not exist: ${state.runId}`);
+        if (!isReservedLaunch(current)) throw new Error(`reserved run claim is no longer available: ${state.runId}`);
+        if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+        assertExactStartedChildTarget(current, state);
+        await this.#replaceState(target, state);
+      } finally {
+        await releaseUpdate();
+      }
+    });
+  }
+
+  /**
+   * Terminalize an unclaimed background launch and release its reservation
+   * while holding the same ticket boundary and per-run version lock.
+   */
+  async failReserved(state: PersonalRunState): Promise<void> {
+    validateState(state);
+    if ((state.status !== "failed" && state.status !== "interrupted") || state.executionMode !== "background" || state.launchState !== "failed") throw new Error("reserved run failure target is invalid");
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    return withTicketOperation(this.directory, state.ticketId, async () => {
+      const lockPath = this.#reservationPath(state.ticketId);
+      if (await readLock(lockPath) !== state.runId) throw new Error(`reserved run reservation ownership mismatch: ${state.runId}`);
+      const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
+      try {
+        const target = this.#path(state.runId);
+        const current = await this.#read(target, state.runId);
+        if (!current) throw new Error(`run state does not exist: ${state.runId}`);
+        if (!isReservedLaunch(current)) throw new Error(`reserved run failure is no longer available: ${state.runId}`);
+        if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+        assertResolvedProfilesUnchanged(current, state);
+        assertLaunchIdentityUnchanged(current, state);
+        await this.#replaceState(target, state);
+      } finally {
+        await releaseUpdate();
+      }
+      await removeReservationIfOwned(lockPath, state.runId);
+    });
   }
 
   async findActive(ticketId: string): Promise<PersonalRunState | undefined> {
@@ -183,6 +227,21 @@ export class JsonRunStateStore implements RunStatePort {
       if (state.status === "running") throw new Error(`cannot release an active ticket reservation: ${ticketId}`);
       await removeReservationIfOwned(lockPath, runId);
     });
+  }
+
+  async #replaceState(target: string, state: PersonalRunState): Promise<void> {
+    const temporary = path.join(this.directory, `.${state.runId}.${randomUUID()}.tmp`);
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(encode(state));
+      await handle.sync();
+      await handle.close();
+      await rename(temporary, target);
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   #path(runId: string): string {
@@ -255,6 +314,50 @@ async function removeReservationIfOwned(file: string, expectedOwner: string): Pr
     await unlink(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function isReservedLaunch(state: PersonalRunState): boolean {
+  return state.status === "running"
+    && state.executionMode === "background"
+    && state.launchState === "reserved"
+    && state.controllerPid === null
+    && state.lifecycle === "launching"
+    && state.step === "launching"
+    && state.preparationState === "pending"
+    && typeof state.startedAt === "string"
+    && state.endedAt === null;
+}
+
+function isStartedChild(state: PersonalRunState): boolean {
+  return state.status === "running"
+    && state.executionMode === "background"
+    && state.launchState === "started"
+    && Number.isSafeInteger(state.controllerPid)
+    && (state.controllerPid ?? 0) > 0
+    && state.lifecycle === "preparing"
+    && state.step === "preparing"
+    && state.preparationState === "started"
+    && typeof state.startedAt === "string"
+    && state.endedAt === null
+    && Date.parse(state.updatedAt) >= Date.parse(state.startedAt);
+}
+
+function assertExactStartedChildTarget(current: PersonalRunState, next: PersonalRunState): void {
+  const controllerPid = next.controllerPid;
+  if (!Number.isSafeInteger(controllerPid) || (controllerPid ?? 0) < 1) throw new Error("reserved run claim target is invalid");
+  const expected: PersonalRunState = {
+    ...current,
+    version: current.version + 1,
+    launchState: "started",
+    controllerPid: controllerPid as number,
+    lifecycle: "preparing",
+    step: "preparing",
+    preparationState: "started",
+    updatedAt: next.updatedAt,
+  };
+  if (!isDeepStrictEqual(next, expected) || Date.parse(next.updatedAt) < Date.parse(current.updatedAt)) {
+    throw new Error("reserved run claim target must be the exact started child transition");
   }
 }
 

@@ -35,6 +35,38 @@ function state(version = 1): PersonalRunState {
   };
 }
 
+function reservedState(directory: string): PersonalRunState {
+  return {
+    ...state(),
+    step: "launching",
+    lifecycle: "launching",
+    launchState: "reserved",
+    preparationState: "pending",
+    executionMode: "background",
+    startedAt: "2026-09-10T00:00:00.000Z",
+    endedAt: null,
+    controllerPid: null,
+    stdoutPath: path.join(directory, "stdout.log"),
+    stderrPath: path.join(directory, "stderr.log"),
+    repositoryPath: path.join(directory, "repository"),
+    sourceRef: "HEAD",
+    launchConfigDigest: "a".repeat(64),
+  };
+}
+
+function startedChild(reserved: PersonalRunState): PersonalRunState {
+  return {
+    ...reserved,
+    version: reserved.version + 1,
+    step: "preparing",
+    lifecycle: "preparing",
+    launchState: "started",
+    preparationState: "started",
+    controllerPid: 123,
+    updatedAt: "2026-09-10T00:00:01.000Z",
+  };
+}
+
 function planResult(runId: string): PlanPhaseResult {
   return {
     runId,
@@ -135,6 +167,76 @@ test("launch identity and log destinations cannot be changed by a later writer",
     await store.create(initial);
     await assert.rejects(store.save({ ...initial, version: 2, sourceRef: "refs/remotes/origin/other" }), /background launch identity is immutable/);
     await assert.rejects(store.save({ ...initial, version: 2, stdoutPath: path.join(directory, "other.log") }), /background launch identity is immutable/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reserved claims reject invalid controller PIDs and non-started lifecycle targets", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-claim-target-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const reserved = reservedState(directory);
+    await store.reserve(reserved);
+    const valid = startedChild(reserved);
+    const invalid: PersonalRunState[] = [
+      { ...valid, controllerPid: null },
+      { ...valid, controllerPid: 0 },
+      { ...valid, controllerPid: -1 },
+      { ...valid, controllerPid: 1.5 },
+      { ...valid, lifecycle: "running" as const },
+      { ...valid, step: "launching" as const },
+      { ...valid, preparationState: "pending" as const },
+    ];
+    for (const candidate of invalid) await assert.rejects(store.claimReserved(candidate));
+    assert.equal((await store.read(reserved.runId))?.version, 1);
+    assert.equal(await store.reservationOwner(reserved.ticketId), reserved.runId);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reserved claims preserve all non-transition fields and timing identity", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-claim-identity-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const reserved = reservedState(directory);
+    await store.reserve(reserved);
+    const valid = startedChild(reserved);
+    await assert.rejects(store.claimReserved({ ...valid, ticketTitle: "changed during claim" }), /exact started child transition/);
+    await assert.rejects(store.claimReserved({ ...valid, sourceRef: "refs/remotes/origin/other" }), /exact started child transition/);
+    await assert.rejects(store.claimReserved({ ...valid, startedAt: "2026-09-09T23:59:59.000Z" }), /exact started child transition/);
+    await assert.rejects(store.claimReserved({ ...valid, updatedAt: "2026-09-09T23:59:59.000Z" }), /claim target/);
+    assert.equal((await store.read(reserved.runId))?.version, 1);
+    await store.claimReserved(valid);
+    assert.deepEqual(await store.read(reserved.runId), valid);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reserved bootstrap failure cannot overwrite a replacement reservation owner", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-failure-owner-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const reserved = reservedState(directory);
+    await store.reserve(reserved);
+    const replacement = "aidev-1-replacement123";
+    await writeFile(path.join(directory, "locks", "aidev-1.lock"), `${replacement}\n`, "utf8");
+    const failed: PersonalRunState = {
+      ...reserved,
+      version: 2,
+      status: "failed",
+      lifecycle: "failed",
+      launchState: "failed",
+      preparationState: "failed",
+      endedAt: "2026-09-10T00:00:01.000Z",
+      lastError: "child bootstrap failed",
+      updatedAt: "2026-09-10T00:00:01.000Z",
+    };
+    await assert.rejects(store.failReserved(failed), /reservation ownership mismatch/);
+    assert.deepEqual(await store.read(reserved.runId), reserved);
+    assert.equal(await store.reservationOwner(reserved.ticketId), replacement);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

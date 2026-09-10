@@ -322,6 +322,38 @@ test("a detached child must own the exact reservation before adapter calls", asy
   }
 });
 
+test("a reservation replacement during claim cannot admit a detached child", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-claim-race-"));
+  try {
+    let replaced = false;
+    const states = new class extends JsonRunStateStore {
+      override async claimReserved(state: PersonalRunState): Promise<void> {
+        if (!replaced) {
+          replaced = true;
+          await writeFile(path.join(this.directory, "locks", "aidev-1.lock"), "aidev-1-replacement123\n", "utf8");
+        }
+        return super.claimReserved(state);
+      }
+    }(path.join(root, "state"));
+    const digest = "7".repeat(64);
+    let ticketCalls = 0;
+    const run = new PersonalMvpController({
+      states,
+      tickets: { async get() { ticketCalls += 1; throw new Error("ticket adapter must not be called"); } },
+      workspaces: {} as never,
+      phases: {} as never,
+      publication: {} as never,
+    });
+    const reserved = await run.reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    await assert.rejects(run.runReserved(REQUEST, reserved.runId, digest), /reservation ownership mismatch/);
+    assert.equal(ticketCalls, 0);
+    assert.equal((await states.read(reserved.runId))?.version, 1);
+    assert.equal(await states.reservationOwner(REQUEST.ticketId), "aidev-1-replacement123");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher rejects a pre-handoff OS error and interruption closes the reservation", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-launch-failures-"));
   try {

@@ -208,8 +208,9 @@ async function recordBootstrapFailure(runId: string, ticketId: string, launchCon
       lastError: message,
       updatedAt: endedAt,
     };
-    await states.save(terminal);
-    await states.release(state.ticketId, state.runId);
+    // The JSON store performs the ownership check, version check, terminal
+    // replacement, and reservation release under one ticket operation.
+    await states.failReserved(terminal);
   } catch (persistenceError) {
     const message = persistenceError instanceof Error ? persistenceError.message : String(persistenceError);
     process.stderr.write(`Squire state persistence warning: ${sanitizeTerminalText(message)}\n`);

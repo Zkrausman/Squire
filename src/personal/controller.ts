@@ -33,6 +33,8 @@ import type {
 interface RunContext {
   state: PersonalRunState;
   persist: (changes: Partial<PersonalRunState>) => Promise<void>;
+  claimReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
+  failReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
 }
 
 export interface PersonalRunMetadata {
@@ -188,9 +190,6 @@ export class PersonalMvpController {
       if (!loaded) throw new Error(`reserved run state not found: ${runId}`);
       if (loaded.ticketId !== request.ticketId || loaded.repository !== request.repository || loaded.repositoryPath !== request.repositoryPath || loaded.sourceRef !== request.sourceRef || loaded.baseBranch !== request.baseBranch || loaded.launchConfigDigest !== launchConfigDigest) throw new Error("reserved run configuration identity mismatch");
       if (loaded.executionMode !== "background") throw new Error("reserved child execution requires a background run");
-      if (this.#states.reservationOwner && await this.#states.reservationOwner(loaded.ticketId) !== runId) {
-        throw new Error(`reserved run reservation ownership mismatch: ${runId}`);
-      }
       if (loaded.status !== "running" || loaded.launchState !== "reserved" || loaded.controllerPid !== null || loaded.lifecycle !== "launching" || loaded.step !== "launching" || loaded.preparationState !== "pending") {
         throw new Error(`run is not in the exact reserved launch state: ${runId}`);
       }
@@ -200,9 +199,10 @@ export class PersonalMvpController {
       if (signal?.aborted) throw startupAbortReason(signal);
 
       const context = this.#context(loaded);
-      // This CAS is the ownership claim. A conflict is terminal for this
-      // invocation; it must never reload another child's started state.
-      await context.persist({
+      // This serialized CAS is the ownership claim. A conflict is terminal
+      // for this invocation; it must never reload another child's started
+      // state or invoke an adapter.
+      await context.claimReserved({
         launchState: "started",
         controllerPid: process.pid,
         lifecycle: "preparing",
@@ -233,7 +233,7 @@ export class PersonalMvpController {
     const latest = await this.#readState(runId).catch(() => undefined);
     if (latest && latest.version >= context.state.version) context.state = latest;
     if (context.state.status !== "running") return context.state;
-    if (context.state.executionMode === "background" && context.state.step !== "launching") return context.state;
+    if (context.state.executionMode === "background" && !isReservedLaunch(context.state)) return context.state;
     await this.#recordTerminal(context, error, interrupted);
     return context.state;
   }
@@ -466,9 +466,42 @@ export class PersonalMvpController {
   #context(state: PersonalRunState): RunContext {
     const context = {} as RunContext;
     context.state = state;
+    const nextState = (changes: Partial<PersonalRunState>): PersonalRunState => ({
+      ...context.state,
+      ...changes,
+      version: context.state.version + 1,
+      updatedAt: this.#timestamp(),
+    });
     context.persist = async changes => {
-      const next: PersonalRunState = { ...context.state, ...changes, version: context.state.version + 1, updatedAt: this.#timestamp() };
+      const next = nextState(changes);
       await this.#states.save(next);
+      context.state = next;
+    };
+    context.claimReserved = async changes => {
+      const next = nextState(changes);
+      if (this.#states.claimReserved) {
+        await this.#states.claimReserved(next);
+      } else {
+        // Older embedders do not expose the serialized claim primitive. Keep
+        // their original contract, but perform the ownership check again
+        // immediately before the compatibility save.
+        if (this.#states.reservationOwner && await this.#states.reservationOwner(context.state.ticketId) !== context.state.runId) {
+          throw new Error(`reserved run reservation ownership mismatch: ${context.state.runId}`);
+        }
+        await this.#states.save(next);
+      }
+      context.state = next;
+    };
+    context.failReserved = async changes => {
+      const next = nextState(changes);
+      if (this.#states.failReserved) {
+        await this.#states.failReserved(next);
+      } else {
+        if (this.#states.reservationOwner && await this.#states.reservationOwner(context.state.ticketId) !== context.state.runId) {
+          throw new Error(`reserved run reservation ownership mismatch: ${context.state.runId}`);
+        }
+        await this.#states.save(next);
+      }
       context.state = next;
     };
     return context;
@@ -510,9 +543,13 @@ export class PersonalMvpController {
       ...(context.state.preparationState === "pending" ? { preparationState: "failed" } : {}),
     };
     let terminalPersisted = context.state.status !== "running";
+    const unclaimedBackground = context.state.executionMode === "background" && isReservedLaunch(context.state);
     try {
       if (context.state.status === "running") {
-        await context.persist(changes);
+        // The JSON store combines this terminal write with the exact-owner
+        // release under the ticket boundary. A pre-handoff failure must not
+        // race a detached child claiming the same reservation.
+        await (unclaimedBackground ? context.failReserved(changes) : context.persist(changes));
         terminalPersisted = true;
       }
     } catch (persistenceError) {
@@ -715,6 +752,16 @@ function isWithinPath(parent: string, child: string): boolean {
 function absolutePath(value: string, label: string): string {
   if (!value || value.includes("\0")) throw new Error(`${label} is invalid`);
   return path.resolve(value);
+}
+
+function isReservedLaunch(state: PersonalRunState): boolean {
+  return state.status === "running"
+    && state.executionMode === "background"
+    && state.launchState === "reserved"
+    && state.controllerPid === null
+    && state.lifecycle === "launching"
+    && state.step === "launching"
+    && state.preparationState === "pending";
 }
 
 function startupAbortReason(signal: AbortSignal): Error {

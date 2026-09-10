@@ -195,6 +195,18 @@ export interface RunStatePort {
   findActive(ticketId: string): Promise<PersonalRunState | undefined>;
   /** Optional atomic ticket reservation implemented by the JSON store. */
   reserve?(state: PersonalRunState): Promise<void>;
+  /**
+   * Atomically claim a reserved background state and its ticket reservation.
+   * Implementations must reject without changing state when another owner has
+   * won the reserved-to-started transition.
+   */
+  claimReserved?(state: PersonalRunState): Promise<void>;
+  /**
+   * Atomically terminalize an unclaimed background reservation and release it.
+   * This is used for pre-handoff/bootstrap failures so a losing claimant
+   * cannot overwrite a started child.
+   */
+  failReserved?(state: PersonalRunState): Promise<void>;
   /** Release only the reservation owned by this run after terminal persistence. */
   release?(ticketId: string, runId: string): Promise<void>;
   /** Read/query methods are optional for in-memory foreground embedders. */
