@@ -196,7 +196,7 @@ async function recordBootstrapFailure(runId: string, ticketId: string, launchCon
     // replaced reservation records remain ambiguous and are not terminalized.
     if (await states.reservationOwner(state.ticketId) !== state.runId) return;
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000) || "background controller bootstrap failed";
-    const endedAt = new Date().toISOString();
+    const endedAt = new Date(Math.max(Date.now(), Date.parse(state.startedAt ?? state.updatedAt), Date.parse(state.updatedAt))).toISOString();
     const terminal = {
       ...state,
       version: state.version + 1,

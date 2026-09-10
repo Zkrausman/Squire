@@ -591,12 +591,13 @@ test("failed reservation cleanup cannot remove a replacement acquired by another
   }
 });
 
-test("child bootstrap failure persists through the original state-directory fallback", async () => {
+test("child bootstrap failure clamps a future reservation timestamp and releases the reservation", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-fallback-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = "b".repeat(64);
-    const reserved = await controller(states).reserve(REQUEST, { executionMode: "background", launchConfigDigest: digest });
+    const reservedAt = "9999-12-31T23:59:59.999Z";
+    const reserved = await controller(states, new Date(reservedAt)).reserve(REQUEST, { executionMode: "background", launchConfigDigest: digest });
     const exit = await spawnExit(process.execPath, [
       path.resolve("dist/src/personal/cli.js"), "run", REQUEST.ticketId,
       "--config", path.join(root, "missing-config.json"),
@@ -606,6 +607,10 @@ test("child bootstrap failure persists through the original state-directory fall
     assert.equal(exit, 1);
     const failed = await states.read(reserved.runId);
     assert.equal(failed?.status, "failed");
+    assert.equal(failed?.lifecycle, "failed");
+    assert.equal(failed?.launchState, "failed");
+    assert.equal(failed?.endedAt, reservedAt);
+    assert.equal(failed?.updatedAt, reservedAt);
     assert.match(failed?.lastError ?? "", /ENOENT/);
     assert.equal(await states.reservationOwner(REQUEST.ticketId), undefined);
   } finally {
