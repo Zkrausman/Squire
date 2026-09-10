@@ -43,6 +43,11 @@ export class NodeBackgroundLauncher implements BackgroundLauncher {
 
   async launch(request: BackgroundLaunchRequest): Promise<BackgroundLaunchResult> {
     validateRequest(request);
+    // An explicitly supplied environment is a launch snapshot, not a set of
+    // additions to the parent's mutable environment. Clone it before any
+    // asynchronous filesystem work so variables added before spawn cannot
+    // change the detached child's configuration roots or other bindings.
+    const launchEnvironment: NodeJS.ProcessEnv = { ...(request.env ?? process.env) };
     const stdoutPath = path.resolve(request.stdoutPath);
     const stderrPath = path.resolve(request.stderrPath);
     await mkdir(path.dirname(stdoutPath), { recursive: true, mode: 0o700 });
@@ -63,7 +68,7 @@ export class NodeBackgroundLauncher implements BackgroundLauncher {
       throwIfAborted(request.signal);
       const child = this.#spawn(request.executable, [...request.args], {
         ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
-        env: { ...process.env, ...(request.env ?? {}) },
+        env: launchEnvironment,
         // A background launcher cannot silently degrade to a foreground child.
         detached: true,
         windowsHide: true,

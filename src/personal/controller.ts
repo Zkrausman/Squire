@@ -43,7 +43,6 @@ export interface PersonalRunMetadata {
   readonly stdoutPath?: string | null;
   readonly stderrPath?: string | null;
   readonly controllerPid?: number | null;
-  readonly sourceSha?: string;
   readonly launchConfigDigest?: string;
 }
 
@@ -151,7 +150,6 @@ export class PersonalMvpController {
       ...(options.stdoutPath !== undefined ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath !== undefined ? { stderrPath: options.stderrPath } : {}),
       controllerPid: options.controllerPid ?? (executionMode === "foreground" ? this.#controllerPid ?? null : null),
-      ...(options.sourceSha !== undefined ? { sourceSha: options.sourceSha } : {}),
       ...(options.launchConfigDigest !== undefined ? { launchConfigDigest: options.launchConfigDigest } : {}),
     });
 
@@ -254,6 +252,11 @@ export class PersonalMvpController {
     // controller. Falling back to the config path would make a bootstrap
     // failure unrecordable when an embedder uses a separate state store.
     const stateDirectory = resolveBackgroundStateDirectory(this.#states, options.stateDirectory);
+    // An explicitly supplied environment is the caller's immutable launch
+    // snapshot. Do not merge ambient variables into it later: a variable such
+    // as SQUIRE_DATA_DIR appearing during reservation/source binding must not
+    // redirect the detached child to a different runtime-data root.
+    const launchEnvironment: NodeJS.ProcessEnv = { ...(options.env ?? process.env) };
     const defaultLogs = backgroundLogPaths(options.logsDirectory ?? stateDirectory, reservedId);
     const stdoutPath = options.stdoutPath !== undefined ? absolutePath(options.stdoutPath, "stdout log path") : defaultLogs.stdoutPath;
     const stderrPath = options.stderrPath !== undefined ? absolutePath(options.stderrPath, "stderr log path") : defaultLogs.stderrPath;
@@ -262,10 +265,6 @@ export class PersonalMvpController {
     // before this check; it is not a continuous ancestor-integrity guarantee.
     await assertBackgroundDestinationsOutsideRepository(request.repositoryPath, [stateDirectory, stdoutPath, stderrPath]);
     assertBackgroundStateStoreMatches(this.#states, stateDirectory);
-    const launchEnvironment: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...(options.env ?? {}),
-    };
     launchEnvironment["SQUIRE_STATE_DIRECTORY"] = stateDirectory;
 
     if (!/^[a-f0-9]{64}$/u.test(options.launchConfigDigest)) throw new Error("launch config digest is invalid");
@@ -614,7 +613,7 @@ function initialState(
   profiles: NonNullable<PersonalRunState["profiles"]>,
   planSelection: NonNullable<PersonalRunState["planSelection"]>,
   startedAt: string,
-  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "sourceSha" | "launchConfigDigest">,
+  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "launchConfigDigest">,
 ): PersonalRunState {
   const background = metadata.executionMode === "background";
   return {

@@ -165,6 +165,38 @@ test("detached launcher uses file descriptors, no shell/window, and unrefs after
   }
 });
 
+test("detached launcher treats a supplied environment as an immutable snapshot", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-env-"));
+  const previous = process.env["SQUIRE_DATA_DIR"];
+  try {
+    const suppliedEnvironment: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "/usr/bin" };
+    process.env["SQUIRE_DATA_DIR"] = path.join(root, "ambient-data");
+    class FakeChild extends EventEmitter {
+      pid = 322;
+      unref(): void {}
+    }
+    const fakeSpawn = ((_command: string, _args: readonly string[], options: Record<string, unknown>) => {
+      const environment = options["env"] as NodeJS.ProcessEnv;
+      assert.equal(environment["SQUIRE_DATA_DIR"], undefined);
+      assert.deepEqual(environment, suppliedEnvironment);
+      const child = new FakeChild();
+      setImmediate(() => child.emit("spawn"));
+      return child;
+    }) as unknown as typeof nodeSpawn;
+    await new NodeBackgroundLauncher({ spawn: fakeSpawn }).launch({
+      executable: process.execPath,
+      args: [],
+      env: suppliedEnvironment,
+      stdoutPath: path.join(root, "stdout.log"),
+      stderrPath: path.join(root, "stderr.log"),
+    });
+  } finally {
+    if (previous === undefined) delete process.env["SQUIRE_DATA_DIR"];
+    else process.env["SQUIRE_DATA_DIR"] = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("POSIX log opening rejects a final-component symlink", { skip: process.platform === "win32" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-log-link-"));
   try {
@@ -338,6 +370,36 @@ test("a short-lived launcher parent exits before the detached child and logs sur
     assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
     assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("background bootstrap transport does not add ambient variables to a captured environment", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-state-transport-"));
+  const previous = process.env["SQUIRE_DATA_DIR"];
+  try {
+    delete process.env["SQUIRE_DATA_DIR"];
+    const capturedEnvironment: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "/usr/bin" };
+    process.env["SQUIRE_DATA_DIR"] = path.join(root, "ambient-data");
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    let launchEnvironment: NodeJS.ProcessEnv | undefined;
+    await controller(states).startBackground(REQUEST, {
+      env: capturedEnvironment,
+      launcher: { async launch(request) {
+        launchEnvironment = request.env;
+        return { pid: 777 };
+      } },
+      cliPath: path.resolve("dist/src/personal/cli.js"),
+      configPath: path.resolve("squire.config.example.json"),
+      logsDirectory: path.join(root, "logs"),
+      launchConfigDigest: "d".repeat(64),
+    });
+    assert.equal(launchEnvironment?.["SQUIRE_DATA_DIR"], undefined);
+    assert.equal(launchEnvironment?.["SQUIRE_STATE_DIRECTORY"], states.directory);
+    assert.equal(launchEnvironment?.["PATH"], capturedEnvironment["PATH"]);
+  } finally {
+    if (previous === undefined) delete process.env["SQUIRE_DATA_DIR"];
+    else process.env["SQUIRE_DATA_DIR"] = previous;
     await rm(root, { recursive: true, force: true });
   }
 });
