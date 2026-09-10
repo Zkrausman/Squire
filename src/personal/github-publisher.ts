@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { CommandPort } from "./command.js";
 import { validatePhaseResultShape } from "./phase-result.js";
 import { PERSONAL_PHASES, type PersonalPhase, type PublicationInput, type PublicationPort, type PublicationResult, type RetroPhaseResult } from "./types.js";
@@ -43,6 +44,8 @@ export interface GitHubPublisherOptions {
   readonly tokens: GitHubTokenProvider;
   readonly gitExecutable?: string;
   readonly ghExecutable?: string;
+  /** Bounded GitHub read-after-write convergence delay; tests may set zero. */
+  readonly consistencyDelayMs?: number;
 }
 
 interface PullRequestRecord {
@@ -62,12 +65,15 @@ export class GitHubPublisher implements PublicationPort {
   readonly #tokens: GitHubTokenProvider;
   readonly #git: string;
   readonly #gh: string;
+  readonly #consistencyDelayMs: number;
 
   constructor(options: GitHubPublisherOptions) {
     this.#commands = options.commands;
     this.#tokens = options.tokens;
     this.#git = options.gitExecutable ?? "git";
     this.#gh = options.ghExecutable ?? "gh";
+    this.#consistencyDelayMs = options.consistencyDelayMs ?? 500;
+    if (!Number.isSafeInteger(this.#consistencyDelayMs) || this.#consistencyDelayMs < 0 || this.#consistencyDelayMs > 5_000) throw new Error("invalid GitHub consistency delay");
   }
 
   async publish(input: PublicationInput, signal?: AbortSignal): Promise<PublicationResult> {
@@ -114,8 +120,7 @@ export class GitHubPublisher implements PublicationPort {
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "cat-file", "-e", `${existing.headRefOid}^{commit}`] }, signal);
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "merge-base", "--is-ancestor", existing.headRefOid, input.head] }, signal);
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", `--force-with-lease=refs/heads/${input.branch}:${existing.headRefOid}`, remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
-            const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
-            if (!samePullRequest(existing, refreshed) || refreshed.headRefOid !== input.head || refreshed.body !== existing.body) throw new Error("matching pull request changed during fast-forward publication");
+            const refreshed = await this.#waitForHead(input, existing, input.head, ghEnvironment, signal);
             confirmed = refreshed;
             body = reconcilePullRequestBody(refreshed.body, input, existing.headRefOid);
           } else {
@@ -125,8 +130,7 @@ export class GitHubPublisher implements PublicationPort {
             body = initialBody;
           }
           await this.#editPullRequestBody(input, confirmed.number, body, temporary, ghEnvironment, signal);
-          const verified = await this.#findPullRequest(input, ghEnvironment, signal);
-          if (!samePullRequest(confirmed, verified) || verified.headRefOid !== input.head || verified.body !== body) throw new Error("matching pull request changed during body reconciliation");
+          const verified = await this.#waitForBody(input, confirmed, body, ghEnvironment, signal);
           return { url: verified.url, number: verified.number, reused: true };
         }
 
@@ -150,8 +154,7 @@ export class GitHubPublisher implements PublicationPort {
           if (reconciled?.headRefOid === input.head) {
             const body = reconcilePullRequestBody(reconciled.body, input, reconciled.headRefOid);
             await this.#editPullRequestBody(input, reconciled.number, body, temporary, ghEnvironment, signal);
-            const verified = await this.#findPullRequest(input, ghEnvironment, signal);
-            if (!samePullRequest(reconciled, verified) || verified.headRefOid !== input.head || verified.body !== body) throw new Error("matching pull request changed during body reconciliation");
+            const verified = await this.#waitForBody(input, reconciled, body, ghEnvironment, signal);
             return { url: verified.url, number: verified.number, reused: true };
           }
           throw error;
@@ -164,6 +167,28 @@ export class GitHubPublisher implements PublicationPort {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  }
+
+  async #waitForHead(input: PublicationInput, previous: PullRequestRecord, expectedHead: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<PullRequestRecord> {
+    for (let attempt = 1; attempt <= 12; attempt += 1) {
+      const current = await this.#findPullRequest(input, environment, signal);
+      if (!samePullRequest(previous, current) || current.body !== previous.body) throw new Error("matching pull request changed during fast-forward publication");
+      if (current.headRefOid === expectedHead) return current;
+      if (current.headRefOid !== previous.headRefOid || attempt === 12) throw new Error("matching pull request changed during fast-forward publication");
+      await delay(this.#consistencyDelayMs, undefined, { signal });
+    }
+    throw new Error("matching pull request changed during fast-forward publication");
+  }
+
+  async #waitForBody(input: PublicationInput, previous: PullRequestRecord, expectedBody: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<PullRequestRecord> {
+    for (let attempt = 1; attempt <= 12; attempt += 1) {
+      const current = await this.#findPullRequest(input, environment, signal);
+      if (!samePullRequest(previous, current) || current.headRefOid !== input.head) throw new Error("matching pull request changed during body reconciliation");
+      if (current.body === expectedBody) return current;
+      if (current.body !== previous.body || attempt === 12) throw new Error("matching pull request changed during body reconciliation");
+      await delay(this.#consistencyDelayMs, undefined, { signal });
+    }
+    throw new Error("matching pull request changed during body reconciliation");
   }
 
   async #editPullRequestBody(

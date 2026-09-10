@@ -22,7 +22,7 @@ class FakeCommands implements CommandPort {
   listCalls = 0;
   currentBody: string | undefined;
   constructor(
-    readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "diverged" | "concurrent" | "exact-concurrent" | "multiple",
+    readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "eventual-head" | "diverged" | "concurrent" | "exact-concurrent" | "multiple",
     readonly mutateRecord?: (record: Record<string, unknown>) => Record<string, unknown>,
   ) {}
   async run(request: CommandRequest): Promise<CommandResult> {
@@ -34,6 +34,8 @@ class FakeCommands implements CommandPort {
       const exists = this.behavior !== "create" && (this.behavior !== "ambiguous" || this.listCalls > 1);
       const headRefOid = this.behavior === "fast-forward"
         ? (this.listCalls === 1 ? PREVIOUS_HEAD : HEAD)
+        : this.behavior === "eventual-head"
+          ? (this.listCalls <= 2 ? PREVIOUS_HEAD : HEAD)
         : this.behavior === "concurrent"
           ? (this.listCalls === 1 ? PREVIOUS_HEAD : CONCURRENT_HEAD)
           : this.behavior === "exact-concurrent"
@@ -173,6 +175,18 @@ test("publisher safely fast-forwards one existing PR before reconciling its body
     assert.ok(commands.requests.some(request => request.args.includes("--is-ancestor") && request.args.includes(PREVIOUS_HEAD) && request.args.includes(HEAD)));
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
     assert.equal(commands.writtenBodies.at(-1)?.match(/^## Retro$/gmu)?.length, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("publisher tolerates bounded stale GitHub reads after a leased fast-forward", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    const commands = new FakeCommands("eventual-head");
+    const published = await new GitHubPublisher({ commands, tokens, consistencyDelayMs: 0 }).publish(await input(directory));
+    assert.equal(published.reused, true);
+    assert.equal(commands.listCalls, 4);
+    assert.equal(commands.requests.filter(request => request.args.includes("push")).length, 1);
+    assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
