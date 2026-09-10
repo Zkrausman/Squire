@@ -22,13 +22,14 @@ class FakeCommands implements CommandPort {
   listCalls = 0;
   currentBody: string | undefined;
   constructor(
-    readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "eventual-head" | "diverged" | "concurrent" | "exact-concurrent" | "multiple",
+    readonly behavior: "existing" | "create" | "ambiguous" | "fast-forward" | "eventual-head" | "stale-body" | "diverged" | "concurrent" | "exact-concurrent" | "multiple",
     readonly mutateRecord?: (record: Record<string, unknown>) => Record<string, unknown>,
   ) {}
   async run(request: CommandRequest): Promise<CommandResult> {
     this.requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
     if (request.command === "git" && request.args.includes("rev-parse")) return { stdout: `${HEAD}\n`, stderr: "" };
-    if (request.command === "git" && request.args.includes("merge-base") && this.behavior === "diverged") throw new Error("not an ancestor");
+    if (request.command === "git" && request.args.includes("cat-file") && request.args.some(argument => argument.startsWith("e".repeat(40)))) throw new Error("missing commit");
+    if (request.command === "git" && request.args.includes("merge-base") && (this.behavior === "diverged" || (request.args.includes(HEAD) && request.args.includes(PREVIOUS_HEAD) && request.args.indexOf(HEAD) < request.args.indexOf(PREVIOUS_HEAD)))) throw new Error("not an ancestor");
     if (request.command === "gh" && request.args[1] === "list") {
       this.listCalls += 1;
       const exists = this.behavior !== "create" && (this.behavior !== "ambiguous" || this.listCalls > 1);
@@ -43,10 +44,11 @@ class FakeCommands implements CommandPort {
           : this.behavior === "diverged"
             ? PREVIOUS_HEAD
             : HEAD;
+      const validatedHead = this.behavior === "stale-body" ? PREVIOUS_HEAD : headRefOid;
       const body = [
         "## AIDEV-1",
         "",
-        `Validated head: \`${headRefOid}\``,
+        `Validated head: \`${validatedHead}\``,
         "",
         "## Squire phases",
         "",
@@ -158,6 +160,18 @@ test("publisher reuses one exact existing PR without pushing or merging", async 
     assert.match(commands.writtenBodies[0] ?? "", /- Keep phase isolation explicit/);
     assert.match(commands.writtenBodies[0] ?? "", /- \[ \] Document the next proof run/);
     assertTokenScope(commands.requests);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("publisher recovers a provably stale body after a prior partial publication", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    const commands = new FakeCommands("stale-body");
+    const published = await new GitHubPublisher({ commands, tokens }).publish(await input(directory));
+    assert.equal(published.reused, true);
+    assert.equal(commands.requests.some(request => request.args.includes("push")), false);
+    assert.ok(commands.requests.some(request => request.args.includes("--is-ancestor") && request.args.includes(PREVIOUS_HEAD) && request.args.includes(HEAD)));
+    assert.match(commands.writtenBodies.at(-1) ?? "", new RegExp("Validated head: `" + HEAD + "`"));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

@@ -108,7 +108,7 @@ export class GitHubPublisher implements PublicationPort {
           // Validate and prepare the body before the first possible remote
           // mutation. A correction run must not advance a branch and only then
           // discover that an owner-edited PR body is ambiguous.
-          const initialBody = reconcilePullRequestBody(existing.body, input, existing.headRefOid);
+          const initialBody = await this.#prepareReconciledBody(checkout, input, existing, signal);
           let confirmed: PullRequestRecord;
           let body: string;
           if (existing.headRefOid !== input.head) {
@@ -122,7 +122,7 @@ export class GitHubPublisher implements PublicationPort {
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", `--force-with-lease=refs/heads/${input.branch}:${existing.headRefOid}`, remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
             const refreshed = await this.#waitForHead(input, existing, input.head, ghEnvironment, signal);
             confirmed = refreshed;
-            body = reconcilePullRequestBody(refreshed.body, input, existing.headRefOid);
+            body = initialBody;
           } else {
             const refreshed = await this.#findPullRequest(input, ghEnvironment, signal);
             if (!samePullRequest(existing, refreshed) || refreshed.headRefOid !== input.head || refreshed.body !== existing.body) throw new Error("matching pull request changed before body reconciliation");
@@ -152,7 +152,7 @@ export class GitHubPublisher implements PublicationPort {
         } catch (error) {
           const reconciled = await this.#findPullRequest(input, ghEnvironment, signal);
           if (reconciled?.headRefOid === input.head) {
-            const body = reconcilePullRequestBody(reconciled.body, input, reconciled.headRefOid);
+            const body = await this.#prepareReconciledBody(checkout, input, reconciled, signal);
             await this.#editPullRequestBody(input, reconciled.number, body, temporary, ghEnvironment, signal);
             const verified = await this.#waitForBody(input, reconciled, body, ghEnvironment, signal);
             return { url: verified.url, number: verified.number, reused: true };
@@ -167,6 +167,20 @@ export class GitHubPublisher implements PublicationPort {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  }
+
+  async #prepareReconciledBody(checkout: string, input: PublicationInput, pullRequest: PullRequestRecord, signal?: AbortSignal): Promise<string> {
+    const validatedHead = pullRequestValidatedHead(pullRequest.body);
+    const reconciled = reconcilePullRequestBody(pullRequest.body, input, validatedHead);
+    if (validatedHead !== pullRequest.headRefOid) {
+      try {
+        await this.#commands.run({ command: this.#git, args: ["-C", checkout, "cat-file", "-e", `${validatedHead}^{commit}`] }, signal);
+        await this.#commands.run({ command: this.#git, args: ["-C", checkout, "merge-base", "--is-ancestor", validatedHead, pullRequest.headRefOid] }, signal);
+      } catch {
+        throw new Error("matching pull request has an unexpected Squire body");
+      }
+    }
+    return reconciled;
   }
 
   async #waitForHead(input: PublicationInput, previous: PullRequestRecord, expectedHead: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<PullRequestRecord> {
@@ -361,6 +375,15 @@ function retroSection(input: PublicationInput): string {
 
 function markdownListItem(value: string): string {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replaceAll("\n", "\n  ");
+}
+
+function pullRequestValidatedHead(body: string): string {
+  if (body.length > 1_900_000) throw new Error("matching pull request has an unexpected Squire body");
+  const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+  const index = uniqueLineIndex(lines, /^Validated head: `[a-f0-9]{40,64}`$/u);
+  const match = index === undefined ? undefined : /^Validated head: `([a-f0-9]{40,64})`$/u.exec(lines[index] ?? "");
+  if (!match) throw new Error("matching pull request has an unexpected Squire body");
+  return match[1]!;
 }
 
 function reconcilePullRequestBody(body: string, input: PublicationInput, expectedValidatedHead: string): string {
