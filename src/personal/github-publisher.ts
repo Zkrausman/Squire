@@ -414,7 +414,7 @@ function reconcilePullRequestBody(body: string, input: PublicationInput, expecte
   const squireHeadings = lines.flatMap((line, index) => /^##\s+Squire phases\s*$/u.test(line) ? [index] : []);
   const retroHeadings = lines.flatMap((line, index) => /^##\s+Retro\s*$/iu.test(line) ? [index] : []);
   const squireIndex = squireHeadings.length === 1 ? squireHeadings[0] : undefined;
-  if (squireIndex === undefined || retroHeadings.length !== 1 || retroHeadings[0]! <= squireIndex || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
+  if (squireIndex === undefined || retroHeadings.length !== 1 || retroHeadings[0]! <= squireIndex || ticketIndex >= validatedIndex || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
   const nextHeading = lines.findIndex((line, index) => index > squireIndex && /^##\s+/u.test(line));
   const phaseEnd = nextHeading === -1 ? lines.length : nextHeading;
   for (const phase of PERSONAL_PHASES) {

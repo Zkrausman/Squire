@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -134,8 +134,8 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.deepEqual(runtime?.args.slice(0, 5), ["exec", "-u", "1000:1000", "squire-aidev-1-0123456789", "sh"]);
   assert.match(runtime?.args.at(-1) ?? "", /npm ci --prefix \/ticket\/runtime --ignore-scripts --no-audit --no-fund/u);
   assert.match(runtime?.args.at(-1) ?? "", /node \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
-  assert.match(runtime?.args.at(-1) ?? "", /if \[ -e \/ticket\/workspace\/.github\/runtime\/package\.json \] \|\| \[ -e \/ticket\/workspace\/.github\/runtime\/package-lock\.json \] \|\| \[ -e \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \]; then/u);
-  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/.github\/runtime\/package-lock\.json/u);
+  assert.match(runtime?.args.at(-1) ?? "", /if \[ -e \/ticket\/workspace\/.github\/runtime\/package\.json \] \|\| \[ -L \/ticket\/workspace\/.github\/runtime\/package\.json \].*\[ -e \/ticket\/workspace\/.github\/runtime\/package-lock\.json \].*\[ -e \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \].*\[ -L \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \]; then/u);
+  assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/.github\/runtime\/package-lock\.json && test ! -L \/ticket\/workspace\/.github\/runtime\/package-lock\.json/u);
   assert.equal(commands.runtimeRequests.length, 1);
   await assert.rejects(readFile(path.join(sandboxRoot, "ticket/runtime/package.json")), error => (error as NodeJS.ErrnoException).code === "ENOENT");
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
@@ -188,6 +188,28 @@ test("declared ticket runtime is provisioned and incomplete declarations fail cl
     const commands = new SandboxShim(sandboxRoot, "squire-aidev-1-runtime-bad");
     const workspace = new DockerSandboxWorkspace({ commands, bridgeRoot: path.join(root, "bridges"), stagingRoot: path.join(root, "staging") });
     await assert.rejects(workspace.prepare({ runId: "aidev-1-runtime-bad", ticketId: "AIDEV-1", sandbox: "squire-aidev-1-runtime-bad", branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), repositoryPath: repository, sourceRef: "HEAD" }), /sh failed/u);
+    assert.equal(commands.runtimeRequests.length, 1);
+  });
+
+  await t.test("symlinked declaration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "squire-runtime-symlink-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const repository = path.join(root, "repository");
+    await exec("git", ["init", "-q", repository]);
+    await git(repository, ["config", "user.name", "Test"]);
+    await git(repository, ["config", "user.email", "test@example.invalid"]);
+    await mkdir(path.join(repository, ".github/runtime"), { recursive: true });
+    await writeFile(path.join(repository, "runtime-package.json"), '{"name":"linked","version":"1.0.0"}\n');
+    await symlink("../../runtime-package.json", path.join(repository, ".github/runtime/package.json"));
+    await writeFile(path.join(repository, ".github/runtime/package-lock.json"), '{"name":"linked","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"linked","version":"1.0.0"}}}\n');
+    await writeFile(path.join(repository, ".github/validate-ticket-runtime.mjs"), "process.exit(0);\n");
+    await git(repository, ["add", "."]);
+    await git(repository, ["commit", "-qm", "symlinked runtime"]);
+
+    const sandboxRoot = path.join(root, "sandbox");
+    const commands = new SandboxShim(sandboxRoot, "squire-aidev-1-runtime-link");
+    const workspace = new DockerSandboxWorkspace({ commands, bridgeRoot: path.join(root, "bridges"), stagingRoot: path.join(root, "staging") });
+    await assert.rejects(workspace.prepare({ runId: "aidev-1-runtime-link", ticketId: "AIDEV-1", sandbox: "squire-aidev-1-runtime-link", branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), repositoryPath: repository, sourceRef: "HEAD" }), /sh failed/u);
     assert.equal(commands.runtimeRequests.length, 1);
   });
 });

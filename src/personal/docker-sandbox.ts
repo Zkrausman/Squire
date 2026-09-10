@@ -107,10 +107,13 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       // Only repositories that declare the pinned ticket runtime need the
       // additional installation. A normal configured checkout must remain
       // usable without Squire's repository-specific CI fixtures.
-      "if [ -e /ticket/workspace/.github/runtime/package.json ] || [ -e /ticket/workspace/.github/runtime/package-lock.json ] || [ -e /ticket/workspace/.github/validate-ticket-runtime.mjs ]; then",
-      "  test -f /ticket/workspace/.github/runtime/package.json",
-      "  test -f /ticket/workspace/.github/runtime/package-lock.json",
-      "  test -f /ticket/workspace/.github/validate-ticket-runtime.mjs",
+      // `-e` follows symlinks, so include `-L` in the declaration probe and
+      // reject symlinked declarations below. A repository must not bypass the
+      // pinned-runtime contract with a dangling or outside-tree link.
+      "if [ -e /ticket/workspace/.github/runtime/package.json ] || [ -L /ticket/workspace/.github/runtime/package.json ] || [ -e /ticket/workspace/.github/runtime/package-lock.json ] || [ -L /ticket/workspace/.github/runtime/package-lock.json ] || [ -e /ticket/workspace/.github/validate-ticket-runtime.mjs ] || [ -L /ticket/workspace/.github/validate-ticket-runtime.mjs ]; then",
+      "  test -f /ticket/workspace/.github/runtime/package.json && test ! -L /ticket/workspace/.github/runtime/package.json",
+      "  test -f /ticket/workspace/.github/runtime/package-lock.json && test ! -L /ticket/workspace/.github/runtime/package-lock.json",
+      "  test -f /ticket/workspace/.github/validate-ticket-runtime.mjs && test ! -L /ticket/workspace/.github/validate-ticket-runtime.mjs",
       "  cp /ticket/workspace/.github/runtime/package.json /ticket/runtime/package.json",
       "  cp /ticket/workspace/.github/runtime/package-lock.json /ticket/runtime/package-lock.json",
       "  npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",

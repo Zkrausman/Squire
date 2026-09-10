@@ -240,6 +240,11 @@ test("publisher rejects mismatched PR identity, malformed bodies, and multiple m
       ["malformed duplicate validated head marker", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\nValidated head: not-a-sha\n` }))],
       ["unexpected validated head", new FakeCommands("fast-forward", record => ({ ...record, body: String(record["body"]).replace(/Validated head: `[^`]+`/u, `Validated head: \`${"e".repeat(40)}\``) }))],
       ["candidate validated head on old PR", new FakeCommands("fast-forward", record => ({ ...record, body: String(record["body"]).replace(/Validated head: `[^`]+`/u, `Validated head: \`${HEAD}\``) }))],
+      ["validated head before ticket", new FakeCommands("fast-forward", record => {
+        const body = String(record["body"]);
+        const marker = body.match(/^Validated head: `[^`]+`\n\n/mu)?.[0] ?? "";
+        return { ...record, body: `${marker}${body.replace(marker, "")}` };
+      })],
       ["Retro before Squire phases", new FakeCommands("fast-forward", record => {
         const body = String(record["body"]);
         const retro = body.indexOf("\n## Retro");
