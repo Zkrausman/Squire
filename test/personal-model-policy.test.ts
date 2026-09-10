@@ -31,7 +31,8 @@ test("Plan assignment is stable, identity-bound, and reaches both equal buckets"
     ["example/repo", "AIDEV-2"],
   ] as const;
   const selections = pairs.map(([repository, ticket]) => resolvePlanSelection(repository, ticket));
-  assert.deepEqual(new Set(selections.map(selection => selection.bucket)), new Set(["a", "b"]));
+  assert.deepEqual(selections.map(selection => selection.bucket), ["b", "a"]);
+  assert.deepEqual(selections.map(selection => selection.profile), [policy.plan[1], policy.plan[0]]);
   for (const [repository, ticket] of pairs) {
     const first = resolvePlanSelection(repository, ticket);
     assert.equal(selectPlanBucket(repository, ticket), first.bucket);
@@ -52,6 +53,8 @@ test("config resolver uses per-user Windows/Linux defaults and explicit preceden
   assert.equal(defaultConfigPath("win32", { USERPROFILE: "C:\\Users\\zkrau" }), "C:\\Users\\zkrau\\.squire\\config.json");
   assert.equal(defaultConfigPath({ platform: "linux", env: { XDG_CONFIG_HOME: "/tmp/config", HOME: "/home/user" } }), "/tmp/config/squire/config.json");
   assert.equal(defaultConfigPath({ platform: "linux", env: { HOME: "/home/user" } }), "/home/user/.config/squire/config.json");
+  assert.equal(resolveConfigPath(undefined, { platform: "win32", env: { SQUIRE_CONFIG: "env\\\\config.json", USERPROFILE: "C:\\Users\\zkrau" }, cwd: "C:\\checkout" }), "C:\\checkout\\env\\config.json");
+  assert.equal(resolveConfigPath("explicit.json", { platform: "win32", env: { SQUIRE_CONFIG: "ignored.json", USERPROFILE: "C:\\Users\\zkrau" }, cwd: "C:\\checkout" }), "C:\\checkout\\explicit.json");
   assert.equal(resolveConfigPath(undefined, { platform: "linux", env: { SQUIRE_CONFIG: "/override/config.json", HOME: "/home/user" } }), "/override/config.json");
   assert.equal(resolveConfigPath("explicit.json", { platform: "linux", env: { SQUIRE_CONFIG: "/ignored/config.json" }, cwd: "/checkout" }), "/checkout/explicit.json");
 });
@@ -77,6 +80,29 @@ test("config paths resolve beside the selected user config, never beside a repos
     assert.equal(loaded.paths.state, path.join(user, "state"));
     assert.equal(loaded.sandbox.piAuthFile, path.join(user, "pi-auth.json"));
     assert.equal(loaded.github.tokenCommand[0], path.join(user, "token-helper"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("omitted model policy resolves to a detached copy of the approved defaults", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-default-policy-"));
+  try {
+    const file = path.join(root, "config.json");
+    await writeFile(file, JSON.stringify({
+      repository: { slug: "example/repo", path: ".", sourceRef: "main", baseBranch: "main" },
+      paths: { state: "state", bridges: "bridges", staging: "staging" },
+      linear: { apiKeyEnv: "LINEAR_API_KEY" },
+      github: { tokenCommand: ["token-helper"] },
+      sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/runtime/pi-agent" },
+      testCommands: ["npm test"],
+    }));
+    const loaded = await loadPersonalMvpConfig(file);
+    assert.deepEqual(loaded.modelPolicy, policy);
+    assert.deepEqual(loaded.profiles, policy);
+    assert.notEqual(loaded.modelPolicy, policy);
+    assert.notEqual(loaded.modelPolicy.plan, policy.plan);
+    assert.notEqual(loaded.modelPolicy.plan[0], policy.plan[0]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

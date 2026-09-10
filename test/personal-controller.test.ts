@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PersonalMvpController } from "../src/personal/controller.js";
-import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
+import { APPROVED_PERSONAL_MODEL_POLICY, resolvePhaseProfiles, type PersonalModelPolicy } from "../src/personal/model-policy.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
 import type { CandidateBundle, PersonalPhase, PersonalRunState, PhaseInput, PhaseResult, PublicationInput, RunStatePort, WorkspacePort } from "../src/personal/types.js";
 
@@ -11,8 +11,9 @@ const REMEDIATED = "c".repeat(40);
 
 class MemoryStates implements RunStatePort {
   state: PersonalRunState | undefined;
-  async create(state: PersonalRunState): Promise<void> { assert.equal(this.state, undefined); this.state = state; }
-  async save(state: PersonalRunState): Promise<void> { assert.equal(state.version, (this.state?.version ?? 0) + 1); this.state = state; }
+  constructor(readonly events: string[] = []) {}
+  async create(state: PersonalRunState): Promise<void> { assert.equal(this.state, undefined); this.events.push("state:create"); this.state = state; }
+  async save(state: PersonalRunState): Promise<void> { assert.equal(state.version, (this.state?.version ?? 0) + 1); this.events.push("state:save"); this.state = state; }
   async findActive(ticketId: string): Promise<PersonalRunState | undefined> { return this.state?.ticketId === ticketId && this.state.status === "running" ? this.state : undefined; }
 }
 
@@ -20,7 +21,8 @@ class MemoryWorkspace implements WorkspacePort {
   head = BASE;
   clean = true;
   cleanChecks = 0;
-  async prepare(): Promise<{ sandbox: string; baseSha: string; head: string }> { return { sandbox: "squire-aidev-1-0123456789", baseSha: BASE, head: BASE }; }
+  constructor(readonly events: string[] = []) {}
+  async prepare(): Promise<{ sandbox: string; baseSha: string; head: string }> { this.events.push("workspace:prepare"); return { sandbox: "squire-aidev-1-0123456789", baseSha: BASE, head: BASE }; }
   async currentHead(): Promise<string> { return this.head; }
   async assertClean(): Promise<void> { this.cleanChecks += 1; if (!this.clean) throw new Error("workspace has uncommitted changes"); }
   async exportBundle(input: { runId: string; sandbox: string; branch: string; baseSha: string; head: string }): Promise<CandidateBundle> {
@@ -47,9 +49,10 @@ function phaseResult(input: PhaseInput, head: string, status: PhaseResult["statu
   return { ...common, phase: "retro", details: { lessons: ["Keep exact HEAD gates explicit"], followUps: feedback } };
 }
 
-function createHarness(runPhase: (input: PhaseInput, workspace: MemoryWorkspace) => Promise<PhaseResult>) {
-  const states = new MemoryStates();
-  const workspace = new MemoryWorkspace();
+function createHarness(runPhase: (input: PhaseInput, workspace: MemoryWorkspace) => Promise<PhaseResult>, modelPolicy: PersonalModelPolicy = APPROVED_PERSONAL_MODEL_POLICY) {
+  const events: string[] = [];
+  const states = new MemoryStates(events);
+  const workspace = new MemoryWorkspace(events);
   const calls: PersonalPhase[] = [];
   const inputs: PhaseInput[] = [];
   const publications: PublicationInput[] = [];
@@ -59,10 +62,11 @@ function createHarness(runPhase: (input: PhaseInput, workspace: MemoryWorkspace)
     phases: { async run(input) { calls.push(input.phase); inputs.push(input); return runPhase(input, workspace); } },
     publication: { async publish(input) { publications.push(input); return { url: "https://github.com/example/repo/pull/1", number: 1, reused: false }; } },
     states,
+    modelPolicy,
     now: () => new Date("2026-09-10T00:00:00.000Z"),
     newId: () => "01234567-89ab-cdef-0123-456789abcdef",
   });
-  return { controller, states, workspace, calls, inputs, publications };
+  return { controller, states, workspace, calls, inputs, publications, events };
 }
 
 const REQUEST = { ticketId: "AIDEV-1", repository: "example/repo", repositoryPath: "/source/repo", sourceRef: "refs/remotes/origin/main", baseBranch: "main" } as const;
@@ -70,6 +74,12 @@ const REQUEST = { ticketId: "AIDEV-1", repository: "example/repo", repositoryPat
 async function implementAndPass(input: PhaseInput, workspace: MemoryWorkspace): Promise<PhaseResult> {
   if (input.phase === "implement") workspace.head = IMPLEMENTED;
   return phaseResult(input, workspace.head);
+}
+
+function replacePolicy(policy: PersonalModelPolicy): void {
+  for (const profile of [policy.plan[0], policy.plan[1], policy.implement, policy.review, policy.test, policy.retro]) {
+    Object.assign(profile, { provider: "changed-provider", model: "changed-model", thinking: "low" });
+  }
 }
 
 test("personal controller completes one ticket and publishes only fresh passing gates", async () => {
@@ -85,6 +95,15 @@ test("personal controller completes one ticket and publishes only fresh passing 
   assert.equal(harness.publications[0]?.phases.review.outputHead, IMPLEMENTED);
   assert.equal(harness.publications[0]?.phases.test.outputHead, IMPLEMENTED);
   assert.equal(harness.publications[0]?.phases.retro.outputHead, IMPLEMENTED);
+});
+
+test("resolved profiles are persisted before workspace preparation", async () => {
+  const harness = createHarness(implementAndPass);
+  await harness.controller.run(REQUEST);
+  assert.equal(harness.events[0], "state:create");
+  assert.ok(harness.events.indexOf("state:create") < harness.events.indexOf("workspace:prepare"));
+  assert.deepEqual(harness.states.state?.profiles, resolvePhaseProfiles(REQUEST.repository, REQUEST.ticketId).profiles);
+  assert.deepEqual(harness.states.state?.planSelection, resolvePhaseProfiles(REQUEST.repository, REQUEST.ticketId).planSelection);
 });
 
 test("Retro receives the tested HEAD and all prior phase results in its own recorded attempt", async () => {
@@ -198,6 +217,53 @@ test("approved resolved profiles remain unchanged through remediation and persis
   }
   assert.equal(result.remediations.review, 1);
   assert.deepEqual(harness.calls, ["plan", "implement", "review", "implement", "review", "test", "retro"]);
+});
+
+test("remediation keeps the initially persisted profiles when external policy objects change", async () => {
+  const externalPolicy: PersonalModelPolicy = {
+    plan: [
+      { provider: "initial-provider", model: "initial-plan-a", thinking: "medium" },
+      { provider: "initial-provider", model: "initial-plan-b", thinking: "high" },
+    ],
+    implement: { provider: "initial-provider", model: "initial-implement", thinking: "max" },
+    review: { provider: "initial-provider", model: "initial-review", thinking: "medium" },
+    test: { provider: "initial-provider", model: "initial-test", thinking: "high" },
+    retro: { provider: "initial-provider", model: "initial-retro", thinking: "medium" },
+  };
+  const resolved = resolvePhaseProfiles(REQUEST.repository, REQUEST.ticketId, externalPolicy);
+  let implementations = 0;
+  let firstReview = true;
+  let firstTest = true;
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      implementations += 1;
+      workspace.head = implementations === 1 ? IMPLEMENTED : REMEDIATED;
+    }
+    if (input.phase === "review" && firstReview) {
+      firstReview = false;
+      replacePolicy(externalPolicy);
+      return phaseResult(input, workspace.head, "remediation_required", ["fix the review finding"]);
+    }
+    if (input.phase === "test" && firstTest) {
+      firstTest = false;
+      replacePolicy(externalPolicy);
+      return phaseResult(input, workspace.head, "remediation_required", ["fix the failing test"]);
+    }
+    return phaseResult(input, workspace.head);
+  }, externalPolicy);
+  const result = await harness.controller.run(REQUEST);
+
+  assert.deepEqual(result.profiles, resolved.profiles);
+  assert.deepEqual(result.planSelection, resolved.planSelection);
+  assert.deepEqual(
+    harness.inputs.map(input => input.profile),
+    harness.inputs.map(input => resolved.profiles[input.phase]),
+  );
+  for (const phase of ["plan", "implement", "review", "test", "retro"] as const) {
+    assert.deepEqual(result.results[phase]?.profile, resolved.profiles[phase]);
+  }
+  assert.equal(result.remediations.review, 1);
+  assert.equal(result.remediations.test, 1);
 });
 
 test("Test remediation reruns Implement, fresh Review, and Test", async () => {

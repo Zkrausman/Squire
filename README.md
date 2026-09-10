@@ -34,6 +34,16 @@ precedence over that per-user default. Relative `state`, `bridges`, `staging`,
 and `piAuthFile` paths are relative to the selected config file; the repository
 path should be an explicit checkout path.
 
-The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox. Plan selection is a stable 50/50 choice between the two profiles in the example; the selected profile and all phase profiles are persisted in run state.
+The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
+
+The approved personal policy is fixed in the example: Plan bucket A is
+`openai-codex/gpt-6-astra` at `medium`, bucket B is
+`openai-codex/gpt-5.6-sol` at `high`, Implement is
+`openai-codex/gpt-5.6-luna` at `max`, Review and Retro are
+`openai-codex/gpt-5.6-sol` at `medium`, and Test is
+`openai-codex/gpt-5.6-terra` at `high`. Plan chooses one bucket from the
+canonical repository/ticket identity exactly once; the selection digest and
+all five resolved phase profiles are persisted with the run and each phase
+result records the profile that actually launched Pi.
 
 > Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.

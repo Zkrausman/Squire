@@ -204,14 +204,17 @@ export class PersonalMvpController {
     await this.#workspaces.assertClean(context.state.sandbox, signal);
     if (phaseError !== undefined) throw phaseError;
     if (!result) throw new Error(`${phase} returned no result`);
-    const evidencedResult: PhaseResult = result.profile ? result : { ...result, profile: input.profile };
+    // A port may omit the additive evidence field, but an explicitly supplied
+    // value must be validated rather than treated as missing. This prevents a
+    // malformed profile from being silently replaced by the controller.
+    const evidencedResult: PhaseResult = result.profile === undefined ? { ...result, profile: input.profile } : result;
     validatePhaseResult(evidencedResult, input, observedHead);
     if (evidencedResult.status === "failed") throw new Error(`${phase} failed: ${evidencedResult.summary}`);
-    if (phase === "implement" && result.status !== "passed") throw new Error("Implement must return passed or failed");
+    if (phase === "implement" && evidencedResult.status !== "passed") throw new Error("Implement must return passed or failed");
     if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
     await context.persist({
       head: observedHead,
-      sessions: { ...context.state.sessions, [phase]: result.sessionId },
+      sessions: { ...context.state.sessions, [phase]: evidencedResult.sessionId },
       results: { ...context.state.results, [phase]: evidencedResult },
     });
     return evidencedResult;
@@ -260,7 +263,7 @@ function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHea
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt) throw new Error("phase result identity mismatch");
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
-  if (input.profile && result.profile && (result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking)) throw new Error("phase result profile identity mismatch");
+  if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");
 }
 
 function feedback(result: PhaseResult): readonly string[] {

@@ -46,11 +46,13 @@ Edit at least:
 - `sandbox.template`, `sandbox.roleUser`, and sandbox executable settings
 - `github.tokenCommand`
 
-The example contains the approved model policy. Plan has two equal deterministic
-buckets: `gpt-6-astra` at medium thinking and `gpt-5.6-sol` at high thinking.
-Implement, Review, Test, and Retro use their fixed approved profiles. The
-controller chooses Plan once from the canonical repository/ticket identity and
-persists the selected and resolved profiles; retries do not reroll it.
+The example contains the approved model policy. Every profile uses the
+`openai-codex` provider. Plan has two equal deterministic buckets:
+`gpt-6-astra` at medium thinking and `gpt-5.6-sol` at high thinking.
+Implement is `gpt-5.6-luna` at max, Review and Retro are `gpt-5.6-sol` at
+medium, and Test is `gpt-5.6-terra` at high. The controller chooses Plan once
+from the canonical repository/ticket identity and persists the selected and
+resolved profiles; retries do not reroll it.
 
 `state`, `bridges`, and `staging` are simple relative paths and resolve beside
 the selected config file. `sandbox.piExecutable` and
