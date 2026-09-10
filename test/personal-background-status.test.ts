@@ -244,6 +244,36 @@ test("background parent performs no post-spawn state write and child validates i
   }
 });
 
+test("a detached child claims with a parent-monotonic timestamp before adapters when its clock moved backward", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-clock-regression-"));
+  try {
+    const states = new JsonRunStateStore(root);
+    const digest = "6".repeat(64);
+    const parentTime = "2026-09-10T00:00:00.000Z";
+    const reserved = await controller(states, new Date(parentTime)).reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    let adapterObservedClaim = false;
+    const child = new PersonalMvpController({
+      states,
+      now: () => new Date("2026-09-09T23:59:59.000Z"),
+      tickets: { async get() {
+        const claimed = await states.read(reserved.runId);
+        assert.equal(claimed?.launchState, "started");
+        assert.equal(claimed?.startedAt, parentTime);
+        assert.equal(claimed?.updatedAt, parentTime);
+        adapterObservedClaim = true;
+        throw new Error("stop after observing the claim");
+      } },
+      workspaces: {} as never,
+      phases: {} as never,
+      publication: {} as never,
+    });
+    await assert.rejects(child.runReserved(REQUEST, reserved.runId, digest), /stop after observing the claim/);
+    assert.equal(adapterObservedClaim, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runReserved rejects a concurrent call on one controller", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-local-claim-"));
   try {

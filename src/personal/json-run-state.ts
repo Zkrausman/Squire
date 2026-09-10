@@ -164,8 +164,7 @@ export class JsonRunStateStore implements RunStatePort {
         if (!current) throw new Error(`run state does not exist: ${state.runId}`);
         if (!isReservedLaunch(current)) throw new Error(`reserved run failure is no longer available: ${state.runId}`);
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
-        assertResolvedProfilesUnchanged(current, state);
-        assertLaunchIdentityUnchanged(current, state);
+        assertExactReservedFailureTarget(current, state);
         await this.#replaceState(target, state);
       } finally {
         await releaseUpdate();
@@ -358,6 +357,33 @@ function assertExactStartedChildTarget(current: PersonalRunState, next: Personal
   };
   if (!isDeepStrictEqual(next, expected) || Date.parse(next.updatedAt) < Date.parse(current.updatedAt)) {
     throw new Error("reserved run claim target must be the exact started child transition");
+  }
+}
+
+function assertExactReservedFailureTarget(current: PersonalRunState, next: PersonalRunState): void {
+  const terminalStatus = next.status;
+  const endedAt = next.endedAt;
+  if ((terminalStatus !== "failed" && terminalStatus !== "interrupted") || typeof endedAt !== "string" || typeof next.lastError !== "string" || next.lastError.trim().length === 0 || next.lastError.length > 2_000) {
+    throw new Error("reserved run failure target is invalid");
+  }
+  const expected: PersonalRunState = {
+    ...current,
+    version: current.version + 1,
+    status: terminalStatus,
+    lifecycle: terminalStatus,
+    launchState: "failed",
+    preparationState: "failed",
+    controllerPid: null,
+    endedAt,
+    lastError: next.lastError,
+    updatedAt: next.updatedAt,
+  };
+  const startedTime = Date.parse(current.startedAt!);
+  const currentTime = Date.parse(current.updatedAt);
+  const endedTime = Date.parse(endedAt);
+  const updatedTime = Date.parse(next.updatedAt);
+  if (!isDeepStrictEqual(next, expected) || endedTime < startedTime || endedTime < currentTime || updatedTime < endedTime) {
+    throw new Error("reserved run failure target must be the exact terminal launch transition");
   }
 }
 

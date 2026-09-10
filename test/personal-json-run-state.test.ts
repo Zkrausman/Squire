@@ -67,6 +67,21 @@ function startedChild(reserved: PersonalRunState): PersonalRunState {
   };
 }
 
+function failedReservation(reserved: PersonalRunState): PersonalRunState {
+  return {
+    ...reserved,
+    version: reserved.version + 1,
+    status: "failed",
+    lifecycle: "failed",
+    launchState: "failed",
+    preparationState: "failed",
+    controllerPid: null,
+    endedAt: "2026-09-10T00:00:01.000Z",
+    lastError: "child bootstrap failed",
+    updatedAt: "2026-09-10T00:00:01.000Z",
+  };
+}
+
 function planResult(runId: string): PlanPhaseResult {
   return {
     runId,
@@ -215,6 +230,34 @@ test("reserved claims preserve all non-transition fields and timing identity", a
   }
 });
 
+test("reserved failure preserves launch identity and workflow evidence with coherent terminal timing", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-failure-target-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const reserved = reservedState(directory);
+    await store.reserve(reserved);
+    const valid = failedReservation(reserved);
+    const invalid: PersonalRunState[] = [
+      { ...valid, controllerPid: 123 },
+      { ...valid, ticketTitle: "changed during failure" },
+      { ...valid, startedAt: "2026-09-09T23:59:59.000Z" },
+      { ...valid, attempts: { ...valid.attempts, plan: 1 } },
+      { ...valid, endedAt: "2026-09-09T23:59:59.000Z" },
+      { ...valid, endedAt: "2026-09-10T00:00:02.000Z" },
+    ];
+    for (const candidate of invalid) {
+      await assert.rejects(store.failReserved(candidate), /failure target/);
+      assert.deepEqual(await store.read(reserved.runId), reserved);
+      assert.equal(await store.reservationOwner(reserved.ticketId), reserved.runId);
+    }
+    await store.failReserved(valid);
+    assert.deepEqual(await store.read(reserved.runId), valid);
+    assert.equal(await store.reservationOwner(reserved.ticketId), undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("reserved bootstrap failure cannot overwrite a replacement reservation owner", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-failure-owner-"));
   try {
@@ -223,17 +266,7 @@ test("reserved bootstrap failure cannot overwrite a replacement reservation owne
     await store.reserve(reserved);
     const replacement = "aidev-1-replacement123";
     await writeFile(path.join(directory, "locks", "aidev-1.lock"), `${replacement}\n`, "utf8");
-    const failed: PersonalRunState = {
-      ...reserved,
-      version: 2,
-      status: "failed",
-      lifecycle: "failed",
-      launchState: "failed",
-      preparationState: "failed",
-      endedAt: "2026-09-10T00:00:01.000Z",
-      lastError: "child bootstrap failed",
-      updatedAt: "2026-09-10T00:00:01.000Z",
-    };
+    const failed = failedReservation(reserved);
     await assert.rejects(store.failReserved(failed), /reservation ownership mismatch/);
     assert.deepEqual(await store.read(reserved.runId), reserved);
     assert.equal(await store.reservationOwner(reserved.ticketId), replacement);

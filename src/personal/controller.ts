@@ -466,11 +466,11 @@ export class PersonalMvpController {
   #context(state: PersonalRunState): RunContext {
     const context = {} as RunContext;
     context.state = state;
-    const nextState = (changes: Partial<PersonalRunState>): PersonalRunState => ({
+    const nextState = (changes: Partial<PersonalRunState>, updatedAt = this.#timestamp()): PersonalRunState => ({
       ...context.state,
       ...changes,
       version: context.state.version + 1,
-      updatedAt: this.#timestamp(),
+      updatedAt,
     });
     context.persist = async changes => {
       const next = nextState(changes);
@@ -478,7 +478,7 @@ export class PersonalMvpController {
       context.state = next;
     };
     context.claimReserved = async changes => {
-      const next = nextState(changes);
+      const next = nextState(changes, this.#timestampAtOrAfter(context.state.updatedAt));
       if (this.#states.claimReserved) {
         await this.#states.claimReserved(next);
       } else {
@@ -493,7 +493,8 @@ export class PersonalMvpController {
       context.state = next;
     };
     context.failReserved = async changes => {
-      const next = nextState(changes);
+      const endedAt = this.#timestampAtOrAfter(context.state.updatedAt, ...(typeof changes.endedAt === "string" ? [changes.endedAt] : []));
+      const next = nextState({ ...changes, endedAt }, this.#timestampAtOrAfter(endedAt));
       if (this.#states.failReserved) {
         await this.#states.failReserved(next);
       } else {
@@ -568,6 +569,14 @@ export class PersonalMvpController {
 
   #timestamp(): string {
     return this.#now().toISOString();
+  }
+
+  #timestampAtOrAfter(...minimums: readonly string[]): string {
+    let latest = this.#timestamp();
+    for (const minimum of minimums) {
+      if (Date.parse(minimum) > Date.parse(latest)) latest = minimum;
+    }
+    return latest;
   }
 
   #previewRunId(request: RunRequest): string {
