@@ -21,12 +21,19 @@ For a complete first-run walkthrough, see [`docs/first-run.md`](docs/first-run.m
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
 npm run build
-mkdir -p .squire
-cp squire.config.example.json .squire/squire.config.json
-# Edit .squire/squire.config.json (repository, sandbox, and token settings), then set LINEAR_API_KEY.
-npm run squire -- run AIDEV-123 --config .squire/squire.config.json
+# Copy squire.config.example.json to your per-user Squire directory and edit
+# the repository checkout, sandbox, and token settings.
+npm run squire -- run AIDEV-123
 ```
 
-The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
+Squire does not search the checkout for configuration. The implicit config is
+`%USERPROFILE%\.squire\config.json` on Windows and
+`$XDG_CONFIG_HOME/squire/config.json` (or `~/.config/squire/config.json`) on
+Linux. `--config <file>` takes precedence over `SQUIRE_CONFIG`, which takes
+precedence over that per-user default. Relative `state`, `bridges`, `staging`,
+and `piAuthFile` paths are relative to the selected config file; the repository
+path should be an explicit checkout path.
+
+The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox. Plan selection is a stable 50/50 choice between the two profiles in the example; the selected profile and all phase profiles are persisted in run state.
 
 > Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.

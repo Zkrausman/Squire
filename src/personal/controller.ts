@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { deterministicFeatureBranch } from "./identity.js";
+import {
+  APPROVED_PERSONAL_MODEL_POLICY,
+  resolvePhaseProfiles,
+  validateModelPolicy,
+  type PersonalModelPolicy,
+  type PhaseProfile,
+} from "./model-policy.js";
 import { validatePhaseResultShape } from "./phase-result.js";
 import type {
   PersonalPhase,
@@ -28,6 +35,10 @@ export interface PersonalMvpControllerOptions {
   readonly states: RunStatePort;
   readonly now?: () => Date;
   readonly newId?: () => string;
+  /** Controller-level policy used unless a request supplies one. */
+  readonly modelPolicy?: PersonalModelPolicy;
+  /** Backward-compatible flat profile map for older embedders. */
+  readonly profiles?: Readonly<Record<PersonalPhase, PhaseProfile>>;
 }
 
 export class PersonalMvpController {
@@ -38,6 +49,7 @@ export class PersonalMvpController {
   readonly #states: RunStatePort;
   readonly #now: () => Date;
   readonly #newId: () => string;
+  readonly #modelPolicy: PersonalModelPolicy;
 
   constructor(options: PersonalMvpControllerOptions) {
     this.#tickets = options.tickets;
@@ -47,6 +59,7 @@ export class PersonalMvpController {
     this.#states = options.states;
     this.#now = options.now ?? (() => new Date());
     this.#newId = options.newId ?? randomUUID;
+    this.#modelPolicy = validateModelPolicy(options.modelPolicy ?? flatProfilesPolicy(options.profiles) ?? APPROVED_PERSONAL_MODEL_POLICY);
   }
 
   async run(request: RunRequest, signal?: AbortSignal): Promise<PersonalRunState> {
@@ -55,12 +68,20 @@ export class PersonalMvpController {
     const ticket = await this.#tickets.get(request.ticketId, signal);
     if (ticket.id !== request.ticketId) throw new Error("Linear returned a different ticket");
 
+    // Resolve the complete policy before workspace preparation. The returned
+    // selection is the only Plan decision made for this run and is persisted
+    // with the initial state, so retries/remediation never reselect it.
+    const resolved = resolvePhaseProfiles(
+      request.repository,
+      ticket.id,
+      request.modelPolicy ?? (request.profiles ? flatProfilesPolicy(request.profiles) : this.#modelPolicy),
+    );
     const suffix = this.#newId().replaceAll("-", "").slice(0, 10).toLowerCase();
     const runId = `${request.ticketId.toLowerCase()}-${suffix}`;
     const sandbox = `squire-${request.ticketId.toLowerCase()}-${suffix}`;
     const branch = deterministicFeatureBranch(request.repository, request.ticketId);
     const context: RunContext = {
-      state: initialState(runId, sandbox, branch, ticket, request, this.#timestamp()),
+      state: initialState(runId, sandbox, branch, ticket, request, resolved.profiles, resolved.planSelection, this.#timestamp()),
       persist: async changes => {
         context.state = { ...context.state, ...changes, version: context.state.version + 1, updatedAt: this.#timestamp() };
         await this.#states.save(context.state);
@@ -163,6 +184,7 @@ export class PersonalMvpController {
       phase,
       attempt,
       expectedHead,
+      profile: resolvedProfile(context.state, phase),
       previous: context.state.results,
       feedback: phaseFeedback,
     };
@@ -182,16 +204,17 @@ export class PersonalMvpController {
     await this.#workspaces.assertClean(context.state.sandbox, signal);
     if (phaseError !== undefined) throw phaseError;
     if (!result) throw new Error(`${phase} returned no result`);
-    validatePhaseResult(result, input, observedHead);
-    if (result.status === "failed") throw new Error(`${phase} failed: ${result.summary}`);
+    const evidencedResult: PhaseResult = result.profile ? result : { ...result, profile: input.profile };
+    validatePhaseResult(evidencedResult, input, observedHead);
+    if (evidencedResult.status === "failed") throw new Error(`${phase} failed: ${evidencedResult.summary}`);
     if (phase === "implement" && result.status !== "passed") throw new Error("Implement must return passed or failed");
     if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
     await context.persist({
       head: observedHead,
       sessions: { ...context.state.sessions, [phase]: result.sessionId },
-      results: { ...context.state.results, [phase]: result },
+      results: { ...context.state.results, [phase]: evidencedResult },
     });
-    return result;
+    return evidencedResult;
   }
 
   #timestamp(): string {
@@ -199,7 +222,7 @@ export class PersonalMvpController {
   }
 }
 
-function initialState(runId: string, sandbox: string, branch: string, ticket: Ticket, request: RunRequest, updatedAt: string): PersonalRunState {
+function initialState(runId: string, sandbox: string, branch: string, ticket: Ticket, request: RunRequest, profiles: NonNullable<PersonalRunState["profiles"]>, planSelection: NonNullable<PersonalRunState["planSelection"]>, updatedAt: string): PersonalRunState {
   return {
     schemaVersion: 1,
     version: 1,
@@ -213,6 +236,8 @@ function initialState(runId: string, sandbox: string, branch: string, ticket: Ti
     baseBranch: request.baseBranch,
     baseSha: null,
     branch,
+    profiles,
+    planSelection,
     head: null,
     sessions: {},
     attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 },
@@ -235,6 +260,7 @@ function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHea
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt) throw new Error("phase result identity mismatch");
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
+  if (input.profile && result.profile && (result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking)) throw new Error("phase result profile identity mismatch");
 }
 
 function feedback(result: PhaseResult): readonly string[] {
@@ -254,6 +280,23 @@ function requireHead(state: PersonalRunState): string {
 function requireBase(state: PersonalRunState): string {
   if (!state.baseSha) throw new Error("run has no base Git SHA");
   return state.baseSha;
+}
+
+function resolvedProfile(state: PersonalRunState, phase: PersonalPhase): PhaseProfile {
+  const profile = state.profiles?.[phase];
+  if (!profile) throw new Error(`run has no resolved ${phase} Pi profile`);
+  return profile;
+}
+
+function flatProfilesPolicy(profiles: Readonly<Record<PersonalPhase, PhaseProfile>> | undefined): PersonalModelPolicy | undefined {
+  if (!profiles) return undefined;
+  return {
+    plan: [profiles.plan, profiles.plan],
+    implement: profiles.implement,
+    review: profiles.review,
+    test: profiles.test,
+    retro: profiles.retro,
+  };
 }
 
 function requirePassingResults(state: PersonalRunState): Readonly<Record<PersonalPhase, PhaseResult>> {

@@ -2,7 +2,7 @@
 import { pathToFileURL } from "node:url";
 import { PersonalMvpController } from "./controller.js";
 import { NodeCommandRunner } from "./command.js";
-import { loadPersonalMvpConfig } from "./config.js";
+import { loadPersonalMvpConfig, resolveConfigPath } from "./config.js";
 import { DockerSandboxWorkspace } from "./docker-sandbox.js";
 import { CommandGitHubTokenProvider, GitHubPublisher } from "./github-publisher.js";
 import { JsonRunStateStore } from "./json-run-state.js";
@@ -25,6 +25,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (!apiKey) throw new Error(`missing Linear credential environment variable: ${config.linear.apiKeyEnv}`);
     const commands = new NodeCommandRunner();
     const workflow = new PersonalMvpController({
+      modelPolicy: config.modelPolicy,
       tickets: new LinearClient({ apiKey, ...(config.linear.endpoint ? { endpoint: config.linear.endpoint } : {}) }),
       workspaces: new DockerSandboxWorkspace({
         commands,
@@ -38,7 +39,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       phases: new SandboxPiPhaseRunner({
         commands,
         stagingRoot: config.paths.staging,
-        profiles: config.profiles,
         testCommands: config.testCommands,
         roleUser: config.sandbox.roleUser,
         piExecutable: config.sandbox.piExecutable,
@@ -73,15 +73,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 }
 
-function parseArguments(argv: readonly string[]): { ticketId: string; config: string } | undefined {
+export function parseArguments(argv: readonly string[]): { ticketId: string; config: string } | undefined {
   if (argv[0] !== "run" || typeof argv[1] !== "string") return undefined;
-  let config = process.env["SQUIRE_CONFIG"] ?? "squire.config.json";
+  let explicit: string | undefined;
   for (let index = 2; index < argv.length; index += 1) {
-    if (argv[index] !== "--config" || typeof argv[index + 1] !== "string" || index + 2 !== argv.length) return undefined;
-    config = argv[index + 1]!;
+    if (argv[index] !== "--config" || typeof argv[index + 1] !== "string" || argv[index + 1]!.trim().length === 0 || index + 2 !== argv.length) return undefined;
+    explicit = argv[index + 1]!;
     index += 1;
   }
-  return { ticketId: argv[1], config };
+  return { ticketId: argv[1], config: resolveConfigPath(explicit) };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -1,3 +1,7 @@
+import type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
+
+export type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
+
 export const PERSONAL_PHASES = ["plan", "implement", "review", "test", "retro"] as const;
 export type PersonalPhase = (typeof PERSONAL_PHASES)[number];
 export type PhaseStatus = "passed" | "remediation_required" | "failed";
@@ -20,6 +24,8 @@ interface PhaseResultBase {
   readonly outputHead: string;
   readonly status: PhaseStatus;
   readonly summary: string;
+  /** Resolved profile evidence added by the controller/runner for new runs. */
+  readonly profile?: PhaseProfile;
 }
 
 export interface PlanPhaseResult extends PhaseResultBase {
@@ -68,6 +74,8 @@ export interface PhaseInput {
   readonly phase: PersonalPhase;
   readonly attempt: number;
   readonly expectedHead: string;
+  /** The controller-resolved profile used for this phase's Pi process. */
+  readonly profile: PhaseProfile;
   readonly previous: Readonly<Partial<Record<PersonalPhase, PhaseResult>>>;
   readonly feedback: readonly string[];
 }
@@ -117,6 +125,9 @@ export interface PersonalRunState {
   readonly baseBranch: string;
   readonly baseSha: string | null;
   readonly branch: string;
+  /** Resolved once at run creation and immutable for the life of the run. */
+  readonly profiles?: ResolvedPhaseProfiles;
+  readonly planSelection?: PlanSelection;
   readonly head: string | null;
   readonly sessions: Readonly<Partial<Record<PersonalPhase, string>>>;
   readonly attempts: Readonly<Record<PersonalPhase, number>>;
@@ -133,6 +144,10 @@ export interface RunRequest {
   readonly repositoryPath: string;
   readonly sourceRef: string;
   readonly baseBranch: string;
+  /** Optional caller-supplied policy; the approved policy is used otherwise. */
+  readonly modelPolicy?: PersonalModelPolicy;
+  /** Backward-compatible flat profiles input; new callers should use modelPolicy. */
+  readonly profiles?: Readonly<Record<PersonalPhase, PhaseProfile>>;
 }
 
 export interface TicketPort {

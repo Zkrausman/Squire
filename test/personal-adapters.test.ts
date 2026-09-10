@@ -50,6 +50,7 @@ function phaseInput(phase: PersonalPhase): PhaseInput {
     phase,
     attempt: 1,
     expectedHead: BASE,
+    profile: PROFILES[phase],
     previous: {},
     feedback: [],
   };
@@ -125,7 +126,7 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
         return { stdout: "", stderr: "" };
       },
     };
-    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, profiles: PROFILES, testCommands: ["npm test"] });
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     for (const phase of ["plan", "review", "test", "retro", "implement"] as const) await runner.run(phaseInput(phase));
     const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
     assert.equal(launches.length, 5);
@@ -135,7 +136,9 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       assert.equal(launch.args[envIndex + 1], "-i");
       assert.equal(launch.args.includes("PI_OFFLINE=1"), true);
       assert.equal(launch.args.includes("PI_TELEMETRY=0"), true);
+      assert.equal(launch.args[launch.args.indexOf("--provider") + 1], PROFILES[phase].provider);
       assert.equal(launch.args[launch.args.indexOf("--model") + 1], PROFILES[phase].model);
+      assert.equal(launch.args[launch.args.indexOf("--thinking") + 1], PROFILES[phase].thinking);
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
       const tools = launch.args[launch.args.indexOf("--tools") + 1];
@@ -155,7 +158,7 @@ test("passing Plan output without actionable steps is rejected", async () => {
       if (request.args.includes("--print")) return { stdout: JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }), stderr: "" };
       return { stdout: "", stderr: "" };
     } };
-    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, profiles: PROFILES, testCommands: ["npm test"] });
+    const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     await assert.rejects(runner.run(phaseInput("plan")), /Plan steps/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

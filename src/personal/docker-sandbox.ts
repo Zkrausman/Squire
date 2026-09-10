@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
@@ -52,9 +52,27 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     const sourceBundle = path.join(runStaging, "source.bundle");
     await rm(sourceBundle, { force: true });
 
-    const baseSha = (await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", `${input.sourceRef}^{commit}`] }, signal)).stdout.trim();
+    const baseSha = (await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", "--verify", `${input.sourceRef}^{commit}`] }, signal)).stdout.trim();
     assertSha(baseSha);
-    await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "bundle", "create", sourceBundle, input.sourceRef], timeoutMs: 180_000 }, signal);
+
+    // A remote-tracking ref is not a reliable bundle head for `git clone`.
+    // Pin the already-resolved commit behind a clone-visible temporary branch,
+    // bundle that ref, and compare-delete it even when bundling fails. The
+    // source ref is never reread after resolution, so movement during prepare
+    // cannot change the sandbox base.
+    const bundleRef = `refs/heads/squire-source-${input.runId}-${randomUUID().replaceAll("-", "")}`;
+    let bundleRefCreated = false;
+    try {
+      // The UUID makes a collision unlikely and the zero old-value makes the
+      // create compare-and-set safe for both SHA-1 and SHA-256 repositories.
+      await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", bundleRef, baseSha, "0".repeat(baseSha.length)] }, signal);
+      bundleRefCreated = true;
+      await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "bundle", "create", sourceBundle, bundleRef], timeoutMs: 180_000 }, signal);
+    } finally {
+      // Cleanup is a host-side safety obligation and must still run after an
+      // aborted caller signal.
+      if (bundleRefCreated) await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "update-ref", "-d", bundleRef, baseSha] });
+    }
 
     const createArgs = ["create", "--name", input.sandbox];
     if (this.#template) createArgs.push("--template", this.#template);

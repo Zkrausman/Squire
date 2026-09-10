@@ -3,18 +3,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
 import { validatePhaseResultShape } from "./phase-result.js";
+import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
 import type { PersonalPhase, PhaseInput, PhasePort, PhaseResult } from "./types.js";
 
-export interface PhaseProfile {
-  readonly provider: string;
-  readonly model: string;
-  readonly thinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-}
+export type { PhaseProfile } from "./model-policy.js";
 
 export interface SandboxPiPhaseRunnerOptions {
   readonly commands: CommandPort;
   readonly stagingRoot: string;
-  readonly profiles: Readonly<Record<PersonalPhase, PhaseProfile>>;
   readonly testCommands: readonly string[];
   readonly roleUser?: string;
   readonly piExecutable?: string;
@@ -26,7 +22,6 @@ export interface SandboxPiPhaseRunnerOptions {
 export class SandboxPiPhaseRunner implements PhasePort {
   readonly #commands: CommandPort;
   readonly #stagingRoot: string;
-  readonly #profiles: Readonly<Record<PersonalPhase, PhaseProfile>>;
   readonly #testCommands: readonly string[];
   readonly #roleUser: string;
   readonly #pi: string;
@@ -37,7 +32,6 @@ export class SandboxPiPhaseRunner implements PhasePort {
   constructor(options: SandboxPiPhaseRunnerOptions) {
     this.#commands = options.commands;
     this.#stagingRoot = path.resolve(options.stagingRoot);
-    this.#profiles = options.profiles;
     this.#testCommands = options.testCommands;
     this.#roleUser = options.roleUser ?? "1000:1000";
     this.#pi = options.piExecutable ?? "pi";
@@ -62,7 +56,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
     const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)} /ticket/artifacts`;
     await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", prepare] }, signal);
 
-    const profile = this.#profiles[input.phase];
+    const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
     const tools = input.phase === "implement"
       ? "read,grep,find,ls,bash,edit,write"
       : input.phase === "plan" || input.phase === "retro"
@@ -101,7 +95,11 @@ export class SandboxPiPhaseRunner implements PhasePort {
     }, signal);
 
     await rm(localInput, { force: true });
-    return parsePhaseResult(output.stdout, input, sessionId, sessionFile);
+    const result = parsePhaseResult(output.stdout, input, sessionId, sessionFile);
+    // Pi's response schema remains intentionally small. The trusted adapter
+    // attaches the exact profile used for argv so persisted evidence cannot be
+    // confused with mutable runner configuration.
+    return { ...result, profile: { ...profile } };
   }
 }
 
@@ -140,6 +138,10 @@ function parsePhaseResult(raw: string, input: PhaseInput, sessionId: string, ses
   const result = value as PhaseResult;
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt || result.sessionId !== sessionId || result.sessionFile !== sessionFile) throw new Error(`${input.phase} result identity mismatch`);
   if (result.inputHead !== input.expectedHead) throw new Error(`${input.phase} result Git identity mismatch`);
+  if (result.profile) {
+    const expected = input.profile;
+    if (expected && (result.profile.provider !== expected.provider || result.profile.model !== expected.model || result.profile.thinking !== expected.thinking)) throw new Error(`${input.phase} result profile identity mismatch`);
+  }
   return result;
 }
 
