@@ -187,6 +187,22 @@ test("launch identity and log destinations cannot be changed by a later writer",
   }
 });
 
+test("reserved source commits bind once before a child claim", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-source-binding-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    const reserved = reservedState(directory);
+    await store.reserve(reserved);
+    const bound = { ...reserved, version: 2, sourceSha: BASE, updatedAt: "2026-09-10T00:00:01.000Z" };
+    await store.bindSource(bound);
+    assert.equal((await store.read(reserved.runId))?.sourceSha, BASE);
+    await assert.rejects(store.bindSource({ ...bound, version: 3, sourceSha: "b".repeat(40), updatedAt: "2026-09-10T00:00:02.000Z" }), /no longer available/);
+    await assert.rejects(store.save({ ...bound, version: 3, sourceSha: "b".repeat(40), updatedAt: "2026-09-10T00:00:02.000Z" }), /background launch identity is immutable/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("reserved claims reject invalid controller PIDs and non-started lifecycle targets", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-claim-target-"));
   try {

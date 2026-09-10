@@ -139,6 +139,8 @@ export interface PersonalRunState {
   /** Immutable source identity captured before a detached child is spawned. */
   readonly repositoryPath?: string;
   readonly sourceRef?: string;
+  /** Exact commit bound for a background launch when the workspace supports it. */
+  readonly sourceSha?: string;
   readonly launchConfigDigest?: string;
   readonly sandbox: string;
   readonly repository: string;
@@ -173,7 +175,9 @@ export interface TicketPort {
 }
 
 export interface WorkspacePort {
-  prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<PreparedWorkspace>;
+  /** Resolve a mutable source ref before detached handoff when supported. */
+  resolveSource?(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string>;
+  prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string; readonly expectedBaseSha?: string }, signal?: AbortSignal): Promise<PreparedWorkspace>;
   currentHead(sandbox: string, signal?: AbortSignal): Promise<string>;
   assertClean(sandbox: string, signal?: AbortSignal): Promise<void>;
   exportBundle(input: { readonly runId: string; readonly sandbox: string; readonly branch: string; readonly baseSha: string; readonly head: string }, signal?: AbortSignal): Promise<CandidateBundle>;
@@ -205,6 +209,8 @@ export interface RunStatePort {
    * cannot overwrite a started child.
    */
   failReserved?(state: PersonalRunState): Promise<void>;
+  /** Bind the exact source commit while a background reservation is unclaimed. */
+  bindSource?(state: PersonalRunState): Promise<void>;
   /** Release only the reservation owned by this run after terminal persistence. */
   release?(ticketId: string, runId: string): Promise<void>;
   /** Read/query methods are optional for in-memory foreground embedders. */

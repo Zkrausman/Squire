@@ -63,17 +63,19 @@ from the canonical repository/ticket identity and persists the selected and
 resolved profiles; retries do not reroll it.
 
 `dataDirectory` is the only JSON spelling for mutable data and logs, and
-`SQUIRE_DATA_DIR` is its only Squire environment override. If omitted, it
-defaults to `%LOCALAPPDATA%\\Squire` on Windows and `$XDG_STATE_HOME/squire`
+`SQUIRE_DATA_DIR` is its only Squire environment override and takes precedence
+over the JSON value. If both are omitted, it defaults to
+`%LOCALAPPDATA%\\Squire` on Windows and `$XDG_STATE_HOME/squire`
 (or `~/.local/state/squire`) on Linux. The pre-existing `paths.state`,
 `paths.bridges`, and `paths.staging` settings remain compatible and resolve
 relative to the selected config file. Squire rejects data destinations inside
 the repository, including destinations reached through symlinks.
 `sandbox.piExecutable` and `sandbox.piAgentDirectory` are paths inside the
-sandbox and are not host resolved. During preparation, Squire resolves
-`repository.sourceRef` once, pins that commit for the clone, and verifies the
-sandbox starts at that exact SHA; it does not snapshot a mutable ref before the
-background reservation.
+sandbox and are not host resolved. For a background run, Squire resolves
+`repository.sourceRef` before detached handoff, persists that source SHA, and
+child preparation verifies that the ref still names the bound commit before
+pinning it for the clone. A moved mutable ref therefore fails visibly instead
+of silently starting from a different source commit.
 
 ## 3) Run in the foreground or background
 

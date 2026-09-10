@@ -141,6 +141,15 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
   assert.equal(commands.executedShellScripts.some(script => script.split("\n").some(line => line.includes("chown"))), false);
   assert.equal(commands.executedShellScripts.some(script => script.includes("chmod 0700")), true);
+  await assert.rejects(workspace.prepare({
+    runId: "aidev-1-0123456789-second",
+    ticketId: "AIDEV-1",
+    sandbox: "squire-aidev-1-0123456789-second",
+    branch: deterministicFeatureBranch("example/repo", "AIDEV-1"),
+    repositoryPath: repository,
+    sourceRef: "refs/remotes/origin/main",
+    expectedBaseSha: first,
+  }), /configured source ref changed after background reservation/u);
   assert.equal(await git(repository, ["rev-parse", "refs/remotes/origin/main"]), localHead);
   const refs = await git(repository, ["for-each-ref", "--format=%(refname)", "refs/heads/squire-source-"]);
   assert.equal(refs, "");

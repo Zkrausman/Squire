@@ -23,6 +23,7 @@ const OPTIONAL_STATE_KEYS = [
   "stderrPath",
   "repositoryPath",
   "sourceRef",
+  "sourceSha",
   "launchConfigDigest",
 ] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
@@ -170,6 +171,29 @@ export class JsonRunStateStore implements RunStatePort {
         await releaseUpdate();
       }
       await removeReservationIfOwned(lockPath, state.runId);
+    });
+  }
+
+  /** Bind the source commit before a detached child can claim the run. */
+  async bindSource(state: PersonalRunState): Promise<void> {
+    validateState(state);
+    if (!isReservedLaunch(state) || state.sourceSha === undefined) throw new Error("reserved source binding target is invalid");
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    return withTicketOperation(this.directory, state.ticketId, async () => {
+      const lockPath = this.#reservationPath(state.ticketId);
+      if (await readLock(lockPath) !== state.runId) throw new Error(`reserved run reservation ownership mismatch: ${state.runId}`);
+      const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
+      try {
+        const target = this.#path(state.runId);
+        const current = await this.#read(target, state.runId);
+        if (!current) throw new Error(`run state does not exist: ${state.runId}`);
+        if (!isReservedLaunch(current) || current.sourceSha !== undefined) throw new Error(`reserved source binding is no longer available: ${state.runId}`);
+        if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+        assertExactSourceBindingTarget(current, state);
+        await this.#replaceState(target, state);
+      } finally {
+        await releaseUpdate();
+      }
     });
   }
 
@@ -353,6 +377,20 @@ function assertExactStartedChildTarget(current: PersonalRunState, next: Personal
   };
   if (!isDeepStrictEqual(next, expected) || Date.parse(next.updatedAt) < Date.parse(current.updatedAt)) {
     throw new Error("reserved run claim target must be the exact started child transition");
+  }
+}
+
+function assertExactSourceBindingTarget(current: PersonalRunState, next: PersonalRunState): void {
+  const sourceSha = next.sourceSha;
+  if (sourceSha === undefined || !/^[a-f0-9]{40,64}$/u.test(sourceSha)) throw new Error("reserved source binding target is invalid");
+  const expected: PersonalRunState = {
+    ...current,
+    version: current.version + 1,
+    sourceSha,
+    updatedAt: next.updatedAt,
+  };
+  if (!isDeepStrictEqual(next, expected) || Date.parse(next.updatedAt) < Date.parse(current.updatedAt)) {
+    throw new Error("reserved source binding target must be the exact source transition");
   }
 }
 
@@ -569,7 +607,7 @@ function validTimestamp(value: string): boolean {
 }
 
 function validateLifecycleMetadata(state: Record<string, unknown>): void {
-  const metadataKeys = ["lifecycle", "launchState", "preparationState", "executionMode", "startedAt", "endedAt", "controllerPid", "stdoutPath", "stderrPath"];
+  const metadataKeys = ["lifecycle", "launchState", "preparationState", "executionMode", "startedAt", "endedAt", "controllerPid", "stdoutPath", "stderrPath", "repositoryPath", "sourceRef", "sourceSha", "launchConfigDigest"];
   const hasMetadata = metadataKeys.some(key => Object.prototype.hasOwnProperty.call(state, key));
   if (!hasMetadata) return; // Published v1 state files did not have launch metadata.
 
@@ -592,6 +630,7 @@ function validateLifecycleMetadata(state: Record<string, unknown>): void {
     if (value !== undefined && value !== null && (typeof value !== "string" || value.length === 0 || value.length > 4_000 || (!path.posix.isAbsolute(value) && !path.win32.isAbsolute(value)))) throw new Error(`invalid run state ${key}`);
   }
   if (state["sourceRef"] !== undefined && !text(state["sourceRef"], 1_000)) throw new Error("invalid run state sourceRef");
+  if (state["sourceSha"] !== undefined && (typeof state["sourceSha"] !== "string" || !/^[a-f0-9]{40,64}$/u.test(state["sourceSha"]))) throw new Error("invalid run state source SHA");
   if (state["launchConfigDigest"] !== undefined && (typeof state["launchConfigDigest"] !== "string" || !/^[a-f0-9]{64}$/u.test(state["launchConfigDigest"]))) throw new Error("invalid run state launch config digest");
 
   const status = state["status"] as string;
@@ -637,6 +676,9 @@ function validateResolvedProfiles(state: Record<string, unknown>): void {
 function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
   for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {
     if (current[key] !== next[key]) throw new Error("background launch identity is immutable");
+  }
+  if (current.sourceSha !== next.sourceSha && !(current.sourceSha === undefined && next.sourceSha !== undefined && isReservedLaunch(current))) {
+    throw new Error("background launch identity is immutable");
   }
 }
 

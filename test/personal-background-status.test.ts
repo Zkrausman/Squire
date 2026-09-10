@@ -4,14 +4,14 @@ import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile 
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { spawn as nodeSpawn } from "node:child_process";
+import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import { NodeBackgroundLauncher } from "../src/personal/background-launcher.js";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
 import { formatRunStatus, findRunState, StatusLookupError } from "../src/personal/status.js";
 import { main, parseArguments } from "../src/personal/cli.js";
-import type { PersonalRunState, RunRequest } from "../src/personal/types.js";
+import type { PersonalRunState, RunRequest, WorkspacePort } from "../src/personal/types.js";
 
 const REQUEST: RunRequest = {
   ticketId: "AIDEV-1",
@@ -363,6 +363,51 @@ test("background bootstrap transport follows the JSON store when no override is 
   }
 });
 
+test("background launch binds the source commit and child verifies it during preparation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-source-binding-"));
+  try {
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    const digest = "5".repeat(64);
+    const sourceSha = "a".repeat(40);
+    const parent = new PersonalMvpController({
+      states,
+      tickets: {} as never,
+      workspaces: { async resolveSource() { return sourceSha; } } as never,
+      phases: {} as never,
+      publication: {} as never,
+    });
+    const started = await parent.startBackground(REQUEST, {
+      launcher: { async launch() { return { pid: 777 }; } },
+      cliPath: path.resolve("dist/src/personal/cli.js"),
+      configPath: path.resolve("squire.config.example.json"),
+      stateDirectory: states.directory,
+      logsDirectory: path.join(root, "logs"),
+      launchConfigDigest: digest,
+    });
+    assert.equal(started.state.sourceSha, sourceSha);
+    assert.equal((await states.read(started.runId))?.sourceSha, sourceSha);
+    assert.equal((await states.read(started.runId))?.version, 2);
+
+    let expectedBaseSha: string | undefined;
+    const child = new PersonalMvpController({
+      states,
+      tickets: { async get(ticketId) { return { id: ticketId, title: "source-bound", description: "" }; } },
+      workspaces: {
+        async prepare(input: Parameters<WorkspacePort["prepare"]>[0]) {
+          expectedBaseSha = input.expectedBaseSha;
+          throw new Error("stop after source verification");
+        },
+      } as never,
+      phases: {} as never,
+      publication: {} as never,
+    });
+    await assert.rejects(child.runReserved(REQUEST, started.runId, digest), /stop after source verification/);
+    assert.equal(expectedBaseSha, sourceSha);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("background parent performs no post-spawn state write and child validates immutable identity", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-single-writer-"));
   try {
@@ -594,6 +639,12 @@ test("CLI SIGINT and SIGTERM before child handoff persist interrupted evidence",
   try {
     const repositoryPath = path.join(root, "repository");
     await mkdir(repositoryPath);
+    execFileSync("git", ["-C", repositoryPath, "init", "-q"], { stdio: "ignore" });
+    execFileSync("git", ["-C", repositoryPath, "config", "user.name", "Squire test"], { stdio: "ignore" });
+    execFileSync("git", ["-C", repositoryPath, "config", "user.email", "squire-test@example.invalid"], { stdio: "ignore" });
+    await writeFile(path.join(repositoryPath, "README.md"), "test\n", "utf8");
+    execFileSync("git", ["-C", repositoryPath, "add", "README.md"], { stdio: "ignore" });
+    execFileSync("git", ["-C", repositoryPath, "commit", "-qm", "test"], { stdio: "ignore" });
     const configPath = path.join(root, "config.json");
     await writeFile(configPath, JSON.stringify({
       repository: { slug: "example/repo", path: repositoryPath, sourceRef: "HEAD", baseBranch: "main" },

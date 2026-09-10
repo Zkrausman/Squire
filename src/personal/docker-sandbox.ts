@@ -39,7 +39,15 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     this.#git = options.gitExecutable ?? "git";
   }
 
-  async prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<PreparedWorkspace> {
+  async resolveSource(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string> {
+    const repositoryPath = path.resolve(input.repositoryPath);
+    const result = await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", "--verify", `${input.sourceRef}^{commit}`] }, signal);
+    const sourceSha = result.stdout.trim();
+    assertSha(sourceSha);
+    return sourceSha;
+  }
+
+  async prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string; readonly expectedBaseSha?: string }, signal?: AbortSignal): Promise<PreparedWorkspace> {
     validateName(input.runId, "run");
     validateName(input.sandbox, "sandbox");
     validateBranch(input.branch);
@@ -52,8 +60,8 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     const sourceBundle = path.join(runStaging, "source.bundle");
     await rm(sourceBundle, { force: true });
 
-    const baseSha = (await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", "--verify", `${input.sourceRef}^{commit}`] }, signal)).stdout.trim();
-    assertSha(baseSha);
+    const baseSha = await this.resolveSource({ repositoryPath, sourceRef: input.sourceRef }, signal);
+    if (input.expectedBaseSha !== undefined && input.expectedBaseSha !== baseSha) throw new Error("configured source ref changed after background reservation");
 
     // A remote-tracking ref is not a reliable bundle head for `git clone`.
     // Pin the already-resolved commit behind a clone-visible temporary branch,

@@ -162,9 +162,16 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   }
   const configuredDataDirectory = value["dataDirectory"];
   if (configuredDataDirectory !== undefined && typeof configuredDataDirectory !== "string") throw new Error("dataDirectory must be a string");
-  const dataDirectory = configuredDataDirectory === undefined
+  // SQUIRE_DATA_DIR is the documented environment override, including when
+  // the selected JSON file also contains dataDirectory. Keep the precedence
+  // decision on the captured environment snapshot used for this parse so a
+  // child cannot bind one root while hashing/reading another configuration.
+  const environmentDataDirectory = nonempty(options.env?.["SQUIRE_DATA_DIR"]);
+  const dataDirectory = environmentDataDirectory !== undefined
     ? resolveSquireDataDirectory(options)
-    : resolveHostPath(base, text(configuredDataDirectory, "dataDirectory"), platform);
+    : configuredDataDirectory === undefined
+      ? defaultSquireDataDirectory(options)
+      : resolveHostPath(base, text(configuredDataDirectory, "dataDirectory"), platform);
 
   if (Object.prototype.hasOwnProperty.call(value, "profiles")) throw new Error("profiles is not supported; use modelPolicy");
   const policyValue = value["modelPolicy"];
@@ -183,7 +190,8 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   const piAuthFile = sandbox["piAuthFile"];
   if (piAuthFile !== undefined && typeof piAuthFile !== "string") throw new Error("sandbox.piAuthFile must be a string");
 
-  const repositoryPath = resolveHostPath(base, text(repository["path"], "repository.path"), platform);
+  const configuredRepositoryPath = resolveHostPath(base, text(repository["path"], "repository.path"), platform);
+  const repositoryPath = await canonicalRepositoryPath(configuredRepositoryPath, platform);
   const statePath = resolveConfiguredRuntimePath(paths["state"], "paths.state", base, dataDirectory, "state", platform);
   const bridgesPath = resolveConfiguredRuntimePath(paths["bridges"], "paths.bridges", base, dataDirectory, "bridges", platform);
   const stagingPath = resolveConfiguredRuntimePath(paths["staging"], "paths.staging", base, dataDirectory, "staging", platform);
@@ -326,6 +334,16 @@ function resolveConfiguredRuntimePath(value: unknown, label: string, base: strin
  * Resolve a path even when its final components do not exist yet. This keeps
  * symlinked parents from becoming a way to put state or logs in the checkout.
  */
+async function canonicalRepositoryPath(value: string, platform: NodeJS.Platform): Promise<string> {
+  if (platform !== process.platform) return value;
+  try {
+    return path.resolve(await realpath(value));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return value;
+    throw error;
+  }
+}
+
 async function realPathForSafety(value: string): Promise<string> {
   const absolute = path.resolve(value);
   const missing: string[] = [];

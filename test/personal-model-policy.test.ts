@@ -219,6 +219,11 @@ test("data directory accepts only canonical JSON and environment names", async (
     assert.equal(loaded.paths.state, path.join(root, "canonical", "state"));
     assert.deepEqual(Object.keys(loaded.paths).sort(), ["bridges", "staging", "state"]);
 
+    await writeFile(file, JSON.stringify({ ...base, dataDirectory: path.join(root, "json-data") }));
+    const overridden = await loadPersonalMvpConfig(file, { env: { HOME: path.join(root, "home"), SQUIRE_DATA_DIR: path.join(root, "environment-data") } });
+    assert.equal(overridden.dataDirectory, path.join(root, "environment-data"));
+    assert.equal(overridden.paths.state, path.join(root, "environment-data", "state"));
+
     await writeFile(file, JSON.stringify({ ...base, repository: { ...base.repository, path: "." }, paths: { state: "state", bridges: "bridges", staging: "staging" } }));
     await assert.rejects(loadPersonalMvpConfig(file, { env: { HOME: path.join(root, "home") } }), /runtime path must be outside the repository/);
   } finally {

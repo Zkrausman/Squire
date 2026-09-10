@@ -33,6 +33,7 @@ import type {
 interface RunContext {
   state: PersonalRunState;
   persist: (changes: Partial<PersonalRunState>) => Promise<void>;
+  bindSource: (sourceSha: string) => Promise<void>;
   claimReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
   failReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
 }
@@ -42,6 +43,7 @@ export interface PersonalRunMetadata {
   readonly stdoutPath?: string | null;
   readonly stderrPath?: string | null;
   readonly controllerPid?: number | null;
+  readonly sourceSha?: string;
   readonly launchConfigDigest?: string;
 }
 
@@ -149,6 +151,7 @@ export class PersonalMvpController {
       ...(options.stdoutPath !== undefined ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath !== undefined ? { stderrPath: options.stderrPath } : {}),
       controllerPid: options.controllerPid ?? (executionMode === "foreground" ? this.#controllerPid ?? null : null),
+      ...(options.sourceSha !== undefined ? { sourceSha: options.sourceSha } : {}),
       ...(options.launchConfigDigest !== undefined ? { launchConfigDigest: options.launchConfigDigest } : {}),
     });
 
@@ -266,7 +269,7 @@ export class PersonalMvpController {
     launchEnvironment["SQUIRE_STATE_DIRECTORY"] = stateDirectory;
 
     if (!/^[a-f0-9]{64}$/u.test(options.launchConfigDigest)) throw new Error("launch config digest is invalid");
-    const state = await this.reserve(request, {
+    let state = await this.reserve(request, {
       runId: reservedId,
       executionMode: "background",
       stdoutPath,
@@ -274,42 +277,51 @@ export class PersonalMvpController {
       controllerPid: null,
       launchConfigDigest: options.launchConfigDigest,
     });
-    if (options.signal?.aborted) {
-      const reason = startupAbortReason(options.signal);
-      await this.failReserved(state.runId, reason, true).catch(error => this.#reportPersistenceError(error));
-      throw reason;
-    }
-    const launchRequest: BackgroundLaunchRequest = {
-      executable: options.executable ?? process.execPath,
-      args: [cliPath, "run", request.ticketId, "--config", configPath, "--reserved-run-id", state.runId, "--reserved-config-sha256", options.launchConfigDigest],
-      cwd: launchCwd,
-      // Capture the launch environment now. In particular, a relative or
-      // default data-directory resolution must not change between reservation
-      // and the detached child's bootstrap.
-      env: launchEnvironment,
-      stdoutPath,
-      stderrPath,
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-      // Once spawn is confirmed, the child is the only lifecycle writer.
-      onError: error => this.#reportPersistenceError(error),
-    };
-
-    let launched: Awaited<ReturnType<BackgroundLauncher["launch"]>>;
     try {
+      // A mutable branch or tag must not be resolved for the first time by a
+      // detached child. Bind the commit while the reservation is still
+      // unclaimed, then make preparation verify that the ref still names it.
+      // This is optional for small embedded WorkspacePorts; the production
+      // Docker adapter implements it.
+      if (this.#workspaces.resolveSource) {
+        const sourceSha = await this.#workspaces.resolveSource({ repositoryPath: request.repositoryPath, sourceRef: request.sourceRef }, options.signal);
+        const context = this.#contexts.get(state.runId) ?? this.#context(state);
+        await context.bindSource(sourceSha);
+        state = context.state;
+      }
+      if (options.signal?.aborted) throw startupAbortReason(options.signal);
+      const launchRequest: BackgroundLaunchRequest = {
+        executable: options.executable ?? process.execPath,
+        args: [cliPath, "run", request.ticketId, "--config", configPath, "--reserved-run-id", state.runId, "--reserved-config-sha256", options.launchConfigDigest],
+        cwd: launchCwd,
+        // Capture the launch environment now. In particular, a relative or
+        // default data-directory resolution must not change between reservation
+        // and the detached child's bootstrap.
+        env: launchEnvironment,
+        stdoutPath,
+        stderrPath,
+        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        // Once spawn is confirmed, the detached child is the only lifecycle
+        // writer.
+        onError: error => this.#reportPersistenceError(error),
+      };
+
       // Recheck immediately before delegating to an injected launcher as well
       // as inside NodeBackgroundLauncher. This closes the ordinary
       // pre-handoff window for launchers that do not perform their own check.
       if (options.signal?.aborted) throw startupAbortReason(options.signal);
-      launched = await launcher.launch(launchRequest);
+      const launched = await launcher.launch(launchRequest);
+      // Do not write state after spawn: the detached child exclusively owns all
+      // post-handoff lifecycle updates, avoiding parent/child stale writers.
+      return { runId: state.runId, pid: launched.pid, state, stdoutPath, stderrPath };
     } catch (error) {
-      // No spawn confirmation means this parent still owns launch failure
-      // recording and may safely close the reservation.
+      // No spawn confirmation means this parent still owns source/bootstrap/
+      // launch failure recording and may safely close the reservation. If a
+      // child already claimed it, failReserved observes that ownership and
+      // deliberately leaves the live child's reservation alone.
       await this.failReserved(state.runId, error, options.signal?.aborted === true).catch(persistenceError => this.#reportPersistenceError(persistenceError));
       throw error;
     }
-    // Do not write state after spawn: the detached child exclusively owns all
-    // post-handoff lifecycle updates, avoiding parent/child stale writers.
-    return { runId: state.runId, pid: launched.pid, state, stdoutPath, stderrPath };
   }
 
   async #executeReserved(context: RunContext, request: RunRequest, signal?: AbortSignal): Promise<PersonalRunState> {
@@ -331,6 +343,7 @@ export class PersonalMvpController {
         branch: context.state.branch,
         repositoryPath: request.repositoryPath,
         sourceRef: request.sourceRef,
+        ...(context.state.sourceSha !== undefined ? { expectedBaseSha: context.state.sourceSha } : {}),
       }, signal);
       if (workspace.head !== workspace.baseSha) throw new Error("prepared workspace did not start at the base SHA");
       await context.persist({ baseSha: workspace.baseSha, head: workspace.head, preparationState: "ready", lifecycle: "running" });
@@ -473,6 +486,19 @@ export class PersonalMvpController {
       await this.#states.save(next);
       context.state = next;
     };
+    context.bindSource = async sourceSha => {
+      if (!/^[a-f0-9]{40,64}$/u.test(sourceSha)) throw new Error("resolved source SHA is invalid");
+      const next = nextState({ sourceSha }, this.#timestampAtOrAfter(context.state.updatedAt));
+      if (this.#states.bindSource) {
+        await this.#states.bindSource(next);
+      } else {
+        if (this.#states.reservationOwner && await this.#states.reservationOwner(context.state.ticketId) !== context.state.runId) {
+          throw new Error(`reserved run reservation ownership mismatch: ${context.state.runId}`);
+        }
+        await this.#states.save(next);
+      }
+      context.state = next;
+    };
     context.claimReserved = async changes => {
       const next = nextState(changes, this.#timestampAtOrAfter(context.state.updatedAt));
       if (this.#states.claimReserved) {
@@ -588,7 +614,7 @@ function initialState(
   profiles: NonNullable<PersonalRunState["profiles"]>,
   planSelection: NonNullable<PersonalRunState["planSelection"]>,
   startedAt: string,
-  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "launchConfigDigest">,
+  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "sourceSha" | "launchConfigDigest">,
 ): PersonalRunState {
   const background = metadata.executionMode === "background";
   return {

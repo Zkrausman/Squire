@@ -36,7 +36,8 @@ Squire does not search the checkout for configuration. The implicit config is
 Linux. `--config <file>` takes precedence over `SQUIRE_CONFIG`, which takes
 precedence over that per-user default. `dataDirectory` is the one JSON setting
 for mutable data and logs; `SQUIRE_DATA_DIR` is its only Squire environment
-override. It defaults to `%LOCALAPPDATA%\Squire` on Windows and
+override and takes precedence over the JSON value. It defaults to
+`%LOCALAPPDATA%\Squire` on Windows and
 `$XDG_STATE_HOME/squire` (or `~/.local/state/squire`) on Linux. The pre-existing
 `paths.state`, `paths.bridges`, and `paths.staging` settings remain supported
 and resolve relative to the selected config file. All data destinations are
@@ -56,6 +57,21 @@ canonical repository/ticket identity exactly once; the selection digest and
 all five resolved phase profiles are persisted with the run and each phase
 result records the profile that actually launched Pi.
 
-Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the `logs` directory beneath `dataDirectory`. `status` reads only persisted JSON records and reservation ownership; it does not contact Linear, Git, Docker, Pi, or GitHub. State writes are versioned and serialized per run, while reservation reserve/release operations use a short-lived per-ticket boundary; malformed or orphan reservations are reported as ambiguous rather than reclaimed. A detached child is intentionally not a crash-perfect supervisor: a forced kill or power loss can leave an ambiguous reservation, and ticket status reports it even when an older terminal run exists. Exact run-ID status remains available for a historical record beside a readable active replacement, but reports a reservation whose owner is missing or inactive as ambiguous. Do not delete or reuse that run's sandbox; inspect the log and state, and remove the exact reservation only after confirming no controller remains.
+Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the
+`logs` directory beneath `dataDirectory`. Before handoff, the production Docker
+workspace resolves `repository.sourceRef` to one commit and persists that source
+SHA; child preparation verifies the ref still names the bound commit before
+creating the sandbox. `status` reads only persisted JSON records and reservation
+ownership; it does not contact Linear, Git, Docker, Pi, or GitHub. State writes
+are versioned and serialized per run, while reservation reserve/release
+operations use a short-lived per-ticket boundary; malformed or orphan
+reservations are reported as ambiguous rather than reclaimed. A detached child
+is intentionally not a crash-perfect supervisor: a forced kill or power loss
+can leave an ambiguous reservation, and ticket status reports it even when an
+older terminal run exists. Exact run-ID status remains available for a
+historical record beside a readable active replacement, but reports a
+reservation whose owner is missing or inactive as ambiguous. Do not delete or
+reuse that run's sandbox; inspect the log and state, and remove the exact
+reservation only after confirming no controller remains.
 
 > Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.
