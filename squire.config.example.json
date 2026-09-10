@@ -27,7 +27,8 @@
     "plan": { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "medium" },
     "implement": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
     "review": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "medium" },
-    "test": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" }
+    "test": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
+    "retro": { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "medium" }
   },
   "testCommands": [
     "npm test"

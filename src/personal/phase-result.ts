@@ -13,7 +13,11 @@ export function validatePhaseResultShape(value: unknown, expectedPhase?: Persona
   if (typeof result["status"] !== "string" || !STATUSES.includes(result["status"] as (typeof STATUSES)[number])) throw new Error("phase result status is invalid");
   if (!nonempty(result["summary"], 8_000)) throw new Error("phase result summary is invalid");
 
-  const details = exactObject(result["details"], phase === "plan" ? ["steps"] : phase === "implement" ? ["changes"] : phase === "review" ? ["findings"] : ["commands"], `${phase} details`);
+  const details = exactObject(
+    result["details"],
+    phase === "plan" ? ["steps"] : phase === "implement" ? ["changes"] : phase === "review" ? ["findings"] : phase === "test" ? ["commands"] : ["lessons", "followUps"],
+    `${phase} details`,
+  );
   if (phase === "plan") {
     stringList(details["steps"], "Plan steps", true);
     if (result["status"] === "remediation_required") throw new Error("Plan cannot request remediation");
@@ -24,12 +28,16 @@ export function validatePhaseResultShape(value: unknown, expectedPhase?: Persona
     const findings = stringList(details["findings"], "Review findings", false);
     if (result["status"] === "passed" && findings.length !== 0) throw new Error("passing Review must have no findings");
     if (result["status"] === "remediation_required" && findings.length === 0) throw new Error("Review remediation requires findings");
-  } else {
+  } else if (phase === "test") {
     const commands = details["commands"];
     if (!Array.isArray(commands) || commands.length === 0 || commands.length > 100) throw new Error("Test commands are invalid");
     const evidence = commands.map((item, index) => validateTestCommand(item, index));
     if (result["status"] === "passed" && evidence.some(item => item.exitCode !== 0)) throw new Error("passing Test contains a failed command");
     if (result["status"] === "remediation_required" && evidence.every(item => item.exitCode === 0)) throw new Error("Test remediation requires a failed command");
+  } else {
+    stringList(details["lessons"], "Retro lessons", true);
+    stringList(details["followUps"], "Retro follow-ups", false);
+    if (result["status"] === "remediation_required") throw new Error("Retro cannot request remediation");
   }
 }
 

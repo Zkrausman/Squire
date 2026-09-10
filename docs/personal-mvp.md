@@ -8,7 +8,7 @@
 
 ## 1. Product goal
 
-The first usable Squire is a single-user local tool that takes one explicitly selected Linear ticket through Plan → Implement → independent Review → Test and opens one pull request for the owner to merge.
+The first usable Squire is a single-user local tool that takes one explicitly selected Linear ticket through Plan → Implement → independent Review → Test → Retro and opens one pull request for the owner to merge.
 
 The intended interface is:
 
@@ -46,13 +46,15 @@ The trusted deterministic TypeScript controller performs this sequence:
 7. Launch a separate top-level Test Pi process.
 8. If Test requests remediation, return its failures to Implement, then rerun Review and Test.
 9. Require Review and Test to pass the exact current Git HEAD.
-10. Export and verify the candidate branch from the sandbox.
-11. Use host-held GitHub credentials to push the deterministic branch and create or find one matching PR.
-12. Persist and print the PR URL, then stop.
+10. Launch a separate top-level, read-only Retro Pi process with a fresh session and all prior results.
+11. Require Retro to pass without changing the clean, tested Git HEAD; Retro has no remediation loop.
+12. Export and verify the candidate branch from the sandbox.
+13. Use host-held GitHub credentials to push the deterministic branch and create or find one matching PR.
+14. Publish Retro lessons and proposed follow-ups in the PR body, then persist and print the PR URL.
 
-The first implementation supports at most one remediation cycle per gate. Exhaustion stops for the owner.
+The first implementation supports at most one remediation cycle per Review or Test gate. Exhaustion, failed or malformed Retro output, or a dirty/stale Retro workspace stops for the owner without publication.
 
-An AI Orchestrator is not required to sequence four known phases. Herdr may display or steer sessions, but it is optional and cannot block the first end-to-end run.
+An AI Orchestrator is not required to sequence five known phases. Herdr may display or steer sessions, but it is optional and cannot block the first end-to-end run.
 
 ## 4. Minimal persisted state
 
@@ -97,9 +99,9 @@ Each phase returns one small JSON result containing:
 - input and output Git HEAD;
 - `passed`, `remediation_required`, or `failed`;
 - a summary;
-- phase-specific plan, findings, or test evidence.
+- phase-specific plan, findings, test evidence, or Retro `lessons` and `followUps` string arrays.
 
-The controller validates the result shape, identities, and Git HEAD. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
+Retro must return at least one lesson; proposed follow-ups may be empty. It receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace. The controller validates the result shape, identities, and Git HEAD. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
 
 ## 6. Sandbox and credentials
 
@@ -133,8 +135,11 @@ The controller:
 3. obtains a short-lived installation token from the already configured private GitHub App;
 4. pushes only the deterministic feature branch;
 5. finds or creates one PR for the expected head/base pair;
-6. writes the Plan/Review/Test summary and records the PR URL;
-7. discards the token.
+6. writes the phase summaries and a canonical `## Retro` section containing lesson bullets and proposed follow-ups as unchecked tasks;
+7. reconciles that section without duplication when reusing an exact existing PR;
+8. records the PR URL and discards the token.
+
+Retro publication is limited to the PR body. Squire does not automatically create follow-up Linear issues or mutate a wiki.
 
 The first MVP does not implement GitHub App onboarding, automatic approval, automatic drafting/closing compensation, or exactly-once distributed settlement. Unexpected remote state stops for the owner. No code path may call a merge endpoint.
 
@@ -142,7 +147,7 @@ The first MVP does not implement GitHub App onboarding, automatic approval, auto
 
 Retain narrowly:
 
-- workflow transitions and same-HEAD Review/Test gates;
+- workflow transitions and same-HEAD Review/Test/Retro gates;
 - Pi RPC process/session primitives;
 - essential phase result schemas;
 - basic Git branch/bundle verification;
@@ -172,7 +177,7 @@ History is preserved. Simplification occurs on a new branch without rewriting `m
 
 1. Add the executable CLI and minimal configuration/state model.
 2. Add Linear issue lookup and Docker Sandbox lifecycle adapter.
-3. Add four sequential Pi phase runners and one bounded remediation loop.
+3. Add five sequential Pi phase runners, with read-only Retro after Test, and one bounded remediation loop per Review/Test gate.
 4. Add controller-side bundle verification, branch push, and create-or-find PR.
 5. Add focused tests for the vertical slice.
 6. Run one small real Linear ticket end to end.
@@ -185,9 +190,9 @@ A reasonable target is 1,500–3,000 production lines for the functional persona
 The MVP is accepted when a real invocation of `squire run <ticket>`:
 
 - creates one isolated ticket workspace;
-- completes Plan, Implement, independent Review, and Test;
+- completes Plan, Implement, independent Review, Test, and read-only Retro in separate Pi processes;
 - handles one ordinary remediation path;
-- proves Review and Test passed the published Git HEAD;
+- proves Review, Test, and Retro passed the published Git HEAD;
 - opens or reuses exactly one PR;
 - prints its URL;
 - leaves the PR unmerged for the owner;

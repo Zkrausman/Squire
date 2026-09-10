@@ -1,4 +1,4 @@
-export const PERSONAL_PHASES = ["plan", "implement", "review", "test"] as const;
+export const PERSONAL_PHASES = ["plan", "implement", "review", "test", "retro"] as const;
 export type PersonalPhase = (typeof PERSONAL_PHASES)[number];
 export type PhaseStatus = "passed" | "remediation_required" | "failed";
 export type RunStatus = "running" | "completed" | "failed" | "interrupted";
@@ -48,7 +48,15 @@ export interface TestPhaseResult extends PhaseResultBase {
   readonly details: { readonly commands: readonly TestCommandEvidence[] };
 }
 
-export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult;
+export interface RetroPhaseResult extends PhaseResultBase {
+  readonly phase: "retro";
+  readonly details: {
+    readonly lessons: readonly string[];
+    readonly followUps: readonly string[];
+  };
+}
+
+export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult | RetroPhaseResult;
 
 export interface PhaseInput {
   readonly runId: string;

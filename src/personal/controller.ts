@@ -84,6 +84,7 @@ export class PersonalMvpController {
       await this.#executePhase(context, ticket, request, "implement", [], signal);
       await this.#ensureReview(context, ticket, request, signal);
       await this.#ensureTest(context, ticket, request, signal);
+      await this.#ensureRetro(context, ticket, request, signal);
 
       const completeResults = requirePassingResults(context.state);
       const head = requireHead(context.state);
@@ -133,6 +134,14 @@ export class PersonalMvpController {
     if (result.status !== "passed") throw new Error(`Test did not pass: ${result.summary}`);
   }
 
+  async #ensureRetro(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal): Promise<void> {
+    const test = context.state.results.test;
+    const head = requireHead(context.state);
+    if (!test || test.status !== "passed" || test.inputHead !== head || test.outputHead !== head) throw new Error("Retro requires a fresh passing Test at the current HEAD");
+    const result = await this.#executePhase(context, ticket, request, "retro", [], signal);
+    if (result.status !== "passed") throw new Error(`Retro did not pass: ${result.summary}`);
+  }
+
   async #executePhase(
     context: RunContext,
     ticket: Ticket,
@@ -157,10 +166,22 @@ export class PersonalMvpController {
       previous: context.state.results,
       feedback: phaseFeedback,
     };
-    if (phase !== "implement") await this.#workspaces.assertClean(context.state.sandbox, signal);
-    const result = await this.#phases.run(input, signal);
+    if (phase !== "implement") {
+      await this.#workspaces.assertClean(context.state.sandbox, signal);
+      const startingHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
+      if (startingHead !== expectedHead) throw new Error(`${phase} started at an unexpected Git HEAD`);
+    }
+    let result: PhaseResult | undefined;
+    let phaseError: unknown;
+    try {
+      result = await this.#phases.run(input, signal);
+    } catch (error) {
+      phaseError = error;
+    }
     const observedHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
     await this.#workspaces.assertClean(context.state.sandbox, signal);
+    if (phaseError !== undefined) throw phaseError;
+    if (!result) throw new Error(`${phase} returned no result`);
     validatePhaseResult(result, input, observedHead);
     if (result.status === "failed") throw new Error(`${phase} failed: ${result.summary}`);
     if (phase === "implement" && result.status !== "passed") throw new Error("Implement must return passed or failed");
@@ -194,7 +215,7 @@ function initialState(runId: string, sandbox: string, branch: string, ticket: Ti
     branch,
     head: null,
     sessions: {},
-    attempts: { plan: 0, implement: 0, review: 0, test: 0 },
+    attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 },
     results: {},
     remediations: { review: 0, test: 0 },
     prUrl: null,
@@ -240,9 +261,10 @@ function requirePassingResults(state: PersonalRunState): Readonly<Record<Persona
   const implement = state.results.implement;
   const review = state.results.review;
   const test = state.results.test;
+  const retro = state.results.retro;
   const head = requireHead(state);
-  if (!plan || !implement || !review || !test) throw new Error("all phase results are required before publication");
-  if ([plan, implement, review, test].some(result => result.status !== "passed")) throw new Error("all phases must pass before publication");
-  if (review.inputHead !== head || review.outputHead !== head || test.inputHead !== head || test.outputHead !== head) throw new Error("Review and Test are stale for the publication HEAD");
-  return { plan, implement, review, test };
+  if (!plan || !implement || !review || !test || !retro) throw new Error("all phase results are required before publication");
+  if ([plan, implement, review, test, retro].some(result => result.status !== "passed")) throw new Error("all phases must pass before publication");
+  if (review.inputHead !== head || review.outputHead !== head || test.inputHead !== head || test.outputHead !== head || retro.inputHead !== head || retro.outputHead !== head) throw new Error("Review, Test, and Retro are stale for the publication HEAD");
+  return { plan, implement, review, test, retro };
 }
