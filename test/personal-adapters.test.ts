@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import type { CommandPort, CommandRequest, CommandResult } from "../src/personal/command.js";
+import { NodeCommandRunner, type CommandPort, type CommandRequest, type CommandResult } from "../src/personal/command.js";
 import { loadPersonalMvpConfig } from "../src/personal/config.js";
 import { DockerSandboxWorkspace } from "../src/personal/docker-sandbox.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
@@ -60,6 +60,15 @@ function details(phase: PersonalPhase): object {
   if (phase === "review") return { findings: [] };
   return { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] };
 }
+
+test("Node command runner closes stdin for non-interactive child processes", async () => {
+  const result = await new NodeCommandRunner().run({
+    command: process.execPath,
+    args: ["-e", "process.stdin.resume(); process.stdin.once('end', () => process.stdout.write('closed'))"],
+    timeoutMs: 2_000,
+  });
+  assert.equal(result.stdout, "closed");
+});
 
 test("Linear client sends its credential only to the configured GraphQL endpoint", async () => {
   const original = globalThis.fetch;

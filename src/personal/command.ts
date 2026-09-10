@@ -1,7 +1,4 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
 
 export interface CommandRequest {
   readonly command: string;
@@ -24,8 +21,8 @@ export interface CommandPort {
 
 export class NodeCommandRunner implements CommandPort {
   async run(request: CommandRequest, signal?: AbortSignal): Promise<CommandResult> {
-    try {
-      const result = await execFileAsync(request.command, [...request.args], {
+    return await new Promise<CommandResult>((resolve, reject) => {
+      const child = execFile(request.command, [...request.args], {
         encoding: "utf8",
         windowsHide: true,
         timeout: request.timeoutMs ?? 120_000,
@@ -33,14 +30,18 @@ export class NodeCommandRunner implements CommandPort {
         ...(request.cwd ? { cwd: request.cwd } : {}),
         ...(request.env ? { env: request.env } : {}),
         ...(signal ? { signal } : {}),
+      }, (error, stdout, stderr) => {
+        if (!error) {
+          resolve({ stdout, stderr });
+          return;
+        }
+        const failure = error as Error & { code?: string | number };
+        const detail = request.sensitive ? "sensitive command failed" : stderr.trim() || stdout.trim() || failure.message;
+        reject(new Error(`${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, { cause: error }));
       });
-      return { stdout: result.stdout, stderr: result.stderr };
-    } catch (error) {
-      const failure = error as Error & { stdout?: string; stderr?: string; code?: string | number };
-      const stderr = failure.stderr?.trim();
-      const stdout = failure.stdout?.trim();
-      const detail = request.sensitive ? "sensitive command failed" : stderr || stdout || failure.message;
-      throw new Error(`${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, { cause: error });
-    }
+      // Non-interactive commands must observe EOF. In particular, Pi print mode
+      // waits for stdin to close before processing its positional prompt.
+      child.stdin?.end();
+    });
   }
 }
