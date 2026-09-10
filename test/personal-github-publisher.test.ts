@@ -63,7 +63,7 @@ class FakeCommands implements CommandPort {
       ].join("\n");
       const currentBody = this.currentBody ?? body;
       if (this.currentBody === undefined) this.currentBody = currentBody;
-      const record = this.mutateRecord?.({ url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body: currentBody }) ?? { url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { nameWithOwner: "example/repo" }, body: currentBody };
+      const record = this.mutateRecord?.({ url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { name: "repo", nameWithOwner: "" }, body: currentBody }) ?? { url: "https://github.com/example/repo/pull/7", number: 7, baseRefName: "main", headRefName: BRANCH, headRefOid, headRepositoryOwner: { login: "example" }, headRepository: { name: "repo", nameWithOwner: "" }, body: currentBody };
       return { stdout: exists ? JSON.stringify(this.behavior === "multiple" ? [record, record] : [record]) : "[]", stderr: "" };
     }
     if (request.command === "gh" && (request.args[1] === "create" || request.args[1] === "edit")) {

@@ -230,7 +230,7 @@ function parsePullRequestRecord(value: unknown, input: PublicationInput): PullRe
   const headRefOid = object["headRefOid"];
   const body = object["body"];
   const headRepositoryOwner = pullRequestOwner(object["headRepositoryOwner"]);
-  const headRepository = pullRequestRepository(object["headRepository"]);
+  const headRepository = pullRequestRepository(object["headRepository"], headRepositoryOwner);
   if (
     typeof url !== "string"
     || !Number.isSafeInteger(number) || (number as number) < 1
@@ -266,14 +266,14 @@ function pullRequestOwner(value: unknown): string | undefined {
   return typeof login === "string" && /^[A-Za-z0-9_.-]+$/u.test(login) ? login : undefined;
 }
 
-function pullRequestRepository(value: unknown): string | undefined {
+function pullRequestRepository(value: unknown, separateOwner?: string): string | undefined {
   if (typeof value === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value)) return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const object = value as Record<string, unknown>;
   const nameWithOwner = object["nameWithOwner"];
   if (typeof nameWithOwner === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(nameWithOwner)) return nameWithOwner;
   const name = object["name"];
-  const owner = pullRequestOwner(object["owner"]);
+  const owner = pullRequestOwner(object["owner"]) ?? separateOwner;
   return typeof name === "string" && /^[A-Za-z0-9_.-]+$/u.test(name) && owner ? `${owner}/${name}` : undefined;
 }
 
