@@ -18,6 +18,7 @@ class SandboxShim implements CommandPort {
   readonly requests: CommandRequest[] = [];
   readonly ownershipRequests: OwnershipRequest[] = [];
   readonly executedShellScripts: string[] = [];
+  readonly runtimeRequests: string[] = [];
   constructor(readonly sandboxRoot: string, readonly sandbox: string) {}
 
   async run(request: CommandRequest, signal?: AbortSignal): Promise<CommandResult> {
@@ -40,6 +41,12 @@ class SandboxShim implements CommandPort {
     }
     if (request.args[0] === "exec" && request.args.includes("sh")) {
       const script = request.args[request.args.length - 1]!;
+      if (script.includes("npm ci --prefix /ticket/runtime")) {
+        assert.equal(request.args[1], "-u");
+        assert.equal(request.args[2], "1000:1000");
+        this.runtimeRequests.push(script);
+        return { stdout: "", stderr: "" };
+      }
       const ownershipCommand = "chown -R '1000:1000' /ticket";
       const lines = script.split("\n");
       assert.equal(lines.filter(line => line === ownershipCommand).length, 1, "production must request the expected privileged ownership setup");
@@ -111,6 +118,11 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   const setup = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.includes("sh"));
   assert.deepEqual(setup?.args.slice(0, 5), ["exec", "-u", "root", "squire-aidev-1-0123456789", "sh"]);
   assert.match(setup?.args.at(-1) ?? "", /chown -R '1000:1000' \/ticket/u);
+  const runtime = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.some(argument => argument.includes("npm ci --prefix /ticket/runtime")));
+  assert.deepEqual(runtime?.args.slice(0, 5), ["exec", "-u", "1000:1000", "squire-aidev-1-0123456789", "sh"]);
+  assert.match(runtime?.args.at(-1) ?? "", /npm ci --prefix \/ticket\/runtime --ignore-scripts --no-audit --no-fund/u);
+  assert.match(runtime?.args.at(-1) ?? "", /node \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
+  assert.equal(commands.runtimeRequests.length, 1);
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
   assert.equal(commands.executedShellScripts.some(script => script.split("\n").some(line => line.includes("chown"))), false);
   assert.equal(commands.executedShellScripts.some(script => script.includes("chmod 0700")), true);

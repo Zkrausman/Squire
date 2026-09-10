@@ -124,6 +124,24 @@ function assertTokenScope(requests: readonly CommandRequest[]): void {
   }
 }
 
+test("publisher rejects inconsistent candidate bundle metadata before remote commands", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    const original = await input(directory);
+    for (const [name, bundle] of [
+      ["size", { ...original.bundle, byteLength: original.bundle.byteLength + 1 }],
+      ["digest", { ...original.bundle, sha256: "e".repeat(64) }],
+      ["base", { ...original.bundle, baseSha: "not-a-sha" }],
+    ] as const) {
+      await t.test(name, async () => {
+        const commands = new FakeCommands("create");
+        await assert.rejects(new GitHubPublisher({ commands, tokens }).publish({ ...original, bundle }), /candidate bundle (size|digest|base SHA)/);
+        assert.equal(commands.requests.length, 0);
+      });
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("publisher reuses one exact existing PR without pushing or merging", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
   try {

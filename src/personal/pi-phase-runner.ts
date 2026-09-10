@@ -118,7 +118,7 @@ function buildPrompt(phase: PersonalPhase, inputPath: string, testCommands: read
     "Return exactly one JSON object as your final response and no other text.",
     `Use details ${detailsShape(phase)}.`,
     '{"runId":"...","phase":"plan|implement|review|test|retro","attempt":1,"sessionId":"...","sessionFile":"...","inputHead":"40-hex","outputHead":"40-hex","status":"passed|remediation_required|failed","summary":"...","details":{}}',
-    "Copy run, phase, attempt, sessionId, and sessionFile exactly from the input. Set inputHead exactly to the input's expectedHead value, never to a prior phase result's inputHead. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
+    "Copy run, phase, attempt, sessionId, and sessionFile exactly from the input. Set inputHead exactly to the input's expectedHead value: result inputHead equals the current phase input's expectedHead, never a prior phase result's inputHead. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
   ].join("\n\n");
 }
 

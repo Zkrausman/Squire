@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
@@ -72,6 +72,8 @@ export class GitHubPublisher implements PublicationPort {
 
   async publish(input: PublicationInput, signal?: AbortSignal): Promise<PublicationResult> {
     validatePublication(input);
+    const bundleInfo = await lstat(input.bundle.path);
+    if (!bundleInfo.isFile() || bundleInfo.size !== input.bundle.byteLength) throw new Error("candidate bundle size or file type mismatch");
     const actualDigest = await sha256File(input.bundle.path);
     if (actualDigest !== input.bundle.sha256) throw new Error("candidate bundle digest mismatch");
     const temporary = await mkdtemp(path.join(os.tmpdir(), "squire-publish-"));
@@ -394,6 +396,10 @@ function validatePublication(input: PublicationInput): void {
   if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(input.ticket.id)) throw new Error("invalid publication ticket");
   if (!/^squire\/[a-z0-9][a-z0-9._/-]{1,127}$/u.test(input.branch) || input.branch.includes("..")) throw new Error("invalid publication branch");
   if (!/^[a-f0-9]{40,64}$/u.test(input.head) || input.bundle.head !== input.head || input.bundle.branch !== input.branch) throw new Error("invalid publication identity");
+  if (typeof input.bundle.path !== "string" || input.bundle.path.length === 0 || !path.isAbsolute(input.bundle.path)) throw new Error("invalid candidate bundle path");
+  if (!/^[a-f0-9]{64}$/u.test(input.bundle.sha256)) throw new Error("invalid candidate bundle digest");
+  if (!Number.isSafeInteger(input.bundle.byteLength) || input.bundle.byteLength <= 0) throw new Error("invalid candidate bundle size");
+  if (!/^[a-f0-9]{40,64}$/u.test(input.bundle.baseSha)) throw new Error("candidate bundle base SHA is invalid");
   for (const phase of PERSONAL_PHASES) {
     const result = input.phases[phase];
     validatePhaseResultShape(result, phase);

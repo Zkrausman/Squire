@@ -20,6 +20,13 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 ```
 
+When the checkout declares `.github/runtime/package.json` and
+`.github/runtime/package-lock.json`, Squire provisions that pinned runtime
+inside the ticket sandbox before phases run and validates it with
+`.github/validate-ticket-runtime.mjs`. This keeps the repository-wide test
+command from confusing missing Pi/wiki/TUI prerequisites with product
+failures.
+
 ## 2) Create the per-user configuration
 
 The default locations are:

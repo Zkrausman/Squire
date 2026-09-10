@@ -98,6 +98,20 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "chmod 0700 /ticket /ticket/workspace /ticket/sessions /ticket/artifacts /ticket/runtime",
     ].join("\n");
     await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", script], timeoutMs: 180_000 }, signal);
+    // Keep repository-controlled Node/npm execution out of the privileged
+    // setup command. The role user owns /ticket after the setup above, so a
+    // declared ticket runtime is installed and validated with the same
+    // pinned commands CI uses, without granting it sandbox-root privileges.
+    const runtimeSetup = [
+      "set -eu",
+      "if [ -f /ticket/workspace/.github/runtime/package.json ] && [ -f /ticket/workspace/.github/runtime/package-lock.json ] && [ -f /ticket/workspace/.github/validate-ticket-runtime.mjs ]; then",
+      "  cp /ticket/workspace/.github/runtime/package.json /ticket/runtime/package.json",
+      "  cp /ticket/workspace/.github/runtime/package-lock.json /ticket/runtime/package-lock.json",
+      "  npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
+      "  node /ticket/workspace/.github/validate-ticket-runtime.mjs",
+      "fi",
+    ].join("\n");
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, input.sandbox, "sh", "-lc", runtimeSetup], timeoutMs: 180_000 }, signal);
     if (this.#piAuthFile) {
       await this.#commands.run({ command: this.#sbx, args: ["cp", this.#piAuthFile, `${input.sandbox}:${this.#piAgentDirectory}/auth.json`] }, signal);
       const secureAuth = `chown ${sh(this.#roleUser)} ${sh(`${this.#piAgentDirectory}/auth.json`)}; chmod 0600 ${sh(`${this.#piAgentDirectory}/auth.json`)}`;
