@@ -113,6 +113,7 @@ export class PersonalMvpController {
   readonly #controllerPid: number | undefined;
   readonly #onPersistenceError: (error: unknown) => void;
   readonly #contexts = new Map<string, RunContext>();
+  readonly #reservedClaims = new Set<string>();
 
   constructor(options: PersonalMvpControllerOptions) {
     this.#tickets = options.tickets;
@@ -177,44 +178,34 @@ export class PersonalMvpController {
    */
   async runReserved(request: RunRequest, runId: string, launchConfigDigest: string, signal?: AbortSignal): Promise<PersonalRunState> {
     validateRequest(request);
-    const loaded = await this.#loadReservedState(runId);
-    if (!loaded) throw new Error(`reserved run state not found: ${runId}`);
-    if (loaded.ticketId !== request.ticketId || loaded.repository !== request.repository || loaded.repositoryPath !== request.repositoryPath || loaded.sourceRef !== request.sourceRef || loaded.baseBranch !== request.baseBranch || loaded.launchConfigDigest !== launchConfigDigest) throw new Error("reserved run configuration identity mismatch");
-    if (loaded.executionMode !== "background") throw new Error("reserved child execution requires a background run");
-    if (loaded.controllerPid !== undefined && loaded.controllerPid !== null && loaded.controllerPid !== process.pid) throw new Error("reserved run is owned by another controller process");
-    if (loaded.status !== "running") {
-      if (loaded.status === "completed") return loaded;
-      throw new Error(`reserved run is already ${loaded.status}: ${runId}`);
-    }
-    const context = this.#contexts.get(runId) ?? this.#context(loaded);
-    this.#contexts.set(runId, context);
-
-    // A direct embedder may invoke runReserved immediately after reserve. A
-    // real detached child normally observes the parent's started handoff; if
-    // it does not, the child can safely claim that handoff itself.
-    if (context.state.launchState === "reserved") {
-      try {
-        await context.persist({
-          launchState: "started",
-          controllerPid: process.pid,
-          lifecycle: "preparing",
-          step: "preparing",
-          preparationState: "started",
-        });
-      } catch (error) {
-        // The parent may have published the spawned PID after this child read
-        // version N but before its handoff save. Reload that exact state and
-        // continue only when the handoff is already owned by a started child.
-        const latest = await this.#readState(runId).catch(() => undefined);
-        if (!latest || latest.status !== "running" || latest.launchState !== "started") throw error;
-        context.state = latest;
+    if (this.#reservedClaims.has(runId)) throw new Error(`reserved run is already being claimed: ${runId}`);
+    this.#reservedClaims.add(runId);
+    try {
+      // Always claim persisted state. Cached state can belong to the reserving
+      // parent invocation and is not authority to enter detached execution.
+      const loaded = await this.#readState(runId);
+      if (!loaded) throw new Error(`reserved run state not found: ${runId}`);
+      if (loaded.ticketId !== request.ticketId || loaded.repository !== request.repository || loaded.repositoryPath !== request.repositoryPath || loaded.sourceRef !== request.sourceRef || loaded.baseBranch !== request.baseBranch || loaded.launchConfigDigest !== launchConfigDigest) throw new Error("reserved run configuration identity mismatch");
+      if (loaded.executionMode !== "background") throw new Error("reserved child execution requires a background run");
+      if (loaded.status !== "running" || loaded.launchState !== "reserved" || loaded.controllerPid !== null || loaded.lifecycle !== "launching" || loaded.step !== "launching" || loaded.preparationState !== "pending") {
+        throw new Error(`run is not in the exact reserved launch state: ${runId}`);
       }
-    }
-    if (context.state.step === "launching") {
-      await context.persist({ lifecycle: "preparing", step: "preparing", preparationState: "started" });
-    }
 
-    return this.#executeReserved(context, request, signal);
+      const context = this.#context(loaded);
+      // This CAS is the ownership claim. A conflict is terminal for this
+      // invocation; it must never reload another child's started state.
+      await context.persist({
+        launchState: "started",
+        controllerPid: process.pid,
+        lifecycle: "preparing",
+        step: "preparing",
+        preparationState: "started",
+      });
+      this.#contexts.set(runId, context);
+      return await this.#executeReserved(context, request, signal);
+    } finally {
+      this.#reservedClaims.delete(runId);
+    }
   }
 
   /** Persist a synchronous/pre-spawn failure for a reserved run. */
@@ -451,12 +442,6 @@ export class PersonalMvpController {
     const context = this.#context(state);
     this.#contexts.set(runId, context);
     return context;
-  }
-
-  async #loadReservedState(runId: string): Promise<PersonalRunState | undefined> {
-    const cached = this.#contexts.get(runId);
-    if (cached) return cached.state;
-    return this.#readState(runId);
   }
 
   async #readState(runId: string): Promise<PersonalRunState | undefined> {

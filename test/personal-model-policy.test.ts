@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +11,7 @@ import {
   selectPlanBucket,
   validateModelPolicy,
 } from "../src/personal/model-policy.js";
-import { defaultConfigPath, loadPersonalMvpConfig, resolveConfigPath } from "../src/personal/config.js";
+import { defaultConfigPath, loadBoundPersonalMvpConfig, loadPersonalMvpConfig, resolveConfigPath } from "../src/personal/config.js";
 
 const policy = APPROVED_PERSONAL_MODEL_POLICY;
 
@@ -108,6 +109,117 @@ test("omitted model policy resolves to a detached copy of the approved defaults"
   }
 });
 
+test("bound config hashes and parses one captured buffer across atomic replacement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-config-replace-"));
+  try {
+    const repository = path.join(root, "repository");
+    const dataDirectory = path.join(root, "data");
+    await mkdir(repository);
+    const file = path.join(root, "config.json");
+    const replacement = path.join(root, "replacement.json");
+    const ready = path.join(root, "read-ready");
+    const release = path.join(root, "read-release");
+    const makeConfig = (slug: string) => ({
+      repository: { slug, path: repository, sourceRef: "main", baseBranch: "main" },
+      dataDirectory,
+      linear: { apiKeyEnv: "LINEAR_API_KEY" },
+      github: { tokenCommand: ["token-helper"] },
+      sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/runtime/pi-agent" },
+      testCommands: ["npm test"],
+    });
+    const original = Buffer.from(JSON.stringify(makeConfig("example/original")), "utf8");
+    await writeFile(file, original);
+    await writeFile(replacement, JSON.stringify(makeConfig("example/replacement")));
+    const loading = loadBoundPersonalMvpConfig(file, { env: {
+      NODE_ENV: "test",
+      SQUIRE_TEST_ONLY_CONFIG_READ_READY_PATH: ready,
+      SQUIRE_TEST_ONLY_CONFIG_READ_RELEASE_PATH: release,
+    } });
+    await waitForFile(ready);
+    await rename(replacement, file);
+    await writeFile(release, "go\n");
+    const loaded = await loading;
+    assert.equal(loaded.config.repository.slug, "example/original");
+    assert.equal(loaded.digest, createHash("sha256").update(original).digest("hex"));
+    assert.equal(JSON.parse(await readFile(file, "utf8")).repository.slug, "example/replacement");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("bound config remains tied to the captured symlink target", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-config-symlink-"));
+  try {
+    const repository = path.join(root, "repository");
+    const dataDirectory = path.join(root, "data");
+    await mkdir(repository);
+    const targetA = path.join(root, "target-a.json");
+    const targetB = path.join(root, "target-b.json");
+    const selected = path.join(root, "config.json");
+    const nextLink = path.join(root, "next-config.json");
+    const ready = path.join(root, "read-ready");
+    const release = path.join(root, "read-release");
+    const makeBytes = (slug: string) => Buffer.from(JSON.stringify({
+      repository: { slug, path: repository, sourceRef: "main", baseBranch: "main" },
+      dataDirectory,
+      linear: { apiKeyEnv: "LINEAR_API_KEY" },
+      github: { tokenCommand: ["token-helper"] },
+      sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/runtime/pi-agent" },
+      testCommands: ["npm test"],
+    }), "utf8");
+    const bytesA = makeBytes("example/target-a");
+    await writeFile(targetA, bytesA);
+    await writeFile(targetB, makeBytes("example/target-b"));
+    try {
+      await symlink(targetA, selected, "file");
+      await symlink(targetB, nextLink, "file");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) { t.skip("file symlinks are unavailable"); return; }
+      throw error;
+    }
+    const loading = loadBoundPersonalMvpConfig(selected, { env: {
+      NODE_ENV: "test",
+      SQUIRE_TEST_ONLY_CONFIG_READ_READY_PATH: ready,
+      SQUIRE_TEST_ONLY_CONFIG_READ_RELEASE_PATH: release,
+    } });
+    await waitForFile(ready);
+    await rename(nextLink, selected);
+    await writeFile(release, "go\n");
+    const loaded = await loading;
+    assert.equal(loaded.config.repository.slug, "example/target-a");
+    assert.equal(loaded.digest, createHash("sha256").update(bytesA).digest("hex"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("data directory accepts only canonical JSON and environment names", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-data-directory-"));
+  try {
+    const repository = path.join(root, "repository");
+    await mkdir(repository);
+    const base = {
+      repository: { slug: "example/repo", path: repository, sourceRef: "main", baseBranch: "main" },
+      linear: { apiKeyEnv: "LINEAR_API_KEY" },
+      github: { tokenCommand: ["token-helper"] },
+      sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/runtime/pi-agent" },
+      testCommands: ["npm test"],
+    };
+    const file = path.join(root, "config.json");
+    await writeFile(file, JSON.stringify({ ...base, runtimeDataDirectory: path.join(root, "alias") }));
+    await assert.rejects(loadPersonalMvpConfig(file), /runtimeDataDirectory is not supported/);
+    await writeFile(file, JSON.stringify({ ...base, paths: { logs: path.join(root, "logs") } }));
+    await assert.rejects(loadPersonalMvpConfig(file), /paths.logs is not supported/);
+    await writeFile(file, JSON.stringify(base));
+    const loaded = await loadPersonalMvpConfig(file, { env: { HOME: path.join(root, "home"), SQUIRE_RUNTIME_DATA_DIR: path.join(root, "ignored"), SQUIRE_DATA_DIR: path.join(root, "canonical") } });
+    assert.equal(loaded.dataDirectory, path.join(root, "canonical"));
+    assert.equal(loaded.paths.state, path.join(root, "canonical", "state"));
+    assert.deepEqual(Object.keys(loaded.paths).sort(), ["bridges", "staging", "state"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("implicit config loading works without repository config and ignores a local decoy", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-implicit-config-"));
   try {
@@ -143,3 +255,11 @@ test("implicit config loading works without repository config and ignores a loca
     await rm(root, { recursive: true, force: true });
   }
 });
+
+async function waitForFile(file: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try { await access(file); return; }
+    catch { await new Promise(resolve => setTimeout(resolve, 5)); }
+  }
+  throw new Error(`timed out waiting for ${file}`);
+}

@@ -1,4 +1,5 @@
-import { readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -16,15 +17,13 @@ export interface PersonalMvpConfig {
     readonly sourceRef: string;
     readonly baseBranch: string;
   };
+  /** Canonical resolved root for mutable run data and logs. */
+  readonly dataDirectory: string;
   readonly paths: {
     readonly state: string;
     readonly bridges: string;
     readonly staging: string;
-    readonly logs: string;
-    readonly dataDirectory?: string;
   };
-  /** Resolved per-user root for state, logs, and other run artifacts. */
-  readonly runtimeDataDirectory: string;
   readonly linear: {
     readonly apiKeyEnv: string;
     readonly endpoint?: string;
@@ -53,9 +52,9 @@ export interface ConfigPathOptions {
   readonly homeDirectory?: string;
 }
 
-export interface RuntimeDataPathOptions extends ConfigPathOptions {
-  /** Explicit data-directory override; environment overrides are considered next. */
-  readonly explicit?: string;
+export interface LoadedPersonalMvpConfig {
+  readonly config: PersonalMvpConfig;
+  readonly digest: string;
 }
 
 /** Resolve the per-user Squire directory without looking in the repository. */
@@ -83,41 +82,27 @@ export function defaultSquireDirectory(first?: ConfigPathOptions | NodeJS.Platfo
  * platform's state/data directory. SQUIRE_DATA_DIR is an explicit environment
  * escape hatch for machines that keep state on a separate volume.
  */
-export function defaultSquireDataDirectory(options?: ConfigPathOptions): string;
-export function defaultSquireDataDirectory(platform: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
-export function defaultSquireDataDirectory(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): string {
-  const options = pathOptions(first, suppliedEnv);
-  const environment = options.env;
-  if (options.platform === "win32") {
+export function defaultSquireDataDirectory(options: ConfigPathOptions = {}): string {
+  const resolved = pathOptions(options);
+  const environment = resolved.env;
+  const platform = resolved.platform;
+  if (platform === "win32") {
     const localAppData = nonempty(environment["LOCALAPPDATA"])
       ?? nonempty(environment["USERPROFILE"])
-      ?? options.homeDirectory
+      ?? resolved.homeDirectory
       ?? os.homedir();
     return path.win32.normalize(path.win32.join(localAppData, "Squire"));
   }
-  const home = nonempty(environment["HOME"]) ?? options.homeDirectory ?? os.homedir();
-  // XDG_STATE_HOME is the appropriate location for mutable run state and
-  // logs. Accept XDG_DATA_HOME as a useful compatibility override because
-  // some older installations only define that XDG variable.
+  const home = nonempty(environment["HOME"]) ?? resolved.homeDirectory ?? os.homedir();
   const stateHome = nonempty(environment["XDG_STATE_HOME"])
-    ?? nonempty(environment["XDG_DATA_HOME"])
     ?? path.posix.join(home, ".local", "state");
-  return path.posix.normalize(path.posix.join(resolvePosixHome(stateHome, options.cwd), "squire"));
+  return path.posix.normalize(path.posix.join(resolvePosixHome(stateHome, resolved.cwd), "squire"));
 }
 
-/** Resolve an explicit, environment, or platform-default runtime directory. */
-export function resolveSquireDataDirectory(options?: ConfigPathOptions | RuntimeDataPathOptions): string;
-export function resolveSquireDataDirectory(explicit: string | undefined, options?: ConfigPathOptions): string;
-export function resolveSquireDataDirectory(first?: string | ConfigPathOptions | RuntimeDataPathOptions, suppliedOptions: ConfigPathOptions = {}): string {
-  const options = typeof first === "object" ? first : suppliedOptions;
-  const explicit = typeof first === "string" ? first : (first && "explicit" in first ? first.explicit : undefined);
+/** Resolve SQUIRE_DATA_DIR or the platform-default mutable-data directory. */
+export function resolveSquireDataDirectory(options: ConfigPathOptions = {}): string {
   const environment = options.env ?? process.env;
-  const selected = nonempty(explicit)
-    ?? nonempty(environment["SQUIRE_DATA_DIR"])
-    ?? nonempty(environment["SQUIRE_RUNTIME_DATA_DIR"])
-    ?? nonempty(environment["SQUIRE_RUNTIME_DIR"])
-    ?? nonempty(environment["SQUIRE_DATA_HOME"])
-    ?? nonempty(environment["SQUIRE_STATE_HOME"]);
+  const selected = nonempty(environment["SQUIRE_DATA_DIR"]);
   if (selected) return resolveHostPath(options.cwd ?? process.cwd(), selected, options.platform ?? process.platform);
   return defaultSquireDataDirectory(options);
 }
@@ -145,9 +130,22 @@ export function resolveConfigPath(explicit?: string, options: ConfigPathOptions 
 }
 
 export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOptions = {}): Promise<PersonalMvpConfig> {
-  const platform = options.platform ?? process.platform;
+  return (await loadBoundPersonalMvpConfig(file, options)).config;
+}
+
+/** Read the selected file once; parsing and launch binding use these exact bytes. */
+export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigPathOptions = {}): Promise<LoadedPersonalMvpConfig> {
   const absolute = resolveConfigPath(file, options);
-  const raw: unknown = JSON.parse(await readFile(absolute, "utf8"));
+  const bytes = await readConfigBytes(absolute, options.env ?? process.env);
+  return {
+    config: await parsePersonalMvpConfig(bytes, absolute, options),
+    digest: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: ConfigPathOptions): Promise<PersonalMvpConfig> {
+  const platform = options.platform ?? process.platform;
+  const raw: unknown = JSON.parse(bytes.toString("utf8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("configuration must be an object");
   const value = raw as Record<string, unknown>;
   const repository = object(value["repository"], "repository");
@@ -156,18 +154,16 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
   const github = object(value["github"], "github");
   const sandbox = object(value["sandbox"], "sandbox");
   const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
-  const runtimeValue = value["runtime"];
-  if (runtimeValue !== undefined && (!runtimeValue || typeof runtimeValue !== "object" || Array.isArray(runtimeValue))) throw new Error("runtime must be an object");
-  const runtimeObject = runtimeValue as Record<string, unknown> | undefined;
-  const configuredDataDirectory = value["dataDirectory"]
-    ?? value["runtimeDataDirectory"]
-    ?? runtimeObject?.["dataDirectory"]
-    ?? paths["dataDirectory"]
-    ?? paths["runtime"]
-    ?? paths["data"];
+  for (const alias of ["runtimeDataDirectory", "runtime"] as const) {
+    if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use dataDirectory`);
+  }
+  for (const alias of ["dataDirectory", "runtime", "data", "logs"] as const) {
+    if (Object.prototype.hasOwnProperty.call(paths, alias)) throw new Error(`paths.${alias} is not supported; use dataDirectory`);
+  }
+  const configuredDataDirectory = value["dataDirectory"];
   if (configuredDataDirectory !== undefined && typeof configuredDataDirectory !== "string") throw new Error("dataDirectory must be a string");
-  const runtimeDataDirectory = configuredDataDirectory === undefined
-    ? resolveSquireDataDirectory(undefined, options)
+  const dataDirectory = configuredDataDirectory === undefined
+    ? resolveSquireDataDirectory(options)
     : resolveHostPath(base, text(configuredDataDirectory, "dataDirectory"), platform);
 
   const hasModelPolicy = Object.prototype.hasOwnProperty.call(value, "modelPolicy");
@@ -200,26 +196,22 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
   // defaults rather than allowing artifacts inside the checkout.
   const legacyPreviewPaths = repository["path"] === "."
     && configuredDataDirectory === undefined
-    && paths["logs"] === undefined
     && paths["state"] === "state"
     && paths["bridges"] === "bridges"
     && paths["staging"] === "staging"
     && nonempty((options.env ?? process.env)["SQUIRE_DATA_DIR"]) === undefined
-    && nonempty((options.env ?? process.env)["SQUIRE_RUNTIME_DATA_DIR"]) === undefined
-    && nonempty((options.env ?? process.env)["SQUIRE_RUNTIME_DIR"]) === undefined
-    && nonempty((options.env ?? process.env)["SQUIRE_DATA_HOME"]) === undefined
-    && nonempty((options.env ?? process.env)["SQUIRE_STATE_HOME"]) === undefined
     && !(platform === process.platform && await isGitCheckout(repositoryPath));
-  const statePath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["state"], "paths.state", base, runtimeDataDirectory, "state", platform);
-  const bridgesPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["bridges"], "paths.bridges", base, runtimeDataDirectory, "bridges", platform);
-  const stagingPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["staging"], "paths.staging", base, runtimeDataDirectory, "staging", platform);
-  const logsPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["logs"], "paths.logs", base, runtimeDataDirectory, "logs", platform);
+  const statePath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["state"], "paths.state", base, dataDirectory, "state", platform);
+  const bridgesPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["bridges"], "paths.bridges", base, dataDirectory, "bridges", platform);
+  const stagingPath = resolveConfiguredRuntimePath(legacyPreviewPaths ? undefined : paths["staging"], "paths.staging", base, dataDirectory, "staging", platform);
+  const logsPath = platform === "win32" ? path.win32.join(dataDirectory, "logs") : path.resolve(dataDirectory, "logs");
   // Resolve symlinks (including symlinked destination parents) before
   // comparing paths. Non-native platform fixtures are parsed for display but
   // are not inspected with the host filesystem.
-  await assertRuntimePathsOutsideRepository(repositoryPath, [runtimeDataDirectory, statePath, bridgesPath, stagingPath, logsPath], platform);
+  await assertRuntimePathsOutsideRepository(repositoryPath, [dataDirectory, statePath, bridgesPath, stagingPath, logsPath], platform);
 
   return {
+    dataDirectory,
     repository: {
       slug: text(repository["slug"], "repository.slug"),
       path: repositoryPath,
@@ -230,10 +222,7 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
       state: statePath,
       bridges: bridgesPath,
       staging: stagingPath,
-      logs: logsPath,
-      dataDirectory: runtimeDataDirectory,
     },
-    runtimeDataDirectory,
     linear: {
       apiKeyEnv: text(linear["apiKeyEnv"], "linear.apiKeyEnv"),
       ...(endpoint !== undefined ? { endpoint } : {}),
@@ -398,6 +387,28 @@ async function assertRuntimePathsOutsideRepository(repositoryPath: string, desti
     const destinationReal = await realPathForSafety(destination);
     if (isWithin(repositoryReal, destinationReal)) throw new Error(`runtime path must be outside the repository: ${destination}`);
   }
+}
+
+async function readConfigBytes(file: string, environment: NodeJS.ProcessEnv): Promise<Buffer> {
+  const bytes = await readFile(file);
+  // Test-only file barriers make atomic replacement and symlink retargeting
+  // deterministic after the selected bytes have been captured.
+  if (environment["NODE_ENV"] === "test") {
+    const ready = nonempty(environment["SQUIRE_TEST_ONLY_CONFIG_READ_READY_PATH"]);
+    const release = nonempty(environment["SQUIRE_TEST_ONLY_CONFIG_READ_RELEASE_PATH"]);
+    if ((ready === undefined) !== (release === undefined)) throw new Error("config test-only read barrier is incomplete");
+    if (ready && release) {
+      await writeFile(ready, "ready\n", "utf8");
+      for (;;) {
+        try { await access(release); break; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+      }
+    }
+  }
+  return bytes;
 }
 
 function nonempty(value: string | undefined): string | undefined {

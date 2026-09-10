@@ -5,12 +5,7 @@
     "sourceRef": "refs/remotes/origin/main",
     "baseBranch": "main"
   },
-  "paths": {
-    "state": "state",
-    "bridges": "bridges",
-    "staging": "staging",
-    "logs": "logs"
-  },
+  "dataDirectory": "/absolute/path/to/your/squire-data",
   "linear": {
     "apiKeyEnv": "LINEAR_API_KEY"
   },

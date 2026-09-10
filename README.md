@@ -34,12 +34,13 @@ Squire does not search the checkout for configuration. The implicit config is
 `%USERPROFILE%\.squire\config.json` on Windows and
 `$XDG_CONFIG_HOME/squire/config.json` (or `~/.config/squire/config.json`) on
 Linux. `--config <file>` takes precedence over `SQUIRE_CONFIG`, which takes
-precedence over that per-user default. Relative `state`, `bridges`, `staging`,
-and `logs` paths are relative to the selected config file for compatibility
-with existing `paths.state` settings. New omitted runtime paths use
-`%LOCALAPPDATA%\Squire` on Windows and `$XDG_STATE_HOME/squire` (or
-`~/.local/state/squire`) on Linux; `SQUIRE_DATA_DIR` overrides that root. All
-state/log destinations are checked after resolving symlinks and must remain
+precedence over that per-user default. `dataDirectory` is the one JSON setting
+for mutable data and logs; `SQUIRE_DATA_DIR` is its only Squire environment
+override. It defaults to `%LOCALAPPDATA%\Squire` on Windows and
+`$XDG_STATE_HOME/squire` (or `~/.local/state/squire`) on Linux. The pre-existing
+`paths.state`, `paths.bridges`, and `paths.staging` settings remain supported
+and resolve relative to the selected config file. All data destinations are
+checked after resolving symlinks and must remain
 outside the repository. The repository path should be an explicit checkout
 path.
 
@@ -55,6 +56,6 @@ canonical repository/ticket identity exactly once; the selection digest and
 all five resolved phase profiles are persisted with the run and each phase
 result records the profile that actually launched Pi.
 
-Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the configured logs directory. `status` reads only persisted JSON records and reservation ownership; it does not contact Linear, Git, Docker, Pi, or GitHub. A detached child is intentionally not a crash-perfect supervisor: a forced kill or power loss can leave an ambiguous reservation. Do not delete or reuse that run's sandbox; inspect the log and state, and remove the exact reservation only after confirming no controller remains.
+Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the `logs` directory beneath `dataDirectory`. `status` reads only persisted JSON records and reservation ownership; it does not contact Linear, Git, Docker, Pi, or GitHub. A detached child is intentionally not a crash-perfect supervisor: a forced kill or power loss can leave an ambiguous reservation. Do not delete or reuse that run's sandbox; inspect the log and state, and remove the exact reservation only after confirming no controller remains.
 
 > Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { PersonalMvpController, type StartBackgroundOptions } from "./controller.js";
 import { NodeCommandRunner } from "./command.js";
-import { loadPersonalMvpConfig, resolveConfigPath, type PersonalMvpConfig } from "./config.js";
+import { loadBoundPersonalMvpConfig, loadPersonalMvpConfig, resolveConfigPath, type PersonalMvpConfig } from "./config.js";
 import { DockerSandboxWorkspace } from "./docker-sandbox.js";
 import { CommandGitHubTokenProvider, GitHubPublisher } from "./github-publisher.js";
 import { JsonRunStateStore } from "./json-run-state.js";
@@ -83,7 +82,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments | undef
 }
 
 async function runCommand(parsed: ParsedRunArguments): Promise<number> {
-  const loaded = await loadBoundConfig(parsed.config).catch(error => {
+  const loaded = await loadBoundPersonalMvpConfig(parsed.config).catch(error => {
     writeError(error);
     return undefined;
   });
@@ -102,7 +101,7 @@ async function runCommand(parsed: ParsedRunArguments): Promise<number> {
         cliPath: fileURLToPath(import.meta.url),
         configPath: parsed.config,
         stateDirectory: config.paths.state,
-        logsDirectory: config.paths.logs,
+        logsDirectory: path.join(config.dataDirectory, "logs"),
         cwd: process.cwd(),
         launchConfigDigest: configDigest,
         signal: abortController.signal,
@@ -144,7 +143,7 @@ async function runReservedCommand(parsed: ParsedReservedArguments): Promise<numb
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
   try {
-    const loaded = await loadBoundConfig(parsed.config);
+    const loaded = await loadBoundPersonalMvpConfig(parsed.config);
     if (loaded.digest !== parsed.reservedConfigDigest) throw new Error("reserved launch configuration changed before child bootstrap");
     const controller = createController(loaded.config);
     await controller.runReserved(requestFromConfig(loaded.config, parsed.ticketId), parsed.reservedRunId, parsed.reservedConfigDigest, abortController.signal);
@@ -170,7 +169,9 @@ async function recordBootstrapFailure(runId: string, error: unknown, interrupted
   try {
     const states = new JsonRunStateStore(directory);
     const state = await states.read(runId);
-    if (!state || state.status !== "running") return;
+    // Bootstrap failure belongs only to an unclaimed launch. A child that
+    // loses the reserved->started CAS must not overwrite the winning owner.
+    if (!state || state.status !== "running" || state.launchState !== "reserved" || state.controllerPid !== null || state.lifecycle !== "launching" || state.step !== "launching" || state.preparationState !== "pending") return;
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000) || "background controller bootstrap failed";
     const terminal = {
       ...state,
@@ -282,18 +283,6 @@ function requestFromConfig(config: PersonalMvpConfig, ticketId: string): RunRequ
     sourceRef: config.repository.sourceRef,
     baseBranch: config.repository.baseBranch,
   };
-}
-
-async function loadBoundConfig(file: string): Promise<{ readonly config: PersonalMvpConfig; readonly digest: string }> {
-  const before = await configDigest(file);
-  const config = await loadPersonalMvpConfig(file);
-  const after = await configDigest(file);
-  if (before !== after) throw new Error("configuration changed while it was being loaded");
-  return { config, digest: after };
-}
-
-async function configDigest(file: string): Promise<string> {
-  return createHash("sha256").update(await readFile(file)).digest("hex");
 }
 
 function writeError(error: unknown): void {

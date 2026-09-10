@@ -50,6 +50,7 @@ Edit at least:
 - `repository.slug` (for example, `zkrausman/personal-mvp-single-ticket`)
 - `repository.path` with the explicit path to that checkout
 - `repository.sourceRef` and `repository.baseBranch`
+- `dataDirectory` with an absolute per-user mutable-data location
 - `sandbox.template`, `sandbox.roleUser`, and sandbox executable settings
 - `github.tokenCommand`
 
@@ -61,12 +62,13 @@ medium, and Test is `gpt-5.6-terra` at high. The controller chooses Plan once
 from the canonical repository/ticket identity and persists the selected and
 resolved profiles; retries do not reroll it.
 
-`state`, `bridges`, `staging`, and `logs` are relative to the selected config
-file when explicitly configured, preserving existing `paths.state` settings.
-If omitted, mutable runtime data defaults to `%LOCALAPPDATA%\\Squire` on
-Windows and `$XDG_STATE_HOME/squire` (or `~/.local/state/squire`) on Linux;
-`SQUIRE_DATA_DIR` overrides that root. Squire rejects state/log destinations
-inside the repository, including destinations reached through symlinks.
+`dataDirectory` is the only JSON spelling for mutable data and logs, and
+`SQUIRE_DATA_DIR` is its only Squire environment override. If omitted, it
+defaults to `%LOCALAPPDATA%\\Squire` on Windows and `$XDG_STATE_HOME/squire`
+(or `~/.local/state/squire`) on Linux. The pre-existing `paths.state`,
+`paths.bridges`, and `paths.staging` settings remain compatible and resolve
+relative to the selected config file. Squire rejects data destinations inside
+the repository, including destinations reached through symlinks.
 `sandbox.piExecutable` and `sandbox.piAgentDirectory` are paths inside the
 sandbox and are not host resolved.
 

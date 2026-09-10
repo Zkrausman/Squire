@@ -220,6 +220,60 @@ test("background parent performs no post-spawn state write and child validates i
   }
 });
 
+test("runReserved rejects a concurrent call on one controller", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-local-claim-"));
+  try {
+    const states = new JsonRunStateStore(root);
+    const digest = "e".repeat(64);
+    let ticketEntered!: () => void;
+    let rejectTicket!: (error: Error) => void;
+    const entered = new Promise<void>(resolve => { ticketEntered = resolve; });
+    const ticketBlocked = new Promise<never>((_, reject) => { rejectTicket = reject; });
+    const run = new PersonalMvpController({
+      states,
+      tickets: { async get() { ticketEntered(); return ticketBlocked; } },
+      workspaces: {} as never,
+      phases: {} as never,
+      publication: {} as never,
+    });
+    const reserved = await run.reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    const first = run.runReserved(REQUEST, reserved.runId, digest);
+    await entered;
+    await assert.rejects(run.runReserved(REQUEST, reserved.runId, digest), /already being claimed/);
+    rejectTicket(new Error("release first claim"));
+    await assert.rejects(first, /release first claim/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("two detached claimants admit exactly one owner before ticket and workspace side effects", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-detached-claim-"));
+  try {
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    const digest = "f".repeat(64);
+    const reserved = await controller(states).reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    const release = path.join(root, "release");
+    const sideEffects = path.join(root, "side-effects");
+    const ready = [path.join(root, "ready-a"), path.join(root, "ready-b")];
+    const results = [path.join(root, "result-a"), path.join(root, "result-b")];
+    const workers = ready.map((readyPath, index) => spawnDetachedExit(process.execPath, [
+      path.resolve("fixtures/run-reserved-claim-worker.mjs"), states.directory, reserved.runId, digest,
+      readyPath, release, sideEffects, results[index]!,
+    ]));
+    await Promise.all(ready.map(waitForFile));
+    await writeFile(release, "go\n", "utf8");
+    assert.deepEqual(await Promise.all(workers), [2, 2]);
+    const effects = (await readFile(sideEffects, "utf8")).trim().split("\n");
+    assert.deepEqual(effects, ["ticket", "workspace"]);
+    const messages = await Promise.all(results.map(file => readFile(file, "utf8")));
+    assert.equal(messages.filter(message => /version must advance by one/.test(message)).length, 1);
+    assert.equal(messages.filter(message => /stop after workspace side effect/.test(message)).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher rejects a pre-handoff OS error and interruption closes the reservation", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-launch-failures-"));
   try {
@@ -280,7 +334,7 @@ test("CLI SIGINT and SIGTERM before child handoff persist interrupted evidence",
     await writeFile(configPath, JSON.stringify({
       repository: { slug: "example/repo", path: repositoryPath, sourceRef: "HEAD", baseBranch: "main" },
       dataDirectory: path.join(root, "runtime"),
-      paths: { state: path.join(root, "state"), bridges: path.join(root, "bridges"), staging: path.join(root, "staging"), logs: path.join(root, "logs") },
+      paths: { state: path.join(root, "state"), bridges: path.join(root, "bridges"), staging: path.join(root, "staging") },
       linear: { apiKeyEnv: "SQUIRE_TEST_LINEAR_KEY" },
       github: { tokenCommand: [process.execPath, "token-helper.js"] },
       sandbox: { roleUser: "squire", piExecutable: "/usr/bin/pi", piAgentDirectory: "/ticket/pi-agent" },
@@ -411,6 +465,14 @@ async function waitForFile(file: string): Promise<void> {
 async function spawnExit(executable: string, args: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<number | null> {
   return await new Promise((resolve, reject) => {
     const child = nodeSpawn(executable, [...args], { env, stdio: "ignore", windowsHide: true });
+    child.once("error", reject);
+    child.once("exit", code => resolve(code));
+  });
+}
+
+async function spawnDetachedExit(executable: string, args: readonly string[]): Promise<number | null> {
+  return await new Promise((resolve, reject) => {
+    const child = nodeSpawn(executable, [...args], { env: process.env, stdio: "ignore", windowsHide: true, detached: true });
     child.once("error", reject);
     child.once("exit", code => resolve(code));
   });
