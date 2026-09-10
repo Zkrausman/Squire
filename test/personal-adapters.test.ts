@@ -144,6 +144,7 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
       assert.match(launch.args.at(-1) ?? "", /Set inputHead exactly to the input's expectedHead value/);
+      if (phase === "review") assert.match(launch.args.at(-1) ?? "", /details\.findings\[\] contains plain strings, never structured objects/);
       const tools = launch.args[launch.args.indexOf("--tools") + 1];
       if (phase === "plan" || phase === "review") assert.equal(tools?.split(",").includes("write"), false);
       if (phase === "retro") assert.deepEqual(tools?.split(","), ["read", "grep", "find", "ls"]);
