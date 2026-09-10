@@ -35,10 +35,10 @@ const CONTROLLED_ENV_KEYS = [
 
 // Treat npm variables as potentially sensitive as well: npm_config_* can carry
 // registry credentials even when the emitted diagnostic has no assignment. Only
-// the two lifecycle metadata variables are exempt because their ordinary values
-// (for example npm_lifecycle_event=test) can be embedded in safe controller paths.
+// npm command/lifecycle metadata variables are exempt because their ordinary
+// values (for example npm_command=test) can be embedded in safe controller paths.
 const SENSITIVE_NAME = /(?:key|token|secret|password|credential|authorization|cookie|proxy|cert|session|ssh|npm(?:_|$)|node_options|node_path|extra_ca)/iu;
-const HARMLESS_NPM_METADATA = /^npm_lifecycle_(?:event|script)$/iu;
+const HARMLESS_NPM_METADATA = /^npm_(?:command|lifecycle_(?:event|script))$/iu;
 const SENSITIVE_ASSIGNMENT = /((?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|PROXY|CERT|SESSION|SSH|NODE_OPTIONS|NODE_PATH)[A-Z0-9_]*|api[-_]?key|access[-_]?token|password)\s*["']?\s*[:=]\s*["']?)([^\s,"'}]+)/gu;
 
 export interface PreparedPiChildLaunch {

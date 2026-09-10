@@ -80,6 +80,7 @@ test("Pi redaction preserves lifecycle paths while retaining npm configuration s
   const registry = "https://user:registry-secret@registry.example";
   const redactor = new BoundedRedactor({
     npm_config_registry: registry,
+    npm_command: "test",
     npm_lifecycle_event: "test",
     npm_lifecycle_script: "npm test",
   });
