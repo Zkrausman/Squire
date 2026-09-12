@@ -50,10 +50,11 @@ Edit at least:
 - `repository.slug` (for example, `zkrausman/personal-mvp-single-ticket`)
 - `repository.path` with the explicit path to that checkout
 - `repository.sourceRef` and `repository.baseBranch`
+- `dataDirectory` with an absolute per-user mutable-data location
 - `sandbox.template`, `sandbox.roleUser`, and sandbox executable settings
 - `github.tokenCommand`
 
-The example contains the approved model policy. Every profile uses the
+The example's canonical policy key is `modelPolicy`. It contains the approved model policy. Every profile uses the
 `openai-codex` provider. Plan has two equal deterministic buckets:
 `gpt-6-astra` at medium thinking and `gpt-5.6-sol` at high thinking.
 Implement is `gpt-5.6-luna` at max, Review and Retro are `gpt-5.6-sol` at
@@ -61,12 +62,68 @@ medium, and Test is `gpt-5.6-terra` at high. The controller chooses Plan once
 from the canonical repository/ticket identity and persists the selected and
 resolved profiles; retries do not reroll it.
 
-`state`, `bridges`, and `staging` are simple relative paths and resolve beside
-the selected config file. `sandbox.piExecutable` and
-`sandbox.piAgentDirectory` are paths inside the sandbox and are not host
-resolved.
+`dataDirectory` is the only JSON spelling for mutable data and logs, and
+`SQUIRE_DATA_DIR` is its only Squire environment override and takes precedence
+over the JSON value. If both are omitted, it defaults to
+`%LOCALAPPDATA%\\Squire` on Windows and `$XDG_STATE_HOME/squire`
+(or `~/.local/state/squire`) on Linux. The pre-existing `paths.state`,
+`paths.bridges`, and `paths.staging` settings remain compatible and resolve
+relative to the selected config file. Squire rejects data destinations inside
+the repository, including destinations reached through symlinks. Unknown
+configuration fields and legacy root aliases are rejected; `repository.sourceRef`
+must be a non-whitespace, non-control Git revision.
+`sandbox.piExecutable` and `sandbox.piAgentDirectory` are paths inside the
+sandbox and are not host resolved. For a background run, Squire binds the
+exact selected config bytes and absolute config pathname, resolves
+`repository.sourceRef` before detached handoff, and persists that source SHA.
+Child preparation verifies that the ref still names the bound commit before
+creating workspace resources or pinning it for the clone. A moved mutable ref
+therefore fails visibly instead of silently starting from a different source
+commit.
 
-## 3) Provision dedicated Pi OAuth
+## 3) Run in the foreground or background
+
+A foreground run waits for the workflow and prints its pull-request URL:
+
+```bash
+npm run squire -- run <ticket>
+```
+
+A background run reserves the ticket, binds the child to the selected config
+content and repository source identity, starts a detached controller, and
+prints only its run ID. The launcher requests hidden-window operation on
+Windows; a provisioned acceptance run must still record the manual observation
+that no second console appeared:
+
+```bash
+npm run squire -- run <ticket> --background
+squire status <ticket>
+squire status <run-id>
+```
+
+Status is persisted and remains useful when the controller has failed during
+credential lookup, ticket fetch, preparation, or publication. It shows the
+current phase/attempt, selected provider/model/thinking, elapsed time, HEAD,
+terminal error, pull-request URL, and log paths. A completed or stopped run's
+elapsed time is frozen from its persisted end timestamp; old v1 records without
+start-time/model evidence display `unavailable` rather than invented values.
+Status escapes control characters in ticket, model, error, URL, and log-path
+values. Reserve/release operations are serialized per ticket, and empty,
+malformed, or orphan reservation records are reported as ambiguous instead of
+being silently reclaimed.
+
+A detached run is deliberately not a daemon or crash-perfect supervisor. A
+forced kill or power loss can leave an ambiguous active reservation. Ticket
+`status` reports that reservation even when an older terminal run exists. An
+exact historical run-ID selector remains readable beside a different readable
+active replacement; a missing or inactive owner is still reported as ambiguous.
+Preserve the state/logs and sandbox, confirm that no controller is still running, then
+perform conservative owner cleanup of the exact reservation rather than
+starting a second run for the same ticket. Normal SIGINT/SIGTERM received
+before child handoff is persisted as an interrupted launch and releases the
+reservation.
+
+## 4) Provision dedicated Pi OAuth
 
 Put a model-only Pi OAuth file in the same per-user Squire directory:
 
@@ -79,7 +136,7 @@ file under `%USERPROFILE%\.squire`. This file may contain only credentials for
 Pi model access. Do not put GitHub or Linear delivery credentials in it, and do
 not commit it.
 
-## 4) Configure the host GitHub helper
+## 5) Configure the host GitHub helper
 
 Set `github.tokenCommand` to a trusted helper that prints a fresh installation
 token, for example:
@@ -93,7 +150,7 @@ token, for example:
 The token is used only for host-side publication commands and is never passed
 to sandboxed Pi processes.
 
-## 5) Run a ticket
+## 6) Run a ticket
 
 ```bash
 npm run squire -- run <ticket>

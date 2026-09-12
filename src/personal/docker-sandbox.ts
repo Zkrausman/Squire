@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { validateSourceRef } from "./identity.js";
 import type { CommandPort } from "./command.js";
 import type { CandidateBundle, PreparedWorkspace, WorkspacePort } from "./types.js";
 
@@ -39,11 +40,27 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     this.#git = options.gitExecutable ?? "git";
   }
 
-  async prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<PreparedWorkspace> {
+  async resolveSource(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string> {
+    const repositoryPath = path.resolve(input.repositoryPath);
+    const sourceRef = validateSourceRef(input.sourceRef, "repository source ref");
+    const result = await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", "--verify", "--end-of-options", `${sourceRef}^{commit}`] }, signal);
+    const sourceSha = result.stdout.trim();
+    assertSha(sourceSha);
+    return sourceSha;
+  }
+
+  async prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string; readonly expectedBaseSha?: string }, signal?: AbortSignal): Promise<PreparedWorkspace> {
     validateName(input.runId, "run");
     validateName(input.sandbox, "sandbox");
     validateBranch(input.branch);
     const repositoryPath = path.resolve(input.repositoryPath);
+    const sourceRef = validateSourceRef(input.sourceRef, "repository source ref");
+    // Resolve and compare the source identity before touching bridge, staging,
+    // or sandbox resources. A moved mutable ref must fail closed without even
+    // preparing a workspace for the wrong commit.
+    const baseSha = await this.resolveSource({ repositoryPath, sourceRef }, signal);
+    if (input.expectedBaseSha !== undefined && input.expectedBaseSha !== baseSha) throw new Error("configured source ref changed after background reservation");
+
     const runStaging = path.join(this.#stagingRoot, input.runId);
     const bridge = path.join(this.#bridgeRoot, input.runId);
     await rm(bridge, { recursive: true, force: true });
@@ -51,9 +68,6 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     await mkdir(runStaging, { recursive: true, mode: 0o700 });
     const sourceBundle = path.join(runStaging, "source.bundle");
     await rm(sourceBundle, { force: true });
-
-    const baseSha = (await this.#commands.run({ command: this.#git, args: ["-C", repositoryPath, "rev-parse", "--verify", `${input.sourceRef}^{commit}`] }, signal)).stdout.trim();
-    assertSha(baseSha);
 
     // A remote-tracking ref is not a reliable bundle head for `git clone`.
     // Pin the already-resolved commit behind a clone-visible temporary branch,

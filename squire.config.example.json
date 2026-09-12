@@ -5,11 +5,7 @@
     "sourceRef": "refs/remotes/origin/main",
     "baseBranch": "main"
   },
-  "paths": {
-    "state": "state",
-    "bridges": "bridges",
-    "staging": "staging"
-  },
+  "dataDirectory": "/absolute/path/to/your/squire-data",
   "linear": {
     "apiKeyEnv": "LINEAR_API_KEY"
   },
@@ -23,7 +19,7 @@
     "piAgentDirectory": "/ticket/runtime/pi-agent",
     "piAuthFile": "pi-auth.json"
   },
-  "profiles": {
+  "modelPolicy": {
     "plan": {
       "buckets": [
         { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "medium" },

@@ -63,13 +63,6 @@ export const APPROVED_PERSONAL_MODEL_POLICY: PersonalModelPolicy = Object.freeze
   retro: SOL_MEDIUM,
 });
 
-// Public aliases keep the policy name discoverable without creating another
-// mutable source of defaults.
-export const DEFAULT_PERSONAL_MODEL_POLICY = APPROVED_PERSONAL_MODEL_POLICY;
-export const DEFAULT_MODEL_POLICY = APPROVED_PERSONAL_MODEL_POLICY;
-export const APPROVED_MODEL_POLICY = APPROVED_PERSONAL_MODEL_POLICY;
-export const DEFAULT_PHASE_MODEL_POLICY = APPROVED_PERSONAL_MODEL_POLICY;
-
 /** Return a validated, detached policy suitable for persisting in run state. */
 export function validateModelPolicy(value: unknown, label = "model policy"): PersonalModelPolicy {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);

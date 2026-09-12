@@ -8,6 +8,7 @@
 
 ## Concepts
 
+- [[concepts/background-run-state-and-status]] — background-run-state-and-status *(created: 2026-09-10)*
 - [[concepts/five-session-pi-rpc-topology]] — five-session-pi-rpc-topology *(created: 2026-09-01)*
 - [[concepts/immutable-handoff-validation]] — immutable-handoff-validation *(created: 2026-09-01)*
 - [[concepts/run-scoped-pi-profiles-and-trusted-footer]] — Run-scoped Pi profiles and trusted wiki footer *(created: 2026-09-02)*
@@ -61,4 +62,4 @@
 - [[syntheses/aidev-222-isolated-git-workspace]] — AIDEV-222 isolated Git workspace *(created: 2026-09-03)*
 
 ---
-*Last updated: 2026-09-06T20:28:02.592Z* | *Total pages: 43*
+*Last updated: 2026-09-10T16:52:58.582Z* | *Total pages: 44*

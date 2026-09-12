@@ -3,6 +3,7 @@ import test from "node:test";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { APPROVED_PERSONAL_MODEL_POLICY, resolvePhaseProfiles, type PersonalModelPolicy } from "../src/personal/model-policy.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
+import { validatePhaseResultShape } from "../src/personal/phase-result.js";
 import type { CandidateBundle, PersonalPhase, PersonalRunState, PhaseInput, PhaseResult, PublicationInput, RunStatePort, WorkspacePort } from "../src/personal/types.js";
 
 const BASE = "a".repeat(40);
@@ -95,6 +96,11 @@ test("personal controller completes one ticket and publishes only fresh passing 
   assert.equal(harness.publications[0]?.phases.review.outputHead, IMPLEMENTED);
   assert.equal(harness.publications[0]?.phases.test.outputHead, IMPLEMENTED);
   assert.equal(harness.publications[0]?.phases.retro.outputHead, IMPLEMENTED);
+  for (const phase of ["plan", "implement", "review", "test", "retro"] as const) {
+    const persisted = result.results[phase];
+    validatePhaseResultShape(persisted, phase);
+    assert.deepEqual(Object.keys(persisted ?? {}).sort(), ["attempt", "details", "inputHead", "outputHead", "phase", "profile", "runId", "sessionFile", "sessionId", "status", "summary"]);
+  }
 });
 
 test("resolved profiles are persisted before workspace preparation", async () => {
@@ -295,6 +301,7 @@ test("a stale gate fails closed and persists a useful error", async () => {
   await assert.rejects(harness.controller.run(REQUEST), /output HEAD mismatch/);
   assert.equal(harness.states.state?.status, "failed");
   assert.match(harness.states.state?.lastError ?? "", /output HEAD mismatch/);
+  assert.equal(harness.states.state?.results.review, undefined);
   assert.equal(harness.publications.length, 0);
 });
 

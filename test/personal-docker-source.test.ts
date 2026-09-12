@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -127,6 +127,8 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.equal(prepared.baseSha, first);
   assert.equal(prepared.head, first);
   assert.notEqual(first, localHead);
+  const sourceLookup = commands.requests.find(request => request.command === "git" && request.args.includes("rev-parse"));
+  assert.deepEqual(sourceLookup?.args.slice(-3), ["--verify", "--end-of-options", "refs/remotes/origin/main^{commit}"]);
   const setup = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.includes("sh"));
   assert.deepEqual(setup?.args.slice(0, 5), ["exec", "-u", "root", "squire-aidev-1-0123456789", "sh"]);
   assert.match(setup?.args.at(-1) ?? "", /chown -R '1000:1000' \/ticket/u);
@@ -141,6 +143,21 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
   assert.equal(commands.executedShellScripts.some(script => script.split("\n").some(line => line.includes("chown"))), false);
   assert.equal(commands.executedShellScripts.some(script => script.includes("chmod 0700")), true);
+  const requestsBeforeMovedSource = commands.requests.length;
+  const secondBridge = path.join(root, "bridges", "aidev-1-0123456789-second");
+  const secondStaging = path.join(root, "staging", "aidev-1-0123456789-second");
+  await assert.rejects(workspace.prepare({
+    runId: "aidev-1-0123456789-second",
+    ticketId: "AIDEV-1",
+    sandbox: "squire-aidev-1-0123456789-second",
+    branch: deterministicFeatureBranch("example/repo", "AIDEV-1"),
+    repositoryPath: repository,
+    sourceRef: "refs/remotes/origin/main",
+    expectedBaseSha: first,
+  }), /configured source ref changed after background reservation/u);
+  assert.equal(commands.requests.slice(requestsBeforeMovedSource).some(request => request.command === "sbx"), false);
+  await assert.rejects(access(secondBridge));
+  await assert.rejects(access(secondStaging));
   assert.equal(await git(repository, ["rev-parse", "refs/remotes/origin/main"]), localHead);
   const refs = await git(repository, ["for-each-ref", "--format=%(refname)", "refs/heads/squire-source-"]);
   assert.equal(refs, "");

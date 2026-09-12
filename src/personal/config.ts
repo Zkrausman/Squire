@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { validateSourceRef } from "./identity.js";
 import {
   APPROVED_PERSONAL_MODEL_POLICY,
   validateModelPolicy,
@@ -16,6 +18,8 @@ export interface PersonalMvpConfig {
     readonly sourceRef: string;
     readonly baseBranch: string;
   };
+  /** Canonical resolved root for mutable run data and logs. */
+  readonly dataDirectory: string;
   readonly paths: {
     readonly state: string;
     readonly bridges: string;
@@ -36,8 +40,6 @@ export interface PersonalMvpConfig {
     readonly piAuthFile?: string;
   };
   /** Normalized policy; Plan is always exactly two equal buckets. */
-  readonly profiles: PersonalModelPolicy;
-  /** Descriptive alias for callers that want to distinguish policy from paths. */
   readonly modelPolicy: PersonalModelPolicy;
   readonly testCommands: readonly string[];
 }
@@ -49,32 +51,64 @@ export interface ConfigPathOptions {
   readonly homeDirectory?: string;
 }
 
+export interface LoadedPersonalMvpConfig {
+  readonly config: PersonalMvpConfig;
+  readonly digest: string;
+}
+
 /** Resolve the per-user Squire directory without looking in the repository. */
-export function defaultSquireDirectory(options?: ConfigPathOptions): string;
-export function defaultSquireDirectory(platform: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
-export function defaultSquireDirectory(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): string {
-  const options = pathOptions(first, suppliedEnv);
-  const environment = options.env;
-  if (options.platform === "win32") {
+export function defaultSquireDirectory(options: ConfigPathOptions = {}): string {
+  const resolved = pathOptions(options);
+  const environment = resolved.env;
+  if (resolved.platform === "win32") {
     const userProfile = nonempty(environment["USERPROFILE"])
       ?? (nonempty(environment["HOMEDRIVE"]) && nonempty(environment["HOMEPATH"]) ? `${environment["HOMEDRIVE"]}${environment["HOMEPATH"]}` : undefined)
-      ?? options.homeDirectory
+      ?? resolved.homeDirectory
       ?? os.homedir();
     return path.win32.normalize(path.win32.join(userProfile, ".squire"));
   }
-  const home = nonempty(environment["HOME"]) ?? options.homeDirectory ?? os.homedir();
+  const home = nonempty(environment["HOME"]) ?? resolved.homeDirectory ?? os.homedir();
   const xdg = nonempty(environment["XDG_CONFIG_HOME"]);
-  const configHome = xdg ? resolvePosixHome(xdg, options.cwd) : path.posix.join(home, ".config");
+  const configHome = xdg ? resolvePosixHome(xdg, resolved.cwd) : path.posix.join(home, ".config");
   return path.posix.normalize(path.posix.join(configHome, "squire"));
 }
 
+/**
+ * Resolve the per-user runtime-data directory. Configuration deliberately uses
+ * the config-specific XDG directory, while mutable run state and logs use the
+ * platform's state/data directory. SQUIRE_DATA_DIR is an explicit environment
+ * escape hatch for machines that keep state on a separate volume.
+ */
+export function defaultSquireDataDirectory(options: ConfigPathOptions = {}): string {
+  const resolved = pathOptions(options);
+  const environment = resolved.env;
+  const platform = resolved.platform;
+  if (platform === "win32") {
+    const localAppData = nonempty(environment["LOCALAPPDATA"])
+      ?? nonempty(environment["USERPROFILE"])
+      ?? resolved.homeDirectory
+      ?? os.homedir();
+    return path.win32.normalize(path.win32.join(localAppData, "Squire"));
+  }
+  const home = nonempty(environment["HOME"]) ?? resolved.homeDirectory ?? os.homedir();
+  const stateHome = nonempty(environment["XDG_STATE_HOME"])
+    ?? path.posix.join(home, ".local", "state");
+  return path.posix.normalize(path.posix.join(resolvePosixHome(stateHome, resolved.cwd), "squire"));
+}
+
+/** Resolve SQUIRE_DATA_DIR or the platform-default mutable-data directory. */
+export function resolveSquireDataDirectory(options: ConfigPathOptions = {}): string {
+  const environment = options.env ?? process.env;
+  const selected = nonempty(environment["SQUIRE_DATA_DIR"]);
+  if (selected) return resolveHostPath(options.cwd ?? process.cwd(), selected, options.platform ?? process.platform);
+  return defaultSquireDataDirectory(options);
+}
+
 /** Return the only implicit config location supported by the personal CLI. */
-export function defaultConfigPath(options?: ConfigPathOptions): string;
-export function defaultConfigPath(platform: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
-export function defaultConfigPath(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): string {
-  const options = pathOptions(first, suppliedEnv);
-  const directory = defaultSquireDirectory(options);
-  return options.platform === "win32"
+export function defaultConfigPath(options: ConfigPathOptions = {}): string {
+  const resolved = pathOptions(options);
+  const directory = defaultSquireDirectory(resolved);
+  return resolved.platform === "win32"
     ? path.win32.join(directory, "config.json")
     : path.posix.join(directory, "config.json");
 }
@@ -90,33 +124,66 @@ export function resolveConfigPath(explicit?: string, options: ConfigPathOptions 
   return defaultConfigPath(options);
 }
 
-// Names used by integrations and tests; all delegate to the same precedence.
-export const resolvePersonalConfigPath = resolveConfigPath;
-export const resolveDefaultConfigPath = defaultConfigPath;
-export const getDefaultConfigPath = defaultConfigPath;
-export const getPersonalSquireDirectory = defaultSquireDirectory;
-
 export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOptions = {}): Promise<PersonalMvpConfig> {
+  return (await loadBoundPersonalMvpConfig(file, options)).config;
+}
+
+/** Read the selected file once; parsing and launch binding use these exact bytes. */
+export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigPathOptions = {}): Promise<LoadedPersonalMvpConfig> {
+  // Resolve all environment-dependent paths from one launch-time snapshot as
+  // well as parsing/hashing one byte buffer. This keeps a test or embedding
+  // that mutates process.env during an asynchronous read from changing the
+  // child bootstrap roots without changing its config digest.
+  const environment = { ...(options.env ?? process.env) };
+  const boundOptions: ConfigPathOptions = { ...options, env: environment };
+  const absolute = resolveConfigPath(file, boundOptions);
+  const bytes = await readConfigBytes(absolute, environment);
+  return {
+    config: await parsePersonalMvpConfig(bytes, absolute, boundOptions),
+    digest: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: ConfigPathOptions): Promise<PersonalMvpConfig> {
   const platform = options.platform ?? process.platform;
-  const absolute = resolveConfigPath(file, options);
-  const raw: unknown = JSON.parse(await readFile(absolute, "utf8"));
+  const raw: unknown = JSON.parse(bytes.toString("utf8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("configuration must be an object");
   const value = raw as Record<string, unknown>;
-  const repository = object(value["repository"], "repository");
-  const paths = object(value["paths"], "paths");
-  const linear = object(value["linear"], "linear");
-  const github = object(value["github"], "github");
-  const sandbox = object(value["sandbox"], "sandbox");
-  const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
+  // Keep the configuration surface deliberately closed. In particular, an
+  // unknown top-level field must not become a second spelling for a runtime
+  // root or a silently ignored launch control. The explicit legacy aliases
+  // below retain their more useful migration diagnostic.
+  const legacyAliases = ["runtimeDataDirectory", "runtime", "data", "logs", "profiles"] as const;
+  for (const alias of legacyAliases) {
+    if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
+  }
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "testCommands"], "configuration");
 
-  const hasModelPolicy = Object.prototype.hasOwnProperty.call(value, "modelPolicy");
-  const hasProfiles = Object.prototype.hasOwnProperty.call(value, "profiles");
-  if (hasModelPolicy && hasProfiles) throw new Error("configuration must define either modelPolicy or profiles, not both");
-  const policyValue = hasModelPolicy
-    ? value["modelPolicy"]
-    : hasProfiles
-      ? value["profiles"]
-      : undefined;
+  const repository = object(value["repository"], "repository");
+  rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
+  const paths = value["paths"] === undefined ? {} : object(value["paths"], "paths");
+  rejectUnknownKeys(paths, ["state", "bridges", "staging"], "paths", "dataDirectory");
+  const linear = object(value["linear"], "linear");
+  rejectUnknownKeys(linear, ["apiKeyEnv", "endpoint"], "linear");
+  const github = object(value["github"], "github");
+  rejectUnknownKeys(github, ["tokenCommand"], "github");
+  const sandbox = object(value["sandbox"], "sandbox");
+  rejectUnknownKeys(sandbox, ["template", "roleUser", "piExecutable", "piAgentDirectory", "piAuthFile"], "sandbox");
+  const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
+  const configuredDataDirectory = value["dataDirectory"];
+  if (configuredDataDirectory !== undefined && typeof configuredDataDirectory !== "string") throw new Error("dataDirectory must be a string");
+  // SQUIRE_DATA_DIR is the documented environment override, including when
+  // the selected JSON file also contains dataDirectory. Keep the precedence
+  // decision on the captured environment snapshot used for this parse so a
+  // child cannot bind one root while hashing/reading another configuration.
+  const environmentDataDirectory = nonempty(options.env?.["SQUIRE_DATA_DIR"]);
+  const dataDirectory = environmentDataDirectory !== undefined
+    ? resolveSquireDataDirectory(options)
+    : configuredDataDirectory === undefined
+      ? defaultSquireDataDirectory(options)
+      : resolveHostPath(base, text(configuredDataDirectory, "dataDirectory"), platform);
+
+  const policyValue = value["modelPolicy"];
   const modelPolicy = policyValue === undefined
     ? clonePolicy(APPROVED_PERSONAL_MODEL_POLICY)
     : parseModelPolicy(policyValue);
@@ -132,17 +199,30 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
   const piAuthFile = sandbox["piAuthFile"];
   if (piAuthFile !== undefined && typeof piAuthFile !== "string") throw new Error("sandbox.piAuthFile must be a string");
 
+  const sourceRef = validateSourceRef(repository["sourceRef"], "repository.sourceRef");
+  const configuredRepositoryPath = resolveHostPath(base, text(repository["path"], "repository.path"), platform);
+  const repositoryPath = await canonicalRepositoryPath(configuredRepositoryPath, platform);
+  const statePath = resolveConfiguredRuntimePath(paths["state"], "paths.state", base, dataDirectory, "state", platform);
+  const bridgesPath = resolveConfiguredRuntimePath(paths["bridges"], "paths.bridges", base, dataDirectory, "bridges", platform);
+  const stagingPath = resolveConfiguredRuntimePath(paths["staging"], "paths.staging", base, dataDirectory, "staging", platform);
+  const logsPath = platform === "win32" ? path.win32.join(dataDirectory, "logs") : path.resolve(dataDirectory, "logs");
+  // Resolve symlinks (including symlinked destination parents) before
+  // comparing paths. Non-native platform fixtures are parsed for display but
+  // are not inspected with the host filesystem.
+  await assertRuntimePathsOutsideRepository(repositoryPath, [dataDirectory, statePath, bridgesPath, stagingPath, logsPath], platform);
+
   return {
+    dataDirectory,
     repository: {
       slug: text(repository["slug"], "repository.slug"),
-      path: resolveHostPath(base, text(repository["path"], "repository.path"), platform),
-      sourceRef: text(repository["sourceRef"], "repository.sourceRef"),
+      path: repositoryPath,
+      sourceRef,
       baseBranch: text(repository["baseBranch"], "repository.baseBranch"),
     },
     paths: {
-      state: resolveHostPath(base, text(paths["state"], "paths.state"), platform),
-      bridges: resolveHostPath(base, text(paths["bridges"], "paths.bridges"), platform),
-      staging: resolveHostPath(base, text(paths["staging"], "paths.staging"), platform),
+      state: statePath,
+      bridges: bridgesPath,
+      staging: stagingPath,
     },
     linear: {
       apiKeyEnv: text(linear["apiKeyEnv"], "linear.apiKeyEnv"),
@@ -157,26 +237,25 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
       ...(template !== undefined ? { template: text(template, "sandbox.template") } : {}),
       ...(piAuthFile !== undefined ? { piAuthFile: resolveHostPath(base, text(piAuthFile, "sandbox.piAuthFile"), platform) } : {}),
     },
-    profiles: modelPolicy,
     modelPolicy,
     testCommands: [...testCommands] as string[],
   };
 }
 
 function parseModelPolicy(value: unknown): PersonalModelPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("profiles must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("modelPolicy must be an object");
   const object = value as Record<string, unknown>;
   const policyKeys = ["plan", "implement", "review", "test", "retro"];
-  if (Object.keys(object).length !== policyKeys.length || Object.keys(object).some(key => !policyKeys.includes(key))) throw new Error("profiles fields are invalid");
+  if (Object.keys(object).length !== policyKeys.length || Object.keys(object).some(key => !policyKeys.includes(key))) throw new Error("modelPolicy fields are invalid");
   const plan = parsePlanBuckets(object["plan"]);
   const result = {
     plan,
-    implement: parseProfile(object["implement"], "profiles.implement"),
-    review: parseProfile(object["review"], "profiles.review"),
-    test: parseProfile(object["test"], "profiles.test"),
-    retro: parseProfile(object["retro"], "profiles.retro"),
+    implement: parseProfile(object["implement"], "modelPolicy.implement"),
+    review: parseProfile(object["review"], "modelPolicy.review"),
+    test: parseProfile(object["test"], "modelPolicy.test"),
+    retro: parseProfile(object["retro"], "modelPolicy.retro"),
   };
-  return validateModelPolicy(result, "profiles");
+  return validateModelPolicy(result, "modelPolicy");
 }
 
 function parsePlanBuckets(value: unknown): readonly [PhaseProfile, PhaseProfile] {
@@ -186,21 +265,21 @@ function parsePlanBuckets(value: unknown): readonly [PhaseProfile, PhaseProfile]
   } else if (value && typeof value === "object" && !Array.isArray(value)) {
     const object = value as Record<string, unknown>;
     if (Object.prototype.hasOwnProperty.call(object, "buckets")) {
-      if (Object.keys(object).length !== 1) throw new Error("profiles.plan fields are invalid");
+      if (Object.keys(object).length !== 1) throw new Error("modelPolicy.plan fields are invalid");
       buckets = object["buckets"];
     } else if (Object.prototype.hasOwnProperty.call(object, "a") || Object.prototype.hasOwnProperty.call(object, "b")) {
-      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "a") || !Object.prototype.hasOwnProperty.call(object, "b")) throw new Error("profiles.plan buckets must be named a and b");
+      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "a") || !Object.prototype.hasOwnProperty.call(object, "b")) throw new Error("modelPolicy.plan buckets must be named a and b");
       buckets = [object["a"], object["b"]];
     } else if (Object.prototype.hasOwnProperty.call(object, "bucketA") || Object.prototype.hasOwnProperty.call(object, "bucketB")) {
-      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "bucketA") || !Object.prototype.hasOwnProperty.call(object, "bucketB")) throw new Error("profiles.plan buckets must include bucketA and bucketB");
+      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "bucketA") || !Object.prototype.hasOwnProperty.call(object, "bucketB")) throw new Error("modelPolicy.plan buckets must include bucketA and bucketB");
       buckets = [object["bucketA"], object["bucketB"]];
     }
     // Accept the pre-policy flat form only as an explicit legacy migration. It
     // does not silently choose a model: both equal buckets are that profile.
     else if (Object.prototype.hasOwnProperty.call(object, "provider") || Object.prototype.hasOwnProperty.call(object, "model") || Object.prototype.hasOwnProperty.call(object, "thinking")) buckets = [value, value];
   }
-  if (!Array.isArray(buckets) || buckets.length !== 2) throw new Error("profiles.plan must contain exactly two buckets");
-  return [parseProfile(buckets[0], "profiles.plan.a"), parseProfile(buckets[1], "profiles.plan.b")];
+  if (!Array.isArray(buckets) || buckets.length !== 2) throw new Error("modelPolicy.plan must contain exactly two buckets");
+  return [parseProfile(buckets[0], "modelPolicy.plan.a"), parseProfile(buckets[1], "modelPolicy.plan.b")];
 }
 
 function parseProfile(value: unknown, label: string): PhaseProfile {
@@ -222,18 +301,25 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function rejectUnknownKeys(object: Record<string, unknown>, allowed: readonly string[], label: string, hint?: string): void {
+  const unknown = Object.keys(object).find(key => !allowed.includes(key));
+  if (unknown !== undefined) throw new Error(`${label}.${unknown} is not supported${hint ? `; use ${hint}` : ""}`);
+}
+
 function text(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${label} must be a non-empty string`);
   return value;
 }
 
-function pathOptions(first?: ConfigPathOptions | NodeJS.Platform, suppliedEnv?: NodeJS.ProcessEnv): Required<Pick<ConfigPathOptions, "platform" | "env" | "cwd">> & Pick<ConfigPathOptions, "homeDirectory"> {
-  if (typeof first === "string") return { platform: first, env: suppliedEnv ?? process.env, cwd: process.cwd() };
-  return { platform: first?.platform ?? process.platform, env: first?.env ?? process.env, cwd: first?.cwd ?? process.cwd(), ...(first?.homeDirectory !== undefined ? { homeDirectory: first.homeDirectory } : {}) };
+function pathOptions(options: ConfigPathOptions): Required<Pick<ConfigPathOptions, "platform" | "env" | "cwd">> & Pick<ConfigPathOptions, "homeDirectory"> {
+  if (!options || typeof options !== "object" || Array.isArray(options)) throw new Error("config path options must be an object");
+  return { platform: options.platform ?? process.platform, env: options.env ?? process.env, cwd: options.cwd ?? process.cwd(), ...(options.homeDirectory !== undefined ? { homeDirectory: options.homeDirectory } : {}) };
 }
 
 function resolveHostPath(base: string, value: string, platform: NodeJS.Platform): string {
   if (platform === "win32") return path.win32.isAbsolute(value) ? path.win32.normalize(value) : path.win32.resolve(base, value);
+  if (path.posix.isAbsolute(value) || path.posix.isAbsolute(base)) return path.posix.resolve(base, value);
+  // Non-native platform fixtures can still point at real host temporary files.
   return path.resolve(base, value);
 }
 
@@ -248,6 +334,91 @@ function resolveTokenCommand(base: string, command: string[], platform: NodeJS.P
     ? path.win32.isAbsolute(executable) || executable.includes("\\") || executable.includes("/") || executable.startsWith(".")
     : path.posix.isAbsolute(executable) || executable.includes("/") || executable.startsWith(".");
   return [isPath ? resolveHostPath(base, executable, platform) : executable, ...command.slice(1)];
+}
+
+function resolveConfiguredRuntimePath(value: unknown, label: string, base: string, dataDirectory: string, fallbackName: string, platform: NodeJS.Platform): string {
+  if (value === undefined) {
+    return platform === "win32"
+      ? path.win32.normalize(path.win32.join(dataDirectory, fallbackName))
+      : path.resolve(dataDirectory, fallbackName);
+  }
+  return resolveHostPath(base, text(value, label), platform);
+}
+
+/**
+ * Resolve a path even when its final components do not exist yet. This keeps
+ * symlinked parents from becoming a way to put state or logs in the checkout.
+ */
+async function canonicalRepositoryPath(value: string, platform: NodeJS.Platform): Promise<string> {
+  if (platform !== process.platform) return value;
+  try {
+    return path.resolve(await realpath(value));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return value;
+    throw error;
+  }
+}
+
+async function realPathForSafety(value: string): Promise<string> {
+  const absolute = path.resolve(value);
+  const missing: string[] = [];
+  let cursor = absolute;
+  for (;;) {
+    try {
+      const existing = await realpath(cursor);
+      return path.resolve(existing, ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return absolute;
+      missing.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function isWithin(parent: string, child: string): boolean {
+  // Windows paths are case-insensitive even when the spelling in a config
+  // differs from the spelling returned by realpath. Compare using the native
+  // platform's case rules before checking containment.
+  const comparableParent = process.platform === "win32" ? parent.toLowerCase() : parent;
+  const comparableChild = process.platform === "win32" ? child.toLowerCase() : child;
+  const relative = path.relative(comparableParent, comparableChild);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+async function assertRuntimePathsOutsideRepository(repositoryPath: string, destinations: readonly string[], platform: NodeJS.Platform): Promise<void> {
+  // Tests and callers may ask the loader to parse Windows paths on a POSIX
+  // host. Those strings are not host filesystem paths and must not be fed to
+  // POSIX realpath; native Windows invocations are checked below.
+  if (platform !== process.platform) return;
+  const repositoryReal = await realPathForSafety(repositoryPath);
+  for (const destination of destinations) {
+    const destinationReal = await realPathForSafety(destination);
+    if (isWithin(repositoryReal, destinationReal)) throw new Error(`runtime path must be outside the repository: ${destination}`);
+  }
+}
+
+async function readConfigBytes(file: string, environment: NodeJS.ProcessEnv): Promise<Buffer> {
+  const bytes = await readFile(file);
+  // Test-only file barriers make atomic replacement and symlink retargeting
+  // deterministic after the selected bytes have been captured.
+  if (environment["NODE_ENV"] === "test") {
+    const ready = nonempty(environment["SQUIRE_TEST_ONLY_CONFIG_READ_READY_PATH"]);
+    const release = nonempty(environment["SQUIRE_TEST_ONLY_CONFIG_READ_RELEASE_PATH"]);
+    if ((ready === undefined) !== (release === undefined)) throw new Error("config test-only read barrier is incomplete");
+    if (ready && release) {
+      await writeFile(ready, "ready\n", "utf8");
+      for (;;) {
+        try { await access(release); break; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+      }
+    }
+  }
+  return bytes;
 }
 
 function nonempty(value: string | undefined): string | undefined {

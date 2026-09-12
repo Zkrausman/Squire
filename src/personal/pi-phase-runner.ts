@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
-import { validatePhaseResultShape } from "./phase-result.js";
+import { validatePhaseResultPayloadShape, validatePhaseResultShape } from "./phase-result.js";
 import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
 import type { PersonalPhase, PhaseInput, PhasePort, PhaseResult } from "./types.js";
 
@@ -98,11 +98,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
         maxOutputBytes: 2 * 1024 * 1024,
       }, signal);
 
-      const result = parsePhaseResult(output.stdout, input, sessionId, sessionFile);
-      // Pi's response schema remains intentionally small. The trusted adapter
-      // attaches the exact profile used for argv so persisted evidence cannot be
-      // confused with mutable runner configuration.
-      return { ...result, profile: { ...profile } };
+      return parsePhaseResult(output.stdout, input, sessionId, sessionFile, profile);
     } finally {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
@@ -115,19 +111,20 @@ export class SandboxPiPhaseRunner implements PhasePort {
 function buildPrompt(phase: PersonalPhase, inputPath: string, testCommands: readonly string[]): string {
   const responsibility: Record<PersonalPhase, string> = {
     plan: "Analyze the ticket and repository. Do not modify the repository. Produce an actionable implementation plan in summary/details and return passed.",
-    implement: "Implement the plan or supplied remediation feedback. Run appropriate checks and commit all intended repository changes before returning passed.",
-    review: "Independently inspect the current commit for correctness and scope. Do not modify it. Return passed or remediation_required with concrete findings.",
+    implement: "Implement the plan or supplied repository-remediation feedback. Run appropriate checks and commit all intended repository changes. Return passed when complete or failed with a clear explanation when the requested work cannot be completed. Implement must never return remediation_required; only Review and Test may request another Implement attempt.",
+    review: "Independently inspect the current commit for correctness and scope, including source code, tests, committed documentation, and committed project-wiki changes. Do not modify it. remediation_required is reserved for a concrete repository defect, missing required repository change, or false committed claim. Each such finding must be something Implement can correct in this sandbox before Test, Retro, and host-side publication. Pending current-run host or live-environment evidence—including status polling, manual console observation, completion, post-publication CI, or open-PR evidence—must not alone cause remediation_required. Mention such pending post-publication acceptance in the summary while returning passed with no findings when the repository gate otherwise passes. False committed claims that such evidence already exists remain repository defects.",
     test: `Independently run the configured validation commands and do not modify the commit. Commands: ${testCommands.join("; ")}. Return passed or remediation_required with failures.`,
     retro: "Reflect on the completed work and all prior phase results. Do not modify the repository. Return passed with concrete lessons and any proposed follow-ups; do not create tickets or mutate a wiki.",
   };
+  const statuses = phase === "review" || phase === "test" ? "passed|remediation_required|failed" : "passed|failed";
   return [
     `You are the independent Squire ${phase} phase.`,
     responsibility[phase],
     `Read your complete JSON input from ${inputPath}.`,
     "Return exactly one JSON object as your final response and no other text.",
     `Use details ${detailsShape(phase)}.`,
-    '{"runId":"...","phase":"plan|implement|review|test|retro","attempt":1,"sessionId":"...","sessionFile":"...","inputHead":"40-hex","outputHead":"40-hex","status":"passed|remediation_required|failed","summary":"...","details":{}}',
-    "Copy run, phase, attempt, sessionId, and sessionFile exactly from the input. Set inputHead exactly to the input's expectedHead value: result inputHead equals the current phase input's expectedHead, never a prior phase result's inputHead. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
+    `{"outputHead":"40-hex","status":"${statuses}","summary":"...","details":{}}`,
+    "Return only outputHead, status, summary, and the phase-specific details. Set outputHead to `git rev-parse HEAD` after your work. Do not wrap JSON in markdown.",
   ].join("\n\n");
 }
 
@@ -139,19 +136,48 @@ function detailsShape(phase: PersonalPhase): string {
   return '{"lessons":["concrete lesson"],"followUps":["optional proposed follow-up"]}';
 }
 
-function parsePhaseResult(raw: string, input: PhaseInput, sessionId: string, sessionFile: string): PhaseResult {
+function parsePhaseResult(raw: string, input: PhaseInput, sessionId: string, sessionFile: string, profile: PhaseProfile): PhaseResult {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new Error(`${input.phase} wrote malformed result JSON`); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${input.phase} result is not an object`);
-  validatePhaseResultShape(value, input.phase);
-  const result = value as PhaseResult;
-  if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt || result.sessionId !== sessionId || result.sessionFile !== sessionFile) throw new Error(`${input.phase} result identity mismatch`);
-  if (result.inputHead !== input.expectedHead) throw new Error(`${input.phase} result Git identity mismatch`);
-  if (result.profile) {
-    const expected = input.profile;
-    if (expected && (result.profile.provider !== expected.provider || result.profile.model !== expected.model || result.profile.thinking !== expected.thinking)) throw new Error(`${input.phase} result profile identity mismatch`);
-  }
+  validatePhaseResultPayloadShape(value, input.phase);
+  const payload = value;
+
+  if (
+    (hasOwn(payload, "runId") && payload.runId !== input.runId)
+    || (hasOwn(payload, "phase") && payload.phase !== input.phase)
+    || (hasOwn(payload, "attempt") && payload.attempt !== input.attempt)
+    || (hasOwn(payload, "sessionId") && payload.sessionId !== sessionId)
+    || (hasOwn(payload, "sessionFile") && payload.sessionFile !== sessionFile)
+  ) throw new Error(`${input.phase} result identity mismatch`);
+  if (hasOwn(payload, "inputHead") && payload.inputHead !== input.expectedHead) throw new Error(`${input.phase} result Git identity mismatch`);
+  const echoedProfile = payload.profile;
+  if (hasOwn(payload, "profile") && (
+    echoedProfile === undefined
+    || echoedProfile.provider !== profile.provider
+    || echoedProfile.model !== profile.model
+    || echoedProfile.thinking !== profile.thinking
+  )) throw new Error(`${input.phase} result profile identity mismatch`);
+
+  const result: unknown = {
+    runId: input.runId,
+    phase: input.phase,
+    attempt: input.attempt,
+    sessionId,
+    sessionFile,
+    inputHead: input.expectedHead,
+    outputHead: payload.outputHead,
+    status: payload.status,
+    summary: payload.summary,
+    details: payload.details,
+    profile: { ...profile },
+  };
+  validatePhaseResultShape(result, input.phase);
   return result;
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function sh(value: string): string {

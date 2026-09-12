@@ -1,8 +1,25 @@
-import { PERSONAL_PHASES, type PersonalPhase, type PhaseResult, type TestCommandEvidence } from "./types.js";
-import { validatePhaseProfile } from "./model-policy.js";
+import { PERSONAL_PHASES, type PersonalPhase, type PhaseResult, type PhaseStatus, type TestCommandEvidence } from "./types.js";
+import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
 
 const RESULT_KEYS = ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "outputHead", "status", "summary", "details"] as const;
+const PAYLOAD_KEYS = ["outputHead", "status", "summary", "details"] as const;
+const TRUSTED_ECHO_KEYS = ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "profile"] as const;
 const STATUSES = ["passed", "remediation_required", "failed"] as const;
+
+/** Pi-supplied fields plus optional compatibility echoes of adapter-owned fields. */
+export interface PhaseResultPayload {
+  readonly outputHead: string;
+  readonly status: PhaseStatus;
+  readonly summary: string;
+  readonly details: PhaseResult["details"];
+  readonly runId?: string;
+  readonly phase?: PersonalPhase;
+  readonly attempt?: number;
+  readonly sessionId?: string;
+  readonly sessionFile?: string;
+  readonly inputHead?: string;
+  readonly profile?: PhaseProfile;
+}
 
 export function validatePhaseResultShape(value: unknown, expectedPhase?: PersonalPhase): asserts value is PhaseResult {
   const result = optionalProfileObject(value, "phase result");
@@ -10,10 +27,22 @@ export function validatePhaseResultShape(value: unknown, expectedPhase?: Persona
   if (typeof phase !== "string" || !PERSONAL_PHASES.includes(phase as PersonalPhase) || (expectedPhase !== undefined && phase !== expectedPhase)) throw new Error("phase result phase is invalid");
   if (!nonempty(result["runId"], 128) || !Number.isInteger(result["attempt"]) || (result["attempt"] as number) < 1) throw new Error("phase result identity is invalid");
   if (!nonempty(result["sessionId"], 128) || !nonempty(result["sessionFile"], 512)) throw new Error("phase result session identity is invalid");
-  if (!sha(result["inputHead"]) || !sha(result["outputHead"])) throw new Error("phase result Git identity is invalid");
+  if (!sha(result["inputHead"])) throw new Error("phase result Git identity is invalid");
+  validateUntrustedResultFields(result, phase as PersonalPhase);
+  if (result["profile"] !== undefined) validatePhaseProfile(result["profile"], `${phase} result profile`);
+}
+
+/** Validate only model-owned output while allowing exact trusted-envelope echoes. */
+export function validatePhaseResultPayloadShape(value: unknown, expectedPhase: PersonalPhase): asserts value is PhaseResultPayload {
+  const result = requiredWithOptionalObject(value, PAYLOAD_KEYS, TRUSTED_ECHO_KEYS, "phase result payload");
+  validateUntrustedResultFields(result, expectedPhase);
+  if (result["profile"] !== undefined) validatePhaseProfile(result["profile"], `${expectedPhase} result profile`);
+}
+
+function validateUntrustedResultFields(result: Record<string, unknown>, phase: PersonalPhase): void {
+  if (!sha(result["outputHead"])) throw new Error("phase result Git identity is invalid");
   if (typeof result["status"] !== "string" || !STATUSES.includes(result["status"] as (typeof STATUSES)[number])) throw new Error("phase result status is invalid");
   if (!nonempty(result["summary"], 8_000)) throw new Error("phase result summary is invalid");
-  if (result["profile"] !== undefined) validatePhaseProfile(result["profile"], `${phase} result profile`);
 
   const details = exactObject(
     result["details"],
@@ -63,10 +92,14 @@ function exactObject(value: unknown, keys: readonly string[], label: string): Re
 }
 
 function optionalProfileObject(value: unknown, label: string): Record<string, unknown> {
+  return requiredWithOptionalObject(value, RESULT_KEYS, ["profile"], label);
+}
+
+function requiredWithOptionalObject(value: unknown, requiredKeys: readonly string[], optionalKeys: readonly string[], label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   const object = value as Record<string, unknown>;
-  const required = new Set<string>(RESULT_KEYS);
-  const allowed = new Set([...RESULT_KEYS, "profile"]);
+  const required = new Set(requiredKeys);
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
   const actual = Object.keys(object);
   if (actual.some(key => !allowed.has(key)) || [...required].some(key => !actual.includes(key))) throw new Error(`${label} fields are invalid`);
   return object;
