@@ -28,12 +28,14 @@ stable hashes of the semantic transition, not of a delivery attempt.
 
 Consumers sort by state revision, deduplicate by event ID, and reconcile from
 authoritative state before and after installing watchers. If an outbox record
-is malformed or missing, the consumer synthesizes the current transition with
-the same semantic event ID. It watches the containing state and event
-directories, not an individual file handle, so Windows rename-based atomic
-replacement is observed. Duplicate/coalesced OS notifications are debounced;
-a low-frequency reconciliation timer is only a bounded missed-event fallback,
-not an LLM or busy polling loop. Terminal state causes the consumer to exit.
+is malformed or missing, the consumer synthesizes the bounded set of meaningful
+phase attempts, results, remediation, publication, and terminal transitions
+represented by that state, using the same semantic event IDs. It watches the
+containing state and event directories, not an individual file handle, so
+Windows rename-based atomic replacement is observed. Duplicate/coalesced OS
+notifications are debounced; a low-frequency reconciliation timer is only a
+bounded missed-event fallback, not an LLM or busy polling loop. Terminal state
+causes the consumer to exit.
 
 The outbox is bounded by both record count and serialized bytes. Retention can
 drop old notifications, so state reconciliation is required and persisted state
@@ -50,9 +52,12 @@ or quiesces on terminal success/failure.
 contains attention and terminal events only. It passes the sanitized event
 object to an adapter, applies bounded timeout/retry behavior, and atomically
 writes a per-consumer checkpoint only after successful delivery. A crash before
-the checkpoint causes replay, preserving at-least-once semantics. A future Pi
-conversation wake-up or other integration may consume this adapter contract;
-it must not embed prompts or invoke a model during idle waiting.
+the checkpoint causes replay, preserving at-least-once semantics. The local
+Test result is represented by `phase_completed`; this controller does not claim
+an external CI observation. A future CI producer must persist authoritative CI
+state before adding a CI-specific event. A future Pi conversation wake-up or
+other integration may consume this adapter contract; it must not embed prompts
+or invoke a model during idle waiting.
 
 Discord delivery and formatting are deliberately deferred. A Discord adapter,
 if added later, must sit above this event contract and must not become another

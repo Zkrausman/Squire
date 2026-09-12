@@ -18,7 +18,6 @@ export const RUN_EVENT_TYPES = [
   "attention_required",
   "publication_started",
   "publication_completed",
-  "ci_updated",
   "terminal_succeeded",
   "terminal_failed",
 ] as const;
@@ -121,8 +120,8 @@ export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (object["attempt"] !== undefined && (!Number.isSafeInteger(object["attempt"]) || (object["attempt"] as number) < 1 || (object["attempt"] as number) > 1_000_000)) throw new Error("run event attempt is invalid");
   if (object["outcome"] !== undefined && (typeof object["outcome"] !== "string" || !RUN_EVENT_OUTCOMES.includes(object["outcome"] as RunEventOutcome))) throw new Error("run event outcome is invalid");
   const typed = object["type"] as RunEventType;
-  if (["phase_started", "phase_completed", "remediation_requested", "attention_required", "ci_updated"].includes(typed) && object["phase"] === undefined) throw new Error("phase event requires a phase");
-  if (["phase_started", "phase_completed", "attention_required", "ci_updated", "remediation_requested"].includes(typed) && object["attempt"] === undefined) throw new Error("phase event requires an attempt");
+  if (["phase_started", "phase_completed", "remediation_requested", "attention_required"].includes(typed) && object["phase"] === undefined) throw new Error("phase event requires a phase");
+  if (["phase_started", "phase_completed", "attention_required", "remediation_requested"].includes(typed) && object["attempt"] === undefined) throw new Error("phase event requires an attempt");
   const expected = eventIdFor({
     runId: object["runId"],
     ticketId: object["ticketId"],
@@ -169,7 +168,6 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
       if (after.status === "remediation_required") {
         events.push(fields("attention_required", { phase, attempt: after.attempt, outcome: "remediation_required" }));
       }
-      if (phase === "test") events.push(fields("ci_updated", { phase, attempt: after.attempt, outcome: after.status }));
     }
   }
 
@@ -194,9 +192,11 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
 }
 
 /**
- * Build deterministic current-transition events when the outbox is missing or
- * was truncated. The state revision is authoritative; event IDs are semantic
- * and therefore match records originally derived from the same transition.
+ * Build deterministic recovery events from the authoritative state when the
+ * outbox is missing or was truncated. State only retains the latest result for
+ * each phase, so the bounded attempt counters and remediation counters are
+ * also used to reconstruct earlier transitions. Event IDs remain semantic and
+ * therefore match records originally derived from those transitions.
  */
 export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly RunEvent[] {
   const fields = (type: RunEventType, extra: Partial<Pick<EventFields, "phase" | "attempt" | "outcome">> = {}): RunEvent => createRunEvent({
@@ -209,57 +209,95 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
   });
   const events: RunEvent[] = [];
 
-  if (state.status === "completed") {
-    events.push(fields("publication_completed", { outcome: "completed" }));
-    events.push(fields("terminal_succeeded", { outcome: "completed" }));
-    return events;
+  // A started background run necessarily passed through the reserved state.
+  // Foreground and legacy states have no separate reservation event.
+  if (state.executionMode === "background" && state.launchState !== undefined) {
+    events.push(fields("run_reserved"));
   }
-  if (state.status === "failed" || state.status === "interrupted") {
-    events.push(fields("terminal_failed", { outcome: state.status }));
-    return events;
-  }
-  if (state.step === "launching") {
-    events.push(fields(state.launchState === "reserved" ? "run_reserved" : "run_started"));
-    return events;
-  }
-  if (state.step === "preparing") {
+  if (state.executionMode !== "background" || state.launchState !== "reserved") {
     events.push(fields("run_started"));
   }
-  if (state.step === "publishing") events.push(fields("publication_started"));
-  if (PERSONAL_PHASES.includes(state.step as PersonalPhase)) {
-    const phase = state.step as PersonalPhase;
-    const attempt = state.attempts[phase];
-    if (attempt > 0) events.push(fields("phase_started", { phase, attempt }));
+
+  for (const phase of PERSONAL_PHASES) {
+    for (const attempt of reconciliationAttempts(state.attempts[phase])) {
+      events.push(fields("phase_started", { phase, attempt }));
+      const outcome = reconciledPhaseOutcome(state, phase, attempt);
+      if (outcome === undefined) continue;
+      events.push(fields("phase_completed", { phase, attempt, outcome }));
+      if (outcome === "remediation_required") {
+        events.push(fields("attention_required", { phase, attempt, outcome }));
+      }
+    }
   }
 
-  // The latest persisted result is enough to repair a missed current
-  // transition without replaying unbounded history.
-  const latest = latestResult(state);
-  if (latest) {
-    events.push(fields("phase_completed", { phase: latest.phase, attempt: latest.attempt, outcome: latest.status }));
-    if (latest.status === "remediation_required") {
-      events.push(fields("attention_required", { phase: latest.phase, attempt: latest.attempt, outcome: "remediation_required" }));
-    }
-    if (latest.phase === "test") events.push(fields("ci_updated", { phase: latest.phase, attempt: latest.attempt, outcome: latest.status }));
-  }
+  // A remediation counter is authoritative evidence that the corresponding
+  // attention transition was committed, even after its phase result was
+  // replaced by a later attempt. Re-emit the request independently so a
+  // missed result and a missed request are both repairable.
   for (const phase of ["review", "test"] as const) {
-    if (state.remediations[phase] > 0) events.push(fields("remediation_requested", {
-      phase,
-      attempt: state.remediations[phase],
-      outcome: "remediation_required",
-    }));
+    for (const attempt of reconciliationAttempts(state.remediations[phase])) {
+      events.push(fields("remediation_requested", {
+        phase,
+        attempt,
+        outcome: "remediation_required",
+      }));
+    }
   }
-  return deduplicateEvents(events);
+
+  // A non-null PR URL is durable publication evidence. Completed states also
+  // imply that publication started, even if that earlier event was lost.
+  if (state.step === "publishing" || state.step === "complete" || state.prUrl !== null) {
+    events.push(fields("publication_started"));
+  }
+  if (state.prUrl !== null) events.push(fields("publication_completed", { outcome: "completed" }));
+
+  if (state.status === "completed") events.push(fields("terminal_succeeded", { outcome: "completed" }));
+  if (state.status === "failed" || state.status === "interrupted") {
+    events.push(fields("terminal_failed", { outcome: state.status }));
+  }
+  return boundReconciledEvents(events);
 }
 
-function latestResult(state: PersonalRunState): import("./types.js").PhaseResult | undefined {
-  let latest: import("./types.js").PhaseResult | undefined;
-  for (const phase of PERSONAL_PHASES) {
-    const result = state.results[phase];
-    if (!result) continue;
-    if (!latest || result.attempt > latest.attempt || (result.attempt === latest.attempt && PERSONAL_PHASES.indexOf(result.phase) > PERSONAL_PHASES.indexOf(latest.phase))) latest = result;
+const MAX_RECONCILIATION_ATTEMPTS = 32;
+
+function reconciliationAttempts(count: number): readonly number[] {
+  if (!Number.isSafeInteger(count) || count < 1) return [];
+  const upper = Math.min(count, 1_000_000);
+  const lower = Math.max(1, upper - MAX_RECONCILIATION_ATTEMPTS + 1);
+  return Array.from({ length: upper - lower + 1 }, (_, index) => lower + index);
+}
+
+function reconciledPhaseOutcome(state: PersonalRunState, phase: PersonalPhase, attempt: number): RunEventOutcome | undefined {
+  const result = state.results[phase];
+  if (result?.attempt === attempt) return result.status;
+
+  // A later result means this attempt finished. Review and Test can only be
+  // retried after remediation; Implement retries are consequently passing
+  // attempts. The state does not retain an older result payload, but these
+  // bounded status facts are enough to reconstruct its sanitized event.
+  if (result && attempt < result.attempt) {
+    if ((phase === "review" || phase === "test") && attempt <= state.remediations[phase]) return "remediation_required";
+    return "passed";
   }
-  return latest;
+  if (!result && (phase === "review" || phase === "test") && attempt <= state.remediations[phase]) {
+    return "remediation_required";
+  }
+  return undefined;
+}
+
+function boundReconciledEvents(events: readonly RunEvent[]): readonly RunEvent[] {
+  const unique = deduplicateEvents(events);
+  if (unique.length <= MAX_RUN_EVENT_COUNT) return unique;
+
+  // Recovery must remain bounded even if a corrupt-but-otherwise-readable
+  // state contains an enormous attempt counter. Prefer the latest transitions,
+  // while retaining lifecycle and terminal evidence for a useful reconciliation.
+  const terminal = unique.filter(event => event.type === "terminal_succeeded" || event.type === "terminal_failed");
+  const lifecycle = unique.filter(event => event.type === "run_reserved" || event.type === "run_started");
+  const preserved = new Set([...terminal, ...lifecycle].map(event => event.eventId));
+  const remaining = unique.filter(event => !preserved.has(event.eventId));
+  const budget = Math.max(0, MAX_RUN_EVENT_COUNT - terminal.length - lifecycle.length);
+  return deduplicateEvents([...lifecycle, ...remaining.slice(-budget), ...terminal]);
 }
 
 function samePhaseTransition(left: import("./types.js").PhaseResult, right: import("./types.js").PhaseResult): boolean {

@@ -6,7 +6,7 @@ import test from "node:test";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { formatRunEvent } from "../src/personal/status.js";
-import { deriveRunEvents, MAX_RUN_EVENT_COUNT, validateRunEvent, type RunEvent } from "../src/personal/run-events.js";
+import { deriveRunEvents, MAX_RUN_EVENT_COUNT, synthesizeCurrentRunEvents, validateRunEvent, type RunEvent } from "../src/personal/run-events.js";
 import { watchRun } from "../src/personal/run-watcher.js";
 import { RunNotificationWorker } from "../src/personal/notification-worker.js";
 import type { PlanPhaseResult, PersonalRunState } from "../src/personal/types.js";
@@ -167,7 +167,7 @@ test("watch reconciles a missed terminal event and exits without live adapters",
     const seen: RunEvent[] = [];
     const result = await watchRun({ states, selector: RUN_ID, onEvent: event => { seen.push(event); } });
     assert.equal(result.state.status, "failed");
-    assert.deepEqual(seen.map(event => event.type), ["terminal_failed"]);
+    assert.deepEqual(seen.map(event => event.type), ["run_started", "terminal_failed"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -258,10 +258,42 @@ test("notification worker retries and checkpoints only after successful terminal
   }
 });
 
-test("derived events include attention, remediation, CI, publication, and terminal transitions", () => {
+test("derived events include attention and remediation transitions without claiming CI", () => {
   const previous = { ...state(), version: 4, step: "review" as const, attempts: { ...state().attempts, plan: 1, implement: 1, review: 1 }, remediations: { review: 0, test: 0 } };
   const review = { ...planResult(), phase: "review" as const, sessionFile: "/ticket/sessions/review/1.jsonl", sessionId: "review", status: "remediation_required" as const, details: { findings: ["fix"] } };
   const next = { ...previous, version: 5, results: { review }, remediations: { review: 1, test: 0 }, updatedAt: "2026-09-10T00:00:00.500Z" };
   const events = deriveRunEvents(previous, next);
   assert.deepEqual(events.map(event => event.type), ["phase_completed", "attention_required", "remediation_requested"]);
+  assert.equal(events.some(event => (event.type as string) === "ci_updated"), false);
+});
+
+test("reconciliation reconstructs earlier attempts and attention after later results replace them", () => {
+  const reviewPass = {
+    ...planResult(),
+    phase: "review" as const,
+    attempt: 2,
+    sessionId: "review-2",
+    sessionFile: "/ticket/sessions/review/2.jsonl",
+    status: "passed" as const,
+    details: { findings: [] },
+  };
+  const recovered = {
+    ...state(12),
+    step: "test" as const,
+    baseSha: BASE,
+    head: BASE,
+    attempts: { plan: 1, implement: 2, review: 2, test: 1, retro: 0 },
+    sessions: { review: "review-2" },
+    results: { review: reviewPass },
+    remediations: { review: 1, test: 0 },
+    updatedAt: "2026-09-10T00:00:12.000Z",
+  };
+
+  const events = synthesizeCurrentRunEvents(recovered);
+  assert.ok(events.some(event => event.type === "phase_started" && event.phase === "implement" && event.attempt === 1));
+  assert.ok(events.some(event => event.type === "phase_started" && event.phase === "review" && event.attempt === 1));
+  assert.ok(events.some(event => event.type === "attention_required" && event.phase === "review" && event.attempt === 1));
+  assert.ok(events.some(event => event.type === "remediation_requested" && event.phase === "review" && event.attempt === 1));
+  assert.ok(events.some(event => event.type === "phase_completed" && event.phase === "review" && event.attempt === 2 && event.outcome === "passed"));
+  assert.equal(events.some(event => (event.type as string) === "ci_updated"), false);
 });

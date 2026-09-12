@@ -22,7 +22,6 @@
         "attention_required",
         "publication_started",
         "publication_completed",
-        "ci_updated",
         "terminal_succeeded",
         "terminal_failed"
       ]
