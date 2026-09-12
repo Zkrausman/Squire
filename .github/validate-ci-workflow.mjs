@@ -205,12 +205,20 @@ exactKeys(document.on.push, ["branches"], "workflow.on.push");
 assert.deepEqual(document.on.push.branches, ["main"]);
 exactKeys(document.permissions, ["contents"], "workflow.permissions");
 assert.equal(document.permissions.contents, "read");
-exactKeys(document.jobs, ["clean-install-build-test"], "workflow.jobs");
+exactKeys(document.jobs, ["clean-install-build-test", "filesystem-event-integration"], "workflow.jobs");
 const job = document.jobs["clean-install-build-test"];
 exactKeys(job, ["name", "runs-on", "steps"], "clean-install-build-test job");
 assert.equal(job.name, "clean-install-build-test");
 assert.equal(job["runs-on"], "ubuntu-latest");
 assert.equal(Array.isArray(job.steps), true);
+const filesystemJob = document.jobs["filesystem-event-integration"];
+exactKeys(filesystemJob, ["name", "strategy", "runs-on", "steps"], "filesystem-event-integration job");
+assert.equal(filesystemJob.name, "filesystem-event-integration");
+exactKeys(filesystemJob.strategy, ["matrix"], "filesystem-event-integration strategy");
+exactKeys(filesystemJob.strategy.matrix, ["os"], "filesystem-event-integration matrix");
+assert.deepEqual(filesystemJob.strategy.matrix.os, ["ubuntu-latest", "windows-latest"]);
+assert.equal(filesystemJob["runs-on"], "${{ matrix.os }}");
+assert.equal(Array.isArray(filesystemJob.steps), true);
 
 const expectedStepNames = [
   "Checkout",
@@ -226,8 +234,10 @@ const expectedStepNames = [
   "Verify clean tree",
 ];
 assert.deepEqual(job.steps.map(step => step.name), expectedStepNames, "CI gate step order changed");
+assert.deepEqual(filesystemJob.steps.map(step => step.name), ["Checkout", "Set up Node.js", "Install dependencies", "Build", "Run filesystem event integration"], "filesystem integration gate order changed");
 
 const [checkout, setupNode, workflowValidation, negativeProbes, install, provision, runtimeValidation, build, contracts, tests, cleanTree] = job.steps;
+const [filesystemCheckout, filesystemSetupNode, filesystemInstall, filesystemBuild, filesystemTests] = filesystemJob.steps;
 exactKeys(checkout, ["name", "uses", "with"], "Checkout step");
 assert.equal(checkout.uses, "actions/checkout@v4");
 exactKeys(checkout.with, ["persist-credentials"], "Checkout.with");
@@ -257,7 +267,28 @@ exactRun(tests, "npm test", "tests");
 exactKeys(cleanTree, ["name", "run"], "clean-tree step");
 assert.equal(cleanTree.run.trim(), "git diff --exit-code\ntest -z \"$(git status --porcelain --untracked-files=all)\"");
 
-for (const [label, value] of [["workflow", document], ["job", job], ...job.steps.map(step => [step.name, step])]) {
+for (const [label, value] of [["filesystem checkout", filesystemCheckout], ["filesystem setup", filesystemSetupNode], ["filesystem install", filesystemInstall], ["filesystem build", filesystemBuild], ["filesystem tests", filesystemTests]]) {
+  assert.equal(Object.hasOwn(value, "if"), false, `${label} must be unconditional`);
+  assert.equal(Object.hasOwn(value, "continue-on-error"), false, `${label} cannot continue on error`);
+}
+exactKeys(filesystemCheckout, ["name", "uses", "with"], "filesystem Checkout step");
+assert.equal(filesystemCheckout.uses, "actions/checkout@v4");
+exactKeys(filesystemCheckout.with, ["persist-credentials"], "filesystem Checkout.with");
+assert.equal(filesystemCheckout.with["persist-credentials"], false);
+exactKeys(filesystemSetupNode, ["name", "uses", "with"], "filesystem Set up Node.js step");
+assert.equal(filesystemSetupNode.uses, "actions/setup-node@v4");
+exactKeys(filesystemSetupNode.with, ["node-version", "cache", "cache-dependency-path"], "filesystem Set up Node.js.with");
+assert.equal(filesystemSetupNode.with["node-version"], "22");
+assert.equal(filesystemSetupNode.with.cache, "npm");
+assert.equal(filesystemSetupNode.with["cache-dependency-path"], "package-lock.json");
+exactKeys(filesystemInstall, ["name", "run"], "filesystem install step");
+assert.equal(filesystemInstall.run, "npm ci");
+exactKeys(filesystemBuild, ["name", "run"], "filesystem build step");
+assert.equal(filesystemBuild.run, "npm run build");
+exactKeys(filesystemTests, ["name", "run"], "filesystem event integration step");
+assert.equal(filesystemTests.run, "node --test dist/test/personal-run-events.test.js");
+
+for (const [label, value] of [["workflow", document], ["job", job], ["filesystem job", filesystemJob], ...job.steps.map(step => [step.name, step]), ...filesystemJob.steps.map(step => [`filesystem ${step.name}`, step])]) {
   assert.equal(Object.hasOwn(value, "if"), false, `${label} must be unconditional`);
   assert.equal(Object.hasOwn(value, "continue-on-error"), false, `${label} cannot continue on error`);
 }

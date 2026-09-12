@@ -154,6 +154,42 @@ test("state validation rejects every mutable record boundary and identity mismat
   for (const value of invalid) assert.throws(() => validateState(value));
 });
 
+test("exact remediation attempt evidence is bounded, counter-consistent, and append-only", async () => {
+  const valid = {
+    ...state(),
+    step: "review" as const,
+    baseSha: BASE,
+    head: BASE,
+    attempts: { ...state().attempts, review: 1 },
+    remediations: { review: 1, test: 0 },
+    remediationAttempts: { review: [1], test: [] },
+  };
+  validateState(valid);
+  const invalid: unknown[] = [
+    { ...valid, remediationAttempts: { review: [2], test: [] } },
+    { ...valid, remediationAttempts: { review: [], test: [] } },
+    { ...valid, remediationAttempts: { review: [1], test: [], extra: [] } },
+    { ...valid, remediationAttempts: { review: "1", test: [] } },
+  ];
+  for (const value of invalid) assert.throws(() => validateState(value));
+
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-state-remediation-evidence-"));
+  try {
+    const store = new JsonRunStateStore(directory);
+    await store.create(valid);
+    await assert.rejects(
+      store.save({ ...valid, version: 2, remediationAttempts: { review: [], test: [] }, remediations: { review: 0, test: 0 } }),
+      /counter cannot decrease|append-only/,
+    );
+    await assert.rejects(
+      store.save({ ...valid, version: 2, attempts: { ...valid.attempts, review: 2 }, remediationAttempts: { review: [2], test: [] } }),
+      /append-only/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("completed state requires every latest phase and exact Review/Test/Retro input heads", () => {
   const valid = completedState();
   validateState(valid);

@@ -9,7 +9,9 @@ import { CommandGitHubTokenProvider, GitHubPublisher } from "./github-publisher.
 import { JsonRunStateStore } from "./json-run-state.js";
 import { LinearClient } from "./linear-client.js";
 import { SandboxPiPhaseRunner } from "./pi-phase-runner.js";
-import { findRunState, formatRunStatus, sanitizeTerminalText, StatusLookupError } from "./status.js";
+import { findRunState, formatRunEvent, formatRunStatus, sanitizeTerminalText, StatusLookupError } from "./status.js";
+import { watchRun } from "./run-watcher.js";
+import type { RunEvent } from "./run-events.js";
 import type { RunRequest, TicketPort } from "./types.js";
 
 const TICKET_PATTERN = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
@@ -28,7 +30,13 @@ export interface ParsedStatusArguments {
   readonly config: string;
 }
 
-export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments;
+export interface ParsedWatchArguments {
+  readonly command: "watch";
+  readonly selector: string;
+  readonly config: string;
+}
+
+export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments;
 
 interface ParsedReservedArguments extends ParsedRunArguments {
   readonly reservedRunId: string;
@@ -41,17 +49,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   const parsed = parseArguments(argv);
   if (!parsed) {
-    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n");
+    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n");
     return 2;
   }
 
   if (parsed.command === "status") return statusCommand(parsed);
+  if (parsed.command === "watch") return watchCommand(parsed);
   return runCommand(parsed);
 }
 
 export function parseArguments(argv: readonly string[]): ParsedArguments | undefined {
   const command = argv[0];
-  if (command !== "run" && command !== "status") return undefined;
+  if (command !== "run" && command !== "status" && command !== "watch") return undefined;
   let positional: string | undefined;
   let explicit: string | undefined;
   let background = false;
@@ -215,6 +224,35 @@ async function recordBootstrapFailure(runId: string, ticketId: string, launchCon
   } catch (persistenceError) {
     const message = persistenceError instanceof Error ? persistenceError.message : String(persistenceError);
     process.stderr.write(`Squire state persistence warning: ${sanitizeTerminalText(message)}\n`);
+  }
+}
+
+async function watchCommand(parsed: ParsedWatchArguments): Promise<number> {
+  const abortController = new AbortController();
+  const interrupt = (): void => abortController.abort(new Error("operator interrupted event watch"));
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", interrupt);
+  try {
+    // Watch is deliberately a host-only path: it constructs configuration,
+    // persisted state, and filesystem event consumption, but no Linear,
+    // Docker, GitHub, Git, Pi, or model adapter.
+    const config = await loadPersonalMvpConfig(parsed.config);
+    const states = new JsonRunStateStore(config.paths.state);
+    await watchRun({
+      states,
+      selector: parsed.selector,
+      signal: abortController.signal,
+      onEvent: (event: RunEvent): void => { process.stdout.write(formatRunEvent(event)); },
+    });
+    return 0;
+  } catch (error) {
+    if (abortController.signal.aborted) return 130;
+    writeError(error);
+    if (error instanceof StatusLookupError && error.code === "malformed") return 2;
+    return 1;
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+    process.removeListener("SIGTERM", interrupt);
   }
 }
 

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "eventId": "a3b57ba0d4aac722e2f3813aba6cc35b372814a5973a7f3039049ed72c312b27",
+  "runId": "aidev-1-0123456789",
+  "ticketId": "AIDEV-1",
+  "stateRevision": 1,
+  "timestamp": "2026-09-10T00:00:00.000Z",
+  "type": "run_started"
+}

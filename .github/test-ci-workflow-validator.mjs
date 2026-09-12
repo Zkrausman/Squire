@@ -113,6 +113,8 @@ try {
   };
 
   await expectValidatorRejects(swapSteps(workflow, "Provision ticket runtime", "Validate ticket runtime"), "runtime validation before provisioning");
+  await expectValidatorRejects(workflow.replace("          - windows-latest", "          - macos-latest"), "filesystem integration without a Windows runner");
+  await expectValidatorRejects(workflow.replace("node --test dist/test/personal-run-events.test.js", "node --test dist/test/personal-run-events.test.js || true"), "status-masked filesystem integration");
   await expectValidatorRejects(insertFalseCondition(workflow, "Run tests"), "an if: false test step");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", ["echo runtime provisioning", "# npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund"]), "comment-substituted provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", [...provisionCommands.slice(0, 3), "set +e", provisionCommands[3], "echo runtime install completed"]), "status-masked provisioning");
