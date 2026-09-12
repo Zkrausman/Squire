@@ -7,10 +7,10 @@ source-before-workspace fixes:
 
 ```text
 node --test dist/test/personal-background-status.test.js
-36 passed, 0 failed
+37 passed, 0 failed
 
 npm test
-398 passed, 1 skipped, 0 failed
+399 passed, 1 skipped, 0 failed
 ```
 
 The real-process fixtures verified that a short-lived parent returns before its
@@ -20,9 +20,10 @@ a readable active replacement, while ticket lookup still selects the active
 replacement. The tests also cover detached argv/options (`windowsHide`,
 ignored stdin, and no shell), serialized state updates, conservative
 reservation races, pre-handoff SIGINT/SIGTERM interruption, bootstrap failure
-fallback, status control escaping, orphan-reservation reporting, and
-duplicate-ticket rejection. These are Linux automated observations; they do
-not claim a manual Windows no-window observation.
+fallback, status control escaping, orphan-reservation reporting, duplicate-ticket
+rejection, and closed configuration/source-ref validation. These are Linux
+automated observations; they do not claim a manual Windows no-window
+observation.
 
 ## Live Linear/Docker/GitHub evidence
 

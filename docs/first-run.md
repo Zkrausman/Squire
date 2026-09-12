@@ -69,7 +69,9 @@ over the JSON value. If both are omitted, it defaults to
 (or `~/.local/state/squire`) on Linux. The pre-existing `paths.state`,
 `paths.bridges`, and `paths.staging` settings remain compatible and resolve
 relative to the selected config file. Squire rejects data destinations inside
-the repository, including destinations reached through symlinks.
+the repository, including destinations reached through symlinks. Unknown
+configuration fields and legacy root aliases are rejected; `repository.sourceRef`
+must be a non-whitespace, non-control Git revision.
 `sandbox.piExecutable` and `sandbox.piAgentDirectory` are paths inside the
 sandbox and are not host resolved. For a background run, Squire binds the
 exact selected config bytes and absolute config pathname, resolves

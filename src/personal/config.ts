@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { access, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { validateSourceRef } from "./identity.js";
 import {
   APPROVED_PERSONAL_MODEL_POLICY,
   validateModelPolicy,
@@ -148,18 +149,27 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   const raw: unknown = JSON.parse(bytes.toString("utf8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("configuration must be an object");
   const value = raw as Record<string, unknown>;
-  const repository = object(value["repository"], "repository");
-  const paths = value["paths"] === undefined ? {} : object(value["paths"], "paths");
-  const allowedPathKeys = ["state", "bridges", "staging"] as const;
-  const unknownPath = Object.keys(paths).find(key => !allowedPathKeys.includes(key as (typeof allowedPathKeys)[number]));
-  if (unknownPath !== undefined) throw new Error(`paths.${unknownPath} is not supported; use dataDirectory`);
-  const linear = object(value["linear"], "linear");
-  const github = object(value["github"], "github");
-  const sandbox = object(value["sandbox"], "sandbox");
-  const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
-  for (const alias of ["runtimeDataDirectory", "runtime", "data", "logs"] as const) {
-    if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use dataDirectory`);
+  // Keep the configuration surface deliberately closed. In particular, an
+  // unknown top-level field must not become a second spelling for a runtime
+  // root or a silently ignored launch control. The explicit legacy aliases
+  // below retain their more useful migration diagnostic.
+  const legacyAliases = ["runtimeDataDirectory", "runtime", "data", "logs", "profiles"] as const;
+  for (const alias of legacyAliases) {
+    if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
   }
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "testCommands"], "configuration");
+
+  const repository = object(value["repository"], "repository");
+  rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
+  const paths = value["paths"] === undefined ? {} : object(value["paths"], "paths");
+  rejectUnknownKeys(paths, ["state", "bridges", "staging"], "paths", "dataDirectory");
+  const linear = object(value["linear"], "linear");
+  rejectUnknownKeys(linear, ["apiKeyEnv", "endpoint"], "linear");
+  const github = object(value["github"], "github");
+  rejectUnknownKeys(github, ["tokenCommand"], "github");
+  const sandbox = object(value["sandbox"], "sandbox");
+  rejectUnknownKeys(sandbox, ["template", "roleUser", "piExecutable", "piAgentDirectory", "piAuthFile"], "sandbox");
+  const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
   const configuredDataDirectory = value["dataDirectory"];
   if (configuredDataDirectory !== undefined && typeof configuredDataDirectory !== "string") throw new Error("dataDirectory must be a string");
   // SQUIRE_DATA_DIR is the documented environment override, including when
@@ -173,7 +183,6 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
       ? defaultSquireDataDirectory(options)
       : resolveHostPath(base, text(configuredDataDirectory, "dataDirectory"), platform);
 
-  if (Object.prototype.hasOwnProperty.call(value, "profiles")) throw new Error("profiles is not supported; use modelPolicy");
   const policyValue = value["modelPolicy"];
   const modelPolicy = policyValue === undefined
     ? clonePolicy(APPROVED_PERSONAL_MODEL_POLICY)
@@ -190,6 +199,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   const piAuthFile = sandbox["piAuthFile"];
   if (piAuthFile !== undefined && typeof piAuthFile !== "string") throw new Error("sandbox.piAuthFile must be a string");
 
+  const sourceRef = validateSourceRef(repository["sourceRef"], "repository.sourceRef");
   const configuredRepositoryPath = resolveHostPath(base, text(repository["path"], "repository.path"), platform);
   const repositoryPath = await canonicalRepositoryPath(configuredRepositoryPath, platform);
   const statePath = resolveConfiguredRuntimePath(paths["state"], "paths.state", base, dataDirectory, "state", platform);
@@ -206,7 +216,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
     repository: {
       slug: text(repository["slug"], "repository.slug"),
       path: repositoryPath,
-      sourceRef: text(repository["sourceRef"], "repository.sourceRef"),
+      sourceRef,
       baseBranch: text(repository["baseBranch"], "repository.baseBranch"),
     },
     paths: {
@@ -291,6 +301,11 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function rejectUnknownKeys(object: Record<string, unknown>, allowed: readonly string[], label: string, hint?: string): void {
+  const unknown = Object.keys(object).find(key => !allowed.includes(key));
+  if (unknown !== undefined) throw new Error(`${label}.${unknown} is not supported${hint ? `; use ${hint}` : ""}`);
+}
+
 function text(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${label} must be a non-empty string`);
   return value;
@@ -363,7 +378,12 @@ async function realPathForSafety(value: string): Promise<string> {
 }
 
 function isWithin(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
+  // Windows paths are case-insensitive even when the spelling in a config
+  // differs from the spelling returned by realpath. Compare using the native
+  // platform's case rules before checking containment.
+  const comparableParent = process.platform === "win32" ? parent.toLowerCase() : parent;
+  const comparableChild = process.platform === "win32" ? child.toLowerCase() : child;
+  const relative = path.relative(comparableParent, comparableChild);
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 

@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import { NodeBackgroundLauncher } from "../src/personal/background-launcher.js";
-import { PersonalMvpController } from "../src/personal/controller.js";
+import { backgroundLogPaths, PersonalMvpController } from "../src/personal/controller.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
 import { formatRunStatus, findRunState, StatusLookupError } from "../src/personal/status.js";
@@ -250,6 +250,15 @@ test("post-spawn errors are diagnostic only after the child handoff", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("background log paths require an already resolved absolute directory", () => {
+  assert.throws(() => backgroundLogPaths("relative-logs", "aidev-1-0123456789"), /must be absolute/);
+  const root = path.resolve("squire-logs");
+  assert.deepEqual(backgroundLogPaths(root, "aidev-1-0123456789"), {
+    stdoutPath: path.join(root, "aidev-1-0123456789.stdout.log"),
+    stderrPath: path.join(root, "aidev-1-0123456789.stderr.log"),
+  });
 });
 
 test("CLI accepts background/status options in either documented order and rejects malformed selectors", () => {

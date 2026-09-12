@@ -6,7 +6,7 @@ import {
   type BackgroundLaunchRequest,
   type BackgroundLauncher,
 } from "./background-launcher.js";
-import { deterministicFeatureBranch } from "./identity.js";
+import { deterministicFeatureBranch, validateSourceRef } from "./identity.js";
 import {
   APPROVED_PERSONAL_MODEL_POLICY,
   resolvePhaseProfiles,
@@ -196,7 +196,7 @@ export class PersonalMvpController {
         || loaded.sourceRef !== request.sourceRef
         || loaded.baseBranch !== request.baseBranch
         || loaded.launchConfigDigest !== launchConfigDigest
-        || (loaded.launchConfigPath !== undefined && boundConfigPath !== undefined && loaded.launchConfigPath !== boundConfigPath)
+        || (boundConfigPath !== undefined && loaded.launchConfigPath !== boundConfigPath)
       ) throw new Error("reserved run configuration identity mismatch");
       if (loaded.executionMode !== "background") throw new Error("reserved child execution requires a background run");
       if (loaded.status !== "running" || loaded.launchState !== "reserved" || loaded.controllerPid !== null || loaded.lifecycle !== "launching" || loaded.step !== "launching" || loaded.preparationState !== "pending") {
@@ -691,7 +691,8 @@ function createRunIdentity(request: RunRequest, suppliedId: string, explicitRunI
 function validateRequest(request: RunRequest): void {
   if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(request.ticketId)) throw new Error("invalid Linear ticket identifier");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(request.repository)) throw new Error("repository must be owner/name");
-  if (!request.repositoryPath || !request.sourceRef || !/^[A-Za-z0-9._/-]+$/u.test(request.baseBranch)) throw new Error("invalid repository configuration");
+  if (!request.repositoryPath || !/^[A-Za-z0-9._/-]+$/u.test(request.baseBranch)) throw new Error("invalid repository configuration");
+  validateSourceRef(request.sourceRef, "repository source ref");
 }
 
 function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHead: string): void {
@@ -741,7 +742,7 @@ function requirePassingResults(state: PersonalRunState): Readonly<Record<Persona
 }
 
 export function backgroundLogPaths(logsDirectory: string, runId: string): BackgroundLogPaths {
-  if (!logsDirectory || logsDirectory.includes("\0")) throw new Error("background logs directory is invalid");
+  if (!logsDirectory || logsDirectory.includes("\0") || !path.isAbsolute(logsDirectory)) throw new Error("background logs directory must be absolute");
   if (!/^[a-z0-9][a-z0-9-]{7,127}$/u.test(runId)) throw new Error("invalid run id");
   const root = path.resolve(logsDirectory);
   return {

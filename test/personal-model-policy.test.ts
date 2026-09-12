@@ -211,6 +211,12 @@ test("data directory accepts only canonical JSON and environment names", async (
     await assert.rejects(loadPersonalMvpConfig(file), /runtimeDataDirectory is not supported/);
     await writeFile(file, JSON.stringify({ ...base, profiles: policy }));
     await assert.rejects(loadPersonalMvpConfig(file), /profiles is not supported/);
+    await writeFile(file, JSON.stringify({ ...base, unexpected: true }));
+    await assert.rejects(loadPersonalMvpConfig(file), /configuration\.unexpected is not supported/);
+    await writeFile(file, JSON.stringify({ ...base, repository: { ...base.repository, unexpected: true } }));
+    await assert.rejects(loadPersonalMvpConfig(file), /repository\.unexpected is not supported/);
+    await writeFile(file, JSON.stringify({ ...base, repository: { ...base.repository, sourceRef: "--help" } }));
+    await assert.rejects(loadPersonalMvpConfig(file), /repository\.sourceRef must be a safe Git ref/);
     await writeFile(file, JSON.stringify({ ...base, paths: { logs: path.join(root, "logs") } }));
     await assert.rejects(loadPersonalMvpConfig(file), /paths.logs is not supported/);
     await writeFile(file, JSON.stringify(base));

@@ -1,4 +1,4 @@
-import { access, mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -74,7 +74,11 @@ export class JsonRunStateStore implements RunStatePort {
         lockHandle = undefined;
       } catch (error) {
         await lockHandle?.close().catch(() => undefined);
-        if (lockAcquired) await unlink(lockPath).catch(() => undefined);
+        // A write/close failure is not permission to unlink whatever now
+        // occupies the pathname. Leave a changed or malformed record visible
+        // as ambiguity rather than allowing a failed reserver to delete a
+        // replacement owner.
+        if (lockAcquired) await removeReservationIfOwned(lockPath, state.runId).catch(() => undefined);
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         // Never reclaim here, even if the owner's state appears terminal. The
         // previous owner may be between its final ownership check and unlink;
@@ -291,6 +295,18 @@ export class JsonRunStateStore implements RunStatePort {
   }
 
   async #read(file: string, expectedRunId: string): Promise<PersonalRunState | undefined> {
+    let metadata: Awaited<ReturnType<typeof lstat>>;
+    try {
+      metadata = await lstat(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    // State reads must not follow a symlink into another run/data root. The
+    // atomic publisher creates regular files and a replaced/non-regular path
+    // is therefore an ambiguity that should stop status or a writer.
+    if (!metadata.isFile()) throw new Error(`run state is not a regular file: ${file}`);
+
     let raw: string;
     try {
       raw = await readFile(file, "utf8");
@@ -327,6 +343,18 @@ async function atomicCreate(target: string, contents: string, directory: string,
 }
 
 async function readLock(file: string): Promise<string | undefined> {
+  let metadata: Awaited<ReturnType<typeof lstat>>;
+  try {
+    metadata = await lstat(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  // A reservation is a private regular-file record. Following a symlink here
+  // would let an unrelated file impersonate ownership and could make status
+  // authorize a run that has no real reservation in this data directory.
+  if (!metadata.isFile()) throw new Error(`ambiguous ticket reservation record: ${file}`);
+
   let value: string;
   try {
     value = await readFile(file, "utf8");
@@ -352,6 +380,18 @@ async function removeReservationIfOwned(file: string, expectedOwner: string): Pr
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+async function removeFileIfExactContents(file: string, expected: string): Promise<void> {
+  let actual: string;
+  try {
+    actual = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("ownership boundary disappeared during release");
+    throw error;
+  }
+  if (actual !== expected) throw new Error("ownership boundary changed during release");
+  await unlink(file);
 }
 
 function isReservedLaunch(state: PersonalRunState): boolean {
@@ -456,20 +496,6 @@ async function acquireTicketOperation(directory: string, ticketId: string): Prom
     let handle: FileHandle;
     try {
       handle = await open(lockPath, "wx", 0o600);
-      try {
-        await handle.writeFile(`${process.pid}-${randomUUID()}\n`, "utf8");
-        await handle.sync();
-      } catch (error) {
-        await handle.close().catch(() => undefined);
-        await unlink(lockPath).catch(() => undefined);
-        throw error;
-      }
-      return async () => {
-        await handle.close().catch(() => undefined);
-        await unlink(lockPath).catch(error => {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        });
-      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       // A live reserve/release operation is normally only a few filesystem
@@ -477,7 +503,31 @@ async function acquireTicketOperation(directory: string, ticketId: string): Prom
       // of reporting a false ambiguity; a crashed operation remains stuck and
       // fails closed after the bounded wait.
       await new Promise(resolve => setTimeout(resolve, 5));
+      continue;
     }
+
+    const owner = `${process.pid}-${randomUUID()}\n`;
+    try {
+      await handle.writeFile(owner, "utf8");
+      await handle.sync();
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      // Never unconditionally unlink a path after an I/O failure. If the
+      // pathname changed, preserving it is safer than deleting another
+      // operation's boundary; status/retry will report the ambiguity.
+      await removeFileIfExactContents(lockPath, owner).catch(() => undefined);
+      throw error;
+    }
+
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      await handle.close().catch(() => undefined);
+      // Verify the ownership marker before removing the operation lock. This
+      // keeps a delayed old process from deleting a replacement boundary.
+      await removeFileIfExactContents(lockPath, owner);
+    };
   }
   throw new Error(`ticket operation is locked or ambiguous: ${ticketId}`);
 }
@@ -707,11 +757,32 @@ async function acquireUpdateLock(directory: string, runId: string): Promise<() =
   for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       await mkdir(lock, { mode: 0o700 });
-      return async () => { await rmdir(lock); };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       await new Promise(resolve => setTimeout(resolve, 5));
+      continue;
     }
+
+    const owner = `${process.pid}-${randomUUID()}\n`;
+    const marker = path.join(lock, "owner");
+    try {
+      await writeFile(marker, owner, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    } catch (error) {
+      // No ownership marker was published, so this process cannot safely
+      // identify the directory after a pathname replacement. Leave the lock
+      // in place and fail closed rather than removing a replacement boundary.
+      throw error;
+    }
+
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      // The marker turns directory-lock cleanup into an ownership-checked
+      // operation. A delayed writer cannot remove a replacement update lock.
+      await removeFileIfExactContents(marker, owner);
+      await rmdir(lock);
+    };
   }
   throw new Error(`run state update is locked or ambiguous: ${runId}`);
 }

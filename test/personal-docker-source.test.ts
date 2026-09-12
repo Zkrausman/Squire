@@ -127,6 +127,8 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.equal(prepared.baseSha, first);
   assert.equal(prepared.head, first);
   assert.notEqual(first, localHead);
+  const sourceLookup = commands.requests.find(request => request.command === "git" && request.args.includes("rev-parse"));
+  assert.deepEqual(sourceLookup?.args.slice(-3), ["--verify", "--end-of-options", "refs/remotes/origin/main^{commit}"]);
   const setup = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.includes("sh"));
   assert.deepEqual(setup?.args.slice(0, 5), ["exec", "-u", "root", "squire-aidev-1-0123456789", "sh"]);
   assert.match(setup?.args.at(-1) ?? "", /chown -R '1000:1000' \/ticket/u);

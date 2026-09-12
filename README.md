@@ -43,7 +43,9 @@ override and takes precedence over the JSON value. It defaults to
 and resolve relative to the selected config file. All data destinations are
 checked after resolving symlinks and must remain
 outside the repository. The repository path should be an explicit checkout
-path.
+path. Configuration objects are closed: unknown fields and legacy root aliases
+are rejected rather than silently ignored, and `repository.sourceRef` must be a
+non-whitespace, non-control Git revision.
 
 The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
 
