@@ -189,6 +189,7 @@ test("Review remediation returns once to Implement and reruns Review and Test at
   assert.equal(result.status, "completed");
   assert.equal(result.head, REMEDIATED);
   assert.equal(result.remediations.review, 1);
+  assert.deepEqual(result.remediationAttempts, { review: [1], test: [] });
   assert.deepEqual(harness.calls, ["plan", "implement", "review", "implement", "review", "test", "retro"]);
 });
 
@@ -222,6 +223,7 @@ test("approved resolved profiles remain unchanged through remediation and persis
     assert.deepEqual(harness.states.state?.results[phase]?.profile, resolved.profiles[phase]);
   }
   assert.equal(result.remediations.review, 1);
+  assert.deepEqual(result.remediationAttempts, { review: [1], test: [] });
   assert.deepEqual(harness.calls, ["plan", "implement", "review", "implement", "review", "test", "retro"]);
 });
 
@@ -270,6 +272,7 @@ test("remediation keeps the initially persisted profiles when external policy ob
   }
   assert.equal(result.remediations.review, 1);
   assert.equal(result.remediations.test, 1);
+  assert.deepEqual(result.remediationAttempts, { review: [1], test: [1] });
 });
 
 test("Test remediation reruns Implement, fresh Review, and Test", async () => {
@@ -289,6 +292,7 @@ test("Test remediation reruns Implement, fresh Review, and Test", async () => {
   const result = await harness.controller.run(REQUEST);
   assert.equal(result.status, "completed");
   assert.equal(result.remediations.test, 1);
+  assert.deepEqual(result.remediationAttempts, { review: [], test: [1] });
   assert.deepEqual(harness.calls, ["plan", "implement", "review", "test", "implement", "review", "test", "retro"]);
 });
 

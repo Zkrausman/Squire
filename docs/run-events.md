@@ -14,7 +14,12 @@ The outbox is `<state>/events/<run-id>.json`. It contains a bounded JSON array
 of versioned, deterministic events. Events include only the run/ticket identity,
 state revision, timestamp, event type, and bounded phase/attempt/outcome
 fields. Titles, descriptions, prompts, transcripts, credentials, URLs, errors,
-and logs are intentionally absent. The event schema is
+and logs are intentionally absent. New state records also retain bounded
+`remediationAttempts` arrays for Review and Test. Each entry is the exact phase
+attempt whose committed result requested remediation; the arrays are
+counter-consistent and append-only. The field is absent from legacy v1 state,
+and consumers never map an old aggregate remediation count onto a historical
+phase attempt. The event schema is
 [`contracts/run-events/v1/run-event.schema.json`](../contracts/run-events/v1/run-event.schema.json).
 
 ## Production and crash consistency
@@ -24,13 +29,17 @@ the state replacement has been durably written. A publication failure never
 rolls back or changes the already-committed state. Consequently the contract is
 state-first and at-least-once: an outbox record may be delayed, duplicated, or
 lost after a crash, and an event may be replayed after a restart. Event IDs are
-stable hashes of the semantic transition, not of a delivery attempt.
+stable hashes of the semantic transition, not of a delivery attempt. A
+reserved background launch publishes `run_reserved`; only its committed
+reserved-to-started claim publishes `run_started`. A reservation terminalized
+before that claim therefore never appears to have started.
 
 Consumers sort by state revision, deduplicate by event ID, and reconcile from
 authoritative state before and after installing watchers. If an outbox record
-is malformed or missing, the consumer synthesizes the bounded set of meaningful
-phase attempts, results, remediation, publication, and terminal transitions
-represented by that state, using the same semantic event IDs. It watches the
+is malformed or missing, the consumer synthesizes only the bounded transitions
+supported by that state: latest phase results and exact remediation-attempt
+evidence can identify Review/Test attention, while a legacy aggregate counter
+cannot. It uses the same semantic event IDs. It watches the
 containing state and event directories, not an individual file handle, so
 Windows rename-based atomic replacement is observed. Duplicate/coalesced OS
 notifications are debounced; a low-frequency reconciliation timer is only a

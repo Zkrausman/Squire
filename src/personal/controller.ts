@@ -28,6 +28,7 @@ import type {
   TicketPort,
   WorkspacePort,
   PhasePort,
+  RemediationAttemptEvidence,
 } from "./types.js";
 
 interface RunContext {
@@ -399,7 +400,10 @@ export class PersonalMvpController {
     let result = await this.#executePhase(context, ticket, request, "review", [], signal);
     if (result.status === "remediation_required") {
       if (context.state.remediations.review >= 1) throw new Error("Review remediation budget exhausted");
-      await context.persist({ remediations: { ...context.state.remediations, review: context.state.remediations.review + 1 } });
+      await context.persist({
+        remediations: { ...context.state.remediations, review: context.state.remediations.review + 1 },
+        remediationAttempts: appendRemediationAttempt(context.state, "review", result.attempt),
+      });
       await this.#executePhase(context, ticket, request, "implement", feedback(result), signal);
       result = await this.#executePhase(context, ticket, request, "review", [], signal);
     }
@@ -410,7 +414,10 @@ export class PersonalMvpController {
     let result = await this.#executePhase(context, ticket, request, "test", [], signal);
     if (result.status === "remediation_required") {
       if (context.state.remediations.test >= 1) throw new Error("Test remediation budget exhausted");
-      await context.persist({ remediations: { ...context.state.remediations, test: context.state.remediations.test + 1 } });
+      await context.persist({
+        remediations: { ...context.state.remediations, test: context.state.remediations.test + 1 },
+        remediationAttempts: appendRemediationAttempt(context.state, "test", result.attempt),
+      });
       await this.#executePhase(context, ticket, request, "implement", feedback(result), signal);
       await this.#ensureReview(context, ticket, request, signal);
       result = await this.#executePhase(context, ticket, request, "test", [], signal);
@@ -666,6 +673,7 @@ function initialState(
     attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 },
     results: {},
     remediations: { review: 0, test: 0 },
+    remediationAttempts: { review: [], test: [] },
     prUrl: null,
     lastError: null,
     updatedAt: startedAt,
@@ -701,6 +709,15 @@ function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHea
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
   if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");
+}
+
+function appendRemediationAttempt(state: PersonalRunState, phase: "review" | "test", attempt: number): RemediationAttemptEvidence {
+  const current = state.remediationAttempts ?? { review: [], test: [] };
+  const prior = current[phase];
+  if (!Number.isSafeInteger(attempt) || attempt < 1 || prior.some(entry => entry === attempt) || (prior.length > 0 && attempt <= prior[prior.length - 1]!)) {
+    throw new Error(`invalid ${phase} remediation attempt evidence`);
+  }
+  return { ...current, [phase]: [...prior, attempt] };
 }
 
 function feedback(result: PhaseResult): readonly string[] {

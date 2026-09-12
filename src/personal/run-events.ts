@@ -146,8 +146,13 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
   const events: RunEvent[] = [];
 
   if (previous === undefined) {
-    if (next.status === "running") events.push(fields(next.launchState === "reserved" ? "run_reserved" : "run_started"));
-    else if (next.status === "completed") events.push(fields("terminal_succeeded", { outcome: "completed" }));
+    if (next.executionMode === "background" && next.launchState !== undefined) {
+      events.push(fields("run_reserved"));
+      if (next.launchState === "started") events.push(fields("run_started"));
+    } else if (next.status === "running" || next.executionMode !== "background") {
+      events.push(fields("run_started"));
+    }
+    if (next.status === "completed") events.push(fields("terminal_succeeded", { outcome: "completed" }));
     else if (next.status === "failed" || next.status === "interrupted") events.push(fields("terminal_failed", { outcome: next.status }));
     return events;
   }
@@ -167,17 +172,25 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
       events.push(fields("phase_completed", { phase, attempt: after.attempt, outcome: after.status }));
       if (after.status === "remediation_required") {
         events.push(fields("attention_required", { phase, attempt: after.attempt, outcome: "remediation_required" }));
+        if (phase === "review" || phase === "test") {
+          // The result is exact evidence for a request in this transition. Do
+          // not substitute the aggregate budget counter for its phase attempt.
+          events.push(fields("remediation_requested", { phase, attempt: after.attempt, outcome: "remediation_required" }));
+        }
       }
     }
   }
 
+  // A request is also committed separately after its phase result in the
+  // controller. Exact evidence makes that boundary replayable without
+  // guessing from the aggregate counter.
   for (const phase of ["review", "test"] as const) {
-    if (next.remediations[phase] > previous.remediations[phase]) {
-      events.push(fields("remediation_requested", {
-        phase,
-        attempt: next.remediations[phase],
-        outcome: "remediation_required",
-      }));
+    const previousAttempts = previous.remediationAttempts?.[phase] ?? [];
+    const nextAttempts = next.remediationAttempts?.[phase] ?? [];
+    for (const attempt of nextAttempts) {
+      if (!previousAttempts.includes(attempt)) {
+        events.push(fields("remediation_requested", { phase, attempt, outcome: "remediation_required" }));
+      }
     }
   }
 
@@ -192,11 +205,10 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
 }
 
 /**
- * Build deterministic recovery events from the authoritative state when the
- * outbox is missing or was truncated. State only retains the latest result for
- * each phase, so the bounded attempt counters and remediation counters are
- * also used to reconstruct earlier transitions. Event IDs remain semantic and
- * therefore match records originally derived from those transitions.
+ * Build deterministic recovery events from authoritative state when the
+ * outbox is missing or was truncated. Exact remediation-attempt evidence is
+ * required before reconstructing historical Review/Test outcomes; legacy
+ * aggregate counters are deliberately not treated as a phase-attempt map.
  */
 export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly RunEvent[] {
   const fields = (type: RunEventType, extra: Partial<Pick<EventFields, "phase" | "attempt" | "outcome">> = {}): RunEvent => createRunEvent({
@@ -209,17 +221,22 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
   });
   const events: RunEvent[] = [];
 
-  // A started background run necessarily passed through the reserved state.
-  // Foreground and legacy states have no separate reservation event.
+  // A failed reserved background launch committed no reserved->started
+  // transition. It still has durable reservation evidence, but must never be
+  // reported as started. Only launchState=started proves the child claim.
   if (state.executionMode === "background" && state.launchState !== undefined) {
     events.push(fields("run_reserved"));
-  }
-  if (state.executionMode !== "background" || state.launchState !== "reserved") {
+    if (state.launchState === "started") events.push(fields("run_started"));
+  } else if (state.executionMode !== "background" || state.launchState === undefined) {
+    // Foreground and published legacy records have no separate reservation.
     events.push(fields("run_started"));
   }
 
   for (const phase of PERSONAL_PHASES) {
-    for (const attempt of reconciliationAttempts(state.attempts[phase])) {
+    const requiredEvidence = phase === "review" || phase === "test"
+      ? state.remediationAttempts?.[phase] ?? []
+      : [];
+    for (const attempt of reconciliationAttempts(state.attempts[phase], requiredEvidence)) {
       events.push(fields("phase_started", { phase, attempt }));
       const outcome = reconciledPhaseOutcome(state, phase, attempt);
       if (outcome === undefined) continue;
@@ -230,17 +247,16 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
     }
   }
 
-  // A remediation counter is authoritative evidence that the corresponding
-  // attention transition was committed, even after its phase result was
-  // replaced by a later attempt. Re-emit the request independently so a
-  // missed result and a missed request are both repairable.
+  // Exact evidence is the only durable mapping from a remediation budget slot
+  // to a Review/Test phase attempt. A current result is also exact evidence for
+  // the request even if a crash occurred before the separate evidence commit.
   for (const phase of ["review", "test"] as const) {
-    for (const attempt of reconciliationAttempts(state.remediations[phase])) {
-      events.push(fields("remediation_requested", {
-        phase,
-        attempt,
-        outcome: "remediation_required",
-      }));
+    for (const attempt of state.remediationAttempts?.[phase] ?? []) {
+      events.push(fields("remediation_requested", { phase, attempt, outcome: "remediation_required" }));
+    }
+    const current = state.results[phase];
+    if (current?.status === "remediation_required") {
+      events.push(fields("remediation_requested", { phase, attempt: current.attempt, outcome: "remediation_required" }));
     }
   }
 
@@ -260,27 +276,31 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
 
 const MAX_RECONCILIATION_ATTEMPTS = 32;
 
-function reconciliationAttempts(count: number): readonly number[] {
-  if (!Number.isSafeInteger(count) || count < 1) return [];
+function reconciliationAttempts(count: number, required: readonly number[] = []): readonly number[] {
+  if (!Number.isSafeInteger(count) || count < 1) return [...new Set(required)].sort((left, right) => left - right);
   const upper = Math.min(count, 1_000_000);
   const lower = Math.max(1, upper - MAX_RECONCILIATION_ATTEMPTS + 1);
-  return Array.from({ length: upper - lower + 1 }, (_, index) => lower + index);
+  return [...new Set([...Array.from({ length: upper - lower + 1 }, (_, index) => lower + index), ...required])]
+    .filter(attempt => attempt >= 1 && attempt <= upper)
+    .sort((left, right) => left - right);
 }
 
 function reconciledPhaseOutcome(state: PersonalRunState, phase: PersonalPhase, attempt: number): RunEventOutcome | undefined {
   const result = state.results[phase];
   if (result?.attempt === attempt) return result.status;
 
-  // A later result means this attempt finished. Review and Test can only be
-  // retried after remediation; Implement retries are consequently passing
-  // attempts. The state does not retain an older result payload, but these
-  // bounded status facts are enough to reconstruct its sanitized event.
-  if (result && attempt < result.attempt) {
-    if ((phase === "review" || phase === "test") && attempt <= state.remediations[phase]) return "remediation_required";
-    return "passed";
-  }
-  if (!result && (phase === "review" || phase === "test") && attempt <= state.remediations[phase]) {
-    return "remediation_required";
+  if (attempt >= 1 && attempt < (result?.attempt ?? state.attempts[phase])) {
+    if (phase === "review" || phase === "test") {
+      // With a new-format evidence object, an omitted historical attempt is a
+      // structurally supported pass: a non-passing attempt cannot lead to a
+      // later attempt. With no object, the old aggregate counter is ambiguous.
+      if (state.remediationAttempts === undefined) return undefined;
+      if (state.remediationAttempts[phase].includes(attempt)) return "remediation_required";
+      return "passed";
+    }
+    // Implement retries and other historical phase attempts are only reached
+    // after a passing adapter result in this controller.
+    return result ? "passed" : undefined;
   }
   return undefined;
 }

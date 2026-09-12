@@ -267,33 +267,92 @@ test("derived events include attention and remediation transitions without claim
   assert.equal(events.some(event => (event.type as string) === "ci_updated"), false);
 });
 
-test("reconciliation reconstructs earlier attempts and attention after later results replace them", () => {
+test("reconciliation uses exact remediation attempts across Review/Test retries", () => {
   const reviewPass = {
     ...planResult(),
     phase: "review" as const,
-    attempt: 2,
-    sessionId: "review-2",
-    sessionFile: "/ticket/sessions/review/2.jsonl",
+    attempt: 3,
+    sessionId: "review-3",
+    sessionFile: "/ticket/sessions/review/3.jsonl",
     status: "passed" as const,
     details: { findings: [] },
   };
+  const testPass = {
+    ...planResult(),
+    phase: "test" as const,
+    attempt: 2,
+    sessionId: "test-2",
+    sessionFile: "/ticket/sessions/test/2.jsonl",
+    status: "passed" as const,
+    details: { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] },
+  };
   const recovered = {
-    ...state(12),
+    ...state(20),
     step: "test" as const,
     baseSha: BASE,
     head: BASE,
-    attempts: { plan: 1, implement: 2, review: 2, test: 1, retro: 0 },
-    sessions: { review: "review-2" },
-    results: { review: reviewPass },
-    remediations: { review: 1, test: 0 },
-    updatedAt: "2026-09-10T00:00:12.000Z",
+    attempts: { plan: 1, implement: 3, review: 3, test: 2, retro: 0 },
+    sessions: { review: "review-3", test: "test-2" },
+    results: { review: reviewPass, test: testPass },
+    remediations: { review: 1, test: 1 },
+    remediationAttempts: { review: [2], test: [1] },
+    updatedAt: "2026-09-10T00:00:20.000Z",
   };
 
   const events = synthesizeCurrentRunEvents(recovered);
   assert.ok(events.some(event => event.type === "phase_started" && event.phase === "implement" && event.attempt === 1));
-  assert.ok(events.some(event => event.type === "phase_started" && event.phase === "review" && event.attempt === 1));
-  assert.ok(events.some(event => event.type === "attention_required" && event.phase === "review" && event.attempt === 1));
-  assert.ok(events.some(event => event.type === "remediation_requested" && event.phase === "review" && event.attempt === 1));
-  assert.ok(events.some(event => event.type === "phase_completed" && event.phase === "review" && event.attempt === 2 && event.outcome === "passed"));
+  assert.ok(events.some(event => event.type === "phase_completed" && event.phase === "review" && event.attempt === 1 && event.outcome === "passed"));
+  assert.equal(events.some(event => event.type === "attention_required" && event.phase === "review" && event.attempt === 1), false);
+  assert.equal(events.some(event => event.type === "remediation_requested" && event.phase === "review" && event.attempt === 1), false);
+  assert.ok(events.some(event => event.type === "attention_required" && event.phase === "review" && event.attempt === 2));
+  assert.ok(events.some(event => event.type === "remediation_requested" && event.phase === "review" && event.attempt === 2));
+  assert.ok(events.some(event => event.type === "attention_required" && event.phase === "test" && event.attempt === 1));
+  assert.ok(events.some(event => event.type === "remediation_requested" && event.phase === "test" && event.attempt === 1));
+  assert.ok(events.some(event => event.type === "phase_completed" && event.phase === "review" && event.attempt === 3 && event.outcome === "passed"));
   assert.equal(events.some(event => (event.type as string) === "ci_updated"), false);
+});
+
+test("reconciliation never fabricates run_started for an unclaimed failed background launch", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-reserved-failure-"));
+  try {
+    const states = new JsonRunStateStore(directory);
+    const reserved = {
+      ...state(),
+      step: "launching" as const,
+      lifecycle: "launching" as const,
+      launchState: "reserved" as const,
+      preparationState: "pending" as const,
+      executionMode: "background" as const,
+      startedAt: "2026-09-10T00:00:00.000Z",
+      endedAt: null,
+      controllerPid: null,
+      stdoutPath: path.join(directory, "stdout.log"),
+      stderrPath: path.join(directory, "stderr.log"),
+      repositoryPath: path.join(directory, "repository"),
+      sourceRef: "HEAD",
+      launchConfigDigest: "a".repeat(64),
+    };
+    await states.reserve(reserved);
+    const failed = {
+      ...reserved,
+      version: 2,
+      status: "failed" as const,
+      lifecycle: "failed" as const,
+      launchState: "failed" as const,
+      preparationState: "failed" as const,
+      endedAt: "2026-09-10T00:00:01.000Z",
+      lastError: "bootstrap failed",
+      updatedAt: "2026-09-10T00:00:01.000Z",
+    };
+    await states.failReserved(failed);
+    await unlink(states.eventPath(RUN_ID));
+    const seen: RunEvent[] = [];
+    const result = await watchRun({ states, selector: RUN_ID, onEvent: event => { seen.push(event); } });
+    assert.equal(result.state.launchState, "failed");
+    assert.ok(seen.some(event => event.type === "run_reserved"));
+    assert.equal(seen.some(event => event.type === "run_started"), false);
+    assert.ok(seen.some(event => event.type === "terminal_failed"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

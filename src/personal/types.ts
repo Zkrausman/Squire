@@ -14,6 +14,8 @@ export type RunLaunchState = "reserved" | "started" | "failed";
 export type RunPreparationState = "pending" | "started" | "ready" | "failed";
 export type RunExecutionMode = "foreground" | "background";
 export type RunStep = "launching" | "preparing" | PersonalPhase | "publishing" | "complete";
+export type RemediationPhase = "review" | "test";
+export type RemediationAttemptEvidence = Readonly<Record<RemediationPhase, readonly number[]>>;
 
 export interface Ticket {
   readonly id: string;
@@ -157,7 +159,9 @@ export interface PersonalRunState {
   readonly sessions: Readonly<Partial<Record<PersonalPhase, string>>>;
   readonly attempts: Readonly<Record<PersonalPhase, number>>;
   readonly results: Readonly<Partial<Record<PersonalPhase, PhaseResult>>>;
-  readonly remediations: Readonly<Record<"review" | "test", number>>;
+  readonly remediations: Readonly<Record<RemediationPhase, number>>;
+  /** Exact Review/Test attempts whose persisted result requested remediation. Absent on legacy v1 state. */
+  readonly remediationAttempts?: RemediationAttemptEvidence;
   readonly prUrl: string | null;
   readonly lastError: string | null;
   readonly updatedAt: string;

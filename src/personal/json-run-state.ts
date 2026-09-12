@@ -27,6 +27,7 @@ const OPTIONAL_STATE_KEYS = [
   "sourceSha",
   "launchConfigPath",
   "launchConfigDigest",
+  "remediationAttempts",
 ] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
 const RUN_STEPS = ["launching", "preparing", ...PERSONAL_PHASES, "publishing", "complete"] as const;
@@ -34,6 +35,8 @@ const RUN_LIFECYCLES = ["launching", "preparing", "running", "publishing", "comp
 const RUN_LAUNCH_STATES = ["reserved", "started", "failed"] as const;
 const RUN_PREPARATION_STATES = ["pending", "started", "ready", "failed"] as const;
 const EXECUTION_MODES = ["foreground", "background"] as const;
+const REMEDIATION_ATTEMPT_LIMIT = 32;
+const MAX_PHASE_ATTEMPT = 1_000_000;
 const TICKET_ID_PATTERN = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{7,127}$/u;
 
@@ -154,6 +157,7 @@ export class JsonRunStateStore implements RunStatePort {
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
         assertResolvedProfilesUnchanged(current, state);
         assertLaunchIdentityUnchanged(current, state);
+        assertRemediationAttemptsAppendOnly(current, state);
         if (sourceBinding && (current.sourceSha === undefined || current.sourceSha !== state.sourceSha)) {
           if (!isReservedLaunch(current) || await readLock(this.#reservationPath(state.ticketId)) !== state.runId) {
             throw new Error(`reserved source binding does not belong to run: ${state.runId}`);
@@ -666,6 +670,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   for (const phase of PERSONAL_PHASES) if (!integer(attempts[phase], 0)) throw new Error(`invalid run state ${phase} attempts`);
   const remediations = exactObject(state["remediations"], ["review", "test"], "run state remediations");
   for (const phase of ["review", "test"] as const) if (!integer(remediations[phase], 0) || (remediations[phase] as number) > 1) throw new Error(`invalid run state ${phase} remediations`);
+  validateRemediationAttempts(state["remediationAttempts"], remediations, attempts, state["results"]);
 
   const sessions = subsetObject(state["sessions"], PERSONAL_PHASES, "run state sessions");
   for (const [phase, sessionId] of Object.entries(sessions)) {
@@ -705,6 +710,75 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   }
   if (state["step"] !== "preparing" && state["step"] !== "launching" && state["baseSha"] === null) throw new Error("started run has no Git identity");
   if (PERSONAL_PHASES.includes(state["step"] as PersonalPhase) && (attempts[state["step"] as PersonalPhase] as number) < 1) throw new Error("active phase has no attempt");
+}
+
+function validateRemediationAttempts(
+  value: unknown,
+  remediations: Record<string, unknown>,
+  attempts: Record<string, unknown>,
+  results: unknown,
+): void {
+  if (value === undefined) return; // Legacy v1 states did not retain exact remediation attempts.
+  const evidence = exactObject(value, ["review", "test"], "run state remediation attempts");
+  const resultObject = results && typeof results === "object" && !Array.isArray(results) ? results as Record<string, unknown> : undefined;
+  for (const phase of ["review", "test"] as const) {
+    const entries = evidence[phase];
+    if (!Array.isArray(entries) || entries.length > REMEDIATION_ATTEMPT_LIMIT) throw new Error(`invalid run state ${phase} remediation attempts`);
+    const count = remediations[phase];
+    if (!integer(count, 0) || entries.length !== count) throw new Error(`run state ${phase} remediation attempts do not match the counter`);
+    const phaseAttemptCount = attempts[phase];
+    if (!integer(phaseAttemptCount, 0)) throw new Error(`invalid run state ${phase} attempts`);
+    let previous = 0;
+    for (const entry of entries) {
+      if (!integer(entry, 1) || (entry as number) > MAX_PHASE_ATTEMPT || (entry as number) > (phaseAttemptCount as number) || (entry as number) <= previous) {
+        throw new Error(`invalid run state ${phase} remediation attempt ordering`);
+      }
+      previous = entry as number;
+    }
+    const latest = resultObject?.[phase];
+    if (latest && typeof latest === "object" && !Array.isArray(latest)) {
+      const latestRecord = latest as Record<string, unknown>;
+      if (typeof latestRecord["attempt"] === "number" && entries.includes(latestRecord["attempt"]) && latestRecord["status"] !== "remediation_required") {
+        throw new Error(`run state ${phase} remediation evidence disagrees with its result`);
+      }
+    }
+  }
+}
+
+function assertRemediationAttemptsAppendOnly(current: PersonalRunState, next: PersonalRunState): void {
+  const previous = current.remediationAttempts;
+  const proposed = next.remediationAttempts;
+  for (const phase of ["review", "test"] as const) {
+    if (next.remediations[phase] < current.remediations[phase]) throw new Error(`run state ${phase} remediation counter cannot decrease`);
+  }
+  if (previous === undefined) {
+    if (proposed === undefined) {
+      // A legacy record remains legacy until a controller has exact evidence for
+      // a newly committed request. Never invent its older remediation history.
+      return;
+    }
+    for (const phase of ["review", "test"] as const) {
+      const entries = proposed[phase];
+      const priorCount = current.remediations[phase];
+      if (priorCount > 0) throw new Error(`cannot add exact ${phase} remediation history to a legacy run state`);
+      if (entries.length === 0 && next.remediations[phase] === 0) continue;
+      const result = next.results[phase];
+      const exactCurrentRequest = next.remediations[phase] === 1
+        && entries.length === 1
+        && result?.attempt === entries[0]
+        && result?.status === "remediation_required";
+      if (!exactCurrentRequest) throw new Error(`legacy ${phase} remediation evidence is not an exact append`);
+    }
+    return;
+  }
+  if (proposed === undefined) throw new Error("run state remediation evidence cannot be removed");
+  for (const phase of ["review", "test"] as const) {
+    const oldEntries = previous[phase];
+    const newEntries = proposed[phase];
+    if (newEntries.length < oldEntries.length || oldEntries.some((entry, index) => newEntries[index] !== entry)) {
+      throw new Error(`run state ${phase} remediation evidence is not append-only`);
+    }
+  }
 }
 
 function exactObject(value: unknown, keys: readonly string[], label: string, optionalKeys: readonly string[] = []): Record<string, unknown> {

@@ -17,8 +17,14 @@ terminal state and never launches Pi or any model merely because a run is idle.
 
 The crash contract is state-first: state replacement is the authority and
 outbox publication may lag or be lost after a crash. Consumers therefore accept
-at-least-once replay and synthesize the current transition from state when an
-event is missing. The bounded outbox is not a replacement for state.
+at-least-once replay and synthesize only transitions supported by persisted
+state when an event is missing. New state records retain bounded, append-only
+exact Review/Test remediation-attempt evidence, so a historical attention event
+is tied to the actual phase attempt. Legacy aggregate remediation counts are
+not enough to reconstruct that mapping and are handled conservatively. A
+background reservation that fails before the child claims it emits reservation
+and terminal-failure evidence without inventing a run-started transition. The
+bounded outbox is not a replacement for state.
 
 Production is separate from consumption. The Run Controller is the only state
 writer. `RunNotificationWorker` is a provider-neutral host adapter with a fixed
