@@ -99,7 +99,18 @@ that no second console appeared:
 npm run squire -- run <ticket> --background
 squire status <ticket>
 squire status <run-id>
+squire watch <ticket-or-run>
 ```
+
+`watch` is a non-LLM host consumer. It watches the state and event
+**directories** (not one file handle, which matters for Windows atomic
+replacement), debounces duplicate/coalesced notifications, reconciles from
+state after restart or a missed notification, prints sanitized meaningful
+transitions, and exits at terminal state. It does not contact Linear, Docker,
+Git, GitHub, Pi, or a model while waiting. The event production/consumption
+contract and provider-neutral notification checkpoint worker are documented in
+[`docs/run-events.md`](run-events.md); Discord delivery remains a separate
+future adapter.
 
 Status is persisted and remains useful when the controller has failed during
 credential lookup, ticket fetch, preparation, or publication. It shows the

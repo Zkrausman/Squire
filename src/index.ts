@@ -49,3 +49,6 @@ export * from "./personal/linear-client.js";
 export * from "./personal/docker-sandbox.js";
 export * from "./personal/pi-phase-runner.js";
 export * from "./personal/github-publisher.js";
+export * from "./personal/run-events.js";
+export * from "./personal/run-watcher.js";
+export * from "./personal/notification-worker.js";

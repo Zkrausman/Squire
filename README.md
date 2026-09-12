@@ -12,7 +12,15 @@ squire run AIDEV-123
 squire run AIDEV-123 --background
 squire status AIDEV-123
 squire status aidev-123-0123456789
+squire watch AIDEV-123
 ```
+
+`watch` consumes durable, bounded controller events from the filesystem. It
+blocks on directory notifications (including Windows atomic replacements),
+deduplicates and reconciles from persisted state, prints sanitized meaningful
+transitions, and never invokes Pi/model work while waiting. See
+[`docs/run-events.md`](docs/run-events.md) for the state-first crash contract,
+provider-neutral adapters, and deferred Discord delivery.
 
 One trusted local controller will fetch the ticket, create one Docker Sandbox, run five independent Pi phase processes, require Review, Test, and Retro to pass the current Git HEAD, and create or reuse one pull request. Implement may update the committed project wiki when the ticket requires it. Retro runs read-only after Test with a fresh session, records lessons and proposed follow-ups, and publishes them in the PR body; Squire does not automatically turn those follow-ups into Linear issues or mutate the wiki during Retro. Docker Sandbox is the host isolation boundary; same-ticket phases share that trust boundary. Ambiguous failures stop for the owner rather than invoking production-scale recovery or compensation.
 

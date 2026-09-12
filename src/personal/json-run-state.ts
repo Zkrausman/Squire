@@ -7,6 +7,7 @@ import { deterministicFeatureBranch } from "./identity.js";
 import { validatePhaseResultShape } from "./phase-result.js";
 import { canonicalPlanIdentity, PLAN_SELECTION_VERSION, validatePhaseProfile } from "./model-policy.js";
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type PlanSelection, type ResolvedPhaseProfiles, type RunExecutionMode, type RunLifecycle, type RunLaunchState, type RunPreparationState } from "./types.js";
+import { JsonRunEventOutbox } from "./run-events.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
@@ -36,14 +37,37 @@ const EXECUTION_MODES = ["foreground", "background"] as const;
 const TICKET_ID_PATTERN = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{7,127}$/u;
 
+export interface JsonRunStateStoreOptions {
+  readonly eventDirectory?: string;
+  readonly maxEvents?: number;
+  readonly maxEventBytes?: number;
+  /** Event publication is best-effort after state commit; diagnostics never roll state back. */
+  readonly onEventPersistenceError?: (error: unknown) => void;
+}
+
 export class JsonRunStateStore implements RunStatePort {
-  constructor(readonly directory: string) {}
+  readonly eventOutbox: JsonRunEventOutbox;
+  readonly eventDirectory: string;
+  readonly eventsDirectory: string;
+  readonly #onEventPersistenceError: (error: unknown) => void;
+
+  constructor(readonly directory: string, options: JsonRunStateStoreOptions = {}) {
+    this.eventOutbox = new JsonRunEventOutbox(directory, {
+      ...(options.eventDirectory === undefined ? {} : { eventDirectory: options.eventDirectory }),
+      ...(options.maxEvents === undefined ? {} : { maxEvents: options.maxEvents }),
+      ...(options.maxEventBytes === undefined ? {} : { maxBytes: options.maxEventBytes }),
+    });
+    this.eventDirectory = this.eventOutbox.eventDirectory;
+    this.eventsDirectory = this.eventDirectory;
+    this.#onEventPersistenceError = options.onEventPersistenceError ?? (() => undefined);
+  }
 
   async create(state: PersonalRunState): Promise<void> {
     validateState(state);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const target = this.#path(state.runId);
     await atomicCreate(target, encode(state), this.directory, state.runId);
+    await this.#publishTransition(undefined, state);
   }
 
   /**
@@ -95,6 +119,7 @@ export class JsonRunStateStore implements RunStatePort {
         const active = (await this.findByTicket(state.ticketId)).filter(candidate => candidate.status === "running");
         if (active.length > 0) throw new Error(`ticket already has an active run: ${state.ticketId}`);
         await atomicCreate(this.#path(state.runId), encode(state), this.directory, state.runId);
+        await this.#publishTransition(undefined, state);
       } catch (error) {
         // Only remove a reservation whose owner is still this run. If an
         // operator or a non-Squire process replaced it, fail closed and leave
@@ -135,6 +160,7 @@ export class JsonRunStateStore implements RunStatePort {
           }
         }
         await this.#replaceState(target, state);
+        await this.#publishTransition(current, state);
       } finally {
         await releaseUpdate();
       }
@@ -163,6 +189,7 @@ export class JsonRunStateStore implements RunStatePort {
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
         assertExactStartedChildTarget(current, state);
         await this.#replaceState(target, state);
+        await this.#publishTransition(current, state);
       } finally {
         await releaseUpdate();
       }
@@ -189,6 +216,7 @@ export class JsonRunStateStore implements RunStatePort {
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
         assertExactReservedFailureTarget(current, state);
         await this.#replaceState(target, state);
+        await this.#publishTransition(current, state);
       } finally {
         await releaseUpdate();
       }
@@ -213,6 +241,7 @@ export class JsonRunStateStore implements RunStatePort {
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
         assertExactSourceBindingTarget(current, state);
         await this.#replaceState(target, state);
+        await this.#publishTransition(current, state);
       } finally {
         await releaseUpdate();
       }
@@ -253,6 +282,18 @@ export class JsonRunStateStore implements RunStatePort {
     return withTicketOperation(this.directory, ticketId, async () => readLock(this.#reservationPath(ticketId)));
   }
 
+  async readEvents(runId: string): Promise<readonly import("./run-events.js").RunEvent[]> {
+    return this.eventOutbox.read(runId);
+  }
+
+  async listEvents(runId: string): Promise<readonly import("./run-events.js").RunEvent[]> {
+    return this.readEvents(runId);
+  }
+
+  eventPath(runId: string): string {
+    return this.eventOutbox.eventPath(runId);
+  }
+
   async release(ticketId: string, runId: string): Promise<void> {
     assertTicketId(ticketId);
     if (!RUN_ID_PATTERN.test(runId)) throw new Error("invalid run id");
@@ -270,6 +311,16 @@ export class JsonRunStateStore implements RunStatePort {
     });
   }
 
+  async #publishTransition(previous: PersonalRunState | undefined, next: PersonalRunState): Promise<void> {
+    try {
+      // State replacement has already committed. Outbox failure is a missed
+      // notification, never permission to roll back or misreport state.
+      await this.eventOutbox.append(previous, next);
+    } catch (error) {
+      try { this.#onEventPersistenceError(error); } catch { /* diagnostics cannot alter state authority */ }
+    }
+  }
+
   async #replaceState(target: string, state: PersonalRunState): Promise<void> {
     const temporary = path.join(this.directory, `.${state.runId}.${randomUUID()}.tmp`);
     const handle = await open(temporary, "wx", 0o600);
@@ -278,6 +329,7 @@ export class JsonRunStateStore implements RunStatePort {
       await handle.sync();
       await handle.close();
       await rename(temporary, target);
+      await syncDirectory(this.directory);
     } catch (error) {
       await handle.close().catch(() => undefined);
       await rm(temporary, { force: true }).catch(() => undefined);
@@ -334,6 +386,7 @@ async function atomicCreate(target: string, contents: string, directory: string,
       await link(temporary, target);
     } finally {
       await rm(temporary, { force: true });
+      await syncDirectory(directory);
     }
   } catch (error) {
     await handle.close().catch(() => undefined);
@@ -573,6 +626,17 @@ function timestampForOrdering(state: PersonalRunState): number {
   const candidate = state.startedAt ?? state.updatedAt;
   const value = Date.parse(candidate);
   return Number.isFinite(value) ? value : 0;
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  try {
+    const handle = await open(directory, "r");
+    try { await handle.sync(); }
+    finally { await handle.close(); }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "EPERM" && code !== "EISDIR" && code !== "ENOTSUP") throw error;
+  }
 }
 
 function encode(state: PersonalRunState): string {

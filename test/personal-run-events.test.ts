@@ -1,0 +1,267 @@
+import assert from "node:assert/strict";
+import { access, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { deterministicFeatureBranch } from "../src/personal/identity.js";
+import { JsonRunStateStore } from "../src/personal/json-run-state.js";
+import { formatRunEvent } from "../src/personal/status.js";
+import { deriveRunEvents, MAX_RUN_EVENT_COUNT, validateRunEvent, type RunEvent } from "../src/personal/run-events.js";
+import { watchRun } from "../src/personal/run-watcher.js";
+import { RunNotificationWorker } from "../src/personal/notification-worker.js";
+import type { PlanPhaseResult, PersonalRunState } from "../src/personal/types.js";
+
+const BASE = "a".repeat(40);
+const RUN_ID = "aidev-1-0123456789";
+const BRANCH = deterministicFeatureBranch("example/repo", "AIDEV-1");
+
+function state(version = 1): PersonalRunState {
+  return {
+    schemaVersion: 1,
+    version,
+    runId: RUN_ID,
+    ticketId: "AIDEV-1",
+    ticketTitle: "secret title should not enter events",
+    status: "running",
+    step: "preparing",
+    lifecycle: "preparing",
+    launchState: "started",
+    preparationState: "pending",
+    executionMode: "foreground",
+    startedAt: "2026-09-10T00:00:00.000Z",
+    endedAt: null,
+    controllerPid: 1,
+    stdoutPath: "/secret/stdout.log",
+    stderrPath: "/secret/stderr.log",
+    repositoryPath: "/secret/repository",
+    sourceRef: "HEAD",
+    sandbox: `squire-${RUN_ID}`,
+    repository: "example/repo",
+    baseBranch: "main",
+    baseSha: null,
+    branch: BRANCH,
+    head: null,
+    sessions: {},
+    attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 },
+    results: {},
+    remediations: { review: 0, test: 0 },
+    prUrl: null,
+    lastError: null,
+    updatedAt: "2026-09-10T00:00:00.000Z",
+  };
+}
+
+function planResult(): PlanPhaseResult {
+  return {
+    runId: RUN_ID,
+    phase: "plan",
+    attempt: 1,
+    sessionId: "plan-session",
+    sessionFile: "/ticket/sessions/plan/1.jsonl",
+    inputHead: BASE,
+    outputHead: BASE,
+    status: "passed",
+    summary: "secret prompt and transcript must not be persisted in event",
+    details: { steps: ["make the focused change"] },
+  };
+}
+
+function terminal(stateValue: PersonalRunState): PersonalRunState {
+  return {
+    ...stateValue,
+    version: stateValue.version + 1,
+    status: "failed",
+    lifecycle: "failed",
+    launchState: "failed",
+    preparationState: "failed",
+    endedAt: "2026-09-10T00:00:01.000Z",
+    lastError: "credential=super-secret transcript=do-not-publish\n",
+    updatedAt: "2026-09-10T00:00:01.000Z",
+  };
+}
+
+test("JSON state commits publish bounded versioned events without secrets or logs", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-state-"));
+  try {
+    const states = new JsonRunStateStore(directory);
+    const initial = state();
+    await states.create(initial);
+    const phaseStarted = { ...initial, version: 2, step: "plan" as const, baseSha: BASE, head: BASE, attempts: { ...initial.attempts, plan: 1 }, updatedAt: "2026-09-10T00:00:00.100Z" };
+    await states.save(phaseStarted);
+    const phaseCompleted = { ...phaseStarted, version: 3, head: BASE, baseSha: BASE, sessions: { plan: "plan-session" }, results: { plan: planResult() }, updatedAt: "2026-09-10T00:00:00.200Z" };
+    await states.save(phaseCompleted);
+    const events = await states.readEvents(RUN_ID);
+    assert.deepEqual(events.map(event => event.type), ["run_started", "phase_started", "phase_completed"]);
+    assert.ok(events.every(event => event.stateRevision >= 1 && event.eventId.length === 64));
+    for (const event of events) validateRunEvent(event);
+    const raw = await readFile(states.eventPath(RUN_ID), "utf8");
+    assert.equal(raw.includes("secret"), false);
+    assert.equal(raw.includes("credential"), false);
+    assert.equal(raw.includes("stdout.log"), false);
+    assert.ok(raw.length < 64 * 1024);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("state remains authoritative when event persistence fails", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-state-first-"));
+  try {
+    const states = new JsonRunStateStore(directory, { maxEventBytes: 1 });
+    await states.create(state());
+    assert.equal((await states.read(RUN_ID))?.version, 1);
+    assert.deepEqual(await states.readEvents(RUN_ID), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("metadata-only state updates are silent and malformed outbox data is recoverable", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-malformed-"));
+  try {
+    const states = new JsonRunStateStore(directory);
+    const initial = state();
+    await states.create(initial);
+    await writeFile(states.eventPath(RUN_ID), "not-json\n", "utf8");
+    const changed = { ...initial, version: 2, ticketTitle: "new title", updatedAt: "2026-09-10T00:00:00.100Z" };
+    await states.save(changed);
+    assert.deepEqual((await states.readEvents(RUN_ID)).map(event => event.type), []);
+    const failed = terminal(changed);
+    await states.save(failed);
+    assert.deepEqual((await states.readEvents(RUN_ID)).map(event => event.type), ["terminal_failed"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("outbox retention is bounded and event IDs deduplicate replay", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-retention-"));
+  try {
+    const outbox = new (await import("../src/personal/run-events.js")).JsonRunEventOutbox(directory, { maxEvents: 2 });
+    let current = state();
+    await outbox.append(undefined, current);
+    for (let version = 2; version <= 10; version += 1) {
+      const next = { ...current, version, step: "plan" as const, attempts: { ...current.attempts, plan: 1 }, updatedAt: `2026-09-10T00:00:${String(version).padStart(2, "0")}.000Z` };
+      await outbox.append(current, next);
+      current = next;
+    }
+    const events = await outbox.read(RUN_ID);
+    assert.ok(events.length <= 2);
+    assert.ok(events.length <= MAX_RUN_EVENT_COUNT);
+    const ids = new Set(events.map(event => event.eventId));
+    assert.equal(ids.size, events.length);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("watch reconciles a missed terminal event and exits without live adapters", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-watch-"));
+  try {
+    const states = new JsonRunStateStore(directory);
+    const initial = state();
+    await states.create(initial);
+    const failed = terminal(initial);
+    await states.save(failed);
+    await unlink(states.eventPath(RUN_ID));
+    const seen: RunEvent[] = [];
+    const result = await watchRun({ states, selector: RUN_ID, onEvent: event => { seen.push(event); } });
+    assert.equal(result.state.status, "failed");
+    assert.deepEqual(seen.map(event => event.type), ["terminal_failed"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("directory watcher observes atomic state replacement and coalesced notifications", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-atomic-watch-"));
+  try {
+    const states = new JsonRunStateStore(directory);
+    const initial = state();
+    await states.reserve(initial);
+    const seen: RunEvent[] = [];
+    let changed = false;
+    const watching = watchRun({
+      states,
+      selector: RUN_ID,
+      debounceMs: 10,
+      reconcileIntervalMs: 200,
+      onEvent: event => {
+        seen.push(event);
+        if (event.type === "run_started" && !changed) {
+          changed = true;
+          setTimeout(() => { void states.save(terminal(initial)); }, 30).unref();
+        }
+      },
+    });
+    const result = await watching;
+    assert.equal(result.state.status, "failed");
+    assert.equal(seen.filter(event => event.type === "run_started").length, 1);
+    assert.equal(seen.filter(event => event.type === "terminal_failed").length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("watch output is one sanitized bounded line", () => {
+  const event: RunEvent = {
+    schemaVersion: 1,
+    eventId: "a3b57ba0d4aac722e2f3813aba6cc35b372814a5973a7f3039049ed72c312b27",
+    runId: RUN_ID,
+    ticketId: "AIDEV-1",
+    stateRevision: 1,
+    timestamp: "2026-09-10T00:00:00.000Z",
+    type: "run_started",
+  };
+  const output = formatRunEvent(event);
+  assert.equal(output.endsWith("\n"), true);
+  assert.equal(output.split("\n").length, 2);
+  assert.equal(output.includes("secret"), false);
+});
+
+test("notification worker retries and checkpoints only after successful terminal delivery", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-worker-"));
+  try {
+    const states = new JsonRunStateStore(directory);
+    const initial = state();
+    await states.create(initial);
+    const failed = terminal(initial);
+    await states.save(failed);
+    await unlink(states.eventPath(RUN_ID));
+    let attempts = 0;
+    const worker = new RunNotificationWorker({
+      states,
+      selector: RUN_ID,
+      consumerId: "test-adapter",
+      checkpointDirectory: path.join(directory, "checkpoints"),
+      adapter: { async notify(event) { assert.equal(event.type, "terminal_failed"); attempts += 1; if (attempts === 1) throw new Error("temporary adapter failure"); } },
+      maxAttempts: 2,
+      retryDelayMs: 0,
+    });
+    await worker.run();
+    assert.equal(attempts, 2);
+    const checkpoint = JSON.parse(await readFile(worker.checkpointPath, "utf8")) as { deliveredEventIds: string[] };
+    assert.equal(checkpoint.deliveredEventIds.length, 1);
+    assert.equal(await access(worker.checkpointPath).then(() => true), true);
+    let replayAttempts = 0;
+    await new RunNotificationWorker({
+      states,
+      selector: RUN_ID,
+      consumerId: "test-adapter",
+      checkpointDirectory: path.join(directory, "checkpoints"),
+      adapter: { async notify() { replayAttempts += 1; } },
+      maxAttempts: 1,
+    }).run();
+    assert.equal(replayAttempts, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("derived events include attention, remediation, CI, publication, and terminal transitions", () => {
+  const previous = { ...state(), version: 4, step: "review" as const, attempts: { ...state().attempts, plan: 1, implement: 1, review: 1 }, remediations: { review: 0, test: 0 } };
+  const review = { ...planResult(), phase: "review" as const, sessionFile: "/ticket/sessions/review/1.jsonl", sessionId: "review", status: "remediation_required" as const, details: { findings: ["fix"] } };
+  const next = { ...previous, version: 5, results: { review }, remediations: { review: 1, test: 0 }, updatedAt: "2026-09-10T00:00:00.500Z" };
+  const events = deriveRunEvents(previous, next);
+  assert.deepEqual(events.map(event => event.type), ["phase_completed", "attention_required", "remediation_requested"]);
+});

@@ -22,6 +22,9 @@ const schemasDir = path.join(root, "contracts/v1");
 const fixturesDir = path.join(root, "fixtures/contracts");
 const gitSchemasDir = path.join(root, "contracts/git-workspace/v1");
 const gitFixturesDir = path.join(root, "fixtures/git-workspace/v1");
+const runEventSchemaPath = path.join(root, "contracts/run-events/v1/run-event.schema.json");
+const runEventValidPath = path.join(root, "fixtures/run-events/v1/valid/run-event.json");
+const runEventInvalidPath = path.join(root, "fixtures/run-events/v1/invalid/malformed-event.json");
 
 async function json(file) {
   return JSON.parse(await readFile(file, "utf8"));
@@ -74,6 +77,14 @@ async function main() {
   const gitSchemaFiles = await filesBelow(gitSchemasDir);
   const gitSchemas = await Promise.all(gitSchemaFiles.map(json));
   for (const schema of gitSchemas) ajv.addSchema(schema);
+  // Personal run notifications are a separate host contract from the
+  // published workflow-artifact schemas, but they are still checked by the
+  // contract gate without changing the published schema count.
+  ajv.addSchema(await json(runEventSchemaPath));
+  const validateRunEvent = ajv.getSchema("urn:squire:run-events:v1:run-event");
+  if (!validateRunEvent) throw new Error("run event schema was not registered");
+  if (!validateRunEvent(await json(runEventValidPath))) throw new Error(`Valid run event rejected: ${runEventValidPath}`);
+  if (validateRunEvent(await json(runEventInvalidPath))) throw new Error(`Invalid run event accepted: ${runEventInvalidPath}`);
 
   const validRoot = path.join(fixturesDir, "valid");
   const validFiles = await filesBelow(validRoot);

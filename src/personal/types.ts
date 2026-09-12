@@ -1,4 +1,5 @@
 import type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
+import type { RunEvent } from "./run-events.js";
 
 export type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
 
@@ -219,4 +220,8 @@ export interface RunStatePort {
   read?(runId: string): Promise<PersonalRunState | undefined>;
   findByTicket?(ticketId: string): Promise<readonly PersonalRunState[]>;
   reservationOwner?(ticketId: string): Promise<string | undefined>;
+  /** Optional durable event outbox read surface used by non-LLM consumers. */
+  readEvents?(runId: string): Promise<readonly RunEvent[]>;
+  /** The directory watched by consumers; state and event files are replaced atomically. */
+  readonly eventDirectory?: string;
 }

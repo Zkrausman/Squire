@@ -1,4 +1,5 @@
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort } from "./types.js";
+import type { RunEvent } from "./run-events.js";
 
 const TICKET_PATTERN = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
 const RUN_PATTERN = /^[a-z][a-z0-9]+-[a-z0-9][a-z0-9-]{7,127}$/u;
@@ -124,6 +125,21 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
   if (state.executionMode) lines.push(`Execution mode: ${display(state.executionMode)}`);
   if (state.controllerPid !== undefined && state.controllerPid !== null) lines.push(`Controller PID: ${state.controllerPid}`);
   return `${lines.join("\n")}\n`;
+}
+
+/** Render only bounded event fields; titles, diagnostics, prompts, and logs never enter watch output. */
+export function formatRunEvent(event: RunEvent): string {
+  const fields = [
+    display(event.timestamp),
+    `event=${display(event.type)}`,
+    `ticket=${display(event.ticketId)}`,
+    `run=${display(event.runId)}`,
+    `revision=${event.stateRevision}`,
+  ];
+  if (event.phase !== undefined) fields.push(`phase=${display(event.phase)}`);
+  if (event.attempt !== undefined) fields.push(`attempt=${event.attempt}`);
+  if (event.outcome !== undefined) fields.push(`outcome=${display(event.outcome)}`);
+  return `${fields.join(" ")}\n`;
 }
 
 export function formatElapsed(state: PersonalRunState, now: Date = new Date()): string {
