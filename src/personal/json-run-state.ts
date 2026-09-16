@@ -1,9 +1,10 @@
-import { access, lstat, mkdir, open, readFile, readdir, rename, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, readdir, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { deterministicFeatureBranch } from "./identity.js";
+import { renameOverExistingWithRetry, type RenameRetryOptions } from "./atomic-rename.js";
 import { validatePhaseResultShape } from "./phase-result.js";
 import { canonicalPlanIdentity, PLAN_SELECTION_VERSION, validatePhaseProfile } from "./model-policy.js";
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type PlanSelection, type ResolvedPhaseProfiles, type RunExecutionMode, type RunLifecycle, type RunLaunchState, type RunPreparationState } from "./types.js";
@@ -46,6 +47,8 @@ export interface JsonRunStateStoreOptions {
   readonly maxEventBytes?: number;
   /** Event publication is best-effort after state commit; diagnostics never roll state back. */
   readonly onEventPersistenceError?: (error: unknown) => void;
+  /** Internal deterministic seam for Windows rename contention handling. */
+  readonly renameRetry?: RenameRetryOptions;
 }
 
 export class JsonRunStateStore implements RunStatePort {
@@ -53,16 +56,19 @@ export class JsonRunStateStore implements RunStatePort {
   readonly eventDirectory: string;
   readonly eventsDirectory: string;
   readonly #onEventPersistenceError: (error: unknown) => void;
+  readonly #renameRetry: RenameRetryOptions;
 
   constructor(readonly directory: string, options: JsonRunStateStoreOptions = {}) {
     this.eventOutbox = new JsonRunEventOutbox(directory, {
       ...(options.eventDirectory === undefined ? {} : { eventDirectory: options.eventDirectory }),
       ...(options.maxEvents === undefined ? {} : { maxEvents: options.maxEvents }),
       ...(options.maxEventBytes === undefined ? {} : { maxBytes: options.maxEventBytes }),
+      ...(options.renameRetry === undefined ? {} : { renameRetry: options.renameRetry }),
     });
     this.eventDirectory = this.eventOutbox.eventDirectory;
     this.eventsDirectory = this.eventDirectory;
     this.#onEventPersistenceError = options.onEventPersistenceError ?? (() => undefined);
+    this.#renameRetry = options.renameRetry ?? {};
   }
 
   async create(state: PersonalRunState): Promise<void> {
@@ -332,7 +338,7 @@ export class JsonRunStateStore implements RunStatePort {
       await handle.writeFile(encode(state));
       await handle.sync();
       await handle.close();
-      await rename(temporary, target);
+      await renameOverExistingWithRetry(temporary, target, this.#renameRetry);
       await syncDirectory(this.directory);
     } catch (error) {
       await handle.close().catch(() => undefined);

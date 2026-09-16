@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState } from "./types.js";
+import { renameOverExistingWithRetry, type RenameRetryOptions } from "./atomic-rename.js";
 
 /** The persisted event contract is intentionally closed and additive. */
 export const RUN_EVENT_SCHEMA_VERSION = 1 as const;
@@ -338,12 +339,14 @@ export class JsonRunEventOutbox {
   readonly eventDirectory: string;
   readonly maxEvents: number;
   readonly maxBytes: number;
+  readonly #renameRetry: RenameRetryOptions;
 
-  constructor(readonly stateDirectory: string, options: { readonly eventDirectory?: string; readonly maxEvents?: number; readonly maxBytes?: number } = {}) {
+  constructor(readonly stateDirectory: string, options: { readonly eventDirectory?: string; readonly maxEvents?: number; readonly maxBytes?: number; readonly renameRetry?: RenameRetryOptions } = {}) {
     if (!stateDirectory || stateDirectory.includes("\0")) throw new Error("event state directory is invalid");
     this.eventDirectory = path.resolve(options.eventDirectory ?? path.join(stateDirectory, "events"));
     this.maxEvents = boundedNumber(options.maxEvents ?? MAX_RUN_EVENT_COUNT, 1, MAX_RUN_EVENT_COUNT);
     this.maxBytes = boundedNumber(options.maxBytes ?? MAX_RUN_EVENT_BYTES, 1, MAX_RUN_EVENT_BYTES);
+    this.#renameRetry = options.renameRetry ?? {};
   }
 
   eventPath(runId: string): string {
@@ -417,7 +420,7 @@ export class JsonRunEventOutbox {
       await handle.writeFile(encodeEvents(events), "utf8");
       await handle.sync();
       await handle.close();
-      await rename(temporary, target);
+      await renameOverExistingWithRetry(temporary, target, this.#renameRetry);
       await syncDirectory(this.eventDirectory);
     } catch (error) {
       await handle.close().catch(() => undefined);
