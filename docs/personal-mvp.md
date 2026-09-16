@@ -57,7 +57,7 @@ The trusted deterministic TypeScript controller performs this sequence:
 11. Require Retro to pass without changing the clean, tested Git HEAD; Retro has no remediation loop.
 12. Export and verify the candidate branch from the sandbox.
 13. Use host-held GitHub credentials to push the deterministic branch and create or find one matching PR.
-14. Publish Retro lessons and proposed follow-ups in the PR body, then persist and print the PR URL.
+14. Publish exactly one canonical `## Knowledge` section showing the Implement disposition, summary and changed wiki paths or the no-update rationale, alongside the Retro section; then persist and print the PR URL.
 
 The first implementation supports at most one remediation cycle per Review or Test gate. Exhaustion, failed or malformed Retro output, or a dirty/stale Retro workspace stops for the owner without publication.
 
@@ -109,7 +109,7 @@ Pi returns one reduced JSON payload containing only:
 
 The adapter treats those fields as untrusted and validates their exact shape and phase semantics. It constructs the complete persisted `PhaseResult` by adding run, phase, attempt, session, and input-HEAD identity from the trusted phase launch plus the exact validated model profile used in Pi's argv. Older full-envelope responses are accepted only as compatibility echoes: every present trusted field must exactly match the adapter-owned value, and unknown fields are rejected. The controller independently reconciles the model-supplied output HEAD with the observed Git HEAD. Pi's raw JSONL session remains unchanged as audit evidence; the adapter-attested full result is the canonical workflow state.
 
-Retro must return at least one lesson; proposed follow-ups may be empty. Implement may update the committed project wiki when required by the ticket, but Retro receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace. The full public and persisted phase contract remains unchanged. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
+Retro must return at least one lesson; proposed follow-ups may be empty. Implement must also persist a closed project-wiki disposition in its details: `updated` contains unique canonical `.llm-wiki/...` paths and a concise summary, while `not_required` contains a concrete reason. The controller compares that evidence with the cumulative committed diff from the run base SHA to the Implement HEAD before allowing Review. Implement evaluates durable architecture, workflow, operational, and constraint knowledge in the target worktree only; personal/host vaults, secrets, transcripts, routine status, and unrelated material are excluded. Implement commits required wiki edits before the exact-head Review/Test/Retro gates. Any pre-existing uncommitted control-worktree wiki backlog is handled by a separate reviewed reconciliation and is never bundled into a feature PR. Retro receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace; selected Retro lessons can be incorporated by a later gated run. The full public and persisted phase contract remains unchanged apart from this required Implement disposition. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
 
 ## 6. Sandbox and credentials
 
@@ -143,7 +143,7 @@ The controller:
 3. obtains a short-lived installation token from the already configured private GitHub App;
 4. pushes only the deterministic feature branch;
 5. finds or creates one PR for the expected head/base pair;
-6. writes the phase summaries and a canonical `## Retro` section containing lesson bullets and proposed follow-ups as unchecked tasks;
+6. writes the phase summaries, exactly one canonical `## Knowledge` section containing the Implement wiki disposition and changed paths or no-update rationale, and a canonical `## Retro` section containing lesson bullets and proposed follow-ups as unchecked tasks;
 7. reconciles that section without duplication when reusing an exact existing PR;
 8. records the PR URL and discards the token.
 

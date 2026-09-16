@@ -51,7 +51,7 @@ function phaseResult(run: PersonalRunState, phase: PersonalPhase, profile: Phase
     profile,
   };
   if (phase === "plan") return { ...common, phase, details: { steps: ["make the change"] } };
-  if (phase === "implement") return { ...common, phase, details: { changes: ["made the change"] } };
+  if (phase === "implement") return { ...common, phase, details: { changes: ["made the change"], projectWiki: { status: "not_required", reason: "the ticket adds no durable project knowledge" } } };
   if (phase === "review") return { ...common, phase, details: { findings: [] } };
   if (phase === "test") return { ...common, phase, details: { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] } };
   return { ...common, phase, details: { lessons: ["keep evidence explicit"], followUps: [] } };
@@ -97,6 +97,17 @@ test("new run state persists resolved profiles and rejects profile mutation", as
     };
     validateState(roundTrippedState);
     await store.save(roundTrippedState);
+    await assert.rejects(
+      store.save({
+        ...roundTrippedState,
+        version: 3,
+        results: {
+          ...results,
+          implement: { ...(results.implement as Extract<PhaseResult, { phase: "implement" }>), details: { changes: ["made the change"] } as never },
+        },
+      }),
+      /implement details fields are invalid/,
+    );
     const savedWithResults = await store.read(state.runId);
     assert.deepEqual(savedWithResults?.profiles, roundTrippedState.profiles);
     assert.deepEqual(savedWithResults?.planSelection, roundTrippedState.planSelection);

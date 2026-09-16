@@ -3,7 +3,8 @@ import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { validateSourceRef } from "./identity.js";
 import type { CommandPort } from "./command.js";
-import type { CandidateBundle, PreparedWorkspace, WorkspacePort } from "./types.js";
+import { validateProjectWikiPaths } from "./phase-result.js";
+import type { CandidateBundle, PreparedWorkspace, ProjectWikiDiffInput, WorkspacePort } from "./types.js";
 
 export interface DockerSandboxWorkspaceOptions {
   readonly commands: CommandPort;
@@ -156,6 +157,37 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     validateName(sandbox, "sandbox");
     const status = await this.#commands.run({ command: this.#sbx, args: ["exec", sandbox, "git", "-C", "/ticket/workspace", "status", "--porcelain"] }, signal);
     if (status.stdout.trim()) throw new Error("workspace has uncommitted changes");
+  }
+
+  /**
+   * Derive only committed project-wiki paths from the target sandbox worktree.
+   * The NUL-delimited response avoids Git quoting ambiguity; no host checkout
+   * or personal/host vault is consulted by this operation.
+   */
+  async committedProjectWikiPaths(input: ProjectWikiDiffInput, signal?: AbortSignal): Promise<readonly string[]> {
+    validateName(input.sandbox, "sandbox");
+    assertSha(input.baseSha);
+    assertSha(input.head);
+    await this.assertClean(input.sandbox, signal);
+    const observed = await this.currentHead(input.sandbox, signal);
+    if (observed !== input.head) throw new Error("workspace HEAD changed before project-wiki diff");
+    const result = await this.#commands.run({
+      command: this.#sbx,
+      args: ["exec", input.sandbox, "git", "-C", "/ticket/workspace", "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "--diff-filter=ACDMRTUXB", `${input.baseSha}..${input.head}`, "--", ".llm-wiki/"],
+      timeoutMs: 120_000,
+      maxOutputBytes: 512 * 1024,
+    }, signal);
+    if (Buffer.byteLength(result.stdout, "utf8") > 512 * 1024) throw new Error("project-wiki diff is too large");
+    if (result.stdout.length === 0) return [];
+    if (!result.stdout.endsWith("\0")) throw new Error("project-wiki diff is not NUL-delimited");
+    const paths = result.stdout.slice(0, -1).split("\0");
+    if (paths.length > 1_000) throw new Error("project-wiki diff contains too many paths");
+    validateProjectWikiPaths(paths, "project-wiki diff paths");
+    return [...paths].sort();
+  }
+
+  async projectWikiDiff(input: ProjectWikiDiffInput, signal?: AbortSignal): Promise<readonly string[]> {
+    return this.committedProjectWikiPaths(input, signal);
   }
 
   async exportBundle(input: { readonly runId: string; readonly sandbox: string; readonly branch: string; readonly baseSha: string; readonly head: string }, signal?: AbortSignal): Promise<CandidateBundle> {

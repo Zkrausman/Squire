@@ -7,7 +7,7 @@ import test from "node:test";
 import type { CommandPort, CommandRequest, CommandResult } from "../src/personal/command.js";
 import { CommandGitHubTokenProvider, GitHubPublisher, type GitHubTokenProvider } from "../src/personal/github-publisher.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
-import type { PersonalPhase, PhaseResult, PublicationInput } from "../src/personal/types.js";
+import type { ImplementPhaseResult, PersonalPhase, PhaseResult, PublicationInput } from "../src/personal/types.js";
 
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
@@ -91,7 +91,7 @@ const tokens: GitHubTokenProvider = { async getToken() { return TOKEN; } };
 function result(phase: PersonalPhase): PhaseResult {
   const common = { runId: "aidev-1-run", attempt: 1, sessionId: phase, sessionFile: `/ticket/sessions/${phase}/1.jsonl`, inputHead: phase === "plan" || phase === "implement" ? BASE : HEAD, outputHead: phase === "plan" ? BASE : HEAD, status: "passed" as const, summary: `${phase} passed` };
   if (phase === "plan") return { ...common, phase, details: { steps: ["make change"] } };
-  if (phase === "implement") return { ...common, phase, details: { changes: ["made change"] } };
+  if (phase === "implement") return { ...common, phase, details: { changes: ["made change"], projectWiki: { status: "not_required", reason: "the ticket adds no durable project knowledge" } } };
   if (phase === "review") return { ...common, phase, details: { findings: [] } };
   if (phase === "test") return { ...common, phase, details: { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] } };
   return { ...common, phase, details: { lessons: ["Keep phase isolation explicit"], followUps: ["Document the next proof run"] } };
@@ -156,7 +156,10 @@ test("publisher reuses one exact existing PR without pushing or merging", async 
     assert.equal(commands.requests.some(request => request.args.includes("push")), false);
     assert.equal(commands.requests.some(request => request.args.includes("merge")), false);
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
+    assert.equal(commands.writtenBodies[0]?.match(/^## Knowledge$/gmu)?.length, 1);
     assert.equal(commands.writtenBodies[0]?.match(/^## Retro$/gmu)?.length, 1);
+    assert.match(commands.writtenBodies[0] ?? "", /- Disposition: not_required/);
+    assert.match(commands.writtenBodies[0] ?? "", /- Reason: the ticket adds no durable project knowledge/);
     assert.match(commands.writtenBodies[0] ?? "", /- Keep phase isolation explicit/);
     assert.match(commands.writtenBodies[0] ?? "", /- \[ \] Document the next proof run/);
     assertTokenScope(commands.requests);
@@ -251,6 +254,9 @@ test("publisher rejects mismatched PR identity, malformed bodies, and multiple m
         return { ...record, body: `${body.slice(retro + 1)}\n\n${body.slice(0, retro)}` };
       })],
       ["duplicate Retro sections", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\n## Retro\n\n- duplicate\n` }))],
+      ["duplicate Knowledge sections", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\n## Knowledge\n\n- Disposition: not_required\n- Reason: duplicate\n` }))],
+      ["malformed Knowledge section", new FakeCommands("fast-forward", record => ({ ...record, body: String(record["body"]).replace("\n## Retro", "\n## Knowledge\n\n- malformed\n\n## Retro") }))],
+      ["Knowledge after Retro", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\n## Knowledge\n\n- Disposition: not_required\n- Reason: misplaced\n` }))],
       ["case-insensitive duplicate Retro sections", new FakeCommands("fast-forward", record => ({ ...record, body: `${String(record["body"])}\n## retro\n\n- duplicate\n` }))],
       ["malformed response", new FakeCommands("fast-forward", record => ({ ...record, number: "7" }))],
       ["multiple matches", new FakeCommands("multiple")],
@@ -258,6 +264,67 @@ test("publisher rejects mismatched PR identity, malformed bodies, and multiple m
     for (const [name, commands] of cases) {
       await t.test(name, async () => {
         await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /unexpected identity or body|multiple matching|unexpected Squire body/);
+        assert.equal(commands.requests.some(request => request.args.includes("push")), false);
+        assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
+      });
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("publisher renders an updated Knowledge disposition with sorted committed paths", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    const original = await input(directory);
+    const implementation = original.phases.implement as ImplementPhaseResult;
+    const updated: PublicationInput = {
+      ...original,
+      phases: {
+        ...original.phases,
+        implement: {
+          ...implementation,
+          details: {
+            ...implementation.details,
+            projectWiki: {
+              status: "updated",
+              paths: [".llm-wiki/wiki/z.md", ".llm-wiki/wiki/a.md"],
+              summary: "documented the durable project knowledge",
+            },
+          },
+        },
+      },
+    };
+    const commands = new FakeCommands("create");
+    await new GitHubPublisher({ commands, tokens }).publish(updated);
+    const body = commands.writtenBodies[0] ?? "";
+    assert.equal(body.match(/^## Knowledge$/gmu)?.length, 1);
+    assert.equal(body.match(/^## Retro$/gmu)?.length, 1);
+    assert.match(body, /- Disposition: updated/);
+    assert.match(body, /- Summary: documented the durable project knowledge/);
+    assert.ok(body.indexOf(".llm-wiki/wiki/a.md") < body.indexOf(".llm-wiki/wiki/z.md"));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("publisher replaces one valid legacy Knowledge section and rejects malformed disposition evidence before mutation", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-publisher-"));
+  try {
+    await t.test("replace one valid section", async () => {
+      const commands = new FakeCommands("existing", record => ({
+        ...record,
+        body: String(record["body"]).includes("## Knowledge") ? String(record["body"]) : String(record["body"]).replace("\n## Retro", "\n## Knowledge\n\n- Disposition: not_required\n- Reason: old reason\n\n## Retro"),
+      }));
+      await new GitHubPublisher({ commands, tokens }).publish(await input(directory));
+      const body = commands.writtenBodies.at(-1) ?? "";
+      assert.equal(body.match(/^## Knowledge$/gmu)?.length, 1);
+      assert.match(body, /the ticket adds no durable project knowledge/);
+      assert.doesNotMatch(body, /old reason/);
+    });
+    for (const [name, mutate] of [
+      ["duplicate", (record: Record<string, unknown>) => ({ ...record, body: `${String(record["body"])}\n## Knowledge\n\n- Disposition: not_required\n- Reason: duplicate\n` })],
+      ["malformed", (record: Record<string, unknown>) => ({ ...record, body: String(record["body"]).replace("\n## Retro", "\n## Knowledge\n\n- malformed\n\n## Retro") })],
+    ] as const) {
+      await t.test(name, async () => {
+        const commands = new FakeCommands("fast-forward", mutate);
+        await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /unexpected Squire body/);
         assert.equal(commands.requests.some(request => request.args.includes("push")), false);
         assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
       });
