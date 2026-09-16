@@ -199,7 +199,7 @@ std::string bytesArg(napi_env env, napi_value v) {
   if (napi_get_value_string_utf8(env, v, b.data(), b.size(), &n) != napi_ok) fail("invalid bytes");
   return std::string(b.data(), n);
 }
-void write(Chain& chain, const std::string& bytes) {
+void write(Chain& chain, const std::string& bytes, napi_env env, napi_value hook) {
   // Unique temporary name, CREATE (never OPEN_IF). Rename is relative to the
   // retained directory; no pathname race or overwrite of an existing envelope.
   LARGE_INTEGER counter; QueryPerformanceCounter(&counter);
@@ -211,6 +211,11 @@ void write(Chain& chain, const std::string& bytes) {
     check(WriteFile(file->value, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr), "write bytes");
     if (written != bytes.size()) fail("short write");
     check(FlushFileBuffers(file->value), "flush bytes");
+    // Test-only synchronous seam after temporary-file pinning, before publish.
+    if (hook) {
+      napi_value receiver, ignored; napi_get_undefined(env, &receiver);
+      if (napi_call_function(env, receiver, hook, 0, nullptr, &ignored) != napi_ok) fail("publication hook failed");
+    }
     chain.verify(); chain.policy.verify(file->value, false, true);
     auto n = chain.leaf.size() * sizeof(wchar_t);
     std::vector<BYTE> buffer(sizeof(FILE_RENAME_INFO) + n);
@@ -255,7 +260,7 @@ napi_value operation(napi_env env, napi_callback_info info, int op) {
     auto chain = std::make_unique<Chain>(filePath, op != 1, repository);
     if (op == 0) {
       if (count < 3) fail("missing bytes");
-      write(*chain, bytesArg(env, args[2]));
+      write(*chain, bytesArg(env, args[2]), env, count >= 4 ? args[3] : nullptr);
     } else if (op == 1) {
       auto file = relative(chain->parent(), chain->leaf, FILE_READ_DATA, Open, false, chain->policy, true, false);
       // Explicit synchronous race-test seam, called only after native pinning.

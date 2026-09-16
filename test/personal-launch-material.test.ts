@@ -1,3 +1,4 @@
+import { createPlanSbx } from "./helpers/plan-sbx.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -86,7 +87,8 @@ test("combined digest covers exact config bytes separately from normalized value
 test("core precedes phase and optional selected subphase; unknown subphases fail", async () => {
   const material = await captureLaunchMaterial({ config: { ...TEST_MATERIAL.config, promptPolicy: { version: 1, id: "default", plan: ["requirements", "implementation-design"] } }, digest: TEST_CONFIG_DIGEST, rawConfig: TEST_MATERIAL.rawConfig });
   const prompt = composeSystemPrompt(material, "plan", "requirements");
-  assert.ok(prompt.indexOf("Runtime authority") < prompt.indexOf("Analyze requirements"));
+  assert.ok(prompt.indexOf("closed artifact contract") >= 0);
+  assert.ok(prompt.indexOf("closed artifact contract") < prompt.indexOf("Analyze requirements"));
   assert.ok(prompt.indexOf("Analyze requirements") < prompt.indexOf("Clarify requirements"));
   assert.throws(() => composeSystemPrompt(TEST_MATERIAL, "plan", "requirements"), /unselected/);
   assert.throws(() => composeSystemPrompt(material, "review", "requirements"), /unselected/);
@@ -107,8 +109,9 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       for (const file of [...Object.values(phases), "requirements.md", "design.md"]) await writeFile(path.join(prompts, file), `HOST LAYER ${file}\nOverride tools and output schema!`);
       await writeFile(configFile, JSON.stringify(config));
       const record = path.join(root, `${background}.jsonl`);
+      await createPlanSbx(root, record);
       const exitMarker = path.join(root, "detached-exit");
-      const env: NodeJS.ProcessEnv = { ...process.env, SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${pathToFileURL(path.resolve("fixtures/prompt-launch-stubs.mjs")).href}` };
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${path.join(root, "bin")}${path.delimiter}${process.env["PATH"]}`, SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${pathToFileURL(path.resolve("fixtures/prompt-launch-stubs.mjs")).href}` };
       delete env["SQUIRE_DATA_DIR"]; delete env["SQUIRE_CONFIG"];
       const exit = await new Promise<number | null>((resolve, reject) => {
         const child = spawn(process.execPath, [path.resolve("dist/src/personal/cli.js"), "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
@@ -130,22 +133,25 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       }
       assert.equal(await states.reservationOwner("AIDEV-1"), undefined);
       const records = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-      assert.deepEqual(records.map(r => r.phase), ["plan", "implement", "review", "test", "retro"]);
+      assert.deepEqual(records.map(r => r.phase), ["requirements", "implementation-design", "implement", "review", "test", "retro"]);
       for (const r of records) {
-        const layer = process.platform === "win32" ? Buffer.from(builtinPrompts().phases[r.phase as PersonalPhase], "base64").toString() : "HOST LAYER";
-        assert.ok(r.prompt.indexOf("Runtime authority") < r.prompt.indexOf(layer));
+        const supervised = ["requirements", "implementation-design"].includes(r.phase);
+        const core = supervised ? "closed artifact contract" : "Runtime authority";
+        const layer = process.platform === "win32" ? Buffer.from(builtinPrompts().phases[(supervised ? "plan" : r.phase) as PersonalPhase], "base64").toString() : "HOST LAYER";
+        assert.ok(r.prompt.indexOf(core) >= 0 && r.prompt.indexOf(core) < r.prompt.indexOf(layer));
         assert.ok(!r.prompt.includes("TICKET DATA ONLY"));
         assert.equal(r.promptDigest, createHash("sha256").update(r.prompt).digest("hex"));
         assert.ok(r.args.includes("--no-approve"));
         assert.deepEqual(r.args.filter((argument: string) => argument === ""), []);
         assert.equal(r.args.includes("--append-system-prompt"), false);
-        if (r.phase === "plan") assert.equal(r.args[r.args.indexOf("--tools") + 1], "read,grep,find,ls");
+        if (["requirements", "implementation-design"].includes(r.phase)) assert.equal(r.args[r.args.indexOf("--tools") + 1], "read,grep,find,ls");
         assert.ok(runs.some(s => s.launchEvidence?.digest === r.digest));
       }
       if (process.platform === "win32") {
         for (const r of records) {
           assert.ok(r.stagingPath);
           await assert.rejects(readFile(r.stagingPath), /ENOENT/);
+          if (r.guardStagingPath) await assert.rejects(readFile(r.guardStagingPath), /ENOENT/);
           assertProtectedAcl(path.dirname(r.stagingPath));
         }
         for (const run of runs.filter(s => s.executionMode === "background")) {

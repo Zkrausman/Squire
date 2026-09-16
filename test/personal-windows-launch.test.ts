@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fsPromises from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { link, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { renameSync } from "node:fs";
+import { link, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { readdirSync, renameSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { capturePromptSet } from "../src/personal/prompt-policy.js";
@@ -14,6 +14,7 @@ import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { NodeBackgroundLauncher } from "../src/personal/background-launcher.js";
 import { SandboxPiPhaseRunner } from "../src/personal/pi-phase-runner.js";
 import type { PersonalRunState } from "../src/personal/types.js";
+import { createPlanSbx } from "./helpers/plan-sbx.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { acl, assertProtectedAcl, grant, launchTestRoot, powershell } from "./helpers/windows-launch.js";
 
@@ -260,5 +261,64 @@ test("Windows missing native support fails with actionable error, never a path-o
     const { pathToFileURL } = await import("node:url");
     const isolated = await import(pathToFileURL(module).href) as { windowsLaunch(): unknown };
     assert.throws(() => isolated.windowsLaunch(), /requires native security support.*npm ci.*no unsafe fallback/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Windows preexisting writer handles prevent material reads and log handoff", windows, async () => {
+  const f = await fixture();
+  try {
+    const writer = await open(f.file, "r+");
+    try {
+      await assert.rejects(readLaunchMaterial(f.state, f.root), /handle-relative open rejected/);
+      assert.throws(() => windowsLaunch().openLog(f.file), /handle-relative open rejected/);
+      await f.rejected();
+    } finally { await writer.close(); }
+    assert.deepEqual(await readLaunchMaterial(f.state, f.root), TEST_MATERIAL);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("Windows publication pinning and log leases reject replacement without overwriting captures", windows, async () => {
+  const root = await launchTestRoot("squire-publication-race-");
+  try {
+    const native = createRequire(import.meta.url)("../../build/Release/windows_launch.node") as { persist(file: string, repository: string, bytes: string, hook: () => void): void };
+    const directory = path.join(root, "material"), file = path.join(directory, "capture.json");
+    native.persist(file, "", "original", () => {
+      const temp = readdirSync(directory).find(name => name.endsWith(".tmp"))!;
+      assert.ok(temp);
+      for (const source of [path.join(directory, temp), directory, root]) assert.throws(() => renameSync(source, `${source}-replaced`), /EPERM|EBUSY|EACCES/);
+    });
+    assert.equal(await readFile(file, "utf8"), "original");
+    const collision = path.join(directory, "collision.json");
+    assert.throws(() => native.persist(collision, "", "must-not-overwrite", () => windowsLaunch().persist(collision, "", "competing-object")), /publish immutable bytes/);
+    assert.equal(await readFile(collision, "utf8"), "competing-object");
+    assert.ok(readdirSync(directory).every(name => !name.endsWith(".tmp")), "failed publication removes only its temporary object");
+    const log = path.join(root, "logs", "out.log"), fd = windowsLaunch().openLog(log);
+    try {
+      for (const source of [log, path.dirname(log), root]) assert.throws(() => renameSync(source, `${source}-replaced`), /EPERM|EBUSY|EACCES/);
+    } finally { windowsLaunch().closeLog(fd); }
+    await rename(log, `${log}-closed`);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Windows rejects actual alternate file ownership when fixture-owner privilege is available", windows, async t => {
+  const f = await fixture();
+  try {
+    const changed = powershell(`try { $a=Get-Acl -LiteralPath $p[0]; $a.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')); Set-Acl -LiteralPath $p[0] -AclObject $a; 'changed' } catch [System.UnauthorizedAccessException] { 'unavailable' }`, f.file);
+    if (changed === "unavailable") { t.skip("fixture owner reassignment privilege unavailable; no host privilege/ACL changes attempted"); return; }
+    assert.equal(changed, "changed"); assert.equal(acl(f.file).owner, "S-1-5-32-545");
+    await assert.rejects(readLaunchMaterial(f.state, f.root), /unsafe owner/);
+    await f.rejected();
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("Windows test transport shim roundtrips argv, std handles and exit status without a shell", windows, async () => {
+  const root = await launchTestRoot("squire-shim-argv-");
+  try {
+    const executable = await createPlanSbx(root, path.join(root, "unused-record"));
+    const args = ["", "with spaces", 'a"quote', "trailing\\", "space and trailing\\", "\\\\", "line\nbreak", "Ω"];
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync(executable, ["--argv-probe", ...args], { encoding: "utf8", timeout: 10_000, shell: false });
+    assert.equal(result.error, undefined); assert.equal(result.status, 17);
+    assert.equal(result.stderr, "shim-stderr"); assert.deepEqual(JSON.parse(result.stdout), args);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

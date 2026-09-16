@@ -132,6 +132,9 @@ try {
   await expectValidatorRejects(insertFalseCondition(workflow, "Run Windows launch capture regression"), "disabled Windows launch regression");
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-launch.test.js ", ""), "missing native Windows security tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js ", ""), "missing actual captured-material CLI regression");
+  await expectValidatorRejects(workflow.replace('          - "20.17.0"', '          - "20"'), "missing exact minimum Node version");
+  await expectValidatorRejects(workflow.replace('          - "22.9.0"', '          - "22"'), "missing exact minimum Node 22 version");
+  await expectValidatorRejects(workflow.replace(" dist/test/personal-plan-supervisor.test.js", ""), "missing supervised Plan regression");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", ["echo runtime provisioning", "# npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund"]), "comment-substituted provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", [...provisionCommands.slice(0, 3), "set +e", provisionCommands[3], "echo runtime install completed"]), "status-masked provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Validate ticket runtime", ["echo lstatSync", "echo pi-tui/package.json", "echo 0.84.4"]), "substituted runtime validation");

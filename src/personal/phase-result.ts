@@ -1,3 +1,4 @@
+import { validatePlanEvidence } from "./plan-artifacts.js";
 import { PERSONAL_PHASES, type PersonalPhase, type PhaseResult, type PhaseStatus, type ProjectWikiDisposition, type TestCommandEvidence } from "./types.js";
 import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
 
@@ -44,6 +45,8 @@ export function validatePhaseResultShape(value: unknown, expectedPhase?: Persona
 /** Validate only model-owned output while allowing exact trusted-envelope echoes. */
 export function validatePhaseResultPayloadShape(value: unknown, expectedPhase: PersonalPhase): asserts value is PhaseResultPayload {
   const result = requiredWithOptionalObject(value, PAYLOAD_KEYS, TRUSTED_ECHO_KEYS, "phase result payload");
+  // Nested supervision is deterministic evidence, never model-owned output.
+  if (expectedPhase === "plan") exactObject(result["details"], ["steps"], "legacy Plan payload details");
   validateUntrustedResultFields(result, expectedPhase);
   if (result["profile"] !== undefined) validatePhaseProfile(result["profile"], `${expectedPhase} result profile`);
 }
@@ -53,15 +56,18 @@ function validateUntrustedResultFields(result: Record<string, unknown>, phase: P
   if (typeof result["status"] !== "string" || !STATUSES.includes(result["status"] as (typeof STATUSES)[number])) throw new Error("phase result status is invalid");
   if (!nonempty(result["summary"], 8_000)) throw new Error("phase result summary is invalid");
 
-  const details = phase === "implement" && options.allowLegacyImplementProjectWiki
+  const details = phase === "plan"
+    ? requiredWithOptionalObject(result["details"], ["steps"], ["supervision"], "plan details")
+    : phase === "implement" && options.allowLegacyImplementProjectWiki
     ? implementDetailsAllowingLegacyProjectWiki(result["details"])
     : exactObject(
       result["details"],
-      phase === "plan" ? ["steps"] : phase === "implement" ? ["changes", "projectWiki"] : phase === "review" ? ["findings"] : phase === "test" ? ["commands"] : ["lessons", "followUps"],
+      phase === "implement" ? ["changes", "projectWiki"] : phase === "review" ? ["findings"] : phase === "test" ? ["commands"] : ["lessons", "followUps"],
       `${phase} details`,
     );
   if (phase === "plan") {
     stringList(details["steps"], "Plan steps", true);
+    if (details["supervision"] !== undefined) validatePlanEvidence(details["supervision"], { sessionId: result["sessionId"], inputHead: result["inputHead"], profile: result["profile"], status: result["status"], attempt: result["attempt"] }, details["steps"]);
     if (result["status"] === "remediation_required") throw new Error("Plan cannot request remediation");
   } else if (phase === "implement") {
     stringList(details["changes"], "Implement changes", true);

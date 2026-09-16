@@ -6,5 +6,9 @@
     "msvs_settings": {
       "VCCLCompilerTool": { "ExceptionHandling": 1 }
     }
+  }, {
+    "target_name": "windows_plan_sbx",
+    "type": "executable",
+    "sources": ["test/native/windows-plan-sbx.cc"]
   }]
 }

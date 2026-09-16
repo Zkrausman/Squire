@@ -1,5 +1,7 @@
+import { validatePlanProgress } from "./plan-artifacts.js";
+import { validateExecutablePlan } from "./prompt-policy.js";
 import { createHash, randomUUID } from "node:crypto";
-import { canonical, launchEvidence, persistLaunchMaterial, readLaunchMaterial, validateLaunchMaterial, type LaunchMaterial, type LaunchEvidence } from "./launch-material.js";
+import { canonical, composeSystemPrompt, launchEvidence, persistLaunchMaterial, readLaunchMaterial, validateLaunchMaterial, type LaunchMaterial, type LaunchEvidence } from "./launch-material.js";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -126,6 +128,7 @@ export class PersonalMvpController {
 
   constructor(options: PersonalMvpControllerOptions) {
     this.#material = options.launchMaterial === undefined ? undefined : validateLaunchMaterial(options.launchMaterial);
+    if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
     this.#tickets = options.tickets;
     this.#workspaces = options.workspaces;
     this.#phases = options.phases;
@@ -455,7 +458,7 @@ export class PersonalMvpController {
   ): Promise<PhaseResult> {
     const expectedHead = requireHead(context.state);
     const attempt = context.state.attempts[phase] + 1;
-    await context.persist({ step: phase, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
+    await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
     const expectedProfile = Object.freeze({ ...resolvedProfile(context.state, phase) });
     const input: PhaseInput = Object.freeze({
       runId: context.state.runId,
@@ -482,11 +485,27 @@ export class PersonalMvpController {
     let result: PhaseResult | undefined;
     let phaseFailed = false;
     let phaseError: unknown;
+    let acceptingProgress = true;
+    let progressWrites = Promise.resolve();
+    let progressCount = 0;
     try {
-      result = await this.#phases.run(input, signal);
+      result = await this.#phases.run(input, signal, progress => {
+        validatePlanProgress(progress);
+        const snapshot = structuredClone(progress);
+        if (!acceptingProgress || phase !== "plan" || context.state.planExecution !== "supervised-v1" || snapshot.runId !== input.runId || snapshot.attempt !== attempt || snapshot.subphase !== ["requirements", "implementation-design"][progressCount]) return Promise.reject(new Error("stale or unordered Plan progress"));
+        progressCount++;
+        progressWrites = progressWrites.then(async () => {
+          if (context.state.status !== "running" || context.state.step !== "plan" || context.state.attempts.plan !== attempt) throw new Error("late Plan progress");
+          await context.persist({ planProgress: snapshot });
+        });
+        return progressWrites;
+      });
     } catch (error) {
       phaseFailed = true;
       phaseError = error;
+    } finally {
+      acceptingProgress = false;
+      try { await progressWrites; } catch (error) { phaseFailed = true; phaseError = error; }
     }
     let observedHead: string | undefined;
     let workspaceFailed = false;
@@ -509,7 +528,17 @@ export class PersonalMvpController {
       ? { ...structuredClone(result), profile: { ...expectedProfile } }
       : structuredClone(result);
     validatePhaseResult(evidencedResult, input, observedHead);
-    if (evidencedResult.status === "failed") throw new Error(`${phase} failed: ${evidencedResult.summary}`);
+    if (phase === "plan" && context.state.launchEvidence?.planSubphases.length) {
+      if (evidencedResult.phase !== "plan" || !evidencedResult.details.supervision || evidencedResult.details.supervision.launchDigest !== context.state.launchEvidence.digest) throw new Error("supervised Plan evidence required");
+      for (const child of evidencedResult.details.supervision.children) {
+        if (!this.#material || child.promptDigest !== createHash("sha256").update(composeSystemPrompt(this.#material, "plan", child.subphase)).digest("hex")) throw new Error("supervised Plan prompt binding mismatch");
+      }
+      if (evidencedResult.details.supervision.children.length > progressCount) throw new Error("supervised Plan progress evidence missing");
+    }
+    if (evidencedResult.status === "failed") {
+      if (evidencedResult.phase === "plan" && evidencedResult.details.supervision) await context.persist({ results: { ...context.state.results, plan: evidencedResult }, sessions: { ...context.state.sessions, plan: evidencedResult.sessionId } });
+      throw new Error(`${phase} failed: ${evidencedResult.summary}`);
+    }
     if (phase === "implement" && evidencedResult.status !== "passed") throw new Error("Implement must return passed or failed");
     if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
     if (phase === "implement") await this.#reconcileProjectWikiDisposition(context, evidencedResult as ImplementPhaseResult, observedHead, signal);
@@ -707,6 +736,7 @@ function initialState(
     ...(metadata.launchConfigPath !== undefined ? { launchConfigPath: metadata.launchConfigPath } : {}),
     ...(metadata.launchConfigDigest !== undefined ? { launchConfigDigest: metadata.launchConfigDigest } : {}),
     ...(metadata.launchEvidence !== undefined ? { launchEvidence: metadata.launchEvidence } : {}),
+    ...(metadata.launchEvidence?.planSubphases.length ? { planExecution: "supervised-v1" as const } : {}),
     sandbox,
     repository: request.repository,
     baseBranch: request.baseBranch,

@@ -294,13 +294,13 @@ assert.equal(filesystemTests.run, "node --test dist/test/personal-run-events.tes
 
 const windowsLaunchJob = document.jobs["windows-launch-capture"];
 assert.deepEqual(windowsLaunchJob, {
-  name: "windows-launch-capture", "runs-on": "windows-latest", "timeout-minutes": "15",
+  name: "windows-launch-capture", strategy: { matrix: { node: ["20.17.0", "22.9.0", "24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
   steps: [
     { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
-    { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "24", cache: "npm", "cache-dependency-path": "package-lock.json" } },
-    { name: "Install dependencies", run: "npm ci" },
+    { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "${{ matrix.node }}", cache: "npm", "cache-dependency-path": "package-lock.json" } },
+    { name: "Install dependencies", run: "npm ci --engine-strict" },
     { name: "Build", run: "npm run build" },
-    { name: "Run Windows launch capture regression", "timeout-minutes": "5", run: "node --test --test-timeout=120000 dist/test/personal-windows-launch.test.js dist/test/personal-launch-material.test.js dist/test/personal-background-status.test.js" },
+    { name: "Run Windows launch capture regression", "timeout-minutes": "5", run: "node --test --test-timeout=120000 dist/test/personal-windows-launch.test.js dist/test/personal-launch-material.test.js dist/test/personal-background-status.test.js dist/test/personal-plan-supervisor.test.js" },
   ],
 }, "Windows launch native build and real filesystem/CLI gates must remain bounded and unconditional");
 
