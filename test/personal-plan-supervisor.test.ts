@@ -94,6 +94,11 @@ test("supervisor host environment omits missing HOME and uses platform PATH defa
   assert.deepEqual(Object.keys(environment), ["PATH"]);
 });
 
+test("supervisor host environment omits empty HOME but preserves empty PATH", () => {
+  assert.deepEqual(supervisorEnvironment({ HOME: "", PATH: "" }, "linux"), { PATH: "" });
+  assert.deepEqual(supervisorEnvironment({ hOmE: "", pAtH: "" }, "win32"), { PATH: "" });
+});
+
 test("supervisor host environment omits missing Windows variables", () => {
   const environment = supervisorEnvironment({ pAtH: "C:\\\\Windows\\\\System32", hOmE: "C:\\\\Users\\\\runner" }, "win32");
   assert.deepEqual(environment, { PATH: "C:\\\\Windows\\\\System32", HOME: "C:\\\\Users\\\\runner" });

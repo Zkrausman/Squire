@@ -20,7 +20,7 @@ export function supervisorEnvironment(source: NodeJS.ProcessEnv = process.env, p
   const environment: NodeJS.ProcessEnv = {};
   for (const name of names) {
     const key = platform === "win32" ? Object.keys(source).find(candidate => candidate.toUpperCase() === name) : name;
-    if (key && source[key] !== undefined) environment[name] = source[key];
+    if (key && source[key] !== undefined && (name !== "HOME" || source[key])) environment[name] = source[key];
   }
   if (environment["PATH"] === undefined) environment["PATH"] = platform === "win32" ? "C:\\Windows\\System32" : "/usr/local/bin:/usr/bin:/bin";
   return environment;
