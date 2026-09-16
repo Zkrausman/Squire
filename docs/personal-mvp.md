@@ -188,6 +188,31 @@ Material publication flushes a protected temporary file then renames by retained
 
 `windows-launch-capture` CI builds the addon and runs bounded real Windows ACL/reparse/hardlink/replacement tests plus actual foreground/detached CLI bootstrap with controlled service/model stubs. Its version matrix does not fail fast, so one failure cannot cancel evidence for the other supported versions. Test ACL probes invoke Windows PowerShell by its explicit SystemRoot system path and import only its system Utility/Security modules, not inherited executable/module search paths: a parent `pwsh` can otherwise make Windows PowerShell 5 load incompatible PowerShell 7 modules. This test-harness isolation does not change production transport environment policy. It checks all six captured calls (Requirements, Design, Implement, Review, Test, Retro), prompts/digests, protected logs/staging, cleanup and fail-closed pre-claim behavior. These tests do not fund model calls or activate a live sandbox. Linux full CI retains the POSIX prompt race/launch checks; repository CI and independent review remain required before publication.
 
+### Detached fixture closure and unresolved Windows lifecycle evidence
+
+`NodeBackgroundLauncher` closes the **parent's** log descriptors after spawn confirmation. The detached child still owns inherited descriptors 1 and 2. Neither launch return, launcher-parent exit, nor a completion marker written by the child establishes their closure. The former delay/marker fixtures allowed deletion before that boundary.
+
+The detached regression fixtures now use a token-bound loopback control connection: synchronous inherited-log writes → `ready` with child PID → held barrier → `release` → explicit closure of both descriptors → `logs-closed`. No fixture filesystem access follows the acknowledgment. Both real-detached tests preserve stdout/stderr contents and prove the child is barrier-held after handoff (or after its short-lived launcher parent exits). Native Windows tests must demonstrate that unlink of each held log fails with a sharing/access error, then that both unlinks succeed after acknowledgment, without retries. Linux checks the handshake and output, not Windows sharing semantics.
+
+The fixture helper registers owned process handles before assertions. Assertion-failure teardown releases the same barrier; disconnect closes child logs and terminates the fixture. Teardown requires acknowledgment or an observed **directly owned child** termination before removing the root, and reaps owned handles. Missing closure evidence fails with sanitized ownership/PID diagnostics and retains the root; a timeout or launcher-parent exit cannot authorize deletion. Descriptor closure is narrower than detached-process termination, and neither establishes sandbox-wide quiescence.
+
+AIDEV-285 tracks three separate dispositions (supplied Windows evidence, not Linux reproduction):
+
+- **Detached cleanup EBUSY:** PR30 run `35150136413` (Node 20.17.0) and PR31 run `35152639377` (Node 22.9.0/24) failed unlinking the exact fixture's `stderr.log`. Marker-before-closure is the concrete hypothesis addressed here; native held-open/closed causal proof remains a pre-merge gate, not something passing Linux reruns establish.
+- **Terminal rename EPERM:** historical PR30 credential/bootstrap failure exhausted 50/100/200 ms retries and left durable `running` state. Its OS cause remains unexplained. Terminal-only fault injection now characterizes both failed and interrupted transitions: four attempts, the same delays, original error preserved, persistence diagnostic surfaced, durable running record unchanged, and reservation retained. This is not a persistence fix or evidence implicating custom-source capture.
+- **Historical cancellation:** the separate running-versus-interrupted observation remains unresolved; detail is unknown. Successful interrupted/lifecycle/endedAt regressions remain, separately from injected persistence exhaustion.
+
+Bounded local validation (no paid model fixtures):
+
+```sh
+npm run build
+node --test --test-name-pattern="real detached child|short-lived launcher parent|descriptor|fixture.*cleanup|terminal-only EPERM" dist/test/personal-background-status.test.js
+node --test dist/test/personal-background-status.test.js dist/test/atomic-rename.test.js dist/test/personal-json-run-state.test.js dist/test/personal-controller.test.js dist/test/personal-windows-launch.test.js
+npm test
+```
+
+Normal Linux Implement/Review/Test/Retro and PR publication may proceed for this scoped fixture correction. Before owner-authorized merge, require exact-head independent review plus causal native Windows proof and green supported Node **20.17.0, 22.9.0, and 24** checks, dispositioning every failure. Windows validation is pending; PR30 remains independently blocked by unexplained EPERM and the issue remains open for persistence/cancellation residuals. No Node24-only policy, merge, or activation is authorized. Preserve PR30's candidate/worktree/configuration and external failure artifacts; never commit/upload raw ETW or decoded OS metadata, only sanitized exact-fixture evidence.
+
 ## 7. Sandbox and credentials
 
 Protect now:
