@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { captureLaunchMaterial, composeSystemPrompt } from "../src/personal/launch-material.js";
 import { supervisePlan, REMOTE_GUARD } from "../src/personal/plan-supervisor.js";
-import { PlanSupervisorRunner } from "../src/personal/plan-supervisor-runner.js";
+import { PlanSupervisorRunner, supervisorEnvironment } from "../src/personal/plan-supervisor-runner.js";
 import { validateExecutablePlan } from "../src/personal/prompt-policy.js";
 import { digestArtifact, validateRequirements, validateDesign, type RequirementsArtifact } from "../src/personal/plan-artifacts.js";
 import { validatePhaseResultShape } from "../src/personal/phase-result.js";
@@ -57,6 +57,52 @@ async function fixture(fn: (root: string, commands: Commands) => Promise<void>) 
 }
 const options = (root: string) => ({ stagingRoot: root, launchMaterial: material, testCommands: ["npm test"] });
 const run = (root: string, commands: Commands, abort = new AbortController()) => supervisePlan(input, options(root), commands, abort.signal, async () => {});
+
+test("supervisor host environment is a normalized OS allowlist on Windows", () => {
+  const environment = supervisorEnvironment({
+    Path: "C:\\\\Windows\\\\System32",
+    hOmE: "C:\\\\Users\\\\runner",
+    LocalAppData: "C:\\\\Users\\\\runner\\\\AppData\\\\Local",
+    SYSTEMROOT: "C:\\\\Windows",
+    windir: "C:\\\\Windows",
+    UserProfile: "C:\\\\Users\\\\runner",
+    TEMP: "C:\\\\Users\\\\runner\\\\AppData\\\\Local\\\\Temp",
+    Tmp: "C:\\\\Users\\\\runner\\\\AppData\\\\Local\\\\Temp",
+    LINEAR_API_KEY: "must-not-cross",
+    GITHUB_TOKEN: "must-not-cross",
+    NODE_OPTIONS: "--require=evil"
+  }, "win32");
+  assert.deepEqual(Object.keys(environment).sort(), ["HOME", "LOCALAPPDATA", "PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR"].sort());
+  assert.equal(environment["PATH"], "C:\\\\Windows\\\\System32");
+  assert.equal(environment["LOCALAPPDATA"], "C:\\\\Users\\\\runner\\\\AppData\\\\Local");
+  assert.equal(environment["NODE_OPTIONS"], undefined);
+  assert.equal(environment["LINEAR_API_KEY"], undefined);
+});
+
+test("supervisor host environment preserves exact Linux PATH and HOME casing", () => {
+  const environment = supervisorEnvironment({ path: "/wrong", home: "/wrong-home", PATH: "/usr/bin", HOME: "/home/runner", NODE_OPTIONS: "--require=evil" }, "linux");
+  assert.equal(environment["PATH"], "/usr/bin");
+  assert.equal(environment["HOME"], "/home/runner");
+  assert.equal(environment["path"], undefined);
+  assert.equal(environment["home"], undefined);
+});
+
+test("supervisor host environment omits missing HOME and uses platform PATH default", () => {
+  const environment = supervisorEnvironment({ path: "/wrong" }, "linux");
+  assert.equal(environment["HOME"], undefined);
+  assert.equal(environment["PATH"], "/usr/local/bin:/usr/bin:/bin");
+  assert.deepEqual(Object.keys(environment), ["PATH"]);
+});
+
+test("supervisor host environment omits empty HOME but preserves empty PATH", () => {
+  assert.deepEqual(supervisorEnvironment({ HOME: "", PATH: "" }, "linux"), { PATH: "" });
+  assert.deepEqual(supervisorEnvironment({ hOmE: "", pAtH: "" }, "win32"), { PATH: "" });
+});
+
+test("supervisor host environment omits missing Windows variables", () => {
+  const environment = supervisorEnvironment({ pAtH: "C:\\\\Windows\\\\System32", hOmE: "C:\\\\Users\\\\runner" }, "win32");
+  assert.deepEqual(environment, { PATH: "C:\\\\Windows\\\\System32", HOME: "C:\\\\Users\\\\runner" });
+});
 
 test("only legacy empty or dependency-valid complete Plan selections execute", () => {
   validateExecutablePlan([]); validateExecutablePlan(["requirements", "implementation-design"]);
@@ -189,7 +235,9 @@ test("real adapter forks one credential-free supervisor; only that supervisor in
   assert.equal(launches.length, 2);
   assert.equal(launches[0].supervisorPid, launches[1].supervisorPid);
   assert.notEqual(launches[0].supervisorPid, process.pid);
-  assert.deepEqual(launches[0].envKeys.sort(), ["HOME", "PATH"].sort());
+  const expectedHostKeys = ["HOME", "PATH"];
+  if (process.platform === "win32") expectedHostKeys.push(...["LOCALAPPDATA", "SYSTEMROOT", "WINDIR", "USERPROFILE", "TEMP", "TMP"]);
+  assert.deepEqual(launches[0].envKeys.sort(), expectedHostKeys.sort());
   assert.equal(launches[0].prompt, composeSystemPrompt(material, "plan", "requirements"));
 }));
 

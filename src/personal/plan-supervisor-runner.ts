@@ -7,6 +7,25 @@ import { validateExecutablePlan } from "./prompt-policy.js";
 import type { PlanSupervisorOptions } from "./plan-supervisor.js";
 import type { PhaseInput, PhasePort, PhaseResult } from "./types.js";
 
+const WINDOWS_OS_ENVIRONMENT = ["LOCALAPPDATA", "SYSTEMROOT", "WINDIR", "USERPROFILE", "TEMP", "TMP"] as const;
+
+/**
+ * Build the supervisor's transport-only host environment. Windows native sbx
+ * needs a few OS locations for settingskit, but no inherited credentials or
+ * process overrides may cross this boundary. Keys are normalized because the
+ * Windows environment is case-insensitive (and Node can expose its spelling).
+ */
+export function supervisorEnvironment(source: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const names = ["PATH", "HOME", ...(platform === "win32" ? WINDOWS_OS_ENVIRONMENT : [])];
+  const environment: NodeJS.ProcessEnv = {};
+  for (const name of names) {
+    const key = platform === "win32" ? Object.keys(source).find(candidate => candidate.toUpperCase() === name) : name;
+    if (key && source[key] !== undefined && (name !== "HOME" || source[key])) environment[name] = source[key];
+  }
+  if (environment["PATH"] === undefined) environment["PATH"] = platform === "win32" ? "C:\\Windows\\System32" : "/usr/local/bin:/usr/bin:/bin";
+  return environment;
+}
+
 /** The controller sees one child process and one lifecycle/timeout boundary. */
 export class PlanSupervisorRunner implements PhasePort {
   readonly #options: PlanSupervisorOptions;
@@ -23,7 +42,7 @@ export class PlanSupervisorRunner implements PhasePort {
     return new Promise<PhaseResult>((resolve, reject) => {
       // Deliberate allowlist: no Linear/GitHub/provider secrets or state directory
       // environment. Provider credentials remain the sandbox's existing bridge.
-      const child = fork(new URL("./plan-supervisor-process.js", import.meta.url), [], { env: { PATH: process.env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin", ...(process.env["HOME"] ? { HOME: process.env["HOME"] } : {}) }, execArgv: [], stdio: ["ignore", "ignore", "ignore", "ipc"] });
+      const child = fork(new URL("./plan-supervisor-process.js", import.meta.url), [], { env: supervisorEnvironment(), execArgv: [], stdio: ["ignore", "ignore", "ignore", "ipc"] });
       let result: PhaseResult | undefined;
       let failure: Error | undefined;
       let cancelled = false;
