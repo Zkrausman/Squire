@@ -1,3 +1,5 @@
+import { STAGED_REASONS, STAGED_CLASSIFICATIONS, type StagedTransition } from "./staged-attempts.js";
+import { validatePhaseProfile } from "./model-policy.js";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, open, readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -13,6 +15,8 @@ export const MAX_RUN_EVENT_BYTES = 64 * 1024;
 export const RUN_EVENT_TYPES = [
   "run_reserved",
   "run_started",
+  "staged_reserved",
+  "staged_closed",
   "phase_started",
   "phase_completed",
   "remediation_requested",
@@ -49,6 +53,7 @@ export interface RunEvent {
   readonly phase?: PersonalPhase;
   readonly attempt?: number;
   readonly outcome?: RunEventOutcome;
+  readonly staged?: Omit<StagedTransition, "result">;
 }
 
 interface EventFields {
@@ -60,6 +65,7 @@ interface EventFields {
   readonly phase?: PersonalPhase;
   readonly attempt?: number;
   readonly outcome?: RunEventOutcome;
+  readonly staged?: Omit<StagedTransition, "result">;
 }
 
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{7,127}$/u;
@@ -80,6 +86,7 @@ export function createRunEvent(fields: EventFields): RunEvent {
     ...(fields.phase === undefined ? {} : { phase: fields.phase }),
     ...(fields.attempt === undefined ? {} : { attempt: fields.attempt }),
     ...(fields.outcome === undefined ? {} : { outcome: fields.outcome }),
+    ...(fields.staged === undefined ? {} : { staged: fields.staged }),
   };
   validateRunEvent(event);
   return event;
@@ -105,7 +112,7 @@ export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "typ
 export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("run event must be an object");
   const object = value as Record<string, unknown>;
-  const allowed = ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type", "phase", "attempt", "outcome"];
+  const allowed = ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type", "phase", "attempt", "outcome", "staged"];
   if (Object.keys(object).some(key => !allowed.includes(key))) throw new Error("run event fields are invalid");
   for (const key of ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type"] as const) {
     if (!Object.prototype.hasOwnProperty.call(object, key)) throw new Error("run event fields are incomplete");
@@ -121,6 +128,15 @@ export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (object["attempt"] !== undefined && (!Number.isSafeInteger(object["attempt"]) || (object["attempt"] as number) < 1 || (object["attempt"] as number) > 1_000_000)) throw new Error("run event attempt is invalid");
   if (object["outcome"] !== undefined && (typeof object["outcome"] !== "string" || !RUN_EVENT_OUTCOMES.includes(object["outcome"] as RunEventOutcome))) throw new Error("run event outcome is invalid");
   const typed = object["type"] as RunEventType;
+  if (typed === "staged_reserved" || typed === "staged_closed") {
+    const t = object["staged"] as Omit<StagedTransition, "result"> | undefined;
+    if (!t || typeof t !== "object" || Object.keys(t).some(k => !["phase", "attempt", "stageIndex", "stageAttempt", "stageMaximum", "consumed", "remaining", "profile", "policyDigest", "kind", "reason", "classification"].includes(k))) throw new Error("invalid staged event fields");
+    if (t.phase !== object["phase"] || t.attempt !== object["attempt"] || t.kind !== (typed === "staged_reserved" ? "reserved" : "closed") || !STAGED_REASONS.includes(t.reason) || !SHA256_PATTERN.test(t.policyDigest)) throw new Error("invalid staged event identity");
+    for (const [n, min, max] of [[t.stageIndex, 0, 7], [t.stageAttempt, 1, 16], [t.stageMaximum, 1, 16], [t.consumed, 1, 32], [t.remaining, 0, 31]]) if (!Number.isSafeInteger(n) || n! < min! || n! > max!) throw new Error("invalid staged event counts");
+    if (t.consumed !== t.attempt || t.consumed + t.remaining > 32 || t.stageAttempt > t.stageMaximum || (t.kind === "closed" ? !STAGED_CLASSIFICATIONS.includes(t.classification!) : t.classification !== undefined)) throw new Error("invalid staged event outcome");
+    validatePhaseProfile(t.profile);
+    if (t.profile.provider.length > 256 || t.profile.model.length > 256) throw new Error("oversized staged event profile");
+  } else if (object["staged"] !== undefined) throw new Error("unexpected staged evidence");
   if (["phase_started", "phase_completed", "remediation_requested", "attention_required"].includes(typed) && object["phase"] === undefined) throw new Error("phase event requires a phase");
   if (["phase_started", "phase_completed", "attention_required", "remediation_requested"].includes(typed) && object["attempt"] === undefined) throw new Error("phase event requires an attempt");
   const expected = eventIdFor({
@@ -144,7 +160,7 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
     type,
     ...extra,
   });
-  const events: RunEvent[] = [];
+  const events: RunEvent[] = stagedEvents(next, previous?.stagedTransitions?.length ?? 0);
 
   if (previous === undefined) {
     if (next.executionMode === "background" && next.launchState !== undefined) {
@@ -220,7 +236,7 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
     type,
     ...extra,
   });
-  const events: RunEvent[] = [];
+  const events: RunEvent[] = stagedEvents(state);
 
   // A failed reserved background launch committed no reserved->started
   // transition. It still has durable reservation evidence, but must never be
@@ -287,6 +303,10 @@ function reconciliationAttempts(count: number, required: readonly number[] = [])
 }
 
 function reconciledPhaseOutcome(state: PersonalRunState, phase: PersonalPhase, attempt: number): RunEventOutcome | undefined {
+  if (state.escalationPolicy?.[phase]) {
+    const t = state.stagedTransitions?.find(t => t.phase === phase && t.attempt === attempt && t.kind === "closed");
+    return t?.result?.status;
+  }
   const result = state.results[phase];
   if (result?.attempt === attempt) return result.status;
 
@@ -485,4 +505,11 @@ function boundedNumber(value: number, minimum: number, maximum: number): number 
 // untrusted selector data without ever accepting arbitrary event-key strings.
 export function validateEventKey(value: string): void {
   if (!EVENT_KEY_PATTERN.test(value)) throw new Error("run event key is invalid");
+}
+
+function stagedEvents(state: PersonalRunState, offset = 0): RunEvent[] {
+  return (state.stagedTransitions ?? []).slice(offset).map(({ result: _result, ...staged }) => createRunEvent({
+    runId: state.runId, ticketId: state.ticketId, stateRevision: state.version, timestamp: state.updatedAt,
+    type: staged.kind === "reserved" ? "staged_reserved" : "staged_closed", phase: staged.phase, attempt: staged.attempt, staged,
+  }));
 }

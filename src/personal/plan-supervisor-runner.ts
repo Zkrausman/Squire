@@ -1,3 +1,4 @@
+import { EXECUTION_FAILURES, PhaseExecutionError, type ExecutionFailure } from "./execution-failure.js";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
 import { canonical, composeSystemPrompt, validateLaunchMaterial } from "./launch-material.js";
@@ -56,11 +57,11 @@ export class PlanSupervisorRunner implements PhasePort {
         if (child.connected) child.send({ type: "cancel" });
         // Only kill our immediate supervisor, never its sbx/Pi children. An
         // unobserved cleanup is a hard failure, not proof of remote termination.
-        reap = setTimeout(() => { failure = new Error("Plan supervisor cleanup/exit unobserved"); child.kill("SIGKILL"); }, 90000);
+        reap = setTimeout(() => { failure = new PhaseExecutionError("infrastructure", "Plan supervisor cleanup/exit unobserved"); child.kill("SIGKILL"); }, 90000);
       };
-      const interrupt = () => cancel(new Error("Plan interrupted"));
+      const interrupt = () => cancel(new PhaseExecutionError("cancelled", "Plan interrupted"));
       signal?.addEventListener("abort", interrupt, { once: true });
-      const deadline = setTimeout(() => cancel(new Error("Plan deadline exceeded")), this.#options.timeoutMs ?? 3600000);
+      const deadline = setTimeout(() => cancel(new PhaseExecutionError("timeout", "Plan deadline exceeded")), this.#options.timeoutMs ?? 3600000);
       child.on("message", (message: unknown) => {
         events = events.then(async () => {
           if (Buffer.byteLength(JSON.stringify(message)) > 2 * 1024 * 1024) throw new Error("oversized supervisor message");
@@ -85,15 +86,16 @@ export class PlanSupervisorRunner implements PhasePort {
             if (r.details.supervision.children.length > received) throw new Error("missing supervisor progress");
             result = r;
           } else {
-            const v = closed(message, ["type", "message"], "supervisor error");
+            const v = closed(message, ["type", "message", "classification"], "supervisor error");
             if (type !== "error" || typeof v["message"] !== "string" || v["message"].length > 8000) throw new Error("invalid supervisor message");
-            throw new Error(v["message"]);
+            if (!(EXECUTION_FAILURES as readonly unknown[]).includes(v["classification"])) throw new PhaseExecutionError("protocol", "invalid supervisor error classification");
+            throw new PhaseExecutionError(v["classification"] as ExecutionFailure, v["message"]);
           }
-        }).catch(error => cancel(error instanceof Error ? error : new Error(String(error))));
+        }).catch(error => cancel(error instanceof PhaseExecutionError ? error : new PhaseExecutionError("protocol", String(error), { cause: error })));
       });
-      child.once("error", error => cancel(error));
+      child.once("error", error => cancel(new PhaseExecutionError("infrastructure", error.message, { cause: error })));
       child.once("exit", (code, exitSignal) => {
-        if (code !== 0 || exitSignal) failure ??= new Error("Plan supervisor exited unsuccessfully");
+        if (code !== 0 || exitSignal) failure ??= new PhaseExecutionError("infrastructure", "Plan supervisor exited unsuccessfully");
         void events.finally(() => {
           clearTimeout(deadline); clearTimeout(reap); signal?.removeEventListener("abort", interrupt);
           if (failure || !result) reject(failure ?? new Error("Plan supervisor exited without aggregate"));

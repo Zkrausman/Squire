@@ -1,3 +1,4 @@
+import { PhaseExecutionError, classifyExecutionFailure } from "./execution-failure.js";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -41,11 +42,12 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   let requirements: RequirementsArtifact | undefined;
   let design: DesignArtifact | undefined;
   let diagnostic: string | undefined;
+  let executionError: unknown;
   try {
     await exec(`set -eu; mkdir -m 755 ${sh(root)}; mkdir -m 700 ${sh(root + "/control")}; mkdir -m 755 ${sh(root + "/artifacts")}`, signal);
     for (const subphase of material.config.promptPolicy!.plan) {
       signal.throwIfAborted();
-      if (Date.now() >= deadline) throw new Error("Plan deadline exceeded");
+      if (Date.now() >= deadline) throw new PhaseExecutionError("timeout", "Plan deadline exceeded");
       await check();
       await progress({ runId: input.runId, attempt: input.attempt, subphase });
       signal.throwIfAborted();
@@ -80,9 +82,11 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
           await exec(`set -eu; touch ${sh(control + "/cancel")}; i=0; while [ ! -f ${sh(control + "/done")} ]; do i=$((i+1)); [ "$i" -lt 100 ] || { echo 'remote Plan child termination unobserved' >&2; exit 1; }; sleep 0.1; done`);
         }
         signal.throwIfAborted();
-        const artifact: unknown = JSON.parse(raw);
+        let artifact: unknown;
+        try { artifact = JSON.parse(raw);
         if (subphase === "requirements") { validateRequirements(artifact, input.expectedHead); requirements = artifact; }
         else { validateDesign(artifact, input.expectedHead, digestArtifact(requirements)); design = artifact; }
+        } catch (error) { throw new PhaseExecutionError("protocol", String(error), { cause: error }); }
         await check();
         const artifactPath = `${root}/artifacts/${subphase}.json`;
         await copy(`${subphase}.json`, artifact, artifactPath);
@@ -93,17 +97,18 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
         let message = error instanceof Error ? error.message : String(error);
         try { await check(); } catch (gitError) { message += `; ${String(gitError)}`; }
         children.push({ ...base, outcome: "failed", diagnostic: message.slice(0, 8000), artifact: null });
-        throw new Error(message);
+        throw new PhaseExecutionError(classifyExecutionFailure(error, signal), message, { cause: error });
       }
       if (requirements?.readiness === "needs_clarification") break;
     }
-  } catch (error) { diagnostic = (error instanceof Error ? error.message : String(error)).slice(0, 6000); }
+  } catch (error) { executionError = error; diagnostic = (error instanceof Error ? error.message : String(error)).slice(0, 6000); }
   // Inputs contain ticket text. Retain only validated artifacts on the host.
   for (const subphase of ["requirements", "implementation-design"]) {
     await rm(path.join(local, `${subphase}-input.json`), { force: true });
     await rm(path.join(local, `${subphase}-guard.json`), { force: true });
   }
   if (signal.aborted || Date.now() >= deadline) diagnostic ??= "Plan interrupted or deadline exceeded";
+  if (input.escalationDigest && diagnostic) throw executionError ?? new PhaseExecutionError(signal.aborted ? "cancelled" : "timeout", diagnostic);
   const outcome = diagnostic ? "failed" : requirements?.readiness === "needs_clarification" ? "needs_clarification" : design ? "ready" : "failed";
   const result: PlanPhaseResult = {
     runId: input.runId, phase: "plan", attempt: input.attempt, sessionId: supervisorId,

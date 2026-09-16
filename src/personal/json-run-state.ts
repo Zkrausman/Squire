@@ -1,3 +1,4 @@
+import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
 import { validatePlanProgress } from "./plan-artifacts.js";
 import { access, lstat, mkdir, open, readFile, readdir, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -14,6 +15,7 @@ import { JsonRunEventOutbox } from "./run-events.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
+  "escalationPolicy", "escalationDigest", "stagedTransitions",
   "profiles",
   "planSelection",
   "lifecycle",
@@ -676,6 +678,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   nullableSha(state["head"], "head");
   if ((state["baseSha"] === null) !== (state["head"] === null)) throw new Error("run state Git identity is incomplete");
   validateResolvedProfiles(state);
+  validateStagedState(state as unknown as PersonalRunState);
 
   const attempts = exactObject(state["attempts"], PERSONAL_PHASES, "run state attempts");
   for (const phase of PERSONAL_PHASES) if (!integer(attempts[phase], 0)) throw new Error(`invalid run state ${phase} attempts`);
@@ -703,7 +706,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
     }
     const profiles = state["profiles"] as ResolvedPhaseProfiles | undefined;
     if (profiles) {
-      if (!result.profile || !sameProfile(result.profile, profiles[phase])) throw new Error(`run state ${phase} profile evidence is missing or does not match the resolved profile`);
+      if (!result.profile || !sameProfile(result.profile, stagedSelection(state as unknown as PersonalRunState, phase, result.attempt)?.profile ?? profiles[phase])) throw new Error(`run state ${phase} profile evidence is missing or does not match the resolved profile`);
     }
 
   }
@@ -949,6 +952,7 @@ async function acquireUpdateLock(directory: string, runId: string): Promise<() =
 }
 
 function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  assertStagedUnchanged(current, next);
   if (current.profiles) {
     if (!next.profiles || !next.planSelection || !current.planSelection || !sameProfiles(current.profiles, next.profiles) || !sameSelection(current.planSelection, next.planSelection)) throw new Error("resolved phase profiles are immutable");
     return;

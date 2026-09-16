@@ -175,6 +175,7 @@ test("watch reconciles a missed terminal event and exits without live adapters",
 
 test("directory watcher observes atomic state replacement and coalesced notifications", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-atomic-watch-"));
+  let saving = Promise.resolve();
   try {
     const states = new JsonRunStateStore(directory);
     const initial = state();
@@ -190,7 +191,9 @@ test("directory watcher observes atomic state replacement and coalesced notifica
         seen.push(event);
         if (event.type === "run_started" && !changed) {
           changed = true;
-          setTimeout(() => { void states.save(terminal(initial)); }, 30).unref();
+          saving = new Promise<void>(resolve => setTimeout(resolve, 30)).then(() => states.save(terminal(initial)));
+          // Observe failures immediately; rethrow below after the watcher settles.
+          void saving.catch(() => undefined);
         }
       },
     });
@@ -199,7 +202,9 @@ test("directory watcher observes atomic state replacement and coalesced notifica
     assert.equal(seen.filter(event => event.type === "run_started").length, 1);
     assert.equal(seen.filter(event => event.type === "terminal_failed").length, 1);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    // Atomic state visibility precedes outbox publication and lock release.
+    // Do not remove the fixture while the writer is still releasing ownership.
+    try { await saving; } finally { await rm(directory, { recursive: true, force: true }); }
   }
 });
 

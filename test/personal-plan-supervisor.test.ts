@@ -1,3 +1,6 @@
+import { PersonalMvpController } from "../src/personal/controller.js";
+import { validateState } from "../src/personal/json-run-state.js";
+import type { PersonalRunState } from "../src/personal/types.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -311,4 +314,46 @@ test("remote guard enforces the phase deadline without a controller cancellation
   const [code] = await once(guard, "exit");
   assert.equal(code, 1);
   assert.equal(await readFile(path.join(control, "done"), "utf8"), "closed");
+}));
+
+test("staged Plan uses one profile for both fresh children and preserves clarification as terminal evidence", async () => fixture(async (root, commands) => {
+  const staged = { ...input, escalationDigest: "e".repeat(64), profile: { provider: "chosen", model: "user-stage", thinking: "low" as const } };
+  const r = await supervisePlan(staged, options(root), commands, new AbortController().signal, async () => {});
+  assert.equal(r.status, "passed");
+  for (const child of commands.launches) {
+    assert.deepEqual(child.input.profile, staged.profile);
+    assert.equal(child.config.args[child.config.args.indexOf("--model") + 1], "user-stage");
+  }
+  commands.requirement = { ...requirements(), openQuestions: ["which interface?"], readiness: "needs_clarification" };
+  const clarification = await supervisePlan({ ...staged, attempt: 2 }, options(root), commands, new AbortController().signal, async () => {});
+  assert.equal(clarification.details.supervision!.outcome, "needs_clarification");
+  assert.equal(clarification.details.supervision!.children.length, 1);
+}));
+
+test("staged Plan never converts adapter or malformed-artifact failure into a retryable failed result", async () => fixture(async (root, commands) => {
+  const staged = { ...input, escalationDigest: "e".repeat(64) };
+  commands.requirement = "malformed";
+  await assert.rejects(supervisePlan(staged, options(root), commands, new AbortController().signal, async () => {}), (error: any) => error.classification === "protocol");
+  commands.fail = () => true;
+  await assert.rejects(supervisePlan({ ...staged, attempt: 2 }, options(root), commands, new AbortController().signal, async () => {}), /injected command failure/);
+}));
+
+
+test("controller terminates staged Plan clarification without consuming a later stage", async () => fixture(async (root, commands) => {
+  commands.requirement = { ...requirements(), openQuestions: ["which interface?"], readiness: "needs_clarification" };
+  let state: PersonalRunState | undefined;
+  let calls = 0;
+  const controller = new PersonalMvpController({
+    escalationPolicy: { plan: { stages: [{ ...input.profile, maxAttempts: 1 }, { ...input.profile, model: "later-stage", maxAttempts: 1 }] } },
+    states: { async create(s) { validateState(s); state = s; }, async save(s) { validateState(s); state = s; }, async findActive() { return undefined; } },
+    tickets: { async get() { return input.ticket; } },
+    workspaces: { async prepare() { return { sandbox: input.sandbox, baseSha: head, head }; }, async currentHead() { return head; }, async assertClean() {}, async exportBundle() { throw new Error("unexpected publish"); } },
+    phases: { async run(i) { calls++; return supervisePlan(i, options(root), commands, new AbortController().signal, async () => {}); } },
+    publication: { async publish() { throw new Error("unexpected publish"); } },
+  });
+  await assert.rejects(controller.run({ ticketId: input.ticket.id, repository: input.repository, repositoryPath: "/tmp/repo", sourceRef: "HEAD", baseBranch: "main" }), /Plan needs clarification/);
+  assert.equal(calls, 1);
+  assert.equal(state!.attempts.plan, 1);
+  assert.equal(state!.stagedTransitions!.at(-1)!.classification, "needs_clarification");
+  assert.equal(state!.results.plan!.status, "failed");
 }));

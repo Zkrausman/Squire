@@ -1,3 +1,4 @@
+import { classifyExecutionFailure } from "./execution-failure.js";
 import { NodeCommandRunner } from "./command.js";
 import { closed } from "./plan-artifacts.js";
 import { supervisePlan, type PlanSupervisorOptions } from "./plan-supervisor.js";
@@ -14,7 +15,7 @@ process.on("SIGINT", cancel);
 process.on("disconnect", cancel);
 process.on("message", (message: unknown) => {
   void receive(message).catch(error => {
-    final({ type: "error", message: String(error).slice(0, 8000) });
+    final({ type: "error", classification: classifyExecutionFailure(error, abort.signal), message: String(error).slice(0, 8000) });
   });
 });
 async function receive(message: unknown): Promise<void> {
