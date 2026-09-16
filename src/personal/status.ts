@@ -122,6 +122,9 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
     `Stdout log: ${display(state.stdoutPath ?? "unavailable")}`,
     `Stderr log: ${display(state.stderrPath ?? "unavailable")}`,
   ];
+  if (state.step === "plan" && state.planProgress) lines.push(`Progress: Plan / ${state.planProgress.subphase === "requirements" ? "Requirements" : "Implementation Design"}`);
+  const plan = state.results.plan?.phase === "plan" ? state.results.plan.details.supervision : undefined;
+  if (plan?.outcome === "needs_clarification") lines.push(`Plan blocked: ${display(state.results.plan!.summary)}`);
   if (state.executionMode) lines.push(`Execution mode: ${display(state.executionMode)}`);
   if (state.controllerPid !== undefined && state.controllerPid !== null) lines.push(`Controller PID: ${state.controllerPid}`);
   return `${lines.join("\n")}\n`;

@@ -1,3 +1,4 @@
+import { validatePlanProgress } from "./plan-artifacts.js";
 import { access, lstat, mkdir, open, readFile, readdir, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -30,6 +31,8 @@ const OPTIONAL_STATE_KEYS = [
   "launchConfigPath",
   "launchConfigDigest",
   "launchEvidence",
+  "planProgress",
+  "planExecution",
   "remediationAttempts",
 ] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
@@ -676,6 +679,12 @@ export function validateState(value: unknown): asserts value is PersonalRunState
 
   const attempts = exactObject(state["attempts"], PERSONAL_PHASES, "run state attempts");
   for (const phase of PERSONAL_PHASES) if (!integer(attempts[phase], 0)) throw new Error(`invalid run state ${phase} attempts`);
+  if (state["planExecution"] !== undefined && (state["planExecution"] !== "supervised-v1" || JSON.stringify((state["launchEvidence"] as { planSubphases?: unknown } | undefined)?.planSubphases) !== JSON.stringify(["requirements", "implementation-design"]))) throw new Error("invalid Plan execution mode");
+  if (state["planProgress"] !== undefined && state["planProgress"] !== null) {
+    validatePlanProgress(state["planProgress"]);
+    const progress = state["planProgress"];
+    if (state["planExecution"] !== "supervised-v1" || state["step"] !== "plan" || progress.runId !== state["runId"] || progress.attempt !== attempts["plan"]) throw new Error("run state Plan progress identity mismatch");
+  }
   const remediations = exactObject(state["remediations"], ["review", "test"], "run state remediations");
   for (const phase of ["review", "test"] as const) if (!integer(remediations[phase], 0) || (remediations[phase] as number) > 1) throw new Error(`invalid run state ${phase} remediations`);
   validateRemediationAttempts(state["remediationAttempts"], remediations, attempts, state["results"]);
@@ -689,6 +698,9 @@ export function validateState(value: unknown): asserts value is PersonalRunState
     const phase = key as PersonalPhase;
     validatePhaseResultShape(result, phase, { allowLegacyImplementProjectWiki: state["profiles"] === undefined && phase === "implement" });
     if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || result.sessionFile !== `/ticket/sessions/${phase}/${result.attempt}.jsonl`) throw new Error(`run state ${phase} result identity mismatch`);
+    if (result.phase === "plan" && state["planExecution"] === "supervised-v1") {
+      if (!result.details.supervision || result.details.supervision.launchDigest !== (state["launchEvidence"] as { digest: string }).digest) throw new Error("supervised Plan evidence missing or mismatched");
+    }
     const profiles = state["profiles"] as ResolvedPhaseProfiles | undefined;
     if (profiles) {
       if (!result.profile || !sameProfile(result.profile, profiles[phase])) throw new Error(`run state ${phase} profile evidence is missing or does not match the resolved profile`);
@@ -889,6 +901,7 @@ function validateResolvedProfiles(state: Record<string, unknown>): void {
 }
 
 function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  if (current.planExecution !== next.planExecution) throw new Error("Plan execution mode is immutable");
   if (!isDeepStrictEqual(current.launchEvidence, next.launchEvidence)) throw new Error("launch evidence is immutable");
   for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigPath", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {
     if (current[key] !== next[key]) throw new Error("background launch identity is immutable");

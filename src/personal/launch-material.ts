@@ -6,7 +6,7 @@ import type { LoadedPersonalMvpConfig, PersonalMvpConfig } from "./config.js";
 import { validateCapturedRawConfig, validatePhaseTimeoutMs } from "./config.js";
 import { validateModelPolicy } from "./model-policy.js";
 import { validateSourceRef } from "./identity.js";
-import { buildCorePrompt } from "./prompt-core.js";
+import { buildCorePrompt, buildPlanChildCore } from "./prompt-core.js";
 import { builtinPrompts, capturePromptSet, decode, deepFreeze, DEFAULT_PROMPT_SELECTION, PLAN_SUBPHASES, record, validatePromptSelection, type CapturedPrompts, type PlanSubphase } from "./prompt-policy.js";
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState } from "./types.js";
 
@@ -25,7 +25,7 @@ export function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 function hash(value: unknown): string { return createHash("sha256").update("squire-launch-material-v1\0").update(canonical(value)).digest("hex"); }
-export function coreDigest(): string { return hash(PERSONAL_PHASES.map(buildCorePrompt)); }
+export function coreDigest(): string { return hash([...PERSONAL_PHASES.map(buildCorePrompt), ...PLAN_SUBPHASES.map(buildPlanChildCore)]); }
 export async function captureLaunchMaterial(loaded: LoadedPersonalMvpConfig): Promise<LaunchMaterial> {
   const { rawConfig, digest } = loaded;
   base64(rawConfig);
@@ -79,7 +79,7 @@ export function validateLaunchEvidence(value: unknown): void {
 }
 export function composeSystemPrompt(material: LaunchMaterial | undefined, phase: PersonalPhase, subphase?: PlanSubphase): string {
   if (subphase && (phase !== "plan" || !material?.config.promptPolicy?.plan.includes(subphase))) throw new Error("unselected subphase");
-  const layers = [buildCorePrompt(phase)];
+  const layers = [subphase ? buildPlanChildCore(subphase) : buildCorePrompt(phase)];
   if (material) {
     layers.push(decode(material.prompts.phases[phase]));
     if (subphase) layers.push(decode(material.prompts.subphases[subphase]!));
