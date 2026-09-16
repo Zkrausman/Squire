@@ -469,25 +469,29 @@ export class PersonalMvpController {
       if (startingHead !== expectedHead) throw new Error(`${phase} started at an unexpected Git HEAD`);
     }
     let result: PhaseResult | undefined;
+    let phaseFailed = false;
     let phaseError: unknown;
     try {
       result = await this.#phases.run(input, signal);
     } catch (error) {
+      phaseFailed = true;
       phaseError = error;
     }
     let observedHead: string | undefined;
+    let workspaceFailed = false;
     let workspaceDiagnostic: unknown;
     try {
       observedHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
       await this.#workspaces.assertClean(context.state.sandbox, signal);
     } catch (error) {
+      workspaceFailed = true;
       workspaceDiagnostic = error;
     }
-    if (phaseError !== undefined) {
-      if (workspaceDiagnostic !== undefined) throw withSecondaryWorkspaceDiagnostic(phaseError, workspaceDiagnostic);
+    if (phaseFailed) {
+      if (workspaceFailed) throw withSecondaryWorkspaceDiagnostic(phaseError, workspaceDiagnostic);
       throw phaseError;
     }
-    if (workspaceDiagnostic !== undefined) throw workspaceDiagnostic;
+    if (workspaceFailed) throw workspaceDiagnostic;
     if (observedHead === undefined) throw new Error(`${phase} did not produce an observed Git HEAD`);
     if (!result) throw new Error(`${phase} returned no result`);
     const evidencedResult: PhaseResult = result.profile === undefined

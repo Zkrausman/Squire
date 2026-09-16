@@ -111,7 +111,11 @@ The adapter treats those fields as untrusted and validates their exact shape and
 
 Retro must return at least one lesson; proposed follow-ups may be empty. Implement must also persist a closed project-wiki disposition in its details: `updated` contains unique canonical `.llm-wiki/...` paths and a concise summary, while `not_required` contains a concrete reason. The controller compares that evidence with the cumulative committed diff from the run base SHA to the Implement HEAD before allowing Review. Implement evaluates durable architecture, workflow, operational, and constraint knowledge in the target worktree only; personal/host vaults, secrets, transcripts, routine status, and unrelated material are excluded. Implement commits required wiki edits before the exact-head Review/Test/Retro gates. Any pre-existing uncommitted control-worktree wiki backlog is handled by a separate reviewed reconciliation and is never bundled into a feature PR. Retro receives only read-only repository tools and cannot create Linear issues, write a wiki, or change the workspace; selected Retro lessons can be incorporated by a later gated run. The full public and persisted phase contract remains unchanged apart from this required Implement disposition. It does not need a recursive cryptographic artifact-authority graph for the personal MVP.
 
-## 6. Sandbox and credentials
+## 6. Personal operations
+
+`phaseTimeoutMs` is optional configuration for the Plan, Implement, Review, Test, and Retro phase processes. It must be an integer from 60,000 through 14,400,000 milliseconds (60 seconds through four hours); when omitted, each phase uses the runner default of 3,600,000 milliseconds (one hour). A timeout bounds the phase process command only: it does not promise sandbox quiescence after termination. Operators should inspect the persisted run state and workspace diagnostics before retrying.
+
+## 7. Sandbox and credentials
 
 Protect now:
 
@@ -134,7 +138,7 @@ Controls:
 
 Deferred threats include hostile same-ticket phases, malicious same-UID processes, PID-reuse forensics, mount/inode proofs, kernel append-only custody, cgroup journals, multiple controllers, and multi-tenant workloads.
 
-## 7. GitHub publication
+## 8. GitHub publication
 
 The controller:
 
@@ -151,7 +155,7 @@ Retro publication is limited to the PR body. Squire does not automatically creat
 
 The first MVP does not implement GitHub App onboarding, automatic approval, automatic drafting/closing compensation, or exactly-once distributed settlement. Unexpected remote state stops for the owner. No code path may call a merge endpoint.
 
-## 8. Code disposition
+## 9. Code disposition
 
 Retain narrowly:
 
@@ -181,7 +185,7 @@ Remove from the first runtime composition:
 
 History is preserved. Simplification occurs on a new branch without rewriting `main`.
 
-## 9. Implementation sequence
+## 10. Implementation sequence
 
 1. Add the executable CLI and minimal configuration/state model.
 2. Add Linear issue lookup and Docker Sandbox lifecycle adapter.
@@ -193,7 +197,7 @@ History is preserved. Simplification occurs on a new branch without rewriting `m
 
 A reasonable target is 1,500–3,000 production lines for the functional personal controller, excluding dependencies and generated lockfiles.
 
-## 10. Acceptance
+## 11. Acceptance
 
 The MVP is accepted when a real invocation of `squire run <ticket>`:
 
