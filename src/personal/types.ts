@@ -1,3 +1,4 @@
+import type { PlanEvidence, PlanProgress } from "./plan-artifacts.js";
 import type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
 import type { LaunchEvidence } from "./launch-material.js";
 import type { RunEvent } from "./run-events.js";
@@ -40,7 +41,7 @@ interface PhaseResultBase {
 
 export interface PlanPhaseResult extends PhaseResultBase {
   readonly phase: "plan";
-  readonly details: { readonly steps: readonly string[] };
+  readonly details: { readonly steps: readonly string[]; readonly supervision?: PlanEvidence };
 }
 
 export type ProjectWikiDisposition =
@@ -145,6 +146,9 @@ export interface PersonalRunState {
   readonly ticketTitle: string;
   readonly status: RunStatus;
   readonly step: RunStep;
+  readonly planProgress?: PlanProgress | null;
+  /** Missing on legacy captured runs; immutable for new supervised lifecycles. */
+  readonly planExecution?: "supervised-v1";
   /** Additive lifecycle evidence. It is absent on published legacy v1 files. */
   readonly lifecycle?: RunLifecycle;
   readonly launchState?: RunLaunchState;
@@ -223,7 +227,7 @@ export interface WorkspacePort {
 }
 
 export interface PhasePort {
-  run(input: PhaseInput, signal?: AbortSignal): Promise<PhaseResult>;
+  run(input: PhaseInput, signal?: AbortSignal, onProgress?: (progress: PlanProgress) => Promise<void>): Promise<PhaseResult>;
 }
 
 export interface PublicationPort {

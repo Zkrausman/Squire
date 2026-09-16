@@ -156,3 +156,8 @@ export function record(value: unknown, allowed: readonly string[], label: string
 export function deepFreeze<T>(value: T): T { if (value && typeof value === "object") { for (const child of Object.values(value)) deepFreeze(child); Object.freeze(value); } return value; }
 export function encode(text: string): string { return Buffer.from(text, "utf8").toString("base64"); }
 export function decode(bytes: string): string { return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(bytes, "base64")); }
+
+/** Only this dependency-valid sequence is executable; no graph or checkpoints. */
+export function validateExecutablePlan(selection: readonly PlanSubphase[]): void {
+  if (selection.length && (selection.length !== 2 || selection[0] !== "requirements" || selection[1] !== "implementation-design")) throw new Error("unsupported Plan sequence: expected requirements then implementation-design");
+}

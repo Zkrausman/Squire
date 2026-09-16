@@ -1,3 +1,6 @@
+import { PlanSupervisorRunner } from "./plan-supervisor-runner.js";
+import { validateExecutablePlan } from "./prompt-policy.js";
+import type { PlanProgress } from "./plan-artifacts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { composeSystemPrompt, validateLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -22,6 +25,7 @@ export interface SandboxPiPhaseRunnerOptions {
 }
 
 export class SandboxPiPhaseRunner implements PhasePort {
+  readonly #supervisor: PlanSupervisorRunner | undefined;
   readonly #commands: CommandPort;
   readonly #stagingRoot: string;
   readonly #testCommands: readonly string[];
@@ -34,6 +38,9 @@ export class SandboxPiPhaseRunner implements PhasePort {
 
   constructor(options: SandboxPiPhaseRunnerOptions) {
     this.#material = options.launchMaterial === undefined ? undefined : validateLaunchMaterial(options.launchMaterial);
+    if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
+    const { commands: _commands, ...supervisorOptions } = options;
+    this.#supervisor = this.#material?.config.promptPolicy!.plan.length ? new PlanSupervisorRunner({ ...supervisorOptions, launchMaterial: this.#material }, this) : undefined;
     this.#commands = options.commands;
     this.#stagingRoot = path.resolve(options.stagingRoot);
     this.#testCommands = Object.freeze([...options.testCommands]);
@@ -44,7 +51,8 @@ export class SandboxPiPhaseRunner implements PhasePort {
     this.#timeoutMs = options.timeoutMs ?? 60 * 60 * 1_000;
   }
 
-  async run(input: PhaseInput, signal?: AbortSignal): Promise<PhaseResult> {
+  async run(input: PhaseInput, signal?: AbortSignal, onProgress?: (progress: PlanProgress) => Promise<void>): Promise<PhaseResult> {
+    if (input.phase === "plan" && this.#supervisor) return this.#supervisor.run(input, signal, onProgress);
     // Validate the controller-bound profile before creating any staging or
     // sandbox artifacts. A malformed profile must not partially launch a
     // phase with an ambiguous model identity.
