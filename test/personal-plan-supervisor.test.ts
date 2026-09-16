@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
-import os from "node:os";
+import { readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { captureLaunchMaterial, composeSystemPrompt } from "../src/personal/launch-material.js";
@@ -15,6 +14,7 @@ import type { CommandPort, CommandRequest } from "../src/personal/command.js";
 import type { PhaseInput } from "../src/personal/types.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { createPlanSbx } from "./helpers/plan-sbx.js";
+import { assertProtectedAcl, launchTestRoot } from "./helpers/windows-launch.js";
 
 const head = "a".repeat(40);
 const material = await captureLaunchMaterial({ config: { ...TEST_MATERIAL.config, promptPolicy: { version: 1, id: "default", plan: ["requirements", "implementation-design"] } }, digest: TEST_CONFIG_DIGEST, rawConfig: TEST_MATERIAL.rawConfig });
@@ -52,7 +52,7 @@ class Commands implements CommandPort {
   }
 }
 async function fixture(fn: (root: string, commands: Commands) => Promise<void>) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-plan-"));
+  const root = await launchTestRoot("squire-plan-");
   try { await fn(root, new Commands()); } finally { await rm(root, { recursive: true, force: true }); }
 }
 const options = (root: string) => ({ stagingRoot: root, launchMaterial: material, testCommands: ["npm test"] });
@@ -227,7 +227,14 @@ test("real adapter forks one credential-free supervisor; only that supervisor in
   let legacy = 0;
   const runner = new PlanSupervisorRunner({ ...options(root), sbxExecutable: sbx }, { async run() { legacy++; throw new Error("not legacy"); } });
   const progress: string[] = [];
-  const result = await runner.run(input, undefined, async event => { progress.push(event.subphase); });
+  const sentinel = process.env["SQUIRE_FIXTURE_SECRET"];
+  process.env["SQUIRE_FIXTURE_SECRET"] = "must-not-cross";
+  let result;
+  try { result = await runner.run(input, undefined, async event => { progress.push(event.subphase); }); }
+  finally {
+    if (sentinel === undefined) delete process.env["SQUIRE_FIXTURE_SECRET"];
+    else process.env["SQUIRE_FIXTURE_SECRET"] = sentinel;
+  }
   assert.equal(legacy, 0);
   assert.equal(result.status, "passed", result.summary);
   assert.deepEqual(progress, ["requirements", "implementation-design"]);
@@ -237,8 +244,27 @@ test("real adapter forks one credential-free supervisor; only that supervisor in
   assert.notEqual(launches[0].supervisorPid, process.pid);
   const expectedHostKeys = ["HOME", "PATH"];
   if (process.platform === "win32") expectedHostKeys.push(...["LOCALAPPDATA", "SYSTEMROOT", "WINDIR", "USERPROFILE", "TEMP", "TMP"]);
-  assert.deepEqual(launches[0].envKeys.sort(), expectedHostKeys.sort());
+  if (process.platform === "win32") {
+    // libuv supplies these OS defaults even for an explicit env block. They
+    // are not additions to supervisorEnvironment's application allowlist.
+    const osDefaults = ["HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "SYSTEMDRIVE", "USERDOMAIN", "USERNAME"];
+    const keys = launches[0].envKeys.map((key: string) => key.toUpperCase());
+    assert.ok(keys.every((key: string) => [...expectedHostKeys, ...osDefaults].includes(key)));
+    for (const key of expectedHostKeys) if (supervisorEnvironment()[key] !== undefined) assert.ok(keys.includes(key));
+  } else assert.deepEqual(launches[0].envKeys.sort(), expectedHostKeys.sort());
+  for (const key of ["NODE_OPTIONS", "LINEAR_API_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SQUIRE_FIXTURE_SECRET"]) {
+    assert.ok(!launches[0].envKeys.some((actual: string) => actual.toUpperCase() === key), `${key} must not reach the transport`);
+  }
   assert.equal(launches[0].prompt, composeSystemPrompt(material, "plan", "requirements"));
+  if (process.platform === "win32") {
+    assert.ok(result.phase === "plan");
+    const local = path.join(root, input.runId, "plan", String(input.attempt), result.details.supervision!.supervisorId);
+    for (const name of ["requirements.json", "implementation-design.json", "result.json"]) assertProtectedAcl(path.join(local, name));
+    for (const launch of launches) {
+      await assert.rejects(readFile(launch.stagingPath), /ENOENT/);
+      await assert.rejects(readFile(launch.guardStagingPath), /ENOENT/);
+    }
+  }
 }));
 
 test("real adapter cancellation at acknowledged progress cannot launch either Pi child", async () => fixture(async root => {
@@ -250,7 +276,7 @@ test("real adapter cancellation at acknowledged progress cannot launch either Pi
   await assert.rejects(readFile(record), /ENOENT/);
 }));
 
-test("remote guard observes child close after cancellation, rather than sbx-client exit", async () => fixture(async root => {
+test("remote guard observes child close after cancellation, rather than sbx-client exit", { skip: process.platform === "win32" }, async () => fixture(async root => {
   const control = path.join(root, "control"); await mkdir(control);
   const childFile = path.join(root, "child.cjs");
   await writeFile(childFile, "process.on('SIGTERM', () => process.exit(0)); console.log('READY'); setInterval(() => {}, 1000);");
@@ -286,7 +312,7 @@ test("adapter deadline cancels only its supervisor and waits for exit", async ()
   await assert.rejects(runner.run(input), /deadline/);
 }));
 
-test("remote guard observes noncooperative child exit after forced termination", async () => fixture(async root => {
+test("remote guard observes noncooperative child exit after forced termination", { skip: process.platform === "win32" }, async () => fixture(async root => {
   const control = path.join(root, "control"); await mkdir(control);
   const childFile = path.join(root, "child.cjs");
   await writeFile(childFile, "process.on('SIGTERM', () => {}); console.log('READY'); setInterval(() => {}, 1000);");
@@ -303,7 +329,7 @@ test("remote guard observes noncooperative child exit after forced termination",
   } finally { guard.kill("SIGKILL"); }
 }));
 
-test("remote guard enforces the phase deadline without a controller cancellation", async () => fixture(async root => {
+test("remote guard enforces the phase deadline without a controller cancellation", { skip: process.platform === "win32" }, async () => fixture(async root => {
   const control = path.join(root, "control"); await mkdir(control);
   const config = path.join(root, "config.json");
   await writeFile(config, JSON.stringify({ control, cwd: root, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000, deadline: Date.now() - 1, executable: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"], env: {} }));

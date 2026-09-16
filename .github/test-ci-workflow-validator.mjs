@@ -117,6 +117,8 @@ try {
     "    runs-on: ${{ matrix.os }}\n    timeout-minutes: 15",
     "      - name: Run tests\n        timeout-minutes: 5",
     "      - name: Run filesystem event integration\n        timeout-minutes: 5",
+    "    runs-on: windows-latest\n    timeout-minutes: 15",
+    "      - name: Run Windows launch capture regression\n        timeout-minutes: 5",
   ]) {
     assert.equal(workflow.includes(marker), true, `timeout marker missing: ${marker}`);
     await expectValidatorRejects(workflow.replace(marker, marker.replace(/\n +timeout-minutes: \d+/, "")), `missing timeout: ${marker}`);
@@ -127,6 +129,13 @@ try {
   await expectValidatorRejects(workflow.replace("          - windows-latest", "          - macos-latest"), "filesystem integration without a Windows runner");
   await expectValidatorRejects(workflow.replace("node --test dist/test/personal-run-events.test.js", "node --test dist/test/personal-run-events.test.js || true"), "status-masked filesystem integration");
   await expectValidatorRejects(insertFalseCondition(workflow, "Run tests"), "an if: false test step");
+  await expectValidatorRejects(insertFalseCondition(workflow, "Run Windows launch capture regression"), "disabled Windows launch regression");
+  await expectValidatorRejects(workflow.replace("dist/test/personal-windows-launch.test.js ", ""), "missing native Windows security tests");
+  await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js ", ""), "missing actual captured-material CLI regression");
+  await expectValidatorRejects(workflow.replace("      fail-fast: false\n", ""), "cancelling other Windows version evidence after one failure");
+  await expectValidatorRejects(workflow.replace('          - "20.17.0"', '          - "20"'), "missing exact minimum Node version");
+  await expectValidatorRejects(workflow.replace('          - "22.9.0"', '          - "22"'), "missing exact minimum Node 22 version");
+  await expectValidatorRejects(workflow.replace(" dist/test/personal-plan-supervisor.test.js", ""), "missing supervised Plan regression");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", ["echo runtime provisioning", "# npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund"]), "comment-substituted provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", [...provisionCommands.slice(0, 3), "set +e", provisionCommands[3], "echo runtime install completed"]), "status-masked provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Validate ticket runtime", ["echo lstatSync", "echo pi-tui/package.json", "echo 0.84.4"]), "substituted runtime validation");

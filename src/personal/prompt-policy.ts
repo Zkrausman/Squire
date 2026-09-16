@@ -42,6 +42,7 @@ export interface CaptureHooks {
 export async function capturePromptSet(selection: PromptSelection, repository: string, hooks: CaptureHooks = {}): Promise<CapturedPrompts> {
   selection = validatePromptSelection(selection);
   if (!selection.root) return builtinPrompts(selection);
+  if (process.platform === "win32") throw new Error("custom prompt roots are unsupported on Windows until safe native traversal is available; use built-in prompts");
   const root = path.resolve(selection.root);
   const repo = await realpath(repository).catch(error => {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
