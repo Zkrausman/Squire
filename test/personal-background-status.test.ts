@@ -1,9 +1,10 @@
+import { BackgroundFixture } from "./helpers/background-fixture.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { persistLaunchMaterial } from "../src/personal/launch-material.js";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { access, mkdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { execFileSync, spawn as nodeSpawn } from "node:child_process";
@@ -70,6 +71,75 @@ test("credential/bootstrap failure is recorded and status never needs live adapt
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const terminal of ["failed", "interrupted"] as const) {
+  test(`terminal-only EPERM exhaustion preserves running state and ownership after ${terminal}`, async () => {
+    const root = await launchTestRoot("squire-terminal-rename-denial-");
+    try {
+      const denial = Object.assign(new Error("injected terminal rename denial"), { code: "EPERM" });
+      const delays: number[] = [];
+      const attempts: PersonalRunState[] = [];
+      let beforeTerminal: PersonalRunState | undefined;
+      let beforeCredential: PersonalRunState | undefined;
+      const states = new JsonRunStateStore(root, {
+        renameRetry: {
+          platform: "win32",
+          async rename(source, destination) {
+            // Leave initial state and outbox publication real. Inject only the
+            // terminal state replacement, not an earlier lifecycle failure.
+            if (path.dirname(destination) === root && destination.endsWith(".json")) {
+              const candidate = JSON.parse(await readFile(source, "utf8")) as PersonalRunState;
+              if (candidate.status === terminal) {
+                beforeTerminal ??= JSON.parse(await readFile(destination, "utf8")) as PersonalRunState;
+                attempts.push(candidate);
+                throw denial;
+              }
+            }
+            await rename(source, destination);
+          },
+          async sleep(milliseconds) { delays.push(milliseconds); },
+        },
+      });
+      const abort = new AbortController();
+      const original = new Error(terminal === "failed" ? "credential lookup failed" : "operator interrupted credential lookup");
+      const diagnostics: unknown[] = [];
+      const run = new PersonalMvpController({
+        launchMaterial: TEST_MATERIAL,
+        states,
+        onPersistenceError: error => diagnostics.push(error),
+        tickets: { async get() {
+          beforeCredential = (await states.findByTicket(REQUEST.ticketId))[0];
+          assert.equal(beforeCredential?.status, "running");
+          if (terminal === "interrupted") abort.abort(original);
+          throw original;
+        } },
+        workspaces: {} as never,
+        phases: {} as never,
+        publication: {} as never,
+      });
+      await assert.rejects(run.run(REQUEST, abort.signal), error => error === original);
+      assert.ok(beforeCredential);
+      assert.deepEqual(beforeTerminal, beforeCredential);
+      assert.equal(attempts.length, 4);
+      assert.deepEqual(delays, [50, 100, 200]);
+      assert.deepEqual(diagnostics, [denial]);
+      for (const candidate of attempts) {
+        assert.equal(candidate.status, terminal);
+        assert.equal(candidate.lifecycle, terminal);
+        assert.ok(candidate.endedAt);
+        assert.equal(candidate.lastError, original.message);
+      }
+      const durable = (await states.findByTicket(REQUEST.ticketId))[0]!;
+      assert.deepEqual(durable, beforeTerminal);
+      assert.equal(durable.status, "running");
+      assert.equal(durable.endedAt, null);
+      assert.equal(await states.reservationOwner(REQUEST.ticketId), durable.runId);
+      await assert.rejects(controller(states).reserve(REQUEST), /active or ambiguous reservation/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("legacy status explicitly reports unavailable timing and model evidence", async () => {
   const state: PersonalRunState = {
@@ -360,44 +430,113 @@ test("exact historical run IDs remain readable beside a valid replacement reserv
   }
 });
 
+async function assertInheritedLogsAndRemove(fixture: BackgroundFixture): Promise<void> {
+  assert.match(await readFile(fixture.stdoutPath, "utf8"), /detached stdout inherited/);
+  assert.match(await readFile(fixture.stderrPath, "utf8"), /detached stderr inherited/);
+  // Explicit per-file removal makes the closure boundary visible on Windows.
+  await unlink(fixture.stdoutPath);
+  await unlink(fixture.stderrPath);
+}
+
+async function assertHeldDescriptors(fixture: BackgroundFixture): Promise<void> {
+  assert.equal(fixture.released, false);
+  assert.equal(fixture.logsClosed, false);
+  if (process.platform === "win32") {
+    for (const log of [fixture.stdoutPath, fixture.stderrPath]) {
+      await assert.rejects(unlink(log), (error: unknown) =>
+        ["EBUSY", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? ""));
+    }
+  }
+}
+
 test("real detached child outlives launch handoff and inherits stdout/stderr logs", async () => {
-  const root = await launchTestRoot("squire-real-detached-");
+  const fixture = await BackgroundFixture.create();
   try {
-    const marker = path.join(root, "finished.txt");
-    const stdoutPath = path.join(root, "stdout.log");
-    const stderrPath = path.join(root, "stderr.log");
-    const launched = await new NodeBackgroundLauncher().launch({
-      executable: process.execPath,
-      args: [path.resolve("fixtures/background-child.mjs"), marker, "400"],
-      stdoutPath,
-      stderrPath,
-    });
+    const launched = await fixture.launchDirect();
     assert.ok(launched.pid);
-    await assert.rejects(access(marker));
-    await waitForFile(marker);
-    assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
-    assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
+    assert.equal(await fixture.ready(), launched.pid);
+    await assertHeldDescriptors(fixture);
+    fixture.release();
+    await fixture.waitClosed();
+    await assertInheritedLogsAndRemove(fixture);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await fixture.cleanup();
   }
 });
 
 test("a short-lived launcher parent exits before the detached child and logs survive", async () => {
-  const root = await launchTestRoot("squire-real-parent-detached-");
+  const fixture = await BackgroundFixture.create();
   try {
-    const marker = path.join(root, "finished.txt");
-    const stdoutPath = path.join(root, "stdout.log");
-    const stderrPath = path.join(root, "stderr.log");
-    const parentExit = await spawnExit(process.execPath, [
-      path.resolve("fixtures/background-launch-parent.mjs"), marker, stdoutPath, stderrPath, "800",
-    ]);
-    assert.equal(parentExit, 0);
-    await assert.rejects(access(marker));
-    await waitForFile(marker);
-    assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
-    assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
+    assert.equal(await fixture.launchParent(), 0);
+    assert.ok(await fixture.ready());
+    await assertHeldDescriptors(fixture);
+    fixture.release();
+    await fixture.waitClosed();
+    await assertInheritedLogsAndRemove(fixture);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await fixture.cleanup();
+  }
+});
+
+test("fixture assertion-failure cleanup releases and closes inherited descriptors", async () => {
+  const fixture = await BackgroundFixture.create();
+  await assert.rejects(async () => {
+    try {
+      await fixture.launchDirect();
+      await fixture.ready();
+      assert.fail("intentional assertion before release");
+    } finally {
+      await fixture.cleanup();
+    }
+  }, /intentional assertion before release/);
+  assert.equal(fixture.logsClosed, true);
+  await assert.rejects(access(fixture.root), { code: "ENOENT" });
+});
+
+test("fixture cleanup owns a child from launch initiation before ready", async () => {
+  const fixture = await BackgroundFixture.create();
+  await assert.rejects(async () => {
+    try {
+      void fixture.launchDirect();
+      assert.fail("intentional assertion during launch");
+    } finally {
+      await fixture.cleanup();
+    }
+  }, /intentional assertion during launch/);
+  assert.equal(fixture.logsClosed, true);
+  await assert.rejects(access(fixture.root), { code: "ENOENT" });
+});
+
+test("fixture control disconnect closes descriptors and cleanup observes owned child termination", async () => {
+  const fixture = await BackgroundFixture.create();
+  try {
+    await fixture.launchDirect();
+    await fixture.ready();
+    fixture.disconnect();
+    assert.equal(await fixture.waitDirectExit(), 0);
+    assert.equal(fixture.logsClosed, false); // disconnect is not a closure ack
+    await assertInheritedLogsAndRemove(fixture);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("fixture stalled protocol cleanup retains root until owned termination is observed", async () => {
+  const fixture = await BackgroundFixture.create();
+  try {
+    await fixture.launchDirect("stall");
+    await fixture.ready();
+    await assertHeldDescriptors(fixture);
+    // The child deterministically ignores release; timeout is only a failure bound.
+    await assert.rejects(fixture.cleanup(100), /fixture root retained/);
+    await access(fixture.root);
+    assert.equal(fixture.logsClosed, false);
+    // Failed teardown disconnects control. Only an actual owned close event now
+    // authorizes deletion, not the timeout or the control socket's disappearance.
+    assert.equal(await fixture.waitDirectExit(), 0);
+    await assertInheritedLogsAndRemove(fixture);
+  } finally {
+    await fixture.cleanup();
   }
 });
 
@@ -719,6 +858,8 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
     }), /operator interrupted before launch/);
     const preHandoff = (await states.findByTicket("AIDEV-2"))[0]!;
     assert.equal(preHandoff.status, "interrupted");
+    assert.equal(preHandoff.lifecycle, "interrupted");
+    assert.ok(preHandoff.endedAt);
     assert.equal(preHandoff.launchState, "failed");
     assert.equal(await states.reservationOwner("AIDEV-2"), undefined);
 
@@ -742,6 +883,8 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
     await assert.rejects(starting, /operator interrupted background startup/);
     const interrupted = (await states.findByTicket(REQUEST.ticketId))[0]!;
     assert.equal(interrupted.status, "interrupted");
+    assert.equal(interrupted.lifecycle, "interrupted");
+    assert.ok(interrupted.endedAt);
     assert.equal(interrupted.launchState, "failed");
     assert.equal(await states.reservationOwner(REQUEST.ticketId), undefined);
     await controller(states, new Date("2026-09-10T00:00:01.000Z"), "11234567-89ab-cdef-0123-456789abcdef").reserve(REQUEST);
