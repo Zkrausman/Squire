@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { access, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, open, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DEFAULT_PROMPT_SELECTION, validatePromptSelection, type PromptSelection } from "./prompt-policy.js";
 import { validateSourceRef } from "./identity.js";
 import {
   APPROVED_PERSONAL_MODEL_POLICY,
@@ -52,6 +53,7 @@ export interface PersonalMvpConfig {
   };
   /** Normalized policy; Plan is always exactly two equal buckets. */
   readonly modelPolicy: PersonalModelPolicy;
+  readonly promptPolicy?: PromptSelection;
   readonly testCommands: readonly string[];
   /** Maximum Pi phase runtime; omitted means the runner's one-hour default. */
   readonly phaseTimeoutMs?: number;
@@ -67,6 +69,7 @@ export interface ConfigPathOptions {
 export interface LoadedPersonalMvpConfig {
   readonly config: PersonalMvpConfig;
   readonly digest: string;
+  readonly rawConfig: string;
 }
 
 /** Resolve the per-user Squire directory without looking in the repository. */
@@ -154,7 +157,38 @@ export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigP
   return {
     config: await parsePersonalMvpConfig(bytes, absolute, boundOptions),
     digest: createHash("sha256").update(bytes).digest("hex"),
+    rawConfig: bytes.toString("base64"),
   };
+}
+
+/** Pure schema validation for captured raw bytes; never resolves paths or reads the child environment. */
+export function validateCapturedRawConfig(raw: unknown): void {
+  const value = object(raw, "captured raw configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
+  const repository = object(value["repository"], "repository");
+  rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
+  for (const key of ["slug", "path", "baseBranch"]) text(repository[key], `repository.${key}`);
+  validateSourceRef(repository["sourceRef"]);
+  const paths = value["paths"] === undefined ? {} : object(value["paths"], "paths");
+  rejectUnknownKeys(paths, ["state", "bridges", "staging"], "paths");
+  for (const [key, entry] of Object.entries(paths)) text(entry, `paths.${key}`);
+  if (value["dataDirectory"] !== undefined) text(value["dataDirectory"], "dataDirectory");
+  const linear = object(value["linear"], "linear");
+  rejectUnknownKeys(linear, ["apiKeyEnv", "endpoint"], "linear");
+  text(linear["apiKeyEnv"], "linear.apiKeyEnv");
+  if (linear["endpoint"] !== undefined && typeof linear["endpoint"] !== "string") throw new Error("linear.endpoint must be a string");
+  const github = object(value["github"], "github");
+  rejectUnknownKeys(github, ["tokenCommand"], "github");
+  for (const [label, commands, limit] of [["testCommands", value["testCommands"], 100], ["github.tokenCommand", github["tokenCommand"], 32]] as const) {
+    if (!Array.isArray(commands) || commands.length === 0 || commands.length > limit || commands.some(command => typeof command !== "string" || command.length === 0 || command.length > 2_000)) throw new Error(`${label} must be a bounded non-empty string array`);
+  }
+  const sandbox = object(value["sandbox"], "sandbox");
+  rejectUnknownKeys(sandbox, ["template", "roleUser", "piExecutable", "piAgentDirectory", "piAuthFile"], "sandbox");
+  for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key], `sandbox.${key}`);
+  for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key], `sandbox.${key}`);
+  if (value["modelPolicy"] !== undefined) parseModelPolicy(value["modelPolicy"]);
+  if (value["promptPolicy"] !== undefined) validatePromptSelection(value["promptPolicy"]);
+  if (value["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(value["phaseTimeoutMs"]);
 }
 
 async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: ConfigPathOptions): Promise<PersonalMvpConfig> {
@@ -170,7 +204,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   for (const alias of legacyAliases) {
     if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
   }
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
 
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
@@ -252,6 +286,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
       ...(piAuthFile !== undefined ? { piAuthFile: resolveHostPath(base, text(piAuthFile, "sandbox.piAuthFile"), platform) } : {}),
     },
     modelPolicy,
+    promptPolicy: value["promptPolicy"] === undefined ? DEFAULT_PROMPT_SELECTION : validatePromptSelection(value["promptPolicy"]),
     testCommands: [...testCommands] as string[],
     ...(phaseTimeoutMs === undefined ? {} : { phaseTimeoutMs }),
   };
@@ -415,7 +450,15 @@ async function assertRuntimePathsOutsideRepository(repositoryPath: string, desti
 }
 
 async function readConfigBytes(file: string, environment: NodeJS.ProcessEnv): Promise<Buffer> {
-  const bytes = await readFile(file);
+  const handle = await open(file, "r");
+  let bytes: Buffer;
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size > 1_000_000n) throw new Error("configuration must be a bounded regular file");
+    bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (before.size !== BigInt(bytes.length) || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new Error("configuration changed during capture");
+  } finally { await handle.close(); }
   // Test-only file barriers make atomic replacement and symlink retargeting
   // deterministic after the selected bytes have been captured.
   if (environment["NODE_ENV"] === "test") {

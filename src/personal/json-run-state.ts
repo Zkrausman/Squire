@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { validateLaunchEvidence } from "./launch-material.js";
 import { deterministicFeatureBranch } from "./identity.js";
 import { renameOverExistingWithRetry, type RenameRetryOptions } from "./atomic-rename.js";
 import { validatePhaseResultShape } from "./phase-result.js";
@@ -28,6 +29,7 @@ const OPTIONAL_STATE_KEYS = [
   "sourceSha",
   "launchConfigPath",
   "launchConfigDigest",
+  "launchEvidence",
   "remediationAttempts",
 ] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
@@ -819,6 +821,7 @@ function validTimestamp(value: string): boolean {
 }
 
 function validateLifecycleMetadata(state: Record<string, unknown>): void {
+  if (state["launchEvidence"] !== undefined) validateLaunchEvidence(state["launchEvidence"]);
   const metadataKeys = ["lifecycle", "launchState", "preparationState", "executionMode", "startedAt", "endedAt", "controllerPid", "stdoutPath", "stderrPath", "repositoryPath", "sourceRef", "sourceSha", "launchConfigPath", "launchConfigDigest"];
   const hasMetadata = metadataKeys.some(key => Object.prototype.hasOwnProperty.call(state, key));
   if (!hasMetadata) return; // Published v1 state files did not have launch metadata.
@@ -886,6 +889,7 @@ function validateResolvedProfiles(state: Record<string, unknown>): void {
 }
 
 function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  if (!isDeepStrictEqual(current.launchEvidence, next.launchEvidence)) throw new Error("launch evidence is immutable");
   for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigPath", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {
     if (current[key] !== next[key]) throw new Error("background launch identity is immutable");
   }

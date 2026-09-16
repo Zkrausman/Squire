@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { PersonalMvpController, type StartBackgroundOptions } from "./controller.js";
 import { NodeCommandRunner } from "./command.js";
@@ -111,8 +112,11 @@ async function runCommand(parsed: ParsedRunArguments): Promise<number> {
       return undefined;
     });
     if (!loaded) return 1;
-    const { config, digest: configDigest } = loaded;
-    const controller = createController(config);
+    const { digest: configDigest } = loaded;
+    const material = await captureLaunchMaterial(loaded).catch(error => { writeError(error); return undefined; });
+    if (!material) return 1;
+    const config = material.config;
+    const controller = createController(config, material);
     const request = requestFromConfig(config, parsed.ticketId);
 
     if (parsed.background) {
@@ -167,11 +171,13 @@ async function runReservedCommand(parsed: ParsedReservedArguments): Promise<numb
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
   try {
-    const loaded = await loadBoundPersonalMvpConfig(parsed.config);
-    if (loaded.digest !== parsed.reservedConfigDigest) throw new Error("reserved launch configuration changed before child bootstrap");
     const stateDirectory = childStateDirectoryOverride();
-    const controller = createController(loaded.config, stateDirectory);
-    await controller.runReserved(requestFromConfig(loaded.config, parsed.ticketId), parsed.reservedRunId, parsed.reservedConfigDigest, abortController.signal, parsed.config);
+    if (!stateDirectory) throw new Error("reserved execution requires captured state directory");
+    const state = await new JsonRunStateStore(stateDirectory).read(parsed.reservedRunId);
+    if (!state || state.ticketId !== parsed.ticketId || state.launchConfigDigest !== parsed.reservedConfigDigest || state.launchConfigPath !== path.resolve(parsed.config)) throw new Error("reserved launch identity mismatch");
+    const material = await readLaunchMaterial(state, stateDirectory);
+    const controller = createController(material.config, material, stateDirectory);
+    await controller.runReserved(requestFromConfig(material.config, parsed.ticketId), parsed.reservedRunId, parsed.reservedConfigDigest, abortController.signal, parsed.config);
     return 0;
   } catch (error) {
     // Always consult the original state directory. This is a no-op after the
@@ -296,13 +302,14 @@ function parseReservedArguments(argv: readonly string[]): ParsedReservedArgument
   return { ...parsed, reservedRunId, reservedConfigDigest };
 }
 
-function createController(config: PersonalMvpConfig, stateDirectory = config.paths.state): PersonalMvpController {
+function createController(config: PersonalMvpConfig, material: LaunchMaterial, stateDirectory = config.paths.state): PersonalMvpController {
   const commands = new NodeCommandRunner();
   const apiKey = process.env[config.linear.apiKeyEnv];
   const tickets: TicketPort = apiKey
     ? new LinearClient({ apiKey, ...(config.linear.endpoint ? { endpoint: config.linear.endpoint } : {}) })
     : { async get(): Promise<never> { throw new Error(`missing Linear credential environment variable: ${config.linear.apiKeyEnv}`); } };
   return new PersonalMvpController({
+    launchMaterial: material,
     controllerPid: process.pid,
     modelPolicy: config.modelPolicy,
     tickets,
@@ -316,6 +323,7 @@ function createController(config: PersonalMvpConfig, stateDirectory = config.pat
       ...(config.sandbox.template ? { template: config.sandbox.template } : {}),
     }),
     phases: new SandboxPiPhaseRunner({
+      launchMaterial: material,
       commands,
       stagingRoot: config.paths.staging,
       testCommands: config.testCommands,

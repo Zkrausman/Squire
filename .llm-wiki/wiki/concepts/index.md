@@ -5,6 +5,7 @@
 - [background-run-state-and-status](background-run-state-and-status.md)
 - [five-session-pi-rpc-topology](five-session-pi-rpc-topology.md)
 - [immutable-handoff-validation](immutable-handoff-validation.md)
+- [Immutable layered prompt policy](/concepts/immutable-layered-prompt-policy.md)
 - [Run-scoped Pi profiles and trusted wiki footer](run-scoped-pi-profiles-and-trusted-footer.md)
 - [transition-remediation-and-fresh-gates](transition-remediation-and-fresh-gates.md)
 - [token-burn-prevention-for-agent-sessions](token-burn-prevention-for-agent-sessions.md)

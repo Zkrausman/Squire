@@ -1,10 +1,12 @@
 import { appendFile, access, writeFile } from "node:fs/promises";
 import { PersonalMvpController } from "../dist/src/personal/controller.js";
 import { JsonRunStateStore } from "../dist/src/personal/json-run-state.js";
+import { readLaunchMaterial } from "../dist/src/personal/launch-material.js";
 
 const [directory, runId, digest, readyPath, releasePath, sideEffectsPath, resultPath] = process.argv.slice(2);
 const backing = new JsonRunStateStore(directory);
 const states = {
+  directory,
   create: state => backing.create(state),
   save: state => backing.save(state),
   findActive: ticketId => backing.findActive(ticketId),
@@ -33,6 +35,7 @@ const request = {
   baseBranch: "main",
 };
 const controller = new PersonalMvpController({
+  launchMaterial: await readLaunchMaterial(await backing.read(runId), directory),
   states,
   tickets: { async get() {
     await appendFile(sideEffectsPath, "ticket\n", "utf8");

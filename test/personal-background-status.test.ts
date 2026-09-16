@@ -1,3 +1,5 @@
+import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
+import { persistLaunchMaterial } from "../src/personal/launch-material.js";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
@@ -23,6 +25,7 @@ const REQUEST: RunRequest = {
 
 function controller(states: JsonRunStateStore, now = new Date("2026-09-10T00:00:00.000Z"), id = "01234567-89ab-cdef-0123-456789abcdef"): PersonalMvpController {
   return new PersonalMvpController({
+    launchMaterial: TEST_MATERIAL,
     states,
     now: () => now,
     newId: () => id,
@@ -97,7 +100,7 @@ test("status renders persisted phase, timing, model, head, error, PR, and log ev
     stderrPath: "/home/user/.local/state/squire/logs/err.log",
     repositoryPath: "/work/repo",
     sourceRef: "main",
-    launchConfigDigest: "a".repeat(64),
+    launchConfigDigest: TEST_CONFIG_DIGEST,
     sandbox: "squire-aidev-1-status1234",
     repository: "example/repo",
     baseBranch: "main",
@@ -302,7 +305,7 @@ test("a running background state without its reservation is ambiguous by run ID 
     const states = new JsonRunStateStore(root);
     const reserved = await controller(states).reserve(REQUEST, {
       executionMode: "background",
-      launchConfigDigest: "a".repeat(64),
+      launchConfigDigest: TEST_CONFIG_DIGEST,
     });
     await unlink(path.join(root, "locks", `${REQUEST.ticketId.toLowerCase()}.lock`));
 
@@ -332,7 +335,7 @@ test("exact historical run IDs remain readable beside a valid replacement reserv
 
     const replacement = await controller(states, new Date("2026-09-10T00:01:00.000Z"), "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").reserve(REQUEST, {
       executionMode: "background",
-      launchConfigDigest: "a".repeat(64),
+      launchConfigDigest: TEST_CONFIG_DIGEST,
     });
     assert.equal((await findRunState(states, old.runId)).runId, old.runId);
     assert.equal((await findRunState(states, replacement.runId)).runId, replacement.runId);
@@ -415,7 +418,7 @@ test("background bootstrap transport does not add ambient variables to a capture
       cliPath: path.resolve("dist/src/personal/cli.js"),
       configPath: path.resolve("squire.config.example.json"),
       logsDirectory: path.join(root, "logs"),
-      launchConfigDigest: "d".repeat(64),
+      launchConfigDigest: TEST_CONFIG_DIGEST,
     });
     assert.equal(launchEnvironment?.["SQUIRE_DATA_DIR"], undefined);
     assert.equal(launchEnvironment?.["SQUIRE_STATE_DIRECTORY"], states.directory);
@@ -440,7 +443,7 @@ test("background bootstrap transport follows the JSON store when no override is 
       cliPath: path.resolve("dist/src/personal/cli.js"),
       configPath: path.resolve("squire.config.example.json"),
       logsDirectory: path.join(root, "logs"),
-      launchConfigDigest: "d".repeat(64),
+      launchConfigDigest: TEST_CONFIG_DIGEST,
     });
     assert.equal(launchEnvironment?.["SQUIRE_STATE_DIRECTORY"], states.directory);
   } finally {
@@ -452,9 +455,10 @@ test("background launch binds the source commit and child verifies it during pre
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-source-binding-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
-    const digest = "5".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     const sourceSha = "a".repeat(40);
     const parent = new PersonalMvpController({
+    launchMaterial: TEST_MATERIAL,
       states,
       tickets: {} as never,
       workspaces: { async resolveSource() { return sourceSha; } } as never,
@@ -475,6 +479,7 @@ test("background launch binds the source commit and child verifies it during pre
 
     let expectedBaseSha: string | undefined;
     const child = new PersonalMvpController({
+    launchMaterial: TEST_MATERIAL,
       states,
       tickets: { async get(ticketId) { return { id: ticketId, title: "source-bound", description: "" }; } },
       workspaces: {
@@ -497,7 +502,7 @@ test("background parent performs no post-spawn state write and child validates i
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-single-writer-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
-    const digest = "c".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     const run = controller(states);
     const launched = await run.startBackground(REQUEST, {
       launcher: { async launch() { return { pid: 777 }; } },
@@ -528,11 +533,13 @@ test("a detached child claims with a parent-monotonic timestamp before adapters 
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-clock-regression-"));
   try {
     const states = new JsonRunStateStore(root);
-    const digest = "6".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     const parentTime = "2026-09-10T00:00:00.000Z";
     const reserved = await controller(states, new Date(parentTime)).reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    await persistLaunchMaterial(TEST_MATERIAL, reserved, states.directory);
     let adapterObservedClaim = false;
     const child = new PersonalMvpController({
+    launchMaterial: TEST_MATERIAL,
       states,
       now: () => new Date("2026-09-09T23:59:59.000Z"),
       tickets: { async get() {
@@ -558,12 +565,13 @@ test("runReserved rejects a concurrent call on one controller", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-local-claim-"));
   try {
     const states = new JsonRunStateStore(root);
-    const digest = "e".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     let ticketEntered!: () => void;
     let rejectTicket!: (error: Error) => void;
     const entered = new Promise<void>(resolve => { ticketEntered = resolve; });
     const ticketBlocked = new Promise<never>((_, reject) => { rejectTicket = reject; });
     const run = new PersonalMvpController({
+    launchMaterial: TEST_MATERIAL,
       states,
       tickets: { async get() { ticketEntered(); return ticketBlocked; } },
       workspaces: {} as never,
@@ -571,6 +579,7 @@ test("runReserved rejects a concurrent call on one controller", async () => {
       publication: {} as never,
     });
     const reserved = await run.reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    await persistLaunchMaterial(TEST_MATERIAL, reserved, states.directory);
     const first = run.runReserved(REQUEST, reserved.runId, digest);
     await entered;
     await assert.rejects(run.runReserved(REQUEST, reserved.runId, digest), /already being claimed/);
@@ -585,8 +594,9 @@ test("two detached claimants admit exactly one owner before ticket and workspace
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-detached-claim-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
-    const digest = "f".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     const reserved = await controller(states).reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    await persistLaunchMaterial(TEST_MATERIAL, reserved, states.directory);
     const release = path.join(root, "release");
     const sideEffects = path.join(root, "side-effects");
     const ready = [path.join(root, "ready-a"), path.join(root, "ready-b")];
@@ -618,9 +628,10 @@ test("a detached child must own the exact reservation before adapter calls", asy
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-owner-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
-    const digest = "8".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     let ticketCalls = 0;
     const run = new PersonalMvpController({
+    launchMaterial: TEST_MATERIAL,
       states,
       tickets: { async get() { ticketCalls += 1; throw new Error("ticket adapter must not be called"); } },
       workspaces: {} as never,
@@ -628,6 +639,7 @@ test("a detached child must own the exact reservation before adapter calls", asy
       publication: {} as never,
     });
     const reserved = await run.reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    await persistLaunchMaterial(TEST_MATERIAL, reserved, states.directory);
     await writeFile(path.join(states.directory, "locks", "aidev-1.lock"), "aidev-1-replacement123\n", "utf8");
     await assert.rejects(run.runReserved(REQUEST, reserved.runId, digest), /reservation ownership mismatch/);
     assert.equal(ticketCalls, 0);
@@ -651,9 +663,10 @@ test("a reservation replacement during claim cannot admit a detached child", asy
         return super.claimReserved(state);
       }
     }(path.join(root, "state"));
-    const digest = "7".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     let ticketCalls = 0;
     const run = new PersonalMvpController({
+    launchMaterial: TEST_MATERIAL,
       states,
       tickets: { async get() { ticketCalls += 1; throw new Error("ticket adapter must not be called"); } },
       workspaces: {} as never,
@@ -661,6 +674,7 @@ test("a reservation replacement during claim cannot admit a detached child", asy
       publication: {} as never,
     });
     const reserved = await run.reserve(REQUEST, { executionMode: "background", controllerPid: null, launchConfigDigest: digest });
+    await persistLaunchMaterial(TEST_MATERIAL, reserved, states.directory);
     await assert.rejects(run.runReserved(REQUEST, reserved.runId, digest), /reservation ownership mismatch/);
     assert.equal(ticketCalls, 0);
     assert.equal((await states.read(reserved.runId))?.version, 1);
@@ -699,7 +713,7 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory: states.directory,
       logsDirectory: path.join(root, "logs"),
-      launchConfigDigest: "9".repeat(64),
+      launchConfigDigest: TEST_CONFIG_DIGEST,
       signal: alreadyAborted.signal,
     }), /operator interrupted before launch/);
     const preHandoff = (await states.findByTicket("AIDEV-2"))[0]!;
@@ -720,7 +734,7 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory: states.directory,
       logsDirectory: path.join(root, "logs"),
-      launchConfigDigest: "a".repeat(64),
+      launchConfigDigest: TEST_CONFIG_DIGEST,
       signal: abort.signal,
     });
     setImmediate(() => abort.abort(new Error("operator interrupted background startup")));
@@ -902,7 +916,7 @@ test("child bootstrap failure clamps a future reservation timestamp and releases
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-fallback-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
-    const digest = "b".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     const reservedAt = "9999-12-31T23:59:59.999Z";
     const reserved = await controller(states, new Date(reservedAt)).reserve(REQUEST, { executionMode: "background", launchConfigDigest: digest });
     const exit = await spawnExit(process.execPath, [
@@ -918,7 +932,7 @@ test("child bootstrap failure clamps a future reservation timestamp and releases
     assert.equal(failed?.launchState, "failed");
     assert.equal(failed?.endedAt, reservedAt);
     assert.equal(failed?.updatedAt, reservedAt);
-    assert.match(failed?.lastError ?? "", /ENOENT/);
+    assert.match(failed?.lastError ?? "", /identity mismatch/);
     assert.equal(await states.reservationOwner(REQUEST.ticketId), undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -929,7 +943,7 @@ test("bootstrap fallback cannot terminalize a reservation with a different ticke
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-identity-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
-    const digest = "1".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     const reserved = await controller(states).reserve({ ...REQUEST, ticketId: "AIDEV-2" }, { executionMode: "background", launchConfigDigest: digest });
     const missingConfig = path.join(root, "missing-config.json");
     const wrongTicketExit = await spawnExit(process.execPath, [
@@ -959,7 +973,7 @@ test("bootstrap fallback requires its reservation to be present and unchanged", 
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-owner-"));
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
-    const digest = "3".repeat(64);
+    const digest = TEST_CONFIG_DIGEST;
     const cases = [
       { ticketId: "AIDEV-3", id: "31234567-89ab-cdef-0123-456789abcdef", replacement: undefined },
       { ticketId: "AIDEV-4", id: "41234567-89ab-cdef-0123-456789abcdef", replacement: "aidev-4-replacement123" },
@@ -1000,7 +1014,7 @@ test("background launch rejects direct and resolved destinations inside the repo
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory,
       logsDirectory,
-      launchConfigDigest: "9".repeat(64),
+      launchConfigDigest: TEST_CONFIG_DIGEST,
     });
 
     await assert.rejects(launch(states.directory, path.join(repository, "logs")), /outside the repository/);

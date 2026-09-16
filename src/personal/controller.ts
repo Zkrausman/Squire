@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { canonical, launchEvidence, persistLaunchMaterial, readLaunchMaterial, validateLaunchMaterial, type LaunchMaterial, type LaunchEvidence } from "./launch-material.js";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -47,9 +48,11 @@ export interface PersonalRunMetadata {
   readonly controllerPid?: number | null;
   readonly launchConfigPath?: string;
   readonly launchConfigDigest?: string;
+  readonly launchEvidence?: LaunchEvidence;
 }
 
 export interface PersonalMvpControllerOptions {
+  readonly launchMaterial?: LaunchMaterial;
   readonly tickets: TicketPort;
   readonly workspaces: WorkspacePort;
   readonly phases: PhasePort;
@@ -107,6 +110,7 @@ export interface StartedBackgroundRun {
  * can durably record a run before it contacts Linear or starts Docker.
  */
 export class PersonalMvpController {
+  readonly #material: LaunchMaterial | undefined;
   readonly #tickets: TicketPort;
   readonly #workspaces: WorkspacePort;
   readonly #phases: PhasePort;
@@ -121,6 +125,7 @@ export class PersonalMvpController {
   readonly #reservedClaims = new Set<string>();
 
   constructor(options: PersonalMvpControllerOptions) {
+    this.#material = options.launchMaterial === undefined ? undefined : validateLaunchMaterial(options.launchMaterial);
     this.#tickets = options.tickets;
     this.#workspaces = options.workspaces;
     this.#phases = options.phases;
@@ -155,6 +160,7 @@ export class PersonalMvpController {
       controllerPid: options.controllerPid ?? (executionMode === "foreground" ? this.#controllerPid ?? null : null),
       ...(options.launchConfigPath !== undefined ? { launchConfigPath: options.launchConfigPath } : {}),
       ...(options.launchConfigDigest !== undefined ? { launchConfigDigest: options.launchConfigDigest } : {}),
+      ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
     if (this.#states.reserve) {
@@ -200,6 +206,8 @@ export class PersonalMvpController {
         || loaded.launchConfigDigest !== launchConfigDigest
         || (boundConfigPath !== undefined && loaded.launchConfigPath !== boundConfigPath)
       ) throw new Error("reserved run configuration identity mismatch");
+      const captured = await readLaunchMaterial(loaded, resolveBackgroundStateDirectory(this.#states, undefined));
+      if (!this.#material || canonical(captured) !== canonical(this.#material)) throw new Error("reserved execution requires matching captured launch material");
       if (loaded.executionMode !== "background") throw new Error("reserved child execution requires a background run");
       if (loaded.status !== "running" || loaded.launchState !== "reserved" || loaded.controllerPid !== null || loaded.lifecycle !== "launching" || loaded.step !== "launching" || loaded.preparationState !== "pending") {
         throw new Error(`run is not in the exact reserved launch state: ${runId}`);
@@ -255,6 +263,7 @@ export class PersonalMvpController {
    */
   async startBackground(request: RunRequest, options: StartBackgroundOptions): Promise<StartedBackgroundRun> {
     validateRequest(request);
+    if (!this.#material) throw new Error("background execution requires captured launch material");
     const launcher = options.launcher ?? new NodeBackgroundLauncher();
     const cliPath = absolutePath(options.cliPath, "CLI path");
     const configPath = absolutePath(options.configPath, "config path");
@@ -283,6 +292,7 @@ export class PersonalMvpController {
     launchEnvironment["SQUIRE_STATE_DIRECTORY"] = stateDirectory;
 
     if (!/^[a-f0-9]{64}$/u.test(options.launchConfigDigest)) throw new Error("launch config digest is invalid");
+    if (createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") !== options.launchConfigDigest) throw new Error("launch config digest does not match captured material");
     let state = await this.reserve(request, {
       runId: reservedId,
       executionMode: "background",
@@ -306,6 +316,7 @@ export class PersonalMvpController {
         state = context.state;
       }
       if (options.signal?.aborted) throw startupAbortReason(options.signal);
+      await persistLaunchMaterial(this.#material, state, stateDirectory);
       const launchRequest: BackgroundLaunchRequest = {
         executable: options.executable ?? process.execPath,
         args: [cliPath, "run", request.ticketId, "--config", configPath, "--reserved-run-id", state.runId, "--reserved-config-sha256", options.launchConfigDigest],
@@ -669,7 +680,7 @@ function initialState(
   profiles: NonNullable<PersonalRunState["profiles"]>,
   planSelection: NonNullable<PersonalRunState["planSelection"]>,
   startedAt: string,
-  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "launchConfigPath" | "launchConfigDigest">,
+  metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "launchConfigPath" | "launchConfigDigest" | "launchEvidence">,
 ): PersonalRunState {
   const background = metadata.executionMode === "background";
   return {
@@ -695,6 +706,7 @@ function initialState(
     sourceRef: request.sourceRef,
     ...(metadata.launchConfigPath !== undefined ? { launchConfigPath: metadata.launchConfigPath } : {}),
     ...(metadata.launchConfigDigest !== undefined ? { launchConfigDigest: metadata.launchConfigDigest } : {}),
+    ...(metadata.launchEvidence !== undefined ? { launchEvidence: metadata.launchEvidence } : {}),
     sandbox,
     repository: request.repository,
     baseBranch: request.baseBranch,
