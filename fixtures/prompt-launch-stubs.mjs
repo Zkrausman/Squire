@@ -31,6 +31,7 @@ NodeBackgroundLauncher.prototype.launch = async function(request) {
 };
 let input;
 NodeCommandRunner.prototype.run = async function(request) {
+  if (request.command === 'sbx' && request.args.some(argument => argument === '')) throw new Error('sandbox argv contains an empty element');
   if (request.args[0] === 'cp') input = JSON.parse(await readFile(request.args[1], 'utf8'));
   if (!request.args.includes('--print')) return { stdout: '', stderr: '' };
   const prompt = request.args[request.args.indexOf('--system-prompt') + 1];
