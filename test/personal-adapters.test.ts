@@ -100,6 +100,24 @@ async function runPiOutput(
   }
 }
 
+test("Pi phase timeout is propagated to the actual sandbox launch command", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-timeout-"));
+  try {
+    let launch: CommandRequest | undefined;
+    const commands: CommandPort = {
+      async run(request) {
+        if (request.command === "sbx" && request.args.includes("--print")) {
+          launch = request;
+          return { stdout: JSON.stringify(reducedPayload("plan")), stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+    await new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: [], timeoutMs: 123_456 }).run(phaseInput("plan"));
+    assert.equal(launch?.timeoutMs, 123_456);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("Node command runner closes stdin for non-interactive child processes", async () => {
   const result = await new NodeCommandRunner().run({
     command: process.execPath,

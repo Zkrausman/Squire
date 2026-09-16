@@ -322,6 +322,7 @@ function createController(config: PersonalMvpConfig, stateDirectory = config.pat
       roleUser: config.sandbox.roleUser,
       piExecutable: config.sandbox.piExecutable,
       piAgentDirectory: config.sandbox.piAgentDirectory,
+      ...(config.phaseTimeoutMs === undefined ? {} : { timeoutMs: config.phaseTimeoutMs }),
     }),
     publication: new GitHubPublisher({
       commands,

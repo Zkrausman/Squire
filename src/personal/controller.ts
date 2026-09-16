@@ -469,15 +469,30 @@ export class PersonalMvpController {
       if (startingHead !== expectedHead) throw new Error(`${phase} started at an unexpected Git HEAD`);
     }
     let result: PhaseResult | undefined;
+    let phaseFailed = false;
     let phaseError: unknown;
     try {
       result = await this.#phases.run(input, signal);
     } catch (error) {
+      phaseFailed = true;
       phaseError = error;
     }
-    const observedHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
-    await this.#workspaces.assertClean(context.state.sandbox, signal);
-    if (phaseError !== undefined) throw phaseError;
+    let observedHead: string | undefined;
+    let workspaceFailed = false;
+    let workspaceDiagnostic: unknown;
+    try {
+      observedHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
+      await this.#workspaces.assertClean(context.state.sandbox, signal);
+    } catch (error) {
+      workspaceFailed = true;
+      workspaceDiagnostic = error;
+    }
+    if (phaseFailed) {
+      if (workspaceFailed) throw withSecondaryWorkspaceDiagnostic(phaseError, workspaceDiagnostic);
+      throw phaseError;
+    }
+    if (workspaceFailed) throw workspaceDiagnostic;
+    if (observedHead === undefined) throw new Error(`${phase} did not produce an observed Git HEAD`);
     if (!result) throw new Error(`${phase} returned no result`);
     const evidencedResult: PhaseResult = result.profile === undefined
       ? { ...structuredClone(result), profile: { ...expectedProfile } }
@@ -737,6 +752,13 @@ function appendRemediationAttempt(state: PersonalRunState, phase: "review" | "te
     throw new Error(`invalid ${phase} remediation attempt evidence`);
   }
   return { ...current, [phase]: [...prior, attempt] };
+}
+
+function withSecondaryWorkspaceDiagnostic(primary: unknown, secondary: unknown): Error {
+  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
+  const secondaryMessage = secondary instanceof Error ? secondary.message : String(secondary);
+  const error = new Error(`${primaryMessage}; secondary workspace diagnostic: ${secondaryMessage}`, { cause: primary });
+  return error;
 }
 
 function feedback(result: PhaseResult): readonly string[] {

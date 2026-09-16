@@ -23,10 +23,16 @@ class MemoryWorkspace implements WorkspacePort {
   clean = true;
   wikiPaths: string[] = [];
   cleanChecks = 0;
+  cleanFailureAt: number | undefined;
+  cleanFailure: unknown;
   constructor(readonly events: string[] = []) {}
   async prepare(): Promise<{ sandbox: string; baseSha: string; head: string }> { this.events.push("workspace:prepare"); return { sandbox: "squire-aidev-1-0123456789", baseSha: BASE, head: BASE }; }
   async currentHead(): Promise<string> { return this.head; }
-  async assertClean(): Promise<void> { this.cleanChecks += 1; if (!this.clean) throw new Error("workspace has uncommitted changes"); }
+  async assertClean(): Promise<void> {
+    this.cleanChecks += 1;
+    if (!this.clean) throw new Error("workspace has uncommitted changes");
+    if (this.cleanFailureAt === this.cleanChecks) throw this.cleanFailure;
+  }
   async committedProjectWikiPaths(): Promise<readonly string[]> { return [...this.wikiPaths]; }
   async exportBundle(input: { runId: string; sandbox: string; branch: string; baseSha: string; head: string }): Promise<CandidateBundle> {
     assert.equal(input.head, this.head);
@@ -206,6 +212,52 @@ test("failed or malformed Retro stops visibly without publication and still chec
     assert.equal(harness.workspace.cleanChecks, 9);
     assert.equal(harness.publications.length, 0);
   });
+});
+
+test("undefined phase and workspace failures are tracked independently from their values", async t => {
+  await t.test("successful phase plus undefined cleanliness failure is rejected", async () => {
+    const harness = createHarness(async input => phaseResult(input, BASE));
+    harness.workspace.cleanFailureAt = 2; // Plan's post-phase cleanliness check.
+    harness.workspace.cleanFailure = undefined;
+    await assert.rejects(harness.controller.run(REQUEST), error => error === undefined);
+  });
+  await t.test("undefined phase failure remains primary with a dirty Error diagnostic", async () => {
+    const harness = createHarness(async input => {
+      if (input.phase === "implement") throw undefined;
+      return phaseResult(input, harness.workspace.head);
+    });
+    harness.workspace.cleanFailureAt = 3; // Implement's post-phase check (Plan used checks 1 and 2).
+    harness.workspace.cleanFailure = new Error("workspace has uncommitted changes");
+    await assert.rejects(harness.controller.run(REQUEST), error => {
+      assert.match(String(error), /undefined; secondary workspace diagnostic: workspace has uncommitted changes/);
+      return true;
+    });
+  });
+  for (const rejected of ["phase failed", null]) {
+    await t.test(`non-Error ${String(rejected)} phase rejection is not swallowed`, async () => {
+      const harness = createHarness(async input => {
+        if (input.phase === "plan") throw rejected;
+        return phaseResult(input, harness.workspace.head);
+      });
+      await assert.rejects(harness.controller.run(REQUEST), error => error === rejected);
+    });
+  }
+});
+
+test("phase execution error remains primary when post-phase cleanliness diagnostics fail", async () => {
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.clean = false;
+      throw new Error("phase timed out");
+    }
+    return phaseResult(input, workspace.head);
+  });
+  await assert.rejects(harness.controller.run(REQUEST), error => {
+    assert.match(String(error), /phase timed out/);
+    assert.match(String(error), /secondary workspace diagnostic: workspace has uncommitted changes/);
+    return true;
+  });
+  assert.equal(harness.publications.length, 0);
 });
 
 test("Retro workspace or HEAD changes fail closed before publication", async t => {

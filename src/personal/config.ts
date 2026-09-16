@@ -11,6 +11,17 @@ import {
   type PhaseProfile,
 } from "./model-policy.js";
 
+export const PERSONAL_PHASE_TIMEOUT_MIN_MS = 60_000;
+export const PERSONAL_PHASE_TIMEOUT_MAX_MS = 14_400_000;
+
+/** Validate the bounded maximum runtime for each Pi phase. */
+export function validatePhaseTimeoutMs(value: unknown, label = "phaseTimeoutMs"): number {
+  if (!Number.isSafeInteger(value) || (value as number) < PERSONAL_PHASE_TIMEOUT_MIN_MS || (value as number) > PERSONAL_PHASE_TIMEOUT_MAX_MS) {
+    throw new Error(`${label} must be a safe integer between ${PERSONAL_PHASE_TIMEOUT_MIN_MS} and ${PERSONAL_PHASE_TIMEOUT_MAX_MS} milliseconds`);
+  }
+  return value as number;
+}
+
 export interface PersonalMvpConfig {
   readonly repository: {
     readonly slug: string;
@@ -42,6 +53,8 @@ export interface PersonalMvpConfig {
   /** Normalized policy; Plan is always exactly two equal buckets. */
   readonly modelPolicy: PersonalModelPolicy;
   readonly testCommands: readonly string[];
+  /** Maximum Pi phase runtime; omitted means the runner's one-hour default. */
+  readonly phaseTimeoutMs?: number;
 }
 
 export interface ConfigPathOptions {
@@ -157,7 +170,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   for (const alias of legacyAliases) {
     if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
   }
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "testCommands"], "configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
 
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
@@ -188,6 +201,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
     ? clonePolicy(APPROVED_PERSONAL_MODEL_POLICY)
     : parseModelPolicy(policyValue);
 
+  const phaseTimeoutMs = value["phaseTimeoutMs"] === undefined ? undefined : validatePhaseTimeoutMs(value["phaseTimeoutMs"]);
   const testCommands = value["testCommands"];
   if (!Array.isArray(testCommands) || testCommands.length === 0 || testCommands.length > 100 || testCommands.some(command => typeof command !== "string" || command.length === 0 || command.length > 2_000)) throw new Error("testCommands must be a non-empty string array");
   const tokenCommand = github["tokenCommand"];
@@ -239,6 +253,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
     },
     modelPolicy,
     testCommands: [...testCommands] as string[],
+    ...(phaseTimeoutMs === undefined ? {} : { phaseTimeoutMs }),
   };
 }
 
