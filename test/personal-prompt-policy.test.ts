@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,6 +32,29 @@ test("prompt capture rejects missing/malformed manifests, files and repository p
     await assert.rejects(capturePromptSet({ ...f.selection, root: f.repository }, f.repository), /repository/);
     await symlink(f.repository, path.join(f.base, "alias"));
     await assert.rejects(capturePromptSet({ ...f.selection, root: path.join(f.base, "alias") }, f.repository));
+  } finally { await rm(f.base, { recursive: true, force: true }); }
+});
+
+test("manifest authority, traversal, repository file aliases and writable sources fail closed", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(path.join(f.repository, "policy.md"), "repository-controlled");
+    await rm(path.join(f.root, "plan.md"));
+    await symlink(path.join(f.repository, "policy.md"), path.join(f.root, "plan.md"));
+    await assert.rejects(capturePromptSet(f.selection, f.repository), /unsafe prompt file/);
+    await rm(path.join(f.root, "plan.md"));
+    await link(path.join(f.repository, "policy.md"), path.join(f.root, "plan.md"));
+    await assert.rejects(capturePromptSet(f.selection, f.repository), /unsafe prompt file/);
+    await rm(path.join(f.root, "plan.md")); await writeFile(path.join(f.root, "plan.md"), "host guidance");
+    await chmod(path.join(f.root, "plan.md"), 0o666);
+    await assert.rejects(capturePromptSet(f.selection, f.repository), /unsafe prompt file/);
+    await chmod(path.join(f.root, "plan.md"), 0o600);
+    for (const manifest of [
+      { version: 1, id: "other", phases: {}, subphases: {} },
+      { version: 1, id: "custom", phases: { plan: "../repo/policy.md" }, subphases: {} },
+      { version: 1, id: "custom", phases: {}, subphases: {}, tools: ["bash"] },
+      { version: 1, id: "custom", phases: {}, subphases: { shell: "plan.md" } },
+    ]) { await writeFile(path.join(f.root, "manifest.json"), JSON.stringify(manifest)); await assert.rejects(capturePromptSet(f.selection, f.repository)); }
   } finally { await rm(f.base, { recursive: true, force: true }); }
 });
 

@@ -161,6 +161,36 @@ export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigP
   };
 }
 
+/** Pure schema validation for captured raw bytes; never resolves paths or reads the child environment. */
+export function validateCapturedRawConfig(raw: unknown): void {
+  const value = object(raw, "captured raw configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
+  const repository = object(value["repository"], "repository");
+  rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
+  for (const key of ["slug", "path", "baseBranch"]) text(repository[key], `repository.${key}`);
+  validateSourceRef(repository["sourceRef"]);
+  const paths = value["paths"] === undefined ? {} : object(value["paths"], "paths");
+  rejectUnknownKeys(paths, ["state", "bridges", "staging"], "paths");
+  for (const [key, entry] of Object.entries(paths)) text(entry, `paths.${key}`);
+  if (value["dataDirectory"] !== undefined) text(value["dataDirectory"], "dataDirectory");
+  const linear = object(value["linear"], "linear");
+  rejectUnknownKeys(linear, ["apiKeyEnv", "endpoint"], "linear");
+  text(linear["apiKeyEnv"], "linear.apiKeyEnv");
+  if (linear["endpoint"] !== undefined && typeof linear["endpoint"] !== "string") throw new Error("linear.endpoint must be a string");
+  const github = object(value["github"], "github");
+  rejectUnknownKeys(github, ["tokenCommand"], "github");
+  for (const [label, commands, limit] of [["testCommands", value["testCommands"], 100], ["github.tokenCommand", github["tokenCommand"], 32]] as const) {
+    if (!Array.isArray(commands) || commands.length === 0 || commands.length > limit || commands.some(command => typeof command !== "string" || command.length === 0 || command.length > 2_000)) throw new Error(`${label} must be a bounded non-empty string array`);
+  }
+  const sandbox = object(value["sandbox"], "sandbox");
+  rejectUnknownKeys(sandbox, ["template", "roleUser", "piExecutable", "piAgentDirectory", "piAuthFile"], "sandbox");
+  for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key], `sandbox.${key}`);
+  for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key], `sandbox.${key}`);
+  if (value["modelPolicy"] !== undefined) parseModelPolicy(value["modelPolicy"]);
+  if (value["promptPolicy"] !== undefined) validatePromptSelection(value["promptPolicy"]);
+  if (value["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(value["phaseTimeoutMs"]);
+}
+
 async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: ConfigPathOptions): Promise<PersonalMvpConfig> {
   const platform = options.platform ?? process.platform;
   const raw: unknown = JSON.parse(bytes.toString("utf8"));

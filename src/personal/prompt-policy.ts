@@ -144,7 +144,7 @@ export async function capturePromptSet(selection: PromptSelection, repository: s
 function assertOwner(s: BigIntStats): void {
   if (process.getuid && s.uid !== 0n && s.uid !== BigInt(process.getuid())) throw new Error("prompt source is not host-owned");
 }
-function sameIdentity(a: BigIntStats, b: BigIntStats): boolean { return a.dev === b.dev && a.ino === b.ino; }
+function sameIdentity(a: BigIntStats, b: BigIntStats): boolean { return a.dev === b.dev && a.ino === b.ino && a.birthtimeNs === b.birthtimeNs && a.uid === b.uid; }
 function sameSnapshot(a: BigIntStats, b: BigIntStats): boolean { return sameIdentity(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.mode === b.mode && a.nlink === b.nlink; }
 function within(parent: string, child: string): boolean { const r = path.relative(parent, child); return r === "" || (!r.startsWith(`..${path.sep}`) && r !== ".." && !path.isAbsolute(r)); }
 export function record(value: unknown, allowed: readonly string[], label: string): Record<string, unknown> {

@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { LoadedPersonalMvpConfig, PersonalMvpConfig } from "./config.js";
-import { validatePhaseTimeoutMs } from "./config.js";
+import { validateCapturedRawConfig, validatePhaseTimeoutMs } from "./config.js";
 import { validateModelPolicy } from "./model-policy.js";
 import { validateSourceRef } from "./identity.js";
 import { buildCorePrompt } from "./prompt-core.js";
@@ -41,7 +41,7 @@ export function validateLaunchMaterial(value: unknown): LaunchMaterial {
   if (v["version"] !== 1 || v["coreDigest"] !== coreDigest()) throw new Error("launch material core/version mismatch");
   base64(v["rawConfig"]);
   const raw = JSON.parse(decode(v["rawConfig"] as string));
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid captured raw configuration");
+  validateCapturedRawConfig(raw);
   const config = validateCapturedConfig(v["config"]);
   const prompts = record(v["prompts"], ["manifest", "phases", "subphases"], "captured prompts");
   base64(prompts["manifest"]);

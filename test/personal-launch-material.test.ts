@@ -33,6 +33,7 @@ test("captured material is defensive, closed, canonical-base64 validated and dig
     (v: any) => { v.prompts.manifest = Buffer.from(JSON.stringify({ version: 1, id: "default", phases: {}, subphases: {}, tools: ["bash"] })).toString("base64"); },
     (v: any) => { v.config.promptPolicy.transitions = ["publish"]; },
     (v: any) => { v.config.modelPolicy.plan = []; },
+    (v: any) => { const raw = JSON.parse(Buffer.from(v.rawConfig, "base64").toString()); raw.sandbox.tools = ["bash"]; v.rawConfig = Buffer.from(JSON.stringify(raw)).toString("base64"); },
   ]) { const v = structuredClone(TEST_MATERIAL); mutate(v); assert.throws(() => validateLaunchMaterial(rehash(v))); }
   const tampered = structuredClone(TEST_MATERIAL); (tampered.config.testCommands as string[])[0] = "other";
   assert.throws(() => validateLaunchMaterial(tampered), /digest/);
@@ -69,7 +70,7 @@ test("detached entry requires bound material before claim and structurally round
 });
 
 test("combined digest covers exact config bytes separately from normalized values", async () => {
-  const changedBytes = "{ }";
+  const changedBytes = Buffer.from(TEST_MATERIAL.rawConfig, "base64").toString() + "\n";
   const material = await captureLaunchMaterial({ config: TEST_MATERIAL.config, rawConfig: Buffer.from(changedBytes).toString("base64"), digest: createHash("sha256").update(changedBytes).digest("hex") });
   assert.deepEqual(material.config, TEST_MATERIAL.config);
   assert.notEqual(material.digest, TEST_MATERIAL.digest);
