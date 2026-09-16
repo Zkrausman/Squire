@@ -133,7 +133,8 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
         assert.ok(!r.prompt.includes("TICKET DATA ONLY"));
         assert.equal(r.promptDigest, createHash("sha256").update(r.prompt).digest("hex"));
         assert.ok(r.args.includes("--no-approve"));
-        assert.equal(r.args[r.args.indexOf("--append-system-prompt") + 1], "");
+        assert.deepEqual(r.args.filter((argument: string) => argument === ""), []);
+        assert.equal(r.args.includes("--append-system-prompt"), false);
         if (r.phase === "plan") assert.equal(r.args[r.args.indexOf("--tools") + 1], "read,grep,find,ls");
         assert.ok(runs.some(s => s.launchEvidence?.digest === r.digest));
       }

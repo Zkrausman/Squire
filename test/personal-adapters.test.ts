@@ -94,6 +94,7 @@ async function runPiOutput(
     const result = await new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] }).run(phaseInput(phase));
     assert.ok(document);
     assert.ok(launch);
+    assert.deepEqual(launch.args.filter(argument => argument === ""), []);
     return { result, document, launch };
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -206,6 +207,7 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
     assert.equal(launches.length, 5);
     for (const [index, phase] of (["plan", "review", "test", "retro", "implement"] as const).entries()) {
       const launch = launches[index]!;
+      assert.deepEqual(launch.args.filter(argument => argument === ""), []);
       const envIndex = launch.args.indexOf("/usr/bin/env");
       assert.equal(launch.args[envIndex + 1], "-i");
       assert.equal(launch.args.includes("PI_OFFLINE=1"), true);
@@ -370,6 +372,7 @@ test("Pi adapter launches every approved policy triple exactly", async () => {
     assert.equal(launches.length, phases.length);
     for (const [index, phase] of phases.entries()) {
       const launch = launches[index]!;
+      assert.deepEqual(launch.args.filter(argument => argument === ""), []);
       const profile = APPROVED_PROFILES[phase];
       assert.deepEqual(results[index]?.profile, profile);
       const providerIndex = launch.args.indexOf("--provider");
