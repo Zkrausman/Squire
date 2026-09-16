@@ -25,6 +25,16 @@ The aggregate preserves `details.steps` and adds versioned `details.supervision`
 
 Only the controller persists acknowledged `planProgress` with `step: plan`. Status renders `Plan / Requirements`, `Plan / Implementation Design`, and clarification blockers. Stale attempt/identity events and late progress are rejected. Immutable `planExecution: supervised-v1` distinguishes new supervised state from readable historical flat Plan records. A new supervised run cannot bypass nested validation with a legacy result.
 
+## Live acceptance evidence
+
+Automated supervisor coverage proves repository behavior, not a live ticket-to-PR rollout. Keep an observed/pending gate ledger with run ID, Plan attempt, exact source HEAD and evidence provenance; unavailable host evidence must remain pending. The [AIDEV-264 acceptance note](../../../docs/acceptance-notes/aidev-264-white-glove-plan.md) illustrates this split without claiming downstream completion.
+
+Correlate the persisted aggregate journal with both child inputs, session files and canonical artifact digests. Validate the Requirements-to-Design `requirementsDigest` and equality of aggregate ordered steps with Design steps. Distinguish supervisor lifecycle identity, controller child session IDs and Pi session-header IDs; correlate namespaces by session file rather than assuming the identifiers are equal. Both children must bind the same Plan profile, exact HEAD and captured launch identity. Their effective prompt digests are subphase-specific and need not match. A shared launch digest alone does not independently verify the host's immutable captured prompt-set manifest/core evidence.
+
+Retain actual sanitized status observations for both `Plan / Requirements` and `Plan / Implementation Design`, correlated with run/attempt. Session/artifact existence and status-renderer tests are not substitutes for those observations. Keep only bounded evidence summaries and identifiers in committed notes, never raw model transcripts, prompt bodies, secrets or executable terminal controls.
+
+Commit the intended documentation/wiki candidate before final exact-commit gates. The authorized parent/operator attaches candidate SHA, clean-tree proof, fresh Review/Test/Retro bindings, full test and Linux CI outcomes, and matching unmerged PR identity with canonical Knowledge/Retro evidence externally to the ticket or PR. Do not backfill the branch after Test or attempt to embed a commit's own SHA in itself. Any intervening candidate change requires renewed exact-commit gates. Preserve observed failures with provenance; missing evidence alone does not justify speculative hardening tickets. Report Implement knowledge paths from the cumulative run-base-to-candidate diff, not merely the last commit.
+
 ## Lifecycle and operational limits
 
 Plan is one controller lifecycle, deadline and retry boundary. Validated partial artifacts are evidence, not independent resume checkpoints. There is no generic graph, recovery engine or model escalation.
