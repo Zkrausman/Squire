@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import test from "node:test";
 import { captureLaunchMaterial, canonical, composeSystemPrompt, launchEvidence, materialPath, persistLaunchMaterial, readLaunchMaterial, validateLaunchMaterial } from "../src/personal/launch-material.js";
 import { PersonalMvpController } from "../src/personal/controller.js";
+import { builtinPrompts } from "../src/personal/prompt-policy.js";
+import type { PersonalPhase } from "../src/personal/types.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
+import { launchTestRoot, assertProtectedAcl } from "./helpers/windows-launch.js";
 
 function rehash(value: unknown): unknown {
   const v = value as Record<string, unknown>; const { digest: _, ...body } = v;
@@ -40,7 +43,7 @@ test("captured material is defensive, closed, canonical-base64 validated and dig
 });
 
 test("detached entry requires bound material before claim and structurally roundtrips launch evidence", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-material-"));
+  const root = await launchTestRoot("squire-material-");
   try {
     const states = new JsonRunStateStore(root);
     let calls = 0;
@@ -90,11 +93,11 @@ test("core precedes phase and optional selected subphase; unknown subphases fail
 });
 
 test("actual foreground and detached CLI reach Pi with identical captured prompts/digest after sources deleted", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-launch-parity-"));
+  const root = await launchTestRoot("squire-launch-parity-");
   try {
     const configFile = path.join(root, "config.json"), prompts = path.join(root, "prompts"), repository = path.join(root, "repo"), data = path.join(root, "runtime");
     await mkdir(repository);
-    const config = { repository: { slug: "example/repo", path: repository, sourceRef: "HEAD", baseBranch: "main" }, dataDirectory: data, linear: { apiKeyEnv: "SQUIRE_FIXTURE_KEY" }, github: { tokenCommand: ["false"] }, sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/pi-agent" }, testCommands: ["npm test"], promptPolicy: { version: 1, id: "custom", root: prompts, plan: ["requirements", "implementation-design"] } };
+    const config = { repository: { slug: "example/repo", path: repository, sourceRef: "HEAD", baseBranch: "main" }, dataDirectory: data, linear: { apiKeyEnv: "SQUIRE_FIXTURE_KEY" }, github: { tokenCommand: ["false"] }, sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/pi-agent" }, testCommands: ["npm test"], promptPolicy: process.platform === "win32" ? { version: 1, id: "default", plan: ["requirements", "implementation-design"] } : { version: 1, id: "custom", root: prompts, plan: ["requirements", "implementation-design"] } };
     const states = new JsonRunStateStore(path.join(data, "state"));
     const captures: any[][] = [];
     for (const background of [false, true]) {
@@ -105,15 +108,15 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       await writeFile(configFile, JSON.stringify(config));
       const record = path.join(root, `${background}.jsonl`);
       const exitMarker = path.join(root, "detached-exit");
-      const env: NodeJS.ProcessEnv = { ...process.env, SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${path.resolve("fixtures/prompt-launch-stubs.mjs")}` };
+      const env: NodeJS.ProcessEnv = { ...process.env, SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${pathToFileURL(path.resolve("fixtures/prompt-launch-stubs.mjs")).href}` };
       delete env["SQUIRE_DATA_DIR"]; delete env["SQUIRE_CONFIG"];
       const exit = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn(process.execPath, [path.resolve("dist/src/personal/cli.js"), "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(process.execPath, [path.resolve("dist/src/personal/cli.js"), "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
         let stderr = ""; child.stderr.on("data", d => { stderr += d; }); child.on("error", reject); child.on("exit", code => code === 0 ? resolve(code) : reject(new Error(stderr)));
       });
       assert.equal(exit, 0);
       let runs = await states.findByTicket("AIDEV-1");
-      const deadline = Date.now() + 15_000;
+      const deadline = Date.now() + 30_000;
       while (runs.some(s => s.status === "running") && Date.now() < deadline) { await new Promise(r => setTimeout(r, 20)); runs = await states.findByTicket("AIDEV-1"); }
       assert.ok(runs.every(s => s.status === "completed"), JSON.stringify(runs));
       if (background) {
@@ -129,7 +132,8 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       const records = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       assert.deepEqual(records.map(r => r.phase), ["plan", "implement", "review", "test", "retro"]);
       for (const r of records) {
-        assert.ok(r.prompt.indexOf("Runtime authority") < r.prompt.indexOf("HOST LAYER"));
+        const layer = process.platform === "win32" ? Buffer.from(builtinPrompts().phases[r.phase as PersonalPhase], "base64").toString() : "HOST LAYER";
+        assert.ok(r.prompt.indexOf("Runtime authority") < r.prompt.indexOf(layer));
         assert.ok(!r.prompt.includes("TICKET DATA ONLY"));
         assert.equal(r.promptDigest, createHash("sha256").update(r.prompt).digest("hex"));
         assert.ok(r.args.includes("--no-approve"));
@@ -137,6 +141,18 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
         assert.equal(r.args.includes("--append-system-prompt"), false);
         if (r.phase === "plan") assert.equal(r.args[r.args.indexOf("--tools") + 1], "read,grep,find,ls");
         assert.ok(runs.some(s => s.launchEvidence?.digest === r.digest));
+      }
+      if (process.platform === "win32") {
+        for (const r of records) {
+          assert.ok(r.stagingPath);
+          await assert.rejects(readFile(r.stagingPath), /ENOENT/);
+          assertProtectedAcl(path.dirname(r.stagingPath));
+        }
+        for (const run of runs.filter(s => s.executionMode === "background")) {
+          assertProtectedAcl(materialPath(path.join(data, "state"), run.runId));
+          assertProtectedAcl(run.stdoutPath!);
+          assertProtectedAcl(run.stderrPath!);
+        }
       }
       captures.push(records);
     }

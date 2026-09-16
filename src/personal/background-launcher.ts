@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
-import { mkdir, open, type FileHandle } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
+import { windowsLaunch } from "./windows-launch.js";
 import path from "node:path";
 
 export interface BackgroundLaunchRequest {
@@ -50,21 +51,21 @@ export class NodeBackgroundLauncher implements BackgroundLauncher {
     const launchEnvironment: NodeJS.ProcessEnv = { ...(request.env ?? process.env) };
     const stdoutPath = path.resolve(request.stdoutPath);
     const stderrPath = path.resolve(request.stderrPath);
-    await mkdir(path.dirname(stdoutPath), { recursive: true, mode: 0o700 });
-    await mkdir(path.dirname(stderrPath), { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") {
+      await mkdir(path.dirname(stdoutPath), { recursive: true, mode: 0o700 });
+      await mkdir(path.dirname(stderrPath), { recursive: true, mode: 0o700 });
+    }
 
     throwIfAborted(request.signal);
-    let stdout: FileHandle | undefined;
-    let stderr: FileHandle | undefined;
+    let stdout: LogHandle | undefined;
+    let stderr: LogHandle | undefined;
     try {
       // Append makes a relaunch/diagnostic invocation preserve the first
       // launch error instead of silently truncating it. The descriptors are
       // closed by the parent immediately after spawn confirmation.
       stdout = await openLog(stdoutPath);
-      await stdout.chmod(0o600);
       throwIfAborted(request.signal);
       stderr = await openLog(stderrPath);
-      await stderr.chmod(0o600);
       throwIfAborted(request.signal);
       const child = this.#spawn(request.executable, [...request.args], {
         ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
@@ -137,13 +138,17 @@ function validateRequest(request: BackgroundLaunchRequest): void {
   if (!path.isAbsolute(request.stdoutPath) || !path.isAbsolute(request.stderrPath)) throw new Error("background log paths must be absolute");
 }
 
-async function openLog(file: string): Promise<FileHandle> {
-  // O_NOFOLLOW rejects only a final-component symlink. It does not establish
-  // ancestor-integrity or hardlink protection.
-  const flags = process.platform === "win32"
-    ? "a"
-    : constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW;
-  return open(file, flags, 0o600);
+interface LogHandle { readonly fd: number; close(): Promise<void>; }
+async function openLog(file: string): Promise<LogHandle> {
+  if (process.platform === "win32") {
+    const native = windowsLaunch();
+    const fd = native.openLog(file);
+    return { fd, async close() { native.closeLog(fd); } };
+  }
+  // Preserve the POSIX no-follow/mode policy.
+  const handle = await open(file, constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  try { await handle.chmod(0o600); return handle; }
+  catch (error) { await handle.close(); throw error; }
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

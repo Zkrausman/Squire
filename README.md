@@ -42,6 +42,8 @@ npm run build
 npm run squire -- run AIDEV-123
 ```
 
+On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture and protected phase-input staging; custom prompt roots are unsupported. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
+
 Squire does not search the checkout for configuration. The implicit config is
 `%USERPROFILE%\.squire\config.json` on Windows and
 `$XDG_CONFIG_HOME/squire/config.json` (or `~/.config/squire/config.json`) on

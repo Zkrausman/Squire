@@ -205,7 +205,7 @@ exactKeys(document.on.push, ["branches"], "workflow.on.push");
 assert.deepEqual(document.on.push.branches, ["main"]);
 exactKeys(document.permissions, ["contents"], "workflow.permissions");
 assert.equal(document.permissions.contents, "read");
-exactKeys(document.jobs, ["clean-install-build-test", "filesystem-event-integration"], "workflow.jobs");
+exactKeys(document.jobs, ["clean-install-build-test", "filesystem-event-integration", "windows-launch-capture"], "workflow.jobs");
 const job = document.jobs["clean-install-build-test"];
 exactKeys(job, ["name", "runs-on", "timeout-minutes", "steps"], "clean-install-build-test job");
 assert.equal(job["timeout-minutes"], "15", "full CI job must be bounded to 15 minutes");
@@ -291,6 +291,18 @@ assert.equal(filesystemBuild.run, "npm run build");
 exactKeys(filesystemTests, ["name", "timeout-minutes", "run"], "filesystem event integration step");
 assert.equal(filesystemTests["timeout-minutes"], "5", "filesystem test step must be bounded to 5 minutes");
 assert.equal(filesystemTests.run, "node --test dist/test/personal-run-events.test.js");
+
+const windowsLaunchJob = document.jobs["windows-launch-capture"];
+assert.deepEqual(windowsLaunchJob, {
+  name: "windows-launch-capture", "runs-on": "windows-latest", "timeout-minutes": "15",
+  steps: [
+    { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
+    { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "24", cache: "npm", "cache-dependency-path": "package-lock.json" } },
+    { name: "Install dependencies", run: "npm ci" },
+    { name: "Build", run: "npm run build" },
+    { name: "Run Windows launch capture regression", "timeout-minutes": "5", run: "node --test --test-timeout=120000 dist/test/personal-windows-launch.test.js dist/test/personal-launch-material.test.js dist/test/personal-background-status.test.js" },
+  ],
+}, "Windows launch native build and real filesystem/CLI gates must remain bounded and unconditional");
 
 for (const [label, value] of [["workflow", document], ["job", job], ["filesystem job", filesystemJob], ...job.steps.map(step => [step.name, step]), ...filesystemJob.steps.map(step => [`filesystem ${step.name}`, step])]) {
   assert.equal(Object.hasOwn(value, "if"), false, `${label} must be unconditional`);

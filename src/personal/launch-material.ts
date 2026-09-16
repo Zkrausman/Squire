@@ -9,6 +9,7 @@ import { validateSourceRef } from "./identity.js";
 import { buildCorePrompt } from "./prompt-core.js";
 import { builtinPrompts, capturePromptSet, decode, deepFreeze, DEFAULT_PROMPT_SELECTION, PLAN_SUBPHASES, record, validatePromptSelection, type CapturedPrompts, type PlanSubphase } from "./prompt-policy.js";
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState } from "./types.js";
+import { windowsLaunch } from "./windows-launch.js";
 
 export interface LaunchMaterial {
   readonly version: 1;
@@ -97,6 +98,10 @@ export async function persistLaunchMaterial(material: LaunchMaterial, state: Per
   material = validateLaunchMaterial(material);
   assertMaterialState(material, state);
   const file = materialPath(directory, state.runId);
+  if (process.platform === "win32") {
+    windowsLaunch().persist(path.resolve(file), await repositoryPath(state), JSON.stringify({ version: 1, binding: binding(state, directory), material }));
+    return;
+  }
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   await assertMaterialDirectory(file, state);
   const temporary = `${file}.${process.pid}.tmp`;
@@ -109,19 +114,30 @@ export async function persistLaunchMaterial(material: LaunchMaterial, state: Per
 }
 export async function readLaunchMaterial(state: PersonalRunState, directory: string): Promise<LaunchMaterial> {
   const file = materialPath(directory, state.runId);
-  await assertMaterialDirectory(file, state);
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let bytes: string;
-  try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.size > 8_000_000 || (info.mode & 0o077) || (process.getuid && info.uid !== process.getuid())) throw new Error("unsafe launch material file");
-    bytes = await handle.readFile("utf8");
-  } finally { await handle.close(); }
+  if (process.platform === "win32") {
+    bytes = windowsLaunch().read(path.resolve(file), await repositoryPath(state));
+  } else {
+    await assertMaterialDirectory(file, state);
+    const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > 8_000_000 || (info.mode & 0o077) || (process.getuid && info.uid !== process.getuid())) throw new Error("unsafe launch material file");
+      bytes = await handle.readFile("utf8");
+    } finally { await handle.close(); }
+  }
   const envelope = record(JSON.parse(bytes), ["version", "binding", "material"], "launch envelope");
   if (envelope["version"] !== 1 || canonical(envelope["binding"]) !== canonical(binding(state, directory))) throw new Error("launch material binding mismatch");
   const material = validateLaunchMaterial(envelope["material"]);
   assertMaterialState(material, state);
   return material;
+}
+async function repositoryPath(state: PersonalRunState): Promise<string> {
+  if (!state.repositoryPath) return "";
+  return realpath(state.repositoryPath).catch(error => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return path.resolve(state.repositoryPath!);
+  });
 }
 async function assertMaterialDirectory(file: string, state: PersonalRunState): Promise<void> {
   const directory = path.dirname(file);

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { composeSystemPrompt, validateLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
+import { persistWindowsPhaseInput } from "./windows-launch.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPort } from "./command.js";
@@ -55,10 +56,14 @@ export class SandboxPiPhaseRunner implements PhasePort {
     const inputPath = `/ticket/artifacts/inputs/${input.phase}-${input.attempt}.json`;
     const localDirectory = path.join(this.#stagingRoot, input.runId, "phase-inputs");
     const localInput = path.join(localDirectory, `${input.phase}-${input.attempt}.json`);
-    await mkdir(localDirectory, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") await mkdir(localDirectory, { recursive: true, mode: 0o700 });
+    let localInputCreated = false;
     try {
       const prompt = composeSystemPrompt(this.#material, input.phase);
-      await writeFile(localInput, `${JSON.stringify({ ...input, sessionId, sessionFile, testCommands: this.#testCommands, launchDigest: this.#material?.digest, systemPromptDigest: createHash("sha256").update(prompt).digest("hex") }, null, 2)}\n`, { mode: 0o600 });
+      const bytes = `${JSON.stringify({ ...input, sessionId, sessionFile, testCommands: this.#testCommands, launchDigest: this.#material?.digest, systemPromptDigest: createHash("sha256").update(prompt).digest("hex") }, null, 2)}\n`;
+      if (process.platform === "win32") persistWindowsPhaseInput(localInput, bytes);
+      else await writeFile(localInput, bytes, { mode: 0o600 });
+      localInputCreated = true;
 
       await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
       const home = `/ticket/runtime/home/${input.phase}`;
@@ -108,7 +113,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
       // launches, rather than retaining sensitive run material indefinitely.
-      await rm(localInput, { force: true });
+      if (process.platform !== "win32" || localInputCreated) await rm(localInput, { force: true });
     }
   }
 }
