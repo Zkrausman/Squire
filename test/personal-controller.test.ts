@@ -208,6 +208,22 @@ test("failed or malformed Retro stops visibly without publication and still chec
   });
 });
 
+test("phase execution error remains primary when post-phase cleanliness diagnostics fail", async () => {
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.clean = false;
+      throw new Error("phase timed out");
+    }
+    return phaseResult(input, workspace.head);
+  });
+  await assert.rejects(harness.controller.run(REQUEST), error => {
+    assert.match(String(error), /phase timed out/);
+    assert.match(String(error), /secondary workspace diagnostic: workspace has uncommitted changes/);
+    return true;
+  });
+  assert.equal(harness.publications.length, 0);
+});
+
 test("Retro workspace or HEAD changes fail closed before publication", async t => {
   await t.test("dirty workspace", async () => {
     const harness = createHarness(async (input, workspace) => {

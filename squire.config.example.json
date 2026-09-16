@@ -33,5 +33,6 @@
   },
   "testCommands": [
     "npm test"
-  ]
+  ],
+  "phaseTimeoutMs": 3600000
 }

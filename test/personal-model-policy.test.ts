@@ -75,15 +75,37 @@ test("config paths resolve beside the selected user config, never beside a repos
       sandbox: { roleUser: "1000:1000", piExecutable: "/usr/local/bin/pi", piAgentDirectory: "/ticket/runtime/pi-agent", piAuthFile: "pi-auth.json" },
       modelPolicy: policy,
       testCommands: ["npm test"],
+      phaseTimeoutMs: 120_000,
     }));
     const loaded = await loadPersonalMvpConfig(configPath);
     assert.equal(loaded.repository.path, repository);
     assert.equal(loaded.paths.state, path.join(user, "state"));
     assert.equal(loaded.sandbox.piAuthFile, path.join(user, "pi-auth.json"));
+    assert.equal(loaded.phaseTimeoutMs, 120_000);
     assert.equal(loaded.github.tokenCommand[0], path.join(user, "token-helper"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("phase timeout accepts only bounded safe integers", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-timeout-"));
+  try {
+    const repository = path.join(root, "repository");
+    await mkdir(repository);
+    const file = path.join(root, "config.json");
+    const base = {
+      repository: { slug: "example/repo", path: repository, sourceRef: "main", baseBranch: "main" },
+      dataDirectory: path.join(root, "data"), linear: { apiKeyEnv: "LINEAR_API_KEY" }, github: { tokenCommand: ["token-helper"] },
+      sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/runtime/pi-agent" }, testCommands: ["npm test"],
+    };
+    for (const value of [59_999, 14_400_001, 120_000.5, Number.NaN, "120000", null]) {
+      await writeFile(file, JSON.stringify({ ...base, phaseTimeoutMs: value }));
+      await assert.rejects(loadPersonalMvpConfig(file), /phaseTimeoutMs.*safe integer|phaseTimeoutMs.*between/);
+    }
+    await writeFile(file, JSON.stringify({ ...base, phaseTimeoutMs: 14_400_000 }));
+    assert.equal((await loadPersonalMvpConfig(file)).phaseTimeoutMs, 14_400_000);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("omitted model policy resolves to a detached copy of the approved defaults", async () => {
