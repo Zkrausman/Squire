@@ -112,6 +112,17 @@ try {
     assert.notEqual(result.status, 0, `validator accepted ${reason}`);
   };
 
+  for (const marker of [
+    "    runs-on: ubuntu-latest\n    timeout-minutes: 15",
+    "    runs-on: ${{ matrix.os }}\n    timeout-minutes: 15",
+    "      - name: Run tests\n        timeout-minutes: 5",
+    "      - name: Run filesystem event integration\n        timeout-minutes: 5",
+  ]) {
+    assert.equal(workflow.includes(marker), true, `timeout marker missing: ${marker}`);
+    await expectValidatorRejects(workflow.replace(marker, marker.replace(/\n +timeout-minutes: \d+/, "")), `missing timeout: ${marker}`);
+    await expectValidatorRejects(workflow.replace(marker, marker.replace(/timeout-minutes: \d+/, "timeout-minutes: 360")), `excessive timeout: ${marker}`);
+  }
+
   await expectValidatorRejects(swapSteps(workflow, "Provision ticket runtime", "Validate ticket runtime"), "runtime validation before provisioning");
   await expectValidatorRejects(workflow.replace("          - windows-latest", "          - macos-latest"), "filesystem integration without a Windows runner");
   await expectValidatorRejects(workflow.replace("node --test dist/test/personal-run-events.test.js", "node --test dist/test/personal-run-events.test.js || true"), "status-masked filesystem integration");
