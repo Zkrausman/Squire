@@ -79,6 +79,26 @@ test("supervisor host environment is a normalized OS allowlist on Windows", () =
   assert.equal(environment["LINEAR_API_KEY"], undefined);
 });
 
+test("supervisor host environment preserves exact Linux PATH and HOME casing", () => {
+  const environment = supervisorEnvironment({ path: "/wrong", home: "/wrong-home", PATH: "/usr/bin", HOME: "/home/runner", NODE_OPTIONS: "--require=evil" }, "linux");
+  assert.equal(environment["PATH"], "/usr/bin");
+  assert.equal(environment["HOME"], "/home/runner");
+  assert.equal(environment["path"], undefined);
+  assert.equal(environment["home"], undefined);
+});
+
+test("supervisor host environment omits missing HOME and uses platform PATH default", () => {
+  const environment = supervisorEnvironment({ path: "/wrong" }, "linux");
+  assert.equal(environment["HOME"], undefined);
+  assert.equal(environment["PATH"], "/usr/local/bin:/usr/bin:/bin");
+  assert.deepEqual(Object.keys(environment), ["PATH"]);
+});
+
+test("supervisor host environment omits missing Windows variables", () => {
+  const environment = supervisorEnvironment({ pAtH: "C:\\\\Windows\\\\System32", hOmE: "C:\\\\Users\\\\runner" }, "win32");
+  assert.deepEqual(environment, { PATH: "C:\\\\Windows\\\\System32", HOME: "C:\\\\Users\\\\runner" });
+});
+
 test("only legacy empty or dependency-valid complete Plan selections execute", () => {
   validateExecutablePlan([]); validateExecutablePlan(["requirements", "implementation-design"]);
   for (const selection of [["requirements"], ["implementation-design"], ["implementation-design", "requirements"], ["requirements", "requirements"], ["unknown"]]) assert.throws(() => validateExecutablePlan(selection as never));
