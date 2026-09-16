@@ -13,6 +13,7 @@ jobs:
   clean-install-build-test:
     name: clean-install-build-test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,6 +55,7 @@ jobs:
         run: npm run validate:contracts
 
       - name: Run tests
+        timeout-minutes: 5
         run: npm test
 
       - name: Verify clean tree
@@ -69,6 +71,7 @@ jobs:
           - ubuntu-latest
           - windows-latest
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,4 +92,5 @@ jobs:
         run: npm run build
 
       - name: Run filesystem event integration
+        timeout-minutes: 5
         run: node --test dist/test/personal-run-events.test.js
