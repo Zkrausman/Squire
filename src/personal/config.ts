@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { access, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, open, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DEFAULT_PROMPT_SELECTION, validatePromptSelection, type PromptSelection } from "./prompt-policy.js";
 import { validateSourceRef } from "./identity.js";
 import {
   APPROVED_PERSONAL_MODEL_POLICY,
@@ -52,6 +53,7 @@ export interface PersonalMvpConfig {
   };
   /** Normalized policy; Plan is always exactly two equal buckets. */
   readonly modelPolicy: PersonalModelPolicy;
+  readonly promptPolicy?: PromptSelection;
   readonly testCommands: readonly string[];
   /** Maximum Pi phase runtime; omitted means the runner's one-hour default. */
   readonly phaseTimeoutMs?: number;
@@ -67,6 +69,7 @@ export interface ConfigPathOptions {
 export interface LoadedPersonalMvpConfig {
   readonly config: PersonalMvpConfig;
   readonly digest: string;
+  readonly rawConfig: string;
 }
 
 /** Resolve the per-user Squire directory without looking in the repository. */
@@ -154,6 +157,7 @@ export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigP
   return {
     config: await parsePersonalMvpConfig(bytes, absolute, boundOptions),
     digest: createHash("sha256").update(bytes).digest("hex"),
+    rawConfig: bytes.toString("base64"),
   };
 }
 
@@ -170,7 +174,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   for (const alias of legacyAliases) {
     if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
   }
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
 
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
@@ -252,6 +256,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
       ...(piAuthFile !== undefined ? { piAuthFile: resolveHostPath(base, text(piAuthFile, "sandbox.piAuthFile"), platform) } : {}),
     },
     modelPolicy,
+    promptPolicy: value["promptPolicy"] === undefined ? DEFAULT_PROMPT_SELECTION : validatePromptSelection(value["promptPolicy"]),
     testCommands: [...testCommands] as string[],
     ...(phaseTimeoutMs === undefined ? {} : { phaseTimeoutMs }),
   };
@@ -415,7 +420,15 @@ async function assertRuntimePathsOutsideRepository(repositoryPath: string, desti
 }
 
 async function readConfigBytes(file: string, environment: NodeJS.ProcessEnv): Promise<Buffer> {
-  const bytes = await readFile(file);
+  const handle = await open(file, "r");
+  let bytes: Buffer;
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size > 1_000_000n) throw new Error("configuration must be a bounded regular file");
+    bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (before.size !== BigInt(bytes.length) || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new Error("configuration changed during capture");
+  } finally { await handle.close(); }
   // Test-only file barriers make atomic replacement and symlink retargeting
   // deterministic after the selected bytes have been captured.
   if (environment["NODE_ENV"] === "test") {

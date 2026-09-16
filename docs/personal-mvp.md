@@ -115,6 +115,51 @@ Retro must return at least one lesson; proposed follow-ups may be empty. Impleme
 
 `phaseTimeoutMs` is optional configuration for the Plan, Implement, Review, Test, and Retro phase processes. It must be an integer from 60,000 through 14,400,000 milliseconds (60 seconds through four hours); when omitted, each phase uses the runner default of 3,600,000 milliseconds (one hour). A timeout bounds the phase process command only: it does not promise sandbox quiescence after termination. Operators should inspect the persisted run state and workspace diagnostics before retrying.
 
+### Immutable prompt policy
+
+The user-global configuration may select a closed, versioned `promptPolicy`. Omission means the host-installed built-in set `{ "version": 1, "id": "default", "plan": [] }`. Prompt selection is independent of deterministic Plan A/B model selection. Only `requirements` and `implementation-design` are recognized Plan subphase IDs; `plan` preserves their order and rejects duplicates. This foundation captures the selected subphase policy but **still executes one Plan process**, without a subphase. Multi-child execution/supervision is deferred to AIDEV-263; live acceptance is AIDEV-264. No executable workflow graphs are supported.
+
+For an operator-owned external set, use an absolute host path outside the target repository:
+
+```json
+"promptPolicy": {
+  "version": 1,
+  "id": "white-glove",
+  "root": "/home/operator/.config/squire/prompt-sets/white-glove",
+  "plan": ["requirements", "implementation-design"]
+}
+```
+
+That directory must contain `manifest.json`, whose ID matches the selection:
+
+```json
+{
+  "version": 1,
+  "id": "white-glove",
+  "phases": {
+    "plan": "plan.md",
+    "implement": "implement.md",
+    "review": "review.md",
+    "test": "test.md",
+    "retro": "retro.md"
+  },
+  "subphases": {
+    "requirements": "requirements.md",
+    "implementation-design": "implementation-design.md"
+  }
+}
+```
+
+Every phase and each selected subphase must exist. Unselected subphases may be omitted. Unknown keys, IDs, malformed manifests, traversal, symlink components, repository-owned roots/aliases, hardlinked or nonregular prompt files, and group/other-writable prompt roots/files fail closed. Ancestors must be host-owned (current UID or root on POSIX); shared sticky ancestors such as `/tmp` are permitted. Files are bounded to 256 KiB and must be nonempty UTF-8 without NUL. External capture uses retained directory descriptors and descriptor-relative opens (`/proc/self/fd` on Linux, `/dev/fd` where supported); unsupported external-capture filesystems fail closed rather than falling back to unpinned path reads. Built-in selection and configuration/status parsing do not impose a blanket Windows rejection.
+
+The initial ancestor/root identities must match the retained opened descriptors. Each file is opened relative to the pinned root, its opened identity is checked against its pre-open metadata, and its size/high-resolution modification metadata and pathname identities are checked around descriptor reads. Tests exercise pre-pin and pre-file-open replacement (including replacement-and-restore), and in-place write/truncation between partial reads. These are snapshot/byte-substitution protections, not a claim to detect all filesystem history: a transient root rename restored before verification that leaves pinned bytes unaffected is not substitution. Privileged metadata forgery and hostile same-UID controller processes remain outside the personal-host trust model.
+
+The final policy is trusted core/output contract → captured phase text → optional selected subphase text. Core invariants have no configuration replacement slot. The runner uses Pi's `--system-prompt`, explicitly disables append-file discovery with an empty `--append-system-prompt`, and ignores project resources with `--no-approve` plus the existing resource-disable flags. Ticket text, feedback, and configured validation commands remain JSON input data, not system policy. Tools, result validation, transitions, retry budgets, timeout, credentials, and exact-head gates remain controller code, not prompt-granted authority.
+
+Both launch modes capture raw configuration bytes and normalize environment-dependent paths once, then capture the selected manifest/prompts once per file. Immutable base64 strings and defensive deep copies avoid mutable Buffer aliases. The domain-separated combined SHA-256 covers exact captured bytes, normalized configuration, ordered selection, and the trusted core digest. New state records carry controller-authored `launchEvidence`; phase input evidence includes the combined and effective system-prompt digests without adding model-authored result fields.
+
+Before detached spawn, the parent atomically writes mode-0600 `state/launch-material/<runId>.json`, bound separately to the reservation, ticket, repository/source identity, selected config pathname/digest, state directory, and launch evidence. The child must validate that material **before claiming the reservation or invoking adapters**, including direct `runReserved` calls. There is no raw-config fallback or child-environment renormalization. Original config/prompt files can change or disappear after capture without affecting either mode. Legacy states remain readable, but do not bypass mandatory detached material. The integration harness exercises real foreground CLI and detached bootstrap through all five phase launch argument sets with external services stubbed; it is not live provider/host-rollout evidence. Independent normal Review, Test, and Retro gates remain required before publication.
+
 ## 7. Sandbox and credentials
 
 Protect now:

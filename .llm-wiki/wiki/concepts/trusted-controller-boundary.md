@@ -1,13 +1,19 @@
 ---
 type: concept
 created: 2026-09-01
-updated: 2026-09-02
+updated: 2026-09-16
 domain: engineering
 confidence: high
 sources: [sources/SRC-2026-09-01-001, sources/SRC-2026-09-01-004, sources/SRC-2026-09-01-009, sources/SRC-2026-09-01-010, sources/SRC-2026-09-02-001, sources/SRC-2026-09-02-002, sources/obs-2026-09-01-fenced-dispatch-authority-invariant]
 ---
 
 # Trusted controller boundary
+
+## Personal single-ticket controller
+
+The personal runtime in `src/personal` uses five deterministic top-level phases, not a configurable Orchestrator graph. [Immutable layered prompt policy](/concepts/immutable-layered-prompt-policy.md) can refine phase/subphase guidance but cannot replace core invariants, tool allowlists, output schemas, transitions, retry limits, timeout, exact-head checks, or credential boundaries. Prompt selection is separate from deterministic Plan A/B model selection. Ticket text and phase inputs stay task data. Both execution modes use captured policy and normalized config; every detached entry must validate controller-owned bound launch material before claiming the reservation. Review, Test, and read-only Retro remain required exact-head gates before publication.
+
+## Earlier orchestration infrastructure
 
 The [Squire](/entities/squire.md) controller is trusted infrastructure, not the Pi Orchestrator. It observes state and Git independently, validates immutable artifacts and requested transitions, applies compare-and-set mutations, and emits typed side-effect directives. Transition authority comes from the exact persisted, role-local Orchestrator registration—not a caller-supplied expected session ID. It does not infer pass/fail from chat or replace Orchestrator reasoning. [Architecture](/sources/SRC-2026-09-01-001.md) · [Contracts](/sources/SRC-2026-09-01-004.md)
 

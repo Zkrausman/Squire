@@ -215,7 +215,10 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
       assert.equal(launch.args[launch.args.indexOf("--thinking") + 1], PROFILES[phase].thinking);
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
-      const prompt = launch.args.at(-1) ?? "";
+      assert.ok(launch.args.includes("--system-prompt"));
+      assert.ok(launch.args.includes("--no-approve"));
+      assert.match(launch.args.at(-1) ?? "", /Read your complete JSON input/);
+      const prompt = launch.args[launch.args.indexOf("--system-prompt") + 1] ?? "";
       assert.match(prompt, /Return only outputHead, status, summary, and the phase-specific details/);
       for (const trustedField of ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "profile"]) {
         assert.equal(prompt.includes(`"${trustedField}":`), false);

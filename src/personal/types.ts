@@ -1,4 +1,5 @@
 import type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
+import type { LaunchEvidence } from "./launch-material.js";
 import type { RunEvent } from "./run-events.js";
 
 export type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
@@ -162,6 +163,7 @@ export interface PersonalRunState {
   /** Absolute config pathname bound at detached handoff; additive for legacy state. */
   readonly launchConfigPath?: string;
   readonly launchConfigDigest?: string;
+  readonly launchEvidence?: LaunchEvidence;
   readonly sandbox: string;
   readonly repository: string;
   readonly baseBranch: string;
