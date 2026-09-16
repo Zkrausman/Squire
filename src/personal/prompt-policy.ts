@@ -1,6 +1,7 @@
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { windowsLaunch } from "./windows-launch.js";
 import { PERSONAL_PHASES, type PersonalPhase } from "./types.js";
 
 export const PLAN_SUBPHASES = ["requirements", "implementation-design"] as const;
@@ -30,7 +31,7 @@ export function validatePromptSelection(value: unknown): PromptSelection {
 export function builtinPrompts(selection = DEFAULT_PROMPT_SELECTION): CapturedPrompts {
   return deepFreeze({ manifest: encode(JSON.stringify({ version: 1, id: "default", phases: DEFAULT_PHASES, subphases: DEFAULT_SUBPHASES })), phases: Object.fromEntries(PERSONAL_PHASES.map(p => [p, encode(DEFAULT_PHASES[p])])) as Record<PersonalPhase, string>, subphases: Object.fromEntries(selection.plan.map(p => [p, encode(DEFAULT_SUBPHASES[p])])) });
 }
-/** Test seams are at the actual lstat -> open and descriptor read boundaries. */
+/** POSIX test seams at lstat/open/read boundaries; Windows uses synchronous native seams. */
 export interface CaptureHooks {
   beforePin?(directory: string): Promise<void>;
   afterPin?(directory: string): Promise<void>;
@@ -42,7 +43,7 @@ export interface CaptureHooks {
 export async function capturePromptSet(selection: PromptSelection, repository: string, hooks: CaptureHooks = {}): Promise<CapturedPrompts> {
   selection = validatePromptSelection(selection);
   if (!selection.root) return builtinPrompts(selection);
-  if (process.platform === "win32") throw new Error("custom prompt roots are unsupported on Windows until safe native traversal is available; use built-in prompts");
+  if (process.platform === "win32") return captureWindowsPromptSet(selection, repository);
   const root = path.resolve(selection.root);
   const repo = await realpath(repository).catch(error => {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -121,26 +122,47 @@ export async function capturePromptSet(selection: PromptSelection, repository: s
         return exact.toString("base64");
       } finally { await handle.close(); }
     };
-    const manifest = await read("manifest.json");
-    const m = record(JSON.parse(decode(manifest)), ["version", "id", "phases", "subphases"], "prompt manifest");
-    if (m["version"] !== 1 || m["id"] !== selection.id) throw new Error("unknown prompt set ID or manifest version");
-    const phases = record(m["phases"], PERSONAL_PHASES, "manifest phases");
-    const subphases = record(m["subphases"], PLAN_SUBPHASES, "manifest subphases");
-    const phaseBytes = {} as Record<PersonalPhase, string>;
-    const subphaseBytes: Partial<Record<PlanSubphase, string>> = {};
-    // A file shared by IDs is captured only once.
-    const cache = new Map<string, string>([["manifest.json", manifest]]);
-    const selected = async (name: unknown) => {
-      if (typeof name !== "string") throw new Error("missing prompt file in manifest");
-      if (!cache.has(name)) cache.set(name, await read(name));
-      return cache.get(name)!;
-    };
-    for (const phase of PERSONAL_PHASES) phaseBytes[phase] = await selected(phases[phase]);
-    for (const id of selection.plan) subphaseBytes[id] = await selected(subphases[id]);
-    // Validate unselected manifest entries too; they may not smuggle directives.
-    for (const value of Object.values(subphases)) if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(value)) throw new Error("invalid subphase file");
-    return deepFreeze({ manifest, phases: phaseBytes, subphases: subphaseBytes });
+    return await captureSelectedPrompts(selection, read);
   } finally { await Promise.all(directories.map(entry => entry.handle.close())); }
+}
+async function captureWindowsPromptSet(selection: PromptSelection, repository: string): Promise<CapturedPrompts> {
+  const native = windowsLaunch();
+  // Do not resolve/normalize the supplied source path: that could erase unsafe
+  // components before native validation. Accept the platform's slash spelling.
+  const lease = native.openSource(selection.root!.replaceAll("/", "\\"), repository.replaceAll("/", "\\"));
+  try {
+    return await captureSelectedPrompts(selection, async file => {
+      const bytes = native.readSource(lease, file);
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (!text.trim() || text.includes("\0")) throw new Error("empty or invalid prompt text");
+      return bytes.toString("base64");
+    });
+  } finally { native.closeSource(lease); }
+}
+async function captureSelectedPrompts(selection: PromptSelection, read: (file: string) => Promise<string>): Promise<CapturedPrompts> {
+  const manifest = await read("manifest.json");
+  const m = record(JSON.parse(decode(manifest)), ["version", "id", "phases", "subphases"], "prompt manifest");
+  if (m["version"] !== 1 || m["id"] !== selection.id) throw new Error("unknown prompt set ID or manifest version");
+  const phases = record(m["phases"], PERSONAL_PHASES, "manifest phases");
+  const subphases = record(m["subphases"], PLAN_SUBPHASES, "manifest subphases");
+  const phaseBytes = {} as Record<PersonalPhase, string>;
+  const subphaseBytes: Partial<Record<PlanSubphase, string>> = {};
+  // A file shared by IDs is captured only once.
+  const cache = new Map<string, string>([["manifest.json", manifest]]);
+  const selected = async (name: unknown) => {
+    if (typeof name !== "string" || !directPromptFile(name)) throw new Error("invalid prompt file in manifest");
+    if (!cache.has(name)) cache.set(name, await read(name));
+    return cache.get(name)!;
+  };
+  for (const phase of PERSONAL_PHASES) phaseBytes[phase] = await selected(phases[phase]);
+  for (const id of selection.plan) subphaseBytes[id] = await selected(subphases[id]);
+  // Validate unselected manifest entries too; they may not smuggle directives.
+  for (const value of Object.values(subphases)) if (typeof value !== "string" || !directPromptFile(value)) throw new Error("invalid subphase file");
+  return deepFreeze({ manifest, phases: phaseBytes, subphases: subphaseBytes });
+}
+function directPromptFile(name: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(name) && (process.platform !== "win32" ||
+    (!name.endsWith(".") && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(name)));
 }
 function assertOwner(s: BigIntStats): void {
   if (process.getuid && s.uid !== 0n && s.uid !== BigInt(process.getuid())) throw new Error("prompt source is not host-owned");

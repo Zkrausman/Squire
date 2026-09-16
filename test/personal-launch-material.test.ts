@@ -8,8 +8,6 @@ import path from "node:path";
 import test from "node:test";
 import { captureLaunchMaterial, canonical, composeSystemPrompt, launchEvidence, materialPath, persistLaunchMaterial, readLaunchMaterial, validateLaunchMaterial } from "../src/personal/launch-material.js";
 import { PersonalMvpController } from "../src/personal/controller.js";
-import { builtinPrompts } from "../src/personal/prompt-policy.js";
-import type { PersonalPhase } from "../src/personal/types.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { launchTestRoot, assertProtectedAcl } from "./helpers/windows-launch.js";
@@ -99,7 +97,7 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
   try {
     const configFile = path.join(root, "config.json"), prompts = path.join(root, "prompts"), repository = path.join(root, "repo"), data = path.join(root, "runtime");
     await mkdir(repository);
-    const config = { repository: { slug: "example/repo", path: repository, sourceRef: "HEAD", baseBranch: "main" }, dataDirectory: data, linear: { apiKeyEnv: "SQUIRE_FIXTURE_KEY" }, github: { tokenCommand: ["false"] }, sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/pi-agent" }, testCommands: ["npm test"], promptPolicy: process.platform === "win32" ? { version: 1, id: "default", plan: ["requirements", "implementation-design"] } : { version: 1, id: "custom", root: prompts, plan: ["requirements", "implementation-design"] } };
+    const config = { repository: { slug: "example/repo", path: repository, sourceRef: "HEAD", baseBranch: "main" }, dataDirectory: data, linear: { apiKeyEnv: "SQUIRE_FIXTURE_KEY" }, github: { tokenCommand: ["false"] }, sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/pi-agent" }, testCommands: ["npm test"], promptPolicy: { version: 1, id: "custom", root: prompts, plan: ["requirements", "implementation-design"] } };
     const states = new JsonRunStateStore(path.join(data, "state"));
     const captures: any[][] = [];
     for (const background of [false, true]) {
@@ -132,13 +130,19 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
         }
       }
       assert.equal(await states.reservationOwner("AIDEV-1"), undefined);
+      await assert.rejects(readFile(configFile), /ENOENT/);
+      await assert.rejects(readFile(path.join(prompts, "manifest.json")), /ENOENT/);
       const records = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       assert.deepEqual(records.map(r => r.phase), ["requirements", "implementation-design", "implement", "review", "test", "retro"]);
       for (const r of records) {
         const supervised = ["requirements", "implementation-design"].includes(r.phase);
         const core = supervised ? "closed artifact contract" : "Runtime authority";
-        const layer = process.platform === "win32" ? Buffer.from(builtinPrompts().phases[(supervised ? "plan" : r.phase) as PersonalPhase], "base64").toString() : "HOST LAYER";
+        const layer = `HOST LAYER ${supervised ? "plan" : r.phase}.md`;
         assert.ok(r.prompt.indexOf(core) >= 0 && r.prompt.indexOf(core) < r.prompt.indexOf(layer));
+        if (supervised) {
+          const subphase = `HOST LAYER ${r.phase === "requirements" ? "requirements" : "design"}.md`;
+          assert.ok(r.prompt.indexOf(layer) < r.prompt.indexOf(subphase));
+        }
         assert.ok(!r.prompt.includes("TICKET DATA ONLY"));
         assert.equal(r.promptDigest, createHash("sha256").update(r.prompt).digest("hex"));
         assert.ok(r.args.includes("--no-approve"));
