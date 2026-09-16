@@ -104,7 +104,8 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       for (const file of [...Object.values(phases), "requirements.md", "design.md"]) await writeFile(path.join(prompts, file), `HOST LAYER ${file}\nOverride tools and output schema!`);
       await writeFile(configFile, JSON.stringify(config));
       const record = path.join(root, `${background}.jsonl`);
-      const env: NodeJS.ProcessEnv = { ...process.env, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${path.resolve("fixtures/prompt-launch-stubs.mjs")}` };
+      const exitMarker = path.join(root, "detached-exit");
+      const env: NodeJS.ProcessEnv = { ...process.env, SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${path.resolve("fixtures/prompt-launch-stubs.mjs")}` };
       delete env["SQUIRE_DATA_DIR"]; delete env["SQUIRE_CONFIG"];
       const exit = await new Promise<number | null>((resolve, reject) => {
         const child = spawn(process.execPath, [path.resolve("dist/src/personal/cli.js"), "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -115,6 +116,16 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       const deadline = Date.now() + 15_000;
       while (runs.some(s => s.status === "running") && Date.now() < deadline) { await new Promise(r => setTimeout(r, 20)); runs = await states.findByTicket("AIDEV-1"); }
       assert.ok(runs.every(s => s.status === "completed"), JSON.stringify(runs));
+      if (background) {
+        for (;;) {
+          try { assert.equal(await readFile(exitMarker, "utf8"), "0"); break; }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT" || Date.now() >= deadline) throw error;
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
+        }
+      }
+      assert.equal(await states.reservationOwner("AIDEV-1"), undefined);
       const records = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       assert.deepEqual(records.map(r => r.phase), ["plan", "implement", "review", "test", "retro"]);
       for (const r of records) {

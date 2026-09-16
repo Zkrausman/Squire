@@ -1,6 +1,10 @@
 // Test-only Node preloader: real CLI + detached bootstrap, external services
 // stubbed below the controller. No production environment injection surface.
 import { appendFile, readFile, rm } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
+// Completed state precedes reservation/outbox cleanup. Signal actual child
+// exit so the test does not remove its state directory while it is still used.
+if (process.argv.includes('--reserved-run-id')) process.once('exit', code => writeFileSync(process.env.SQUIRE_FIXTURE_EXIT, String(code)));
 import { NodeCommandRunner } from '../dist/src/personal/command.js';
 import { DockerSandboxWorkspace } from '../dist/src/personal/docker-sandbox.js';
 import { LinearClient } from '../dist/src/personal/linear-client.js';
