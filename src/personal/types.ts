@@ -42,9 +42,24 @@ export interface PlanPhaseResult extends PhaseResultBase {
   readonly details: { readonly steps: readonly string[] };
 }
 
+export type ProjectWikiDisposition =
+  | {
+      readonly status: "updated";
+      /** Canonical repository-relative paths changed between the run base and Implement HEAD. */
+      readonly paths: readonly string[];
+      readonly summary: string;
+    }
+  | {
+      readonly status: "not_required";
+      readonly reason: string;
+    };
+
 export interface ImplementPhaseResult extends PhaseResultBase {
   readonly phase: "implement";
-  readonly details: { readonly changes: readonly string[] };
+  readonly details: {
+    readonly changes: readonly string[];
+    readonly projectWiki: ProjectWikiDisposition;
+  };
 }
 
 export interface ReviewPhaseResult extends PhaseResultBase {
@@ -181,12 +196,27 @@ export interface TicketPort {
   get(ticketId: string, signal?: AbortSignal): Promise<Ticket>;
 }
 
+export interface ProjectWikiDiffInput {
+  readonly sandbox: string;
+  readonly baseSha: string;
+  readonly head: string;
+}
+
 export interface WorkspacePort {
   /** Resolve a mutable source ref before detached handoff when supported. */
   resolveSource?(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string>;
   prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string; readonly expectedBaseSha?: string }, signal?: AbortSignal): Promise<PreparedWorkspace>;
   currentHead(sandbox: string, signal?: AbortSignal): Promise<string>;
   assertClean(sandbox: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * Return the committed `.llm-wiki` files changed from the run base to a
+   * candidate HEAD. Implementations must inspect only the target worktree.
+   * This is optional for old embedders, but the personal controller fails
+   * closed when it is unavailable for a new run.
+   */
+  committedProjectWikiPaths?(input: ProjectWikiDiffInput, signal?: AbortSignal): Promise<readonly string[]>;
+  /** Compatibility spelling for adapters that expose the operation as a diff. */
+  projectWikiDiff?(input: ProjectWikiDiffInput, signal?: AbortSignal): Promise<readonly string[]>;
   exportBundle(input: { readonly runId: string; readonly sandbox: string; readonly branch: string; readonly baseSha: string; readonly head: string }, signal?: AbortSignal): Promise<CandidateBundle>;
 }
 

@@ -4,7 +4,7 @@ import { PersonalMvpController } from "../src/personal/controller.js";
 import { APPROVED_PERSONAL_MODEL_POLICY, resolvePhaseProfiles, type PersonalModelPolicy } from "../src/personal/model-policy.js";
 import { deterministicFeatureBranch } from "../src/personal/identity.js";
 import { validatePhaseResultShape } from "../src/personal/phase-result.js";
-import type { CandidateBundle, PersonalPhase, PersonalRunState, PhaseInput, PhaseResult, PublicationInput, RunStatePort, WorkspacePort } from "../src/personal/types.js";
+import type { CandidateBundle, ImplementPhaseResult, PersonalPhase, PersonalRunState, PhaseInput, PhaseResult, PublicationInput, RunStatePort, WorkspacePort } from "../src/personal/types.js";
 
 const BASE = "a".repeat(40);
 const IMPLEMENTED = "b".repeat(40);
@@ -21,18 +21,20 @@ class MemoryStates implements RunStatePort {
 class MemoryWorkspace implements WorkspacePort {
   head = BASE;
   clean = true;
+  wikiPaths: string[] = [];
   cleanChecks = 0;
   constructor(readonly events: string[] = []) {}
   async prepare(): Promise<{ sandbox: string; baseSha: string; head: string }> { this.events.push("workspace:prepare"); return { sandbox: "squire-aidev-1-0123456789", baseSha: BASE, head: BASE }; }
   async currentHead(): Promise<string> { return this.head; }
   async assertClean(): Promise<void> { this.cleanChecks += 1; if (!this.clean) throw new Error("workspace has uncommitted changes"); }
+  async committedProjectWikiPaths(): Promise<readonly string[]> { return [...this.wikiPaths]; }
   async exportBundle(input: { runId: string; sandbox: string; branch: string; baseSha: string; head: string }): Promise<CandidateBundle> {
     assert.equal(input.head, this.head);
     return { path: "/staging/candidate.bundle", sha256: "d".repeat(64), byteLength: 10, baseSha: input.baseSha, head: input.head, branch: input.branch };
   }
 }
 
-function phaseResult(input: PhaseInput, head: string, status: PhaseResult["status"] = "passed", feedback: readonly string[] = []): PhaseResult {
+function phaseResult(input: PhaseInput, head: string, status: PhaseResult["status"] = "passed", feedback: readonly string[] = [], wikiPaths: readonly string[] = []): PhaseResult {
   const common = {
     runId: input.runId,
     attempt: input.attempt,
@@ -44,7 +46,7 @@ function phaseResult(input: PhaseInput, head: string, status: PhaseResult["statu
     summary: `${input.phase} ${status}`,
   };
   if (input.phase === "plan") return { ...common, phase: "plan", details: { steps: ["Make the focused change"] } };
-  if (input.phase === "implement") return { ...common, phase: "implement", details: { changes: ["Changed the requested file"] } };
+  if (input.phase === "implement") return { ...common, phase: "implement", details: { changes: ["Changed the requested file"], projectWiki: wikiPaths.length > 0 ? { status: "updated", paths: [...wikiPaths], summary: "documented the durable project knowledge" } : { status: "not_required", reason: "the ticket adds no durable project knowledge" } } };
   if (input.phase === "review") return { ...common, phase: "review", details: { findings: status === "remediation_required" ? feedback : [] } };
   if (input.phase === "test") return { ...common, phase: "test", details: { commands: [{ command: "npm test", exitCode: status === "remediation_required" ? 1 : 0, summary: feedback[0] ?? status }] } };
   return { ...common, phase: "retro", details: { lessons: ["Keep exact HEAD gates explicit"], followUps: feedback } };
@@ -101,6 +103,63 @@ test("personal controller completes one ticket and publishes only fresh passing 
     validatePhaseResultShape(persisted, phase);
     assert.deepEqual(Object.keys(persisted ?? {}).sort(), ["attempt", "details", "inputHead", "outputHead", "phase", "profile", "runId", "sessionFile", "sessionId", "status", "summary"]);
   }
+});
+
+test("controller persists an updated project-wiki disposition only for the cumulative committed diff", async () => {
+  const wikiPaths = [".llm-wiki/wiki/concepts/project-wiki-gates.md"];
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.head = IMPLEMENTED;
+      workspace.wikiPaths = [...wikiPaths];
+    }
+    return phaseResult(input, workspace.head, "passed", [], workspace.wikiPaths);
+  });
+  const result = await harness.controller.run(REQUEST);
+  const implementation = result.results.implement;
+  assert.equal(implementation?.phase, "implement");
+  if (implementation?.phase === "implement") assert.deepEqual(implementation.details.projectWiki, { status: "updated", paths: wikiPaths, summary: "documented the durable project knowledge" });
+  const publishedImplement = harness.publications[0]?.phases.implement;
+  assert.equal(publishedImplement?.phase, "implement");
+  if (publishedImplement?.phase === "implement") assert.deepEqual(publishedImplement.details.projectWiki, { status: "updated", paths: wikiPaths, summary: "documented the durable project knowledge" });
+});
+
+test("controller fails closed when not_required contradicts committed project-wiki paths", async () => {
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.head = IMPLEMENTED;
+      workspace.wikiPaths = [".llm-wiki/wiki/concepts/project-wiki-gates.md"];
+      const implementation = phaseResult(input, workspace.head) as ImplementPhaseResult;
+      return { ...implementation, details: { changes: ["Changed the requested file"], projectWiki: { status: "not_required", reason: "the ticket adds no durable project knowledge" } } };
+    }
+    return phaseResult(input, workspace.head);
+  });
+  await assert.rejects(harness.controller.run(REQUEST), /not_required disposition contradicts committed diff/);
+  assert.deepEqual(harness.calls, ["plan", "implement"]);
+  assert.equal(harness.publications.length, 0);
+});
+
+test("controller compares remediation dispositions with the cumulative wiki diff", async () => {
+  let firstReview = true;
+  let implementationCount = 0;
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      implementationCount += 1;
+      workspace.head = implementationCount === 1 ? IMPLEMENTED : REMEDIATED;
+      workspace.wikiPaths = implementationCount === 1
+        ? [".llm-wiki/wiki/concepts/first.md"]
+        : [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"];
+    }
+    if (input.phase === "review" && firstReview) {
+      firstReview = false;
+      return phaseResult(input, workspace.head, "remediation_required", ["fix the review finding"]);
+    }
+    return phaseResult(input, workspace.head, "passed", [], workspace.wikiPaths);
+  });
+  const result = await harness.controller.run(REQUEST);
+  assert.equal(result.status, "completed");
+  const implementation = result.results.implement;
+  assert.equal(implementation?.phase, "implement");
+  if (implementation?.phase === "implement" && implementation.details.projectWiki.status === "updated") assert.deepEqual(implementation.details.projectWiki.paths, [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"]);
 });
 
 test("resolved profiles are persisted before workspace preparation", async () => {

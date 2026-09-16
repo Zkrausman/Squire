@@ -14,12 +14,13 @@ import {
   type PersonalModelPolicy,
   type PhaseProfile,
 } from "./model-policy.js";
-import { validatePhaseResultShape } from "./phase-result.js";
+import { validatePhaseResultShape, validateProjectWikiDisposition, validateProjectWikiPaths } from "./phase-result.js";
 import type {
   PersonalPhase,
   PersonalRunState,
   PhaseInput,
   PhaseResult,
+  ImplementPhaseResult,
   PublicationPort,
   RunExecutionMode,
   RunRequest,
@@ -485,12 +486,30 @@ export class PersonalMvpController {
     if (evidencedResult.status === "failed") throw new Error(`${phase} failed: ${evidencedResult.summary}`);
     if (phase === "implement" && evidencedResult.status !== "passed") throw new Error("Implement must return passed or failed");
     if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
+    if (phase === "implement") await this.#reconcileProjectWikiDisposition(context, evidencedResult as ImplementPhaseResult, observedHead, signal);
     await context.persist({
       head: observedHead,
       sessions: { ...context.state.sessions, [phase]: evidencedResult.sessionId },
       results: { ...context.state.results, [phase]: evidencedResult },
     });
     return evidencedResult;
+  }
+
+  async #reconcileProjectWikiDisposition(context: RunContext, result: ImplementPhaseResult, head: string, signal?: AbortSignal): Promise<void> {
+    const diff = this.#workspaces.committedProjectWikiPaths ?? this.#workspaces.projectWikiDiff;
+    if (!diff) throw new Error("workspace cannot provide a committed project-wiki diff");
+    const baseSha = requireBase(context.state);
+    const reported = result.details.projectWiki;
+    validateProjectWikiDisposition(reported);
+    const observed = await diff.call(this.#workspaces, { sandbox: context.state.sandbox, baseSha, head }, signal);
+    if (!Array.isArray(observed) || observed.length > 1_000) throw new Error("workspace returned an invalid project-wiki diff");
+    const changedPaths = observed.length === 0 ? [] : [...validateProjectWikiPaths(observed, "workspace project-wiki diff")].sort();
+    if (reported.status === "updated") {
+      const reportedPaths = [...reported.paths].sort();
+      if (!sameProjectWikiPathSet(reportedPaths, changedPaths)) throw new Error("project-wiki disposition does not match committed diff");
+    } else if (changedPaths.length > 0) {
+      throw new Error("project-wiki not_required disposition contradicts committed diff");
+    }
   }
 
   #context(state: PersonalRunState): RunContext {
@@ -737,6 +756,10 @@ function requireHead(state: PersonalRunState): string {
 function requireBase(state: PersonalRunState): string {
   if (!state.baseSha) throw new Error("run has no base Git SHA");
   return state.baseSha;
+}
+
+function sameProjectWikiPathSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function resolvedProfile(state: PersonalRunState, phase: PersonalPhase): PhaseProfile {

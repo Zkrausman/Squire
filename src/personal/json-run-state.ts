@@ -679,7 +679,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   const results = subsetObject(state["results"], PERSONAL_PHASES, "run state results");
   for (const [key, result] of Object.entries(results)) {
     const phase = key as PersonalPhase;
-    validatePhaseResultShape(result, phase);
+    validatePhaseResultShape(result, phase, { allowLegacyImplementProjectWiki: state["profiles"] === undefined && phase === "implement" });
     if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || result.sessionFile !== `/ticket/sessions/${phase}/${result.attempt}.jsonl`) throw new Error(`run state ${phase} result identity mismatch`);
     const profiles = state["profiles"] as ResolvedPhaseProfiles | undefined;
     if (profiles) {

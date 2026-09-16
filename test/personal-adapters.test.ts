@@ -23,11 +23,13 @@ const execFileAsync = promisify(execFile);
 class RecordingCommands implements CommandPort {
   readonly requests: CommandRequest[] = [];
   dirty = false;
+  wikiDiffOutput = "";
   async run(request: CommandRequest): Promise<CommandResult> {
     this.requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
     if (request.command === "git" && request.args.includes("rev-parse")) return { stdout: `${BASE}\n`, stderr: "" };
     if (request.command === "sbx" && request.args.includes("rev-parse")) return { stdout: `${BASE}\n`, stderr: "" };
     if (request.command === "sbx" && request.args.includes("--porcelain")) return { stdout: this.dirty ? " M file.ts\n" : "", stderr: "" };
+    if (request.command === "sbx" && request.args.includes("diff")) return { stdout: this.wikiDiffOutput, stderr: "" };
     return { stdout: "", stderr: "" };
   }
 }
@@ -60,7 +62,7 @@ function phaseInput(phase: PersonalPhase, profiles: Readonly<Record<PersonalPhas
 
 function details(phase: PersonalPhase): object {
   if (phase === "plan") return { steps: ["make change"] };
-  if (phase === "implement") return { changes: ["changed file"] };
+  if (phase === "implement") return { changes: ["changed file"], projectWiki: { status: "not_required", reason: "the ticket adds no durable project knowledge" } };
   if (phase === "review") return { findings: [] };
   if (phase === "test") return { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] };
   return { lessons: ["keep the gates explicit"], followUps: [] };
@@ -142,6 +144,26 @@ test("Docker Sandbox adapter uses exact create/copy/exec argv and exposes no pub
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Docker Sandbox project-wiki diff is bounded, NUL-delimited, and path-contained", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "squire-wiki-diff-"));
+  try {
+    const commands = new RecordingCommands();
+    commands.wikiDiffOutput = ".llm-wiki/wiki/z.md\0.llm-wiki/wiki/a.md\0";
+    const workspace = new DockerSandboxWorkspace({ commands, bridgeRoot: path.join(root, "bridges"), stagingRoot: path.join(root, "staging") });
+    const paths = await workspace.committedProjectWikiPaths({ sandbox: "squire-aidev-1-0123456789", baseSha: BASE, head: BASE });
+    assert.deepEqual(paths, [".llm-wiki/wiki/a.md", ".llm-wiki/wiki/z.md"]);
+    const diff = commands.requests.find(request => request.command === "sbx" && request.args.includes("diff"));
+    assert.ok(diff);
+    assert.equal(diff?.args.includes("-z"), true);
+    assert.equal(diff?.args.includes(".llm-wiki/"), true);
+
+    for (const output of [".llm-wiki/wiki/a.md", ".llm-wiki/../outside.md\0", ".llm-wiki-evil/a.md\0", ".llm-wiki/wiki/a.md\0.llm-wiki/wiki/a.md\0"]) {
+      commands.wikiDiffOutput = output;
+      await assert.rejects(workspace.committedProjectWikiPaths({ sandbox: "squire-aidev-1-0123456789", baseSha: BASE, head: BASE }), /NUL-delimited|project-wiki/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("Pi adapter launches exact profiles under env -i and gives Retro only read-only repository tools", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-"));
   try {
@@ -216,7 +238,7 @@ test("Pi adapter constructs a complete trusted envelope when all echoes are omit
     outputHead: BASE,
     status: "passed",
     summary: "implement passed",
-    details: { changes: ["changed file"] },
+    details: { changes: ["changed file"], projectWiki: { status: "not_required", reason: "the ticket adds no durable project knowledge" } },
     profile: PROFILES.implement,
   });
   assert.equal(launch.args[launch.args.indexOf("--session") + 1], result.sessionFile);
@@ -285,6 +307,13 @@ test("Pi adapter rejects malformed or non-exact reduced payloads", async t => {
     ["invalid Retro details", "retro", JSON.stringify({ ...reducedPayload("retro"), details: { lessons: [], followUps: [] } }), /Retro lessons/],
     ["legacy Implement commit/checks details", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { commit: BASE, checks: ["npm test"] } }), /implement details fields are invalid/],
     ["Implement remediation_required", "implement", JSON.stringify({ ...reducedPayload("implement"), status: "remediation_required" }), /Implement cannot request remediation/],
+    ["missing project-wiki disposition", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { changes: ["changed file"] } }), /implement details fields are invalid/],
+    ["unknown project-wiki field", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { changes: ["changed file"], projectWiki: { status: "not_required", reason: "none", paths: [] } } }), /disposition fields are invalid/],
+    ["unsafe project-wiki path", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { changes: ["changed file"], projectWiki: { status: "updated", paths: [".llm-wiki/../secret.md"], summary: "documented durable knowledge" } } }), /project-wiki paths/],
+    ["project-wiki prefix confusion", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { changes: ["changed file"], projectWiki: { status: "updated", paths: [".llm-wiki-elsewhere/secret.md"], summary: "documented durable knowledge" } } }), /project-wiki paths/],
+    ["duplicate project-wiki path", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { changes: ["changed file"], projectWiki: { status: "updated", paths: [".llm-wiki/wiki/a.md", ".llm-wiki/wiki/a.md"], summary: "documented durable knowledge" } } }), /project-wiki paths/],
+    ["multiline project-wiki summary", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { changes: ["changed file"], projectWiki: { status: "updated", paths: [".llm-wiki/wiki/a.md"], summary: "line one\nline two" } } }), /project-wiki update summary/],
+    ["empty no-update reason", "implement", JSON.stringify({ ...reducedPayload("implement"), details: { changes: ["changed file"], projectWiki: { status: "not_required", reason: " " } } }), /project-wiki no-update reason/],
   ];
   for (const [name, phase, response, message] of cases) {
     await t.test(name, async () => {
@@ -407,7 +436,7 @@ test("passing Review and Test require their structured phase evidence", () => {
 });
 
 test("Implement remediation_required remains rejected", () => {
-  const result = { runId: "aidev-1-run", phase: "implement", attempt: 1, sessionId: "implement-session", sessionFile: "/ticket/sessions/implement/1.jsonl", inputHead: BASE, outputHead: BASE, status: "remediation_required", summary: "cannot supply future live evidence", details: { changes: ["repository work completed"] } };
+  const result = { runId: "aidev-1-run", phase: "implement", attempt: 1, sessionId: "implement-session", sessionFile: "/ticket/sessions/implement/1.jsonl", inputHead: BASE, outputHead: BASE, status: "remediation_required", summary: "cannot supply future live evidence", details: { changes: ["repository work completed"], projectWiki: { status: "not_required", reason: "the ticket adds no durable project knowledge" } } };
   assert.throws(() => validatePhaseResultShape(result, "implement"), /Implement cannot request remediation/);
 });
 

@@ -99,7 +99,7 @@ function planResult(runId: string): PlanPhaseResult {
 
 function completedState(): PersonalRunState {
   const run = state();
-  const implementation: ImplementPhaseResult = { runId: run.runId, phase: "implement", attempt: 1, sessionId: "implement-session", sessionFile: "/ticket/sessions/implement/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "implemented", details: { changes: ["changed one file"] } };
+  const implementation: ImplementPhaseResult = { runId: run.runId, phase: "implement", attempt: 1, sessionId: "implement-session", sessionFile: "/ticket/sessions/implement/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "implemented", details: { changes: ["changed one file"], projectWiki: { status: "not_required", reason: "the ticket adds no durable project knowledge" } } };
   const review: ReviewPhaseResult = { runId: run.runId, phase: "review", attempt: 1, sessionId: "review-session", sessionFile: "/ticket/sessions/review/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "reviewed", details: { findings: [] } };
   const validation: TestPhaseResult = { runId: run.runId, phase: "test", attempt: 1, sessionId: "test-session", sessionFile: "/ticket/sessions/test/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "tested", details: { commands: [{ command: "npm test", exitCode: 0, summary: "passed" }] } };
   const retro: RetroPhaseResult = { runId: run.runId, phase: "retro", attempt: 1, sessionId: "retro-session", sessionFile: "/ticket/sessions/retro/1.jsonl", inputHead: BASE, outputHead: BASE, status: "passed", summary: "retrospected", details: { lessons: ["keep gates explicit"], followUps: [] } };

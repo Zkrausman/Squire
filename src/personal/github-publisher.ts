@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CommandPort } from "./command.js";
-import { validatePhaseResultShape } from "./phase-result.js";
-import { PERSONAL_PHASES, type PersonalPhase, type PublicationInput, type PublicationPort, type PublicationResult, type RetroPhaseResult } from "./types.js";
+import { validatePhaseResultShape, validateProjectWikiDisposition, validateProjectWikiPaths } from "./phase-result.js";
+import { PERSONAL_PHASES, type ImplementPhaseResult, type PersonalPhase, type PublicationInput, type PublicationPort, type PublicationResult, type RetroPhaseResult } from "./types.js";
 
 export interface GitHubTokenProvider {
   getToken(signal?: AbortSignal): Promise<string>;
@@ -355,7 +355,30 @@ function pullRequestBody(input: PublicationInput): string {
     "",
     "> Squire does not merge pull requests. The owner retains the final decision.",
     "",
+    knowledgeSection(input),
     retroSection(input),
+  ].join("\n");
+}
+
+function knowledgeSection(input: PublicationInput): string {
+  const disposition = (input.phases.implement as ImplementPhaseResult).details.projectWiki;
+  if (disposition.status === "updated") {
+    return [
+      "## Knowledge",
+      "",
+      "- Disposition: updated",
+      `- Summary: ${markdownInline(disposition.summary)}`,
+      "- Changed paths:",
+      ...[...disposition.paths].sort().map(value => `  - \`${value}\``),
+      "",
+    ].join("\n");
+  }
+  return [
+    "## Knowledge",
+    "",
+    "- Disposition: not_required",
+    `- Reason: ${markdownInline(disposition.reason)}`,
+    "",
   ].join("\n");
 }
 
@@ -413,9 +436,24 @@ function reconcilePullRequestBody(body: string, input: PublicationInput, expecte
   if (marker.head !== expectedValidatedHead) return invalidBody();
   const squireHeadings = lines.flatMap((line, index) => /^##\s+Squire phases\s*$/u.test(line) ? [index] : []);
   const retroHeadings = lines.flatMap((line, index) => /^##\s+Retro\s*$/iu.test(line) ? [index] : []);
+  const knowledgeHeadingLike = lines.flatMap((line, index) => /^#{2,6}\s+Knowledge\b.*$/iu.test(line) ? [index] : []);
   const squireIndex = squireHeadings.length === 1 ? squireHeadings[0] : undefined;
-  if (squireIndex === undefined || retroHeadings.length !== 1 || retroHeadings[0]! <= squireIndex || ticketIndex >= validatedIndex || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
-  const nextHeading = lines.findIndex((line, index) => index > squireIndex && /^##\s+/u.test(line));
+  const retroIndex = retroHeadings.length === 1 ? retroHeadings[0] : undefined;
+  if (squireIndex === undefined || retroIndex === undefined || retroIndex <= squireIndex || ticketIndex >= validatedIndex || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
+  if (knowledgeHeadingLike.length > 1) return invalidBody();
+  const knowledgeIndex = knowledgeHeadingLike.length === 1 ? knowledgeHeadingLike[0]! : undefined;
+  if (knowledgeIndex !== undefined) {
+    if (lines[knowledgeIndex] !== "## Knowledge" || knowledgeIndex <= squireIndex || knowledgeIndex >= retroIndex) return invalidBody();
+    const knowledgeEnd = nextHeadingAfter(lines, knowledgeIndex);
+    validateExistingKnowledgeSection(lines, knowledgeIndex, knowledgeEnd === -1 ? lines.length : knowledgeEnd, invalidBody);
+  }
+  // Between the phase heading and Retro, only the optional managed Knowledge
+  // section may be another level-two section. Other headings make owner edits
+  // ambiguous and are not safe to reconcile automatically.
+  for (let index = squireIndex + 1; index < retroIndex; index += 1) {
+    if (/^##\s+/u.test(lines[index] ?? "") && index !== knowledgeIndex) return invalidBody();
+  }
+  const nextHeading = nextHeadingAfter(lines, squireIndex);
   const phaseEnd = nextHeading === -1 ? lines.length : nextHeading;
   for (const phase of PERSONAL_PHASES) {
     const matches = lines.flatMap((line, index) => index > squireIndex && index < phaseEnd && new RegExp(`^- ${capitalize(phase)}: .+$`, "u").test(line) ? [index] : []);
@@ -423,7 +461,7 @@ function reconcilePullRequestBody(body: string, input: PublicationInput, expecte
     lines[matches[0]!] = `- ${capitalize(phase)}: ${markdownInline(input.phases[phase].summary)}`;
   }
   lines[validatedIndex] = `Validated head: \`${input.head}\``;
-  return reconcileRetroSection(lines.join("\n"), retroSection(input));
+  return reconcileManagedSections(lines.join("\n"), knowledgeSection(input), retroSection(input));
 }
 
 function uniqueLineIndex(lines: readonly string[], expected: string | RegExp): number | undefined {
@@ -439,20 +477,61 @@ function capitalize(value: PersonalPhase): string {
   return `${value[0]!.toUpperCase()}${value.slice(1)}`;
 }
 
-function reconcileRetroSection(body: string, section: string): string {
+function nextHeadingAfter(lines: readonly string[], index: number): number {
+  return lines.findIndex((line, lineIndex) => lineIndex > index && /^##\s+/u.test(line));
+}
+
+function validateExistingKnowledgeSection(
+  lines: readonly string[],
+  start: number,
+  end: number,
+  invalidBody: () => never,
+): void {
+  const content = lines.slice(start + 1, end).filter(line => line.trim().length > 0);
+  const disposition = content[0];
+  if (disposition === "- Disposition: not_required") {
+    if (content.length !== 2 || inlineKnowledgeEvidence(content[1], "- Reason: ") === undefined) invalidBody();
+    return;
+  }
+  if (disposition !== "- Disposition: updated" || content.length < 4 || inlineKnowledgeEvidence(content[1], "- Summary: ") === undefined || content[2] !== "- Changed paths:") invalidBody();
+  const paths = content.slice(3).map(line => {
+    const match = /^  - `([^`]+)`$/u.exec(line);
+    return match?.[1];
+  });
+  if (paths.some(value => value === undefined)) invalidBody();
+  try {
+    validateProjectWikiPaths(paths, "existing Knowledge paths");
+  } catch {
+    invalidBody();
+  }
+}
+
+function inlineKnowledgeEvidence(line: string | undefined, prefix: string): string | undefined {
+  if (line === undefined || !line.startsWith(prefix)) return undefined;
+  const value = line.slice(prefix.length);
+  return value.length > 2_000 || !value.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(value) ? undefined : value;
+}
+
+function reconcileManagedSections(body: string, knowledge: string, retro: string): string {
   const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
   const kept: string[] = [];
   let skipping = false;
   for (const line of lines) {
-    if (/^##\s+Retro\s*$/iu.test(line)) {
+    if (/^##\s+(?:Knowledge|Retro)\s*$/iu.test(line)) {
       skipping = true;
       continue;
     }
-    if (skipping && /^##\s+/u.test(line)) skipping = false;
-    if (!skipping) kept.push(line);
+    if (skipping) {
+      if (/^##\s+/u.test(line)) {
+        skipping = false;
+        kept.push(line);
+      }
+      continue;
+    }
+    kept.push(line);
   }
-  const withoutRetro = kept.join("\n").trimEnd();
-  return `${withoutRetro ? `${withoutRetro}\n\n` : ""}${section.trimEnd()}\n`;
+  const withoutManaged = kept.join("\n").trimEnd();
+  return `${withoutManaged ? `${withoutManaged}\n\n` : ""}${knowledge.trimEnd()}\n\n${retro.trimEnd()}\n`;
 }
 
 function validatePublication(input: PublicationInput): void {
@@ -468,6 +547,7 @@ function validatePublication(input: PublicationInput): void {
   for (const phase of PERSONAL_PHASES) {
     const result = input.phases[phase];
     validatePhaseResultShape(result, phase);
+    if (phase === "implement") validateProjectWikiDisposition((result as ImplementPhaseResult).details.projectWiki);
     if (result.runId !== input.runId || result.phase !== phase || result.status !== "passed") throw new Error("publication requires passing phase results for this run");
   }
   const review = input.phases.review;
