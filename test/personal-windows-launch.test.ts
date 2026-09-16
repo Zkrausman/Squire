@@ -322,3 +322,30 @@ test("Windows test transport shim roundtrips argv, std handles and exit status w
     assert.equal(result.stderr, "shim-stderr"); assert.deepEqual(JSON.parse(result.stdout), args);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("Windows ACL probes ignore conflicting inherited PowerShell module and executable search paths", windows, async () => {
+  const root = await launchTestRoot("squire-powershell-env-");
+  const saved = new Map(["PSModulePath", "PSHOME", "PATH"].map(key => [key, process.env[key]]));
+  try {
+    const module = path.join(root, "modules", "Microsoft.PowerShell.Security");
+    await fsPromises.mkdir(module, { recursive: true });
+    await writeFile(path.join(module, "Microsoft.PowerShell.Security.psd1"), "@{ ModuleVersion='99.0'; PowerShellVersion='99.0'; RootModule='conflict.psm1'; FunctionsToExport=@('Get-Acl','Set-Acl') }");
+    await writeFile(path.join(module, "conflict.psm1"), "throw 'inherited module must never load'");
+    // Mixed casing matters: Windows environment keys are case-insensitive.
+    process.env["pSmOdUlEpAtH"] = path.dirname(module);
+    process.env["PSHOME"] = root;
+    process.env["PATH"] = root;
+    assertProtectedAcl(root);
+    const result = JSON.parse(powershell("[pscustomobject]@{home=$PSHOME;search=$env:PSModulePath;security=(Get-Command Get-Acl).Module.Path;utility=(Get-Command ConvertFrom-Json).Module.Path;major=$PSVersionTable.PSVersion.Major} | ConvertTo-Json -Compress"));
+    const home = path.join(process.env["SystemRoot"]!, "System32", "WindowsPowerShell", "v1.0");
+    assert.equal(result.major, 5);
+    assert.equal(result.home.toLowerCase(), home.toLowerCase());
+    assert.equal(result.search.toLowerCase(), path.join(home, "Modules").toLowerCase());
+    for (const name of ["Security", "Utility"]) assert.equal(result[name.toLowerCase()].toLowerCase(), path.join(home, "Modules", `Microsoft.PowerShell.${name}`, `Microsoft.PowerShell.${name}.psd1`).toLowerCase());
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});

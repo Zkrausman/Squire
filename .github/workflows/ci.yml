@@ -98,6 +98,7 @@ jobs:
   windows-launch-capture:
     name: windows-launch-capture
     strategy:
+      fail-fast: false
       matrix:
         node:
           - "20.17.0"
