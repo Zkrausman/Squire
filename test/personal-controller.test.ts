@@ -12,6 +12,7 @@ const REMEDIATED = "c".repeat(40);
 
 class MemoryStates implements RunStatePort {
   state: PersonalRunState | undefined;
+  reserve?: (state: PersonalRunState) => Promise<void>;
   release?: (ticketId: string, runId: string) => Promise<void>;
   reservationOwner?: (ticketId: string) => Promise<string | undefined>;
   throwAfterTerminal = false;
@@ -95,6 +96,13 @@ function replacePolicy(policy: PersonalModelPolicy): void {
   }
 }
 
+test("reservation-capable state store without release fails closed before creating state", async () => {
+  const harness = createHarness(implementAndPass);
+  harness.states.reserve = async () => { throw new Error("must not reserve"); };
+  await assert.rejects(harness.controller.run(REQUEST), /must provide release/);
+  assert.equal(harness.states.state, undefined);
+});
+
 test("terminal state commit followed by rejection is reconciled before release", async () => {
   const harness = createHarness(async () => { throw new Error("phase contract failure"); });
   harness.states.throwAfterTerminal = true;
@@ -173,13 +181,22 @@ test("controller fails closed when not_required contradicts committed project-wi
 test("controller compares remediation dispositions with the cumulative wiki diff", async () => {
   let firstReview = true;
   let implementationCount = 0;
+  let secondInput: PhaseInput | undefined;
+  let laterInput: PhaseInput | undefined;
   const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "review" && implementationCount === 2) laterInput = input;
     if (input.phase === "implement") {
       implementationCount += 1;
-      workspace.head = implementationCount === 1 ? IMPLEMENTED : REMEDIATED;
-      workspace.wikiPaths = implementationCount === 1
-        ? [".llm-wiki/wiki/concepts/first.md"]
-        : [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"];
+      if (implementationCount === 2) {
+        secondInput = input;
+        workspace.head = REMEDIATED;
+        workspace.wikiPaths = [".llm-wiki/wiki/concepts/first.md"];
+        const prior = input.previousCumulative.find(item => item.phase === "implement");
+        if (prior?.phase === "implement") (prior.details.changes as string[]).push("mutated clone only");
+      } else {
+        workspace.head = IMPLEMENTED;
+        workspace.wikiPaths = [".llm-wiki/wiki/concepts/first.md"];
+      }
     }
     if (input.phase === "review" && firstReview) {
       firstReview = false;
@@ -191,7 +208,10 @@ test("controller compares remediation dispositions with the cumulative wiki diff
   assert.equal(result.status, "completed");
   const implementation = result.results.implement;
   assert.equal(implementation?.phase, "implement");
-  if (implementation?.phase === "implement" && implementation.details.projectWiki.status === "updated") assert.deepEqual(implementation.details.projectWiki.paths, [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"]);
+  if (implementation?.phase === "implement" && implementation.details.projectWiki.status === "updated") assert.deepEqual(implementation.details.projectWiki.paths, [".llm-wiki/wiki/concepts/first.md"]);
+  assert.equal(secondInput?.originalTicketBaseSha, BASE);
+  const laterImplement = laterInput?.previousCumulative.find(item => item.phase === "implement");
+  assert.equal(laterImplement?.phase === "implement" && laterImplement.details.changes.includes("mutated clone only"), false);
 });
 
 test("resolved profiles are persisted before workspace preparation", async () => {

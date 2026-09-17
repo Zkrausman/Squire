@@ -747,7 +747,18 @@ export class PersonalMvpController {
       // notification. Reconcile only the exact expected terminal revision;
       // never treat a newer owner/revision as our successful write.
       const observed = await this.#readState(context.state.runId).catch(() => undefined);
-      if (observed && observed.version === context.state.version + 1 && observed.status === status && observed.lastError === changes.lastError && observed.endedAt === changes.endedAt) {
+      if (
+        observed
+        && observed.runId === context.state.runId
+        && observed.ticketId === context.state.ticketId
+        && observed.repository === context.state.repository
+        && observed.baseBranch === context.state.baseBranch
+        && observed.branch === context.state.branch
+        && observed.version === context.state.version + 1
+        && observed.status === status
+        && observed.lastError === changes.lastError
+        && observed.endedAt === changes.endedAt
+      ) {
         context.state = observed;
         terminalPersisted = true;
       }
