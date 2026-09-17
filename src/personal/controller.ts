@@ -178,6 +178,7 @@ export class PersonalMvpController {
 
     const state: PersonalRunState = { ...baseline, ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
+      if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
     } else {
       // This compatibility branch cannot close a cross-process race, but it
@@ -700,11 +701,11 @@ export class PersonalMvpController {
     if (!this.#states.release) return;
     let failure: string | undefined;
     try {
+      // The production JSON port performs owner check and unlink under one
+      // ticket-operation boundary. Do not perform a second lookup here: a
+      // legitimate replacement could acquire the ticket immediately after
+      // that boundary and would be misdiagnosed as our failed cleanup.
       await this.#states.release(context.state.ticketId, context.state.runId);
-      if (this.#states.reservationOwner) {
-        const owner = await this.#states.reservationOwner(context.state.ticketId);
-        if (owner !== undefined) failure = `reservation release did not verify removal; current owner is ${owner}`;
-      }
     } catch (error) {
       failure = `reservation release blocked or unverified: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -742,10 +743,14 @@ export class PersonalMvpController {
         terminalPersisted = true;
       }
     } catch (persistenceError) {
-      // Never hide a launch/workflow error merely because a second failure
-      // prevented durable publication. The caller/log hook can surface it.
-      // In particular, do not release a lock after a CAS race with a live
-      // child; that would permit a second same-ticket run.
+      // A port may commit the replacement and reject while publishing a
+      // notification. Reconcile only the exact expected terminal revision;
+      // never treat a newer owner/revision as our successful write.
+      const observed = await this.#readState(context.state.runId).catch(() => undefined);
+      if (observed && observed.version === context.state.version + 1 && observed.status === status && observed.lastError === changes.lastError && observed.endedAt === changes.endedAt) {
+        context.state = observed;
+        terminalPersisted = true;
+      }
       this.#reportPersistenceError(persistenceError);
     }
     if (terminalPersisted) await this.#releaseReservation(context);

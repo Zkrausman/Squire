@@ -118,6 +118,7 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
     `Elapsed: ${display(formatElapsed(state, now))}`,
     `Current HEAD: ${display(state.head ?? "unavailable")}`,
     `Terminal error: ${display(state.lastError ?? "unavailable")}`,
+    ...(state.reservationCleanupFailure ? [`Reservation cleanup: ${display(state.reservationCleanupFailure)}`] : []),
     `PR URL: ${display(state.prUrl ?? "unavailable")}`,
     `Stdout log: ${display(state.stdoutPath ?? "unavailable")}`,
     `Stderr log: ${display(state.stderrPath ?? "unavailable")}`,

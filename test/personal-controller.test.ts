@@ -14,10 +14,12 @@ class MemoryStates implements RunStatePort {
   state: PersonalRunState | undefined;
   release?: (ticketId: string, runId: string) => Promise<void>;
   reservationOwner?: (ticketId: string) => Promise<string | undefined>;
+  throwAfterTerminal = false;
   constructor(readonly events: string[] = []) {}
   async create(state: PersonalRunState): Promise<void> { assert.equal(this.state, undefined); this.events.push("state:create"); this.state = state; }
-  async save(state: PersonalRunState): Promise<void> { assert.equal(state.version, (this.state?.version ?? 0) + 1); this.events.push("state:save"); this.state = state; }
+  async save(state: PersonalRunState): Promise<void> { assert.equal(state.version, (this.state?.version ?? 0) + 1); this.events.push("state:save"); this.state = state; if (this.throwAfterTerminal && state.status !== "running") throw new Error("event publication rejected after terminal commit"); }
   async findActive(ticketId: string): Promise<PersonalRunState | undefined> { return this.state?.ticketId === ticketId && this.state.status === "running" ? this.state : undefined; }
+  async read(): Promise<PersonalRunState | undefined> { return this.state; }
 }
 
 class MemoryWorkspace implements WorkspacePort {
@@ -92,6 +94,16 @@ function replacePolicy(policy: PersonalModelPolicy): void {
     Object.assign(profile, { provider: "changed-provider", model: "changed-model", thinking: "low" });
   }
 }
+
+test("terminal state commit followed by rejection is reconciled before release", async () => {
+  const harness = createHarness(async () => { throw new Error("phase contract failure"); });
+  harness.states.throwAfterTerminal = true;
+  let releases = 0;
+  harness.states.release = async () => { releases++; };
+  await assert.rejects(harness.controller.run(REQUEST), /phase contract failure/);
+  assert.equal(harness.states.state?.status, "failed");
+  assert.equal(releases, 1);
+});
 
 test("reservation release failure preserves terminal error and records actionable cleanup", async () => {
   const harness = createHarness(implementAndPass);
