@@ -116,6 +116,7 @@ test("status renders persisted phase, timing, model, head, error, PR, and log ev
     remediations: { review: 1, test: 0 },
     prUrl: "https://github.com/example/repo/pull/12",
     lastError: "a terminal diagnostic",
+    reservationCleanupFailure: "reservation release blocked or unverified",
     updatedAt: "2026-09-10T01:01:01.000Z",
   }, new Date("2026-09-11T00:00:00.000Z"));
   assert.match(output, /Phase: review/);
@@ -126,6 +127,7 @@ test("status renders persisted phase, timing, model, head, error, PR, and log ev
   assert.match(output, /Elapsed: 1h 1m 1s \(3661000 ms\)/);
   assert.match(output, new RegExp(`Current HEAD: ${"c".repeat(40)}`));
   assert.match(output, /Terminal error: a terminal diagnostic/);
+  assert.match(output, /Reservation cleanup: reservation release blocked or unverified/);
   assert.match(output, /PR URL: https:\/\/github\.com\/example\/repo\/pull\/12/);
   assert.match(output, /Stdout log: \/home\/user\/\.local\/state\/squire\/logs\/out\.log/);
   assert.match(output, /Stderr log: \/home\/user\/\.local\/state\/squire\/logs\/err\.log/);

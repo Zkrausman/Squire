@@ -12,10 +12,15 @@ const REMEDIATED = "c".repeat(40);
 
 class MemoryStates implements RunStatePort {
   state: PersonalRunState | undefined;
+  reserve?: (state: PersonalRunState) => Promise<void>;
+  release?: (ticketId: string, runId: string) => Promise<void>;
+  reservationOwner?: (ticketId: string) => Promise<string | undefined>;
+  throwAfterTerminal = false;
   constructor(readonly events: string[] = []) {}
   async create(state: PersonalRunState): Promise<void> { assert.equal(this.state, undefined); this.events.push("state:create"); this.state = state; }
-  async save(state: PersonalRunState): Promise<void> { assert.equal(state.version, (this.state?.version ?? 0) + 1); this.events.push("state:save"); this.state = state; }
+  async save(state: PersonalRunState): Promise<void> { assert.equal(state.version, (this.state?.version ?? 0) + 1); this.events.push("state:save"); this.state = state; if (this.throwAfterTerminal && state.status !== "running") throw new Error("event publication rejected after terminal commit"); }
   async findActive(ticketId: string): Promise<PersonalRunState | undefined> { return this.state?.ticketId === ticketId && this.state.status === "running" ? this.state : undefined; }
+  async read(): Promise<PersonalRunState | undefined> { return this.state; }
 }
 
 class MemoryWorkspace implements WorkspacePort {
@@ -91,6 +96,68 @@ function replacePolicy(policy: PersonalModelPolicy): void {
   }
 }
 
+test("reservation-capable state store without release fails closed before creating state", async () => {
+  const harness = createHarness(implementAndPass);
+  harness.states.reserve = async () => { throw new Error("must not reserve"); };
+  await assert.rejects(harness.controller.run(REQUEST), /must provide release/);
+  assert.equal(harness.states.state, undefined);
+});
+
+test("terminal state commit followed by rejection is reconciled before release", async () => {
+  const harness = createHarness(async () => { throw new Error("phase contract failure"); });
+  harness.states.throwAfterTerminal = true;
+  let releases = 0;
+  harness.states.release = async () => { releases++; };
+  await assert.rejects(harness.controller.run(REQUEST), /phase contract failure/);
+  assert.equal(harness.states.state?.status, "failed");
+  assert.equal(releases, 1);
+});
+
+for (const field of ["head", "baseSha", "launchState", "lifecycle", "version", "controllerPid", "updatedAt"] as const) {
+  test(`terminal readback rejects changed ${field} without releasing reservation`, async () => {
+    const harness = createHarness(async () => { throw new Error("original phase failure"); });
+    const save = harness.states.save.bind(harness.states);
+    harness.states.save = async state => {
+      await save(state);
+      if (state.status === "running") return;
+      const value = field === "head" || field === "baseSha" ? REMEDIATED
+        : field === "launchState" ? "claimed"
+        : field === "lifecycle" ? "running"
+        : field === "version" ? state.version + 1
+        : field === "controllerPid" ? 123456 : "2026-09-11T00:00:00.000Z";
+      const replacement: PersonalRunState = { ...structuredClone(state), [field]: value };
+      harness.states.state = replacement;
+      throw new Error("terminal write outcome is ambiguous");
+    };
+    let releases = 0;
+    harness.states.release = async () => { releases++; };
+    await assert.rejects(harness.controller.run(REQUEST), /original phase failure/);
+    assert.equal(releases, 0);
+    assert.equal(harness.states.state?.lastError, "original phase failure");
+  });
+}
+
+test("terminal contract failure preserves its error when reservation release fails", async () => {
+  const harness = createHarness(async () => { throw new Error("original phase failure"); });
+  harness.states.release = async () => { throw new Error("ticket operation is locked or ambiguous"); };
+  await assert.rejects(harness.controller.run(REQUEST), /original phase failure/);
+  assert.equal(harness.states.state?.status, "failed");
+  assert.equal(harness.states.state?.lastError, "original phase failure");
+  assert.match(harness.states.state?.reservationCleanupFailure ?? "", /locked or ambiguous/);
+});
+
+test("reservation release failure preserves terminal error and records actionable cleanup", async () => {
+  const harness = createHarness(implementAndPass);
+  const releaseError = new Error("ticket operation remained ambiguous");
+  harness.states.release = async () => { throw releaseError; };
+  harness.states.reservationOwner = async () => "aidev-1-0123456789";
+  const result = await harness.controller.run(REQUEST);
+  assert.equal(result.status, "completed");
+  assert.equal(result.lastError, null);
+  assert.match(result.reservationCleanupFailure ?? "", /blocked or unverified/);
+  assert.equal(harness.states.state?.reservationCleanupFailure, result.reservationCleanupFailure);
+});
+
 test("personal controller completes one ticket and publishes only fresh passing gates", async () => {
   const harness = createHarness(implementAndPass);
   const result = await harness.controller.run(REQUEST);
@@ -144,16 +211,63 @@ test("controller fails closed when not_required contradicts committed project-wi
   assert.equal(harness.publications.length, 0);
 });
 
+test("controller rejects updated disposition omitting a cumulative wiki path", async () => {
+  const paths = [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"];
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.head = IMPLEMENTED;
+      workspace.wikiPaths = paths;
+      return phaseResult(input, workspace.head, "passed", [], paths.slice(0, 1));
+    }
+    return phaseResult(input, workspace.head);
+  });
+  await assert.rejects(harness.controller.run(REQUEST), /project-wiki/);
+  assert.equal(harness.publications.length, 0);
+});
+
+test("controller accepts not_required after remediation reverts the earlier wiki change", async () => {
+  const firstPath = ".llm-wiki/wiki/concepts/first.md";
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.head = input.attempt === 1 ? IMPLEMENTED : REMEDIATED;
+      workspace.wikiPaths = input.attempt === 1 ? [firstPath] : [];
+      assert.equal(input.originalTicketBaseSha, BASE);
+      if (input.attempt === 2) {
+        const prior = input.previousCumulative.find(result => result.phase === "implement");
+        assert.equal(prior?.phase === "implement" && prior.details.projectWiki.status, "updated");
+      }
+    }
+    if (input.phase === "review" && input.attempt === 1) {
+      return phaseResult(input, workspace.head, "remediation_required", ["revert the wiki addition"]);
+    }
+    return phaseResult(input, workspace.head, "passed", [], workspace.wikiPaths);
+  });
+  const result = await harness.controller.run(REQUEST);
+  assert.equal(result.status, "completed");
+  assert.equal(result.head, REMEDIATED);
+  assert.equal(result.results.implement?.phase === "implement" && result.results.implement.details.projectWiki.status, "not_required");
+  assert.equal(harness.publications.length, 1);
+});
+
 test("controller compares remediation dispositions with the cumulative wiki diff", async () => {
   let firstReview = true;
   let implementationCount = 0;
+  let secondInput: PhaseInput | undefined;
+  let laterInput: PhaseInput | undefined;
   const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "review" && implementationCount === 2) laterInput = input;
     if (input.phase === "implement") {
       implementationCount += 1;
-      workspace.head = implementationCount === 1 ? IMPLEMENTED : REMEDIATED;
-      workspace.wikiPaths = implementationCount === 1
-        ? [".llm-wiki/wiki/concepts/first.md"]
-        : [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"];
+      if (implementationCount === 2) {
+        secondInput = input;
+        workspace.head = REMEDIATED;
+        workspace.wikiPaths = [".llm-wiki/wiki/concepts/first.md"];
+        const prior = input.previousCumulative.find(item => item.phase === "implement");
+        if (prior?.phase === "implement") (prior.details.changes as string[]).push("mutated clone only");
+      } else {
+        workspace.head = IMPLEMENTED;
+        workspace.wikiPaths = [".llm-wiki/wiki/concepts/first.md"];
+      }
     }
     if (input.phase === "review" && firstReview) {
       firstReview = false;
@@ -165,7 +279,10 @@ test("controller compares remediation dispositions with the cumulative wiki diff
   assert.equal(result.status, "completed");
   const implementation = result.results.implement;
   assert.equal(implementation?.phase, "implement");
-  if (implementation?.phase === "implement" && implementation.details.projectWiki.status === "updated") assert.deepEqual(implementation.details.projectWiki.paths, [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"]);
+  if (implementation?.phase === "implement" && implementation.details.projectWiki.status === "updated") assert.deepEqual(implementation.details.projectWiki.paths, [".llm-wiki/wiki/concepts/first.md"]);
+  assert.equal(secondInput?.originalTicketBaseSha, BASE);
+  const laterImplement = laterInput?.previousCumulative.find(item => item.phase === "implement");
+  assert.equal(laterImplement?.phase === "implement" && laterImplement.details.changes.includes("mutated clone only"), false);
 });
 
 test("resolved profiles are persisted before workspace preparation", async () => {
@@ -186,7 +303,9 @@ test("Retro receives the tested HEAD and all prior phase results in its own reco
   });
   const result = await harness.controller.run(REQUEST);
   assert.equal(retroInput?.expectedHead, IMPLEMENTED);
+  assert.equal(retroInput?.originalTicketBaseSha, BASE);
   assert.deepEqual(Object.keys(retroInput?.previous ?? {}).sort(), ["implement", "plan", "review", "test"]);
+  assert.equal(retroInput?.previousCumulative.length, 4);
   assert.equal(result.attempts.retro, 1);
   assert.equal(result.sessions.retro, "retro-1");
   assert.deepEqual(result.results.retro?.details, { lessons: ["Keep exact HEAD gates explicit"], followUps: [] });

@@ -37,6 +37,7 @@ const OPTIONAL_STATE_KEYS = [
   "planProgress",
   "planExecution",
   "remediationAttempts",
+  "reservationCleanupFailure",
 ] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
 const RUN_STEPS = ["launching", "preparing", ...PERSONAL_PHASES, "publishing", "complete"] as const;
@@ -725,6 +726,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
 
   if (state["prUrl"] !== null && (!text(state["prUrl"], 2_000) || !/^https:\/\/[^\s]+$/u.test(state["prUrl"]))) throw new Error("invalid run state prUrl");
   if (state["lastError"] !== null && !text(state["lastError"], 2_000)) throw new Error("invalid run state lastError");
+  if (state["reservationCleanupFailure"] !== undefined && !text(state["reservationCleanupFailure"], 2_000)) throw new Error("invalid run state reservation cleanup failure");
   if (!text(state["updatedAt"], 64) || !validTimestamp(state["updatedAt"])) throw new Error("invalid run state updatedAt");
 
   if (state["status"] === "running" && (state["step"] === "complete" || state["lastError"] !== null || state["prUrl"] !== null)) throw new Error("running state has terminal fields");

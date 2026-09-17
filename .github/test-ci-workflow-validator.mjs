@@ -125,6 +125,9 @@ try {
     await expectValidatorRejects(workflow.replace(marker, marker.replace(/timeout-minutes: \d+/, "timeout-minutes: 360")), `excessive timeout: ${marker}`);
   }
 
+  const controllerRegression = " dist/test/personal-controller.test.js";
+  assert.equal(workflow.includes(controllerRegression), true, "Windows controller regression missing");
+  await expectValidatorRejects(workflow.replace(controllerRegression, ""), "missing Windows controller cleanup coverage");
   await expectValidatorRejects(swapSteps(workflow, "Provision ticket runtime", "Validate ticket runtime"), "runtime validation before provisioning");
   await expectValidatorRejects(workflow.replace("          - windows-latest", "          - macos-latest"), "filesystem integration without a Windows runner");
   await expectValidatorRejects(workflow.replace("node --test dist/test/personal-run-events.test.js", "node --test dist/test/personal-run-events.test.js || true"), "status-masked filesystem integration");

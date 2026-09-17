@@ -40,10 +40,10 @@ import type {
 
 interface RunContext {
   state: PersonalRunState;
-  persist: (changes: Partial<PersonalRunState>) => Promise<void>;
+  persist: (changes: Partial<PersonalRunState>, prepared?: (state: PersonalRunState) => void) => Promise<void>;
   bindSource: (sourceSha: string) => Promise<void>;
   claimReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
-  failReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
+  failReserved: (changes: Partial<PersonalRunState>, prepared?: (state: PersonalRunState) => void) => Promise<void>;
 }
 
 export interface PersonalRunMetadata {
@@ -178,6 +178,7 @@ export class PersonalMvpController {
 
     const state: PersonalRunState = { ...baseline, ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
+      if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
     } else {
       // This compatibility branch cannot close a cross-process race, but it
@@ -515,6 +516,8 @@ export class PersonalMvpController {
       phase,
       attempt,
       expectedHead,
+      originalTicketBaseSha: requireBase(context.state),
+      previousCumulative: cumulativePreviousResults(context.state),
       profile: expectedProfile,
       ...(stagedProfile ? { escalationDigest: context.state.escalationDigest! } : {}),
       // A phase adapter is untrusted with respect to controller state. Give it
@@ -630,8 +633,9 @@ export class PersonalMvpController {
       version: context.state.version + 1,
       updatedAt,
     });
-    context.persist = async changes => {
+    context.persist = async (changes, prepared) => {
       const next = nextState(changes);
+      prepared?.(structuredClone(next));
       await this.#states.save(next);
       context.state = next;
     };
@@ -663,9 +667,10 @@ export class PersonalMvpController {
       }
       context.state = next;
     };
-    context.failReserved = async changes => {
+    context.failReserved = async (changes, prepared) => {
       const endedAt = this.#timestampAtOrAfter(context.state.updatedAt, ...(typeof changes.endedAt === "string" ? [changes.endedAt] : []));
       const next = nextState({ ...changes, endedAt }, this.#timestampAtOrAfter(endedAt));
+      prepared?.(structuredClone(next));
       if (this.#states.failReserved) {
         await this.#states.failReserved(next);
       } else {
@@ -696,10 +701,25 @@ export class PersonalMvpController {
 
   async #releaseReservation(context: RunContext): Promise<void> {
     if (!this.#states.release) return;
+    let failure: string | undefined;
     try {
+      // The production JSON port performs owner check and unlink under one
+      // ticket-operation boundary. Do not perform a second lookup here: a
+      // legitimate replacement could acquire the ticket immediately after
+      // that boundary and would be misdiagnosed as our failed cleanup.
       await this.#states.release(context.state.ticketId, context.state.runId);
     } catch (error) {
-      this.#reportPersistenceError(error);
+      failure = `reservation release blocked or unverified: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (failure === undefined) return;
+    try {
+      // Preserve the original terminal lastError and write a distinct,
+      // actionable cleanup outcome. The state CAS prevents this diagnostic
+      // from overwriting a newer owner or revision.
+      await context.persist({ reservationCleanupFailure: failure.slice(0, 2_000) });
+    } catch (diagnosticError) {
+      this.#reportPersistenceError(diagnosticError);
+      this.#reportPersistenceError(new Error(failure));
     }
   }
 
@@ -715,20 +735,29 @@ export class PersonalMvpController {
       ...(context.state.preparationState === "pending" ? { preparationState: "failed" } : {}),
     };
     let terminalPersisted = context.state.status !== "running";
+    let expectedTerminal: PersonalRunState | undefined;
+    const captureTerminal = (state: PersonalRunState): void => { expectedTerminal = state; };
     const unclaimedBackground = context.state.executionMode === "background" && isReservedLaunch(context.state);
     try {
       if (context.state.status === "running") {
         // The JSON store combines this terminal write with the exact-owner
         // release under the ticket boundary. A pre-handoff failure must not
         // race a detached child claiming the same reservation.
-        await (unclaimedBackground ? context.failReserved(changes) : context.persist(changes));
+        await (unclaimedBackground ? context.failReserved(changes, captureTerminal) : context.persist(changes, captureTerminal));
         terminalPersisted = true;
       }
     } catch (persistenceError) {
-      // Never hide a launch/workflow error merely because a second failure
-      // prevented durable publication. The caller/log hook can surface it.
-      // In particular, do not release a lock after a CAS race with a live
-      // child; that would permit a second same-ticket run.
+      // A port may commit the replacement and reject while publishing a
+      // notification. Reconcile only the exact expected terminal revision;
+      // never treat a newer owner/revision as our successful write.
+      const observed = await this.#readState(context.state.runId).catch(() => undefined);
+      // Compare the complete prepared wire state, including candidate, launch
+      // claims, lifecycle, results and timestamps. A matching subset is not
+      // evidence that our write committed. The snapshot predates the port call.
+      if (observed && expectedTerminal && canonical(observed) === canonical(expectedTerminal)) {
+        context.state = observed;
+        terminalPersisted = true;
+      }
       this.#reportPersistenceError(persistenceError);
     }
     if (terminalPersisted) await this.#releaseReservation(context);
@@ -879,6 +908,21 @@ function requireBase(state: PersonalRunState): string {
 
 function sameProjectWikiPathSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** Preserve every prior output, rather than only the latest result per phase. */
+function cumulativePreviousResults(state: PersonalRunState): readonly PhaseResult[] {
+  const results: PhaseResult[] = [];
+  const seen = new Set<string>();
+  for (const result of [
+    ...Object.values(state.results),
+    ...(state.stagedTransitions ?? []).map(transition => transition.result),
+  ]) {
+    if (!result || seen.has(result.sessionId)) continue;
+    seen.add(result.sessionId);
+    results.push(structuredClone(result));
+  }
+  return Object.freeze(results);
 }
 
 function resolvedProfile(state: PersonalRunState, phase: PersonalPhase): PhaseProfile {

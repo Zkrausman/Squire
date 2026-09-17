@@ -21,7 +21,7 @@ import { assertProtectedAcl, launchTestRoot } from "./helpers/windows-launch.js"
 
 const head = "a".repeat(40);
 const material = await captureLaunchMaterial({ config: { ...TEST_MATERIAL.config, promptPolicy: { version: 1, id: "default", plan: ["requirements", "implementation-design"] } }, digest: TEST_CONFIG_DIGEST, rawConfig: TEST_MATERIAL.rawConfig });
-const input: PhaseInput = { runId: "aidev-1-0123456789", phase: "plan", attempt: 1, expectedHead: head, profile: { provider: "test", model: "same-persisted-model", thinking: "high" }, ticket: { id: "AIDEV-1", title: "change", description: "untrusted" }, repository: "example/repo", baseBranch: "main", branch: "feature", sandbox: "sandbox", previous: {}, feedback: [] };
+const input: PhaseInput = { runId: "aidev-1-0123456789", phase: "plan", attempt: 1, expectedHead: head, originalTicketBaseSha: head, previousCumulative: [], profile: { provider: "test", model: "same-persisted-model", thinking: "high" }, ticket: { id: "AIDEV-1", title: "change", description: "untrusted" }, repository: "example/repo", baseBranch: "main", branch: "feature", sandbox: "sandbox", previous: {}, feedback: [] };
 const requirements = (): RequirementsArtifact => ({ version: 1, inputHead: head, problem: "deliver change", acceptanceCriteria: ["verified"], nonGoals: [], assumptions: [], dependencies: [], openQuestions: [], readiness: "ready" });
 const design = (r = requirements()) => ({ version: 1, inputHead: head, requirementsDigest: digestArtifact(r), steps: ["implement", "test"], affectedComponents: ["src"], tests: ["npm test"], risks: [], exactHeadEvidence: { head, observations: ["inspected source"] }, projectWiki: { status: "planned", paths: [".llm-wiki/wiki/concepts/plan.md"], summary: "document architecture" } });
 

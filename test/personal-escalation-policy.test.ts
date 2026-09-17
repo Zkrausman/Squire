@@ -80,6 +80,9 @@ test("same-stage retry, exact boundary advance, failed committed HEAD, feedback 
   const implementations = h.inputs.filter(i => i.phase === "implement");
   assert.deepEqual(implementations.map(i => i.profile.model), ["first", "first", "second"]);
   assert.deepEqual(implementations.map(i => i.expectedHead), [base, "1".repeat(40), "2".repeat(40)]);
+  assert.deepEqual(implementations.map(i => i.originalTicketBaseSha), [base, base, base]);
+  assert.deepEqual(implementations.map(i => i.previousCumulative.length), [1, 2, 3]);
+  assert.deepEqual(implementations[2]!.previousCumulative.map(item => item.attempt).sort((a, b) => a - b), [1, 1, 2]);
   assert.deepEqual(implementations[1]!.feedback, ["applicable feedback"]);
   assert.equal(implementations[2]!.previous.implement!.status, "failed");
   for (const phase of ["review", "test", "retro"] as const) assert.equal(state.results[phase]!.inputHead, "3".repeat(40));

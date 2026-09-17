@@ -104,6 +104,21 @@ test("JSON state commits publish bounded versioned events without secrets or log
   }
 });
 
+test("terminal state remains authoritative and watcher synthesizes after outbox failure", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-terminal-failure-"));
+  try {
+    const states = new JsonRunStateStore(directory, { maxEventBytes: 1 });
+    await states.create(state());
+    const failed = { ...terminal(state()), reservationCleanupFailure: "reservation release blocked or unverified" };
+    await states.save(failed);
+    const persisted = await states.read(RUN_ID);
+    assert.equal(persisted?.status, "failed");
+    assert.equal(persisted?.reservationCleanupFailure, failed.reservationCleanupFailure);
+    assert.equal((await states.readEvents(RUN_ID)).length, 0);
+    assert.equal(synthesizeCurrentRunEvents(persisted!).at(-1)?.type, "terminal_failed");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("state remains authoritative when event persistence fails", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-state-first-"));
   try {

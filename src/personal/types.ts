@@ -103,6 +103,10 @@ export interface PhaseInput {
   readonly phase: PersonalPhase;
   readonly attempt: number;
   readonly expectedHead: string;
+  /** Immutable ticket baseline used to evaluate cumulative wiki disposition. */
+  readonly originalTicketBaseSha: string;
+  /** All prior phase outputs, including superseded remediation attempts. */
+  readonly previousCumulative: readonly PhaseResult[];
   /** The controller-resolved profile used for this phase's Pi process. */
   readonly profile: PhaseProfile;
   readonly previous: Readonly<Partial<Record<PersonalPhase, PhaseResult>>>;
@@ -191,6 +195,8 @@ export interface PersonalRunState {
   readonly remediationAttempts?: RemediationAttemptEvidence;
   readonly prUrl: string | null;
   readonly lastError: string | null;
+  /** Durable, actionable reservation cleanup outcome when release is blocked or unverifiable. */
+  readonly reservationCleanupFailure?: string;
   readonly updatedAt: string;
 }
 
