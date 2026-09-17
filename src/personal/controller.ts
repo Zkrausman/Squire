@@ -515,6 +515,8 @@ export class PersonalMvpController {
       phase,
       attempt,
       expectedHead,
+      originalTicketBaseSha: requireBase(context.state),
+      previousCumulative: cumulativePreviousResults(context.state),
       profile: expectedProfile,
       ...(stagedProfile ? { escalationDigest: context.state.escalationDigest! } : {}),
       // A phase adapter is untrusted with respect to controller state. Give it
@@ -879,6 +881,21 @@ function requireBase(state: PersonalRunState): string {
 
 function sameProjectWikiPathSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** Preserve every prior output, rather than only the latest result per phase. */
+function cumulativePreviousResults(state: PersonalRunState): readonly PhaseResult[] {
+  const results: PhaseResult[] = [];
+  const seen = new Set<string>();
+  for (const result of [
+    ...Object.values(state.results),
+    ...(state.stagedTransitions ?? []).map(transition => transition.result),
+  ]) {
+    if (!result || seen.has(result.sessionId)) continue;
+    seen.add(result.sessionId);
+    results.push(structuredClone(result));
+  }
+  return Object.freeze(results);
 }
 
 function resolvedProfile(state: PersonalRunState, phase: PersonalPhase): PhaseProfile {

@@ -187,7 +187,7 @@ test("Windows failed phase copy cleans protected captured input, but never delet
     const input = {
       runId: "aidev-1-0123456789", ticket: { id: "AIDEV-1", title: "fixture", description: "data" },
       repository: "example/repo", baseBranch: "main", branch: "squire/fixture", sandbox: "fixture",
-      phase: "plan" as const, attempt: 1, expectedHead: "a".repeat(40),
+      phase: "plan" as const, attempt: 1, expectedHead: "a".repeat(40), originalTicketBaseSha: "a".repeat(40), previousCumulative: [],
       profile: { provider: "provider", model: "model", thinking: "medium" as const }, previous: {}, feedback: [],
     };
     const file = path.join(root, input.runId, "phase-inputs", "plan-1.json");

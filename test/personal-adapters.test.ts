@@ -54,6 +54,8 @@ function phaseInput(phase: PersonalPhase, profiles: Readonly<Record<PersonalPhas
     phase,
     attempt: 1,
     expectedHead: BASE,
+    originalTicketBaseSha: BASE,
+    previousCumulative: [],
     profile: profiles[phase],
     previous: {},
     feedback: [],
@@ -238,6 +240,8 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
         assert.match(prompt, /details\.findings\[\] contains plain strings, never structured objects/);
       }
       if (phase === "implement") {
+        assert.match(prompt, /NET disposition of the original ticket baseline through the current candidate/);
+        assert.match(prompt, /previousCumulative/);
         assert.match(prompt, /Return passed when complete or failed with a clear explanation when the requested work cannot be completed/);
         assert.match(prompt, /Implement must never return remediation_required/);
       }

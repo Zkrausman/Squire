@@ -186,7 +186,9 @@ test("Retro receives the tested HEAD and all prior phase results in its own reco
   });
   const result = await harness.controller.run(REQUEST);
   assert.equal(retroInput?.expectedHead, IMPLEMENTED);
+  assert.equal(retroInput?.originalTicketBaseSha, BASE);
   assert.deepEqual(Object.keys(retroInput?.previous ?? {}).sort(), ["implement", "plan", "review", "test"]);
+  assert.equal(retroInput?.previousCumulative.length, 4);
   assert.equal(result.attempts.retro, 1);
   assert.equal(result.sessions.retro, "retro-1");
   assert.deepEqual(result.results.retro?.details, { lessons: ["Keep exact HEAD gates explicit"], followUps: [] });
