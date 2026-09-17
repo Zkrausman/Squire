@@ -71,7 +71,7 @@ struct Policy {
     return IsValidSid(sid) && (EqualSid(sid, user) || EqualSid(sid, system.value) ||
       EqualSid(sid, admins.value) || (ancestor && EqualSid(sid, installer.value)));
   }
-  void verify(HANDLE h, bool directory, bool confidential) const {
+  void verify(HANDLE h, bool directory, bool confidential, bool source = false) const {
     BY_HANDLE_FILE_INFORMATION info;
     check(GetFileInformationByHandle(h, &info), "file identity");
     if (GetFileType(h) != FILE_TYPE_DISK || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
@@ -81,7 +81,7 @@ struct Policy {
     DWORD error = GetSecurityInfo(h, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
       &owner, nullptr, &acl, nullptr, reinterpret_cast<PSECURITY_DESCRIPTOR*>(&sd.value));
     if (error) fail("read handle DACL", error);
-    if (!owner || !trusted(owner, !confidential) || !acl || !IsValidAcl(acl)) fail("unsafe owner or absent DACL");
+    if (!owner || !trusted(owner, !confidential && !source) || !acl || !IsValidAcl(acl)) fail("unsafe owner or absent DACL");
     // Conservative allow-ACE analysis: deny ACEs never excuse an unsafe allow.
     // Ancestor read/traverse and child creation are not replacement authority.
     // DELETE on this object and DELETE_CHILD on its parent are both checked.
@@ -98,13 +98,14 @@ struct Policy {
       if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) fail("unsupported DACL ACE");
       auto ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
       DWORD mask = ace->Mask; MapGenericMask(&mask, &mapping);
-      if (!trusted(&ace->SidStart, !confidential) && (confidential ? mask != 0 : (mask & mutation) != 0))
-        fail(confidential ? "unexpected protected-object principal" : "unsafe ancestor mutation principal");
+      if (!trusted(&ace->SidStart, !confidential && !source) &&
+          (confidential ? mask != 0 : (mask & (mutation | (source ? FILE_WRITE_DATA | FILE_APPEND_DATA : 0))) != 0))
+        fail(confidential ? "unexpected protected-object principal" : source ? "unsafe source mutation principal" : "unsafe ancestor mutation principal");
     }
   }
 };
 Held relative(HANDLE parent, const std::wstring& name, DWORD access, ULONG disposition,
-              bool directory, Policy& policy, bool confidential, bool canCreate) {
+              bool directory, Policy& policy, bool confidential, bool canCreate, bool source = false) {
   static auto ntCreate = reinterpret_cast<NtCreate>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
   static auto ntError = reinterpret_cast<NtError>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError"));
   if (!ntCreate || !ntError) fail("NT handle-relative support unavailable");
@@ -118,7 +119,7 @@ Held relative(HANDLE parent, const std::wstring& name, DWORD access, ULONG dispo
   // validation (not sharing alone) establish ancestor integrity. Files deny
   // write/delete sharing for stable reads and to reject existing writers.
   NTSTATUS status = ntCreate(&h, access | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE, &attr, &io,
-    nullptr, FILE_ATTRIBUTE_NORMAL, directory ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ,
+    nullptr, FILE_ATTRIBUTE_NORMAL, directory && !source ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ,
     disposition, OpenReparse | Synchronous | (directory ? Directory : NonDirectory), nullptr, 0);
   if (status < 0) {
     DWORD error = ntError(status);
@@ -126,7 +127,7 @@ Held relative(HANDLE parent, const std::wstring& name, DWORD access, ULONG dispo
     fail("handle-relative open rejected", error);
   }
   auto result = std::make_unique<Handle>(h);
-  policy.verify(h, directory, confidential);
+  policy.verify(h, directory, confidential, source);
   return result;
 }
 std::vector<std::wstring> components(const std::wstring& file) {
@@ -193,6 +194,139 @@ struct Chain {
     for (size_t i = 0; i < handles.size(); ++i) policy.verify(handles[i]->value, true, i + 1 == handles.size());
   }
 };
+// Source integrity is deliberately separate from private-byte confidentiality.
+// Outsider readers are allowed, never outsider authors/owners. TrustedInstaller
+// remains ancestor-only. Source files stay pinned until the whole capture ends.
+void sourceHook(napi_env env, napi_value hook, const char* stage, const std::wstring& name) {
+  if (!hook) return;
+  napi_value receiver, args[2], ignored;
+  napi_get_undefined(env, &receiver);
+  napi_create_string_utf8(env, stage, NAPI_AUTO_LENGTH, &args[0]);
+  napi_create_string_utf16(env, reinterpret_cast<const char16_t*>(name.data()), name.size(), &args[1]);
+  if (napi_call_function(env, receiver, hook, 2, args, &ignored) != napi_ok) fail("source test hook failed");
+}
+struct Snapshot {
+  BY_HANDLE_FILE_INFORMATION identity{};
+  FILE_BASIC_INFO basic{};
+  explicit Snapshot(HANDLE h) {
+    check(GetFileInformationByHandle(h, &identity), "source identity");
+    check(GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)), "source metadata");
+  }
+  bool same(const Snapshot& b) const {
+    return identity.dwVolumeSerialNumber == b.identity.dwVolumeSerialNumber &&
+      identity.nFileIndexHigh == b.identity.nFileIndexHigh && identity.nFileIndexLow == b.identity.nFileIndexLow &&
+      identity.nFileSizeHigh == b.identity.nFileSizeHigh && identity.nFileSizeLow == b.identity.nFileSizeLow &&
+      identity.nNumberOfLinks == b.identity.nNumberOfLinks && basic.FileAttributes == b.basic.FileAttributes &&
+      basic.CreationTime.QuadPart == b.basic.CreationTime.QuadPart &&
+      basic.LastWriteTime.QuadPart == b.basic.LastWriteTime.QuadPart && basic.ChangeTime.QuadPart == b.basic.ChangeTime.QuadPart;
+  }
+};
+struct SourceFile { Held handle; Snapshot snapshot; explicit SourceFile(Held h) : handle(std::move(h)), snapshot(handle->value) {} };
+struct Source {
+  Policy policy;
+  std::vector<Held> directories;
+  std::vector<SourceFile> files;
+  Held repository;
+  Source(const std::wstring& root, const std::wstring& repo, napi_env env, napi_value hook) {
+    auto parts = components(root + L"\\manifest.json"); parts.pop_back();
+    if (GetDriveTypeW(parts[0].c_str()) != DRIVE_FIXED) fail("local fixed drive required");
+    auto volume = std::make_unique<Handle>(CreateFileW(parts[0].c_str(), FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (volume->value == INVALID_HANDLE_VALUE) fail("open source volume", GetLastError());
+    policy.verify(volume->value, true, false, parts.size() == 1);
+    wchar_t filesystem[32];
+    check(GetVolumeInformationByHandleW(volume->value, nullptr, 0, nullptr, nullptr, nullptr,
+      filesystem, 32), "source filesystem");
+    if (wcscmp(filesystem, L"NTFS") != 0) fail("custom prompt sources require local NTFS");
+    auto canonical = finalName(volume->value), expected = L"\\\\?\\" + parts[0];
+    if (CompareStringOrdinal(canonical.c_str(), -1, expected.c_str(), -1, TRUE) != CSTR_EQUAL) fail("drive aliases cannot bypass the full ancestor chain");
+    directories.push_back(std::move(volume));
+    for (size_t i = 1; i < parts.size(); ++i) {
+      sourceHook(env, hook, "beforeDirectoryOpen", parts[i]);
+      directories.push_back(relative(parent(), parts[i], FILE_TRAVERSE, Open, true, policy, false, false, i + 1 == parts.size()));
+      sourceHook(env, hook, "pinnedDirectory", finalName(parent()));
+    }
+    // Resolve only the repository alias, to a retained canonical exclusion anchor.
+    // Source traversal itself never follows reparse points.
+    components(repo + L"\\manifest.json");
+    repository = std::make_unique<Handle>(CreateFileW(repo.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (repository->value == INVALID_HANDLE_VALUE) fail("open repository exclusion anchor", GetLastError());
+    if (within(finalName(repository->value), finalName(parent()))) fail("prompt sources must be outside repository");
+    verify();
+  }
+  HANDLE parent() const { return directories.back()->value; }
+  void verify() {
+    for (size_t i = 0; i < directories.size(); ++i) policy.verify(directories[i]->value, true, false, i + 1 == directories.size());
+    for (const auto& file : files) {
+      policy.verify(file.handle->value, false, false, true);
+      if (!file.snapshot.same(Snapshot(file.handle->value))) fail("source changed during capture");
+    }
+  }
+  napi_value read(napi_env env, const std::wstring& name, napi_value hook) {
+    if (name.empty() || name.size() > 128) fail("prompt file must be a direct root member");
+    for (size_t i = 0; i < name.size(); ++i) {
+      wchar_t c = name[i];
+      if (!((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || (i && (c == L'.' || c == L'_' || c == L'-')))) fail("prompt file must be a direct root member");
+    }
+    components(L"C:\\" + name); // Also reject DOS aliases and trailing dots.
+    verify();
+    sourceHook(env, hook, "beforeFileOpen", name);
+    files.emplace_back(relative(parent(), name, FILE_READ_DATA, Open, false, policy, false, false, true));
+    auto& file = files.back();
+    sourceHook(env, hook, "pinnedFile", name);
+    LARGE_INTEGER size; check(GetFileSizeEx(file.handle->value, &size), "source size");
+    if (size.QuadPart < 0 || size.QuadPart > 262144) fail("prompt file too large");
+    std::vector<char> bytes(static_cast<size_t>(size.QuadPart) + 1);
+    DWORD first, rest;
+    check(ReadFile(file.handle->value, bytes.data(), static_cast<DWORD>(bytes.size() / 2), &first, nullptr), "read source bytes");
+    sourceHook(env, hook, "duringRead", name);
+    check(ReadFile(file.handle->value, bytes.data() + first, static_cast<DWORD>(bytes.size() - first), &rest, nullptr), "read source bytes");
+    if (first + rest != size.QuadPart) fail("source size changed during capture");
+    verify();
+    napi_value result; napi_create_buffer_copy(env, first + rest, bytes.data(), nullptr, &result); return result;
+  }
+};
+// GC also releases abandoned leases. Tagged holders cannot be forged by passing
+// another addon's external value, and synchronous hooks cannot reenter a read.
+constexpr napi_type_tag SourceTag{0x368c9bfb491a4b83, 0x9b37087a02991037};
+struct SourceLease { std::unique_ptr<Source> source; bool busy = false; };
+SourceLease* sourceLease(napi_env env, napi_value value) {
+  bool tagged = false; void* p = nullptr;
+  if (napi_check_object_type_tag(env, value, &SourceTag, &tagged) != napi_ok || !tagged ||
+      napi_unwrap(env, value, &p) != napi_ok || !p) fail("invalid source lease");
+  auto lease = static_cast<SourceLease*>(p);
+  if (!lease->source || lease->busy) fail("closed or busy source lease");
+  return lease;
+}
+napi_value sourceOperation(napi_env env, napi_callback_info info, int op) {
+  try {
+    napi_value args[3], result; size_t count = 3;
+    napi_get_cb_info(env, info, &count, args, nullptr, nullptr); napi_get_undefined(env, &result);
+    if (count < (op == 2 ? 1u : 2u)) fail("missing source arguments");
+    if (op == 0) {
+      auto lease = std::make_unique<SourceLease>();
+      lease->source = std::make_unique<Source>(stringArg(env, args[0]), stringArg(env, args[1]), env, count == 3 ? args[2] : nullptr);
+      if (napi_create_object(env, &result) != napi_ok || napi_type_tag_object(env, result, &SourceTag) != napi_ok ||
+          napi_wrap(env, result, lease.get(), [](napi_env, void* p, void*) { delete static_cast<SourceLease*>(p); }, nullptr, nullptr) != napi_ok) fail("create source lease");
+      lease.release();
+    } else {
+      auto lease = sourceLease(env, args[0]);
+      if (op == 2) {
+        auto source = std::move(lease->source); source->verify();
+      } else {
+        lease->busy = true;
+        try { result = lease->source->read(env, stringArg(env, args[1]), count == 3 ? args[2] : nullptr); }
+        catch (...) { lease->busy = false; throw; }
+        lease->busy = false;
+      }
+    }
+    return result;
+  } catch (const std::exception& error) { napi_throw_error(env, nullptr, error.what()); return nullptr; }
+}
+napi_value openSource(napi_env e, napi_callback_info i) { return sourceOperation(e, i, 0); }
+napi_value readSource(napi_env e, napi_callback_info i) { return sourceOperation(e, i, 1); }
+napi_value closeSource(napi_env e, napi_callback_info i) { return sourceOperation(e, i, 2); }
 std::string bytesArg(napi_env env, napi_value v) {
   size_t n; if (napi_get_value_string_utf8(env, v, nullptr, 0, &n) != napi_ok || n > MaxBytes) fail("invalid/oversized bytes");
   std::vector<char> b(n + 1);
@@ -298,13 +432,16 @@ napi_value closeLog(napi_env e, napi_callback_info i) { return operation(e, i, 3
 napi_value init(napi_env env, napi_value exports) {
   napi_set_instance_data(env, new Context(), [](napi_env, void* p, void*) { delete static_cast<Context*>(p); }, nullptr);
   napi_property_descriptor methods[] = {
+    {"openSource", nullptr, openSource, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"readSource", nullptr, readSource, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"closeSource", nullptr, closeSource, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"persist", nullptr, persist, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"read", nullptr, read, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"openLog", nullptr, openLog, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeLog", nullptr, closeLog, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"replaceState", nullptr, replaceState, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
-  napi_define_properties(env, exports, 5, methods); return exports;
+  napi_define_properties(env, exports, 8, methods); return exports;
 }
 } // namespace
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init)

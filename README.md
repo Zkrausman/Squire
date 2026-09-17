@@ -42,7 +42,7 @@ npm run build
 npm run squire -- run AIDEV-123
 ```
 
-Supported Node versions are `^20.17.0 || >=22.9.0`, matching the build dependency engines even on POSIX. On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture and protected phase-input staging; custom prompt roots are unsupported. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
+Supported Node versions are `^20.17.0 || >=22.9.0`, matching the build dependency engines even on POSIX. On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture, protected phase-input staging, and read-only external custom prompt capture on local NTFS. Custom sources may allow other readers, but not untrusted authors; private captured material remains confidential. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
 
 Squire does not search the checkout for configuration. The implicit config is
 `%USERPROFILE%\.squire\config.json` on Windows and
