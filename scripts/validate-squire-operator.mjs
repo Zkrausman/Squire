@@ -18,6 +18,9 @@ function locatePackage() {
     roots.push(path.join(dir, "runtime", "node_modules"));
     if (path.dirname(dir) === dir) break;
   }
+  // CI provisions the locked ticket runtime outside the repository; use that
+  // explicit installation before checking host-wide locations.
+  roots.push("/ticket/runtime/node_modules");
   roots.push(path.resolve(path.dirname(process.execPath), "../lib/node_modules"));
   for (const root of roots) {
     const candidate = path.join(root, packageName);
