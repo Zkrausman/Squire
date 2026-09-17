@@ -1,3 +1,4 @@
+import { PhaseExecutionError } from "./execution-failure.js";
 import { PlanSupervisorRunner } from "./plan-supervisor-runner.js";
 import { validateExecutablePlan } from "./prompt-policy.js";
 import type { PlanProgress } from "./plan-artifacts.js";
@@ -116,7 +117,8 @@ export class SandboxPiPhaseRunner implements PhasePort {
         maxOutputBytes: 2 * 1024 * 1024,
       }, signal);
 
-      return parsePhaseResult(output.stdout, input, sessionId, sessionFile, profile);
+      try { return parsePhaseResult(output.stdout, input, sessionId, sessionFile, profile); }
+      catch (error) { throw new PhaseExecutionError("protocol", String(error), { cause: error }); }
     } finally {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi

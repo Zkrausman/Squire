@@ -1,3 +1,5 @@
+import type { EscalationPolicy } from "./model-policy.js";
+import type { StagedTransition } from "./staged-attempts.js";
 import type { PlanEvidence, PlanProgress } from "./plan-artifacts.js";
 import type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
 import type { LaunchEvidence } from "./launch-material.js";
@@ -91,6 +93,7 @@ export interface RetroPhaseResult extends PhaseResultBase {
 export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult | RetroPhaseResult;
 
 export interface PhaseInput {
+  readonly escalationDigest?: string;
   readonly runId: string;
   readonly ticket: Ticket;
   readonly repository: string;
@@ -174,6 +177,9 @@ export interface PersonalRunState {
   readonly baseSha: string | null;
   readonly branch: string;
   /** Resolved once at run creation and immutable for the life of the run. */
+  readonly escalationPolicy?: EscalationPolicy;
+  readonly escalationDigest?: string;
+  readonly stagedTransitions?: readonly StagedTransition[];
   readonly profiles?: ResolvedPhaseProfiles;
   readonly planSelection?: PlanSelection;
   readonly head: string | null;
@@ -196,6 +202,7 @@ export interface RunRequest {
   readonly baseBranch: string;
   /** Optional caller-supplied policy; the approved policy is used otherwise. */
   readonly modelPolicy?: PersonalModelPolicy;
+  readonly escalationPolicy?: EscalationPolicy;
 }
 
 export interface TicketPort {

@@ -31,6 +31,14 @@
     "test": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
     "retro": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "medium" }
   },
+  "escalationPolicy": {
+    "implement": {
+      "stages": [
+        { "provider": "YOUR_PROVIDER", "model": "YOUR_INITIAL_MODEL", "thinking": "medium", "maxAttempts": 2 },
+        { "provider": "YOUR_PROVIDER", "model": "YOUR_NEXT_MODEL", "thinking": "high", "maxAttempts": 1 }
+      ]
+    }
+  },
   "promptPolicy": {
     "version": 1,
     "id": "default",

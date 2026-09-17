@@ -1,3 +1,4 @@
+import { PhaseExecutionError } from "./execution-failure.js";
 import { execFile } from "node:child_process";
 
 export interface CommandRequest {
@@ -37,7 +38,7 @@ export class NodeCommandRunner implements CommandPort {
         }
         const failure = error as Error & { code?: string | number };
         const detail = request.sensitive ? "sensitive command failed" : stderr.trim() || stdout.trim() || failure.message;
-        reject(new Error(`${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, { cause: error }));
+        reject(new PhaseExecutionError(signal?.aborted ? "cancelled" : (failure as Error & { killed?: boolean }).killed ? "timeout" : typeof failure.code === "string" && ["ENOENT", "EACCES", "ENOBUFS"].includes(failure.code) ? "infrastructure" : "unknown", `${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, { cause: error }));
       });
       // Non-interactive commands must observe EOF. In particular, Pi print mode
       // waits for stdin to close before processing its positional prompt.

@@ -122,6 +122,10 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
     `Stdout log: ${display(state.stdoutPath ?? "unavailable")}`,
     `Stderr log: ${display(state.stderrPath ?? "unavailable")}`,
   ];
+  const staged = [...(state.stagedTransitions ?? [])].reverse().find(t => !phase || t.phase === phase);
+  const selectionReason = [...(state.stagedTransitions ?? [])].reverse().find(t => t.kind === "reserved" && t.phase === staged?.phase && t.attempt === staged.attempt)?.reason;
+  if (staged) lines.push(`Escalation: ${staged.phase} stage=${staged.stageIndex + 1}/${state.escalationPolicy![staged.phase]!.stages.length} stage-consumed=${staged.stageAttempt}/${staged.stageMaximum} consumed=${staged.consumed} remaining=${staged.remaining} reason=${staged.reason} selected-by=${selectionReason} classification=${staged.classification ?? "reserved"} policy=${staged.policyDigest}`);
+  else if (state.escalationDigest) lines.push(`Escalation policy: ${state.escalationDigest} (no attempt reserved for current phase)`);
   if (state.step === "plan" && state.planProgress) lines.push(`Progress: Plan / ${state.planProgress.subphase === "requirements" ? "Requirements" : "Implementation Design"}`);
   const plan = state.results.plan?.phase === "plan" ? state.results.plan.details.supervision : undefined;
   if (plan?.outcome === "needs_clarification") lines.push(`Plan blocked: ${display(state.results.plan!.summary)}`);
@@ -142,6 +146,10 @@ export function formatRunEvent(event: RunEvent): string {
   if (event.phase !== undefined) fields.push(`phase=${display(event.phase)}`);
   if (event.attempt !== undefined) fields.push(`attempt=${event.attempt}`);
   if (event.outcome !== undefined) fields.push(`outcome=${display(event.outcome)}`);
+  if (event.staged) {
+    const t = event.staged;
+    fields.push(`stage=${t.stageIndex + 1}`, `stage-consumed=${t.stageAttempt}/${t.stageMaximum}`, `consumed=${t.consumed}`, `remaining=${t.remaining}`, `profile=${display(`${t.profile.provider}/${t.profile.model}@${t.profile.thinking}`)}`, `reason=${t.reason}`, `classification=${t.classification ?? "reserved"}`, `policy=${t.policyDigest}`);
+  }
   return `${fields.join(" ")}\n`;
 }
 
@@ -192,6 +200,8 @@ function phaseForStatus(step: PersonalRunState["step"]): PersonalPhase | undefin
 }
 
 function profileForStatus(state: PersonalRunState, phase: PersonalPhase | undefined) {
+  const staged = [...(state.stagedTransitions ?? [])].reverse().find(t => !phase || t.phase === phase);
+  if (staged) return staged.profile;
   if (phase && state.profiles?.[phase]) return state.profiles[phase];
   // During launch/preparation there is no current phase yet, but the selected
   // Plan profile is already durable and is the most useful resolved model to

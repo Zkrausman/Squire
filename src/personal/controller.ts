@@ -1,3 +1,6 @@
+import { requireStagedSlot, reservation } from "./staged-attempts.js";
+import { classifyExecutionFailure, PhaseExecutionError } from "./execution-failure.js";
+import { validateEscalationPolicy, escalationDigest, type EscalationPolicy } from "./model-policy.js";
 import { validatePlanProgress } from "./plan-artifacts.js";
 import { validateExecutablePlan } from "./prompt-policy.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -64,6 +67,7 @@ export interface PersonalMvpControllerOptions {
   readonly newId?: () => string;
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
+  readonly escalationPolicy?: EscalationPolicy;
   /** Optional process identity for persisted foreground/background evidence. */
   readonly controllerPid?: number;
   /** Receives persistence failures that cannot be represented in run state. */
@@ -121,6 +125,7 @@ export class PersonalMvpController {
   readonly #now: () => Date;
   readonly #newId: () => string;
   readonly #modelPolicy: PersonalModelPolicy;
+  readonly #escalationPolicy: EscalationPolicy | undefined;
   readonly #controllerPid: number | undefined;
   readonly #onPersistenceError: (error: unknown) => void;
   readonly #contexts = new Map<string, RunContext>();
@@ -129,6 +134,8 @@ export class PersonalMvpController {
   constructor(options: PersonalMvpControllerOptions) {
     this.#material = options.launchMaterial === undefined ? undefined : validateLaunchMaterial(options.launchMaterial);
     if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
+    const staged = this.#material?.config.escalationPolicy ?? options.escalationPolicy;
+    this.#escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
     this.#tickets = options.tickets;
     this.#workspaces = options.workspaces;
     this.#phases = options.phases;
@@ -154,9 +161,12 @@ export class PersonalMvpController {
       request.ticketId,
       request.modelPolicy ?? this.#modelPolicy,
     );
+    const staged = request.escalationPolicy ?? this.#escalationPolicy;
+    const escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
+    if (this.#material && canonical(escalationPolicy) !== canonical(this.#material.config.escalationPolicy)) throw new Error("request escalation policy differs from launch capture");
     const identity = createRunIdentity(request, options.runId ?? this.#newId(), options.runId);
     const startedAt = this.#timestamp();
-    const state = initialState(identity.runId, identity.sandbox, identity.branch, request, resolved.profiles, resolved.planSelection, startedAt, {
+    const baseline = initialState(identity.runId, identity.sandbox, identity.branch, request, resolved.profiles, resolved.planSelection, startedAt, {
       executionMode,
       ...(options.stdoutPath !== undefined ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath !== undefined ? { stderrPath: options.stderrPath } : {}),
@@ -166,6 +176,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
+    const state: PersonalRunState = { ...baseline, ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
       await this.#states.reserve(state);
     } else {
@@ -405,7 +416,7 @@ export class PersonalMvpController {
       this.#contexts.delete(context.state.runId);
       return context.state;
     } catch (error) {
-      await this.#recordTerminal(context, error, signal?.aborted === true);
+      await this.#recordTerminal(context, error, signal?.aborted === true || classifyExecutionFailure(error) === "cancelled");
       this.#contexts.delete(context.state.runId);
       throw error;
     }
@@ -415,6 +426,7 @@ export class PersonalMvpController {
     let result = await this.#executePhase(context, ticket, request, "review", [], signal);
     if (result.status === "remediation_required") {
       if (context.state.remediations.review >= 1) throw new Error("Review remediation budget exhausted");
+      for (const phase of ["implement", "review"] as const) requireStagedSlot(context.state, phase, "remediation_required");
       await context.persist({
         remediations: { ...context.state.remediations, review: context.state.remediations.review + 1 },
         remediationAttempts: appendRemediationAttempt(context.state, "review", result.attempt),
@@ -429,6 +441,7 @@ export class PersonalMvpController {
     let result = await this.#executePhase(context, ticket, request, "test", [], signal);
     if (result.status === "remediation_required") {
       if (context.state.remediations.test >= 1) throw new Error("Test remediation budget exhausted");
+      for (const phase of ["implement", "review", "test"] as const) requireStagedSlot(context.state, phase, "remediation_required");
       await context.persist({
         remediations: { ...context.state.remediations, test: context.state.remediations.test + 1 },
         remediationAttempts: appendRemediationAttempt(context.state, "test", result.attempt),
@@ -448,18 +461,50 @@ export class PersonalMvpController {
     if (result.status !== "passed") throw new Error(`Retro did not pass: ${result.summary}`);
   }
 
-  async #executePhase(
+  async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, phaseFeedback: readonly string[], signal?: AbortSignal): Promise<PhaseResult> {
+    if (!context.state.escalationPolicy?.[phase]) return this.#executePhaseOnce(context, ticket, request, phase, phaseFeedback, signal);
+    let nextFeedback = phaseFeedback.slice(0, 20).map(item => item.slice(0, 2000));
+    let trigger = phaseFeedback.length ? "remediation_required" : "initial";
+    for (;;) {
+      signal?.throwIfAborted();
+      const slot = requireStagedSlot(context.state, phase, trigger)!;
+      // No attempt is charged for controller-owned preflight failures.
+      if (signal?.aborted) throw signal.reason;
+      await this.#workspaces.assertClean(context.state.sandbox, signal);
+      if (await this.#workspaces.currentHead(context.state.sandbox, signal) !== requireHead(context.state)) throw new Error(`${phase} started at an unexpected Git HEAD`);
+      signal?.throwIfAborted();
+      const reserved = reservation(context.state, slot);
+      await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: slot.attempt }, stagedTransitions: [...context.state.stagedTransitions!, reserved] });
+      let result: PhaseResult;
+      try {
+        result = await this.#executePhaseOnce(context, ticket, request, phase, nextFeedback, signal, slot.profile);
+      } catch (error) {
+        const classification = classifyExecutionFailure(error, signal);
+        await context.persist({ stagedTransitions: [...context.state.stagedTransitions!, { ...slot, kind: "closed", reason: "execution_failure", classification }] });
+        throw error;
+      }
+      const classification = result.status === "failed" ? (result.phase === "plan" && result.details.supervision?.outcome === "needs_clarification" ? "needs_clarification" : "eligible_failure") : result.status;
+      await context.persist({ stagedTransitions: [...context.state.stagedTransitions!, { ...slot, kind: "closed", reason: "result", classification, result }] });
+      if (classification === "needs_clarification") throw new Error(`Plan needs clarification: ${result.summary}`);
+      if (classification !== "eligible_failure") return result;
+      nextFeedback = feedback(result).slice(0, 20).map(item => item.slice(0, 2000));
+      trigger = classification;
+    }
+  }
+
+  async #executePhaseOnce(
     context: RunContext,
     ticket: Ticket,
     request: RunRequest,
     phase: PersonalPhase,
     phaseFeedback: readonly string[],
     signal?: AbortSignal,
+    stagedProfile?: PhaseProfile,
   ): Promise<PhaseResult> {
     const expectedHead = requireHead(context.state);
-    const attempt = context.state.attempts[phase] + 1;
-    await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
-    const expectedProfile = Object.freeze({ ...resolvedProfile(context.state, phase) });
+    const attempt = context.state.attempts[phase] + (stagedProfile ? 0 : 1);
+    if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
+    const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
     const input: PhaseInput = Object.freeze({
       runId: context.state.runId,
       ticket: Object.freeze({ ...ticket }),
@@ -471,13 +516,14 @@ export class PersonalMvpController {
       attempt,
       expectedHead,
       profile: expectedProfile,
+      ...(stagedProfile ? { escalationDigest: context.state.escalationDigest! } : {}),
       // A phase adapter is untrusted with respect to controller state. Give it
       // detached, immutable inputs so a retained reference cannot mutate the
       // resolved policy or prior evidence between persistence boundaries.
       previous: structuredClone(context.state.results),
       feedback: Object.freeze([...phaseFeedback]),
     });
-    if (phase !== "implement") {
+    if (!stagedProfile && phase !== "implement") {
       await this.#workspaces.assertClean(context.state.sandbox, signal);
       const startingHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
       if (startingHead !== expectedHead) throw new Error(`${phase} started at an unexpected Git HEAD`);
@@ -517,29 +563,37 @@ export class PersonalMvpController {
       workspaceFailed = true;
       workspaceDiagnostic = error;
     }
+    if (stagedProfile && signal?.aborted) throw new PhaseExecutionError("cancelled", "phase interrupted", { cause: signal.reason });
     if (phaseFailed) {
       if (workspaceFailed) throw withSecondaryWorkspaceDiagnostic(phaseError, workspaceDiagnostic);
       throw phaseError;
     }
     if (workspaceFailed) throw workspaceDiagnostic;
     if (observedHead === undefined) throw new Error(`${phase} did not produce an observed Git HEAD`);
-    if (!result) throw new Error(`${phase} returned no result`);
-    const evidencedResult: PhaseResult = result.profile === undefined
-      ? { ...structuredClone(result), profile: { ...expectedProfile } }
-      : structuredClone(result);
-    validatePhaseResult(evidencedResult, input, observedHead);
-    if (phase === "plan" && context.state.launchEvidence?.planSubphases.length) {
-      if (evidencedResult.phase !== "plan" || !evidencedResult.details.supervision || evidencedResult.details.supervision.launchDigest !== context.state.launchEvidence.digest) throw new Error("supervised Plan evidence required");
-      for (const child of evidencedResult.details.supervision.children) {
-        if (!this.#material || child.promptDigest !== createHash("sha256").update(composeSystemPrompt(this.#material, "plan", child.subphase)).digest("hex")) throw new Error("supervised Plan prompt binding mismatch");
+    if (!result) throw new PhaseExecutionError("protocol", `${phase} returned no result`);
+    let evidencedResult: PhaseResult;
+    try {
+      evidencedResult = result.profile === undefined
+        ? { ...structuredClone(result), profile: { ...expectedProfile } }
+        : structuredClone(result);
+      validatePhaseResult(evidencedResult, input, observedHead);
+      if (stagedProfile && (!result.profile || (Object.values(context.state.sessions).includes(evidencedResult.sessionId) || context.state.stagedTransitions?.some(t => t.result?.sessionId === evidencedResult.sessionId)))) throw new Error("staged result missing profile or reused session");
+      if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
+      if (phase === "plan" && context.state.launchEvidence?.planSubphases.length) {
+        if (evidencedResult.phase !== "plan" || !evidencedResult.details.supervision || evidencedResult.details.supervision.launchDigest !== context.state.launchEvidence.digest) throw new Error("supervised Plan evidence required");
+        for (const child of evidencedResult.details.supervision.children) {
+          if (!this.#material || child.promptDigest !== createHash("sha256").update(composeSystemPrompt(this.#material, "plan", child.subphase)).digest("hex")) throw new Error("supervised Plan prompt binding mismatch");
+        }
+        if (evidencedResult.details.supervision.children.length > progressCount) throw new Error("supervised Plan progress evidence missing");
       }
-      if (evidencedResult.details.supervision.children.length > progressCount) throw new Error("supervised Plan progress evidence missing");
+    } catch (error) {
+      throw new PhaseExecutionError("protocol", error instanceof Error ? error.message : String(error), { cause: error });
     }
-    if (evidencedResult.status === "failed") {
+    if (!stagedProfile && evidencedResult.status === "failed") {
       if (evidencedResult.phase === "plan" && evidencedResult.details.supervision) await context.persist({ results: { ...context.state.results, plan: evidencedResult }, sessions: { ...context.state.sessions, plan: evidencedResult.sessionId } });
       throw new Error(`${phase} failed: ${evidencedResult.summary}`);
     }
-    if (phase === "implement" && evidencedResult.status !== "passed") throw new Error("Implement must return passed or failed");
+    if (phase === "implement" && evidencedResult.status !== "passed" && !(stagedProfile && evidencedResult.status === "failed")) throw new Error("Implement must return passed or failed");
     if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
     if (phase === "implement") await this.#reconcileProjectWikiDisposition(context, evidencedResult as ImplementPhaseResult, observedHead, signal);
     await context.persist({
@@ -782,6 +836,7 @@ function validateRequest(request: RunRequest): void {
 function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHead: string): void {
   validatePhaseResultShape(result, input.phase);
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt) throw new Error("phase result identity mismatch");
+  if (result.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("phase result session file mismatch");
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
   if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");
@@ -799,7 +854,7 @@ function appendRemediationAttempt(state: PersonalRunState, phase: "review" | "te
 function withSecondaryWorkspaceDiagnostic(primary: unknown, secondary: unknown): Error {
   const primaryMessage = primary instanceof Error ? primary.message : String(primary);
   const secondaryMessage = secondary instanceof Error ? secondary.message : String(secondary);
-  const error = new Error(`${primaryMessage}; secondary workspace diagnostic: ${secondaryMessage}`, { cause: primary });
+  const error = new PhaseExecutionError(classifyExecutionFailure(primary), `${primaryMessage}; secondary workspace diagnostic: ${secondaryMessage}`, { cause: primary });
   return error;
 }
 

@@ -11,3 +11,4 @@
 - [transition-remediation-and-fresh-gates](transition-remediation-and-fresh-gates.md)
 - [token-burn-prevention-for-agent-sessions](token-burn-prevention-for-agent-sessions.md)
 - [trusted-controller-boundary](trusted-controller-boundary.md)
+- [Staged model escalation policy](staged-model-escalation-policy.md)

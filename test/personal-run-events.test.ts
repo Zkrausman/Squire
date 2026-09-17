@@ -213,6 +213,8 @@ test("directory watcher observes atomic state replacement and coalesced notifica
     assert.equal(seen.filter(event => event.type === "run_started").length, 1);
     assert.equal(seen.filter(event => event.type === "terminal_failed").length, 1);
   } finally {
+    // Atomic state visibility precedes outbox publication and lock release.
+    // Do not remove the fixture while the writer is still releasing ownership.
     clearTimeout(timer);
     cancelWriter?.();
     try { await writer; }

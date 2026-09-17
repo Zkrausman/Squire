@@ -169,3 +169,39 @@ function profileText(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0 || /[\u0000-\u001f\u007f]/u.test(value)) throw new Error(`${label} must be a safe non-empty string`);
   return value;
 }
+
+export const ESCALATION_PHASES = ["plan", "implement", "review", "test", "retro"] as const;
+export type EscalationPhase = typeof ESCALATION_PHASES[number];
+export interface EscalationStage extends PhaseProfile { readonly maxAttempts: number; }
+export type EscalationPolicy = Readonly<Partial<Record<EscalationPhase, { readonly stages: readonly EscalationStage[] }>>>;
+
+/** Closed, detached user data: ordering conveys no inferred model ranking. */
+export function validateEscalationPolicy(value: unknown): EscalationPolicy {
+  const object = closedObject(value, ESCALATION_PHASES, "escalationPolicy");
+  if (!Object.keys(object).length) throw new Error("escalationPolicy must not be empty");
+  const policy: Partial<Record<EscalationPhase, { readonly stages: readonly EscalationStage[] }>> = {};
+  for (const phase of ESCALATION_PHASES) {
+    if (!Object.hasOwn(object, phase)) continue;
+    const entry = closedObject(object[phase], ["stages"], `escalationPolicy.${phase}`);
+    if (!Array.isArray(entry["stages"]) || entry["stages"].length < 1 || entry["stages"].length > 8) throw new Error(`${phase} requires 1..8 stages`);
+    const stages = entry["stages"].map((value: unknown) => {
+      const stage = closedObject(value, ["provider", "model", "thinking", "maxAttempts"], "escalation stage");
+      const { maxAttempts, ...profile } = stage;
+      if (!Number.isSafeInteger(maxAttempts) || (maxAttempts as number) < 1 || (maxAttempts as number) > 16) throw new Error("stage maxAttempts must be 1..16");
+      const checked = validatePhaseProfile(profile);
+      if (checked.provider.length > 256 || checked.model.length > 256) throw new Error("escalation profile text exceeds 256 characters");
+      return { ...checked, maxAttempts: maxAttempts as number };
+    });
+    if (stages.reduce((n, s) => n + s.maxAttempts, 0) > 32) throw new Error(`${phase} permits at most 32 attempts`);
+    policy[phase] = Object.freeze({ stages: Object.freeze(stages.map(s => Object.freeze(s))) });
+  }
+  return Object.freeze(policy);
+}
+export function escalationDigest(policy: EscalationPolicy): string {
+  // Validation rebuilds keys in a fixed order, independent of JSON key order.
+  return createHash("sha256").update("squire-escalation-policy-v1\0").update(JSON.stringify(validateEscalationPolicy(policy))).digest("hex");
+}
+function closedObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(k => !keys.includes(k))) throw new Error(`${label} fields are invalid`);
+  return value as Record<string, unknown>;
+}

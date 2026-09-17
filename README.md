@@ -94,3 +94,14 @@ reuse that run's sandbox; inspect the log and state, and remove the exact
 reservation only after confirming no controller remains.
 
 > Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.
+
+### Optional staged escalation
+
+User-global `escalationPolicy` can assign bounded ordered provider/model/thinking
+stages to individual phases. Omission preserves fixed-profile behavior and the
+approved defaults. The placeholder stages in `squire.config.example.json` are
+**illustrative only**: remove that block or replace its profiles before use.
+See [staged escalation](docs/staged-escalation.md) for validation bounds, exact
+attempt charging, terminal failure classes, immutable launch capture, exhaustion,
+remediation-limit intersection and status/watch evidence. Independent gates are
+unchanged; configuration changes never affect an active run.

@@ -4,7 +4,7 @@ import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { LoadedPersonalMvpConfig, PersonalMvpConfig } from "./config.js";
 import { validateCapturedRawConfig, validatePhaseTimeoutMs } from "./config.js";
-import { validateModelPolicy } from "./model-policy.js";
+import { validateEscalationPolicy, escalationDigest, validateModelPolicy } from "./model-policy.js";
 import { validateSourceRef } from "./identity.js";
 import { buildCorePrompt, buildPlanChildCore } from "./prompt-core.js";
 import { builtinPrompts, capturePromptSet, decode, deepFreeze, DEFAULT_PROMPT_SELECTION, PLAN_SUBPHASES, record, validatePromptSelection, type CapturedPrompts, type PlanSubphase } from "./prompt-policy.js";
@@ -44,6 +44,7 @@ export function validateLaunchMaterial(value: unknown): LaunchMaterial {
   const raw = JSON.parse(decode(v["rawConfig"] as string));
   validateCapturedRawConfig(raw);
   const config = validateCapturedConfig(v["config"]);
+  if (canonical(raw.escalationPolicy === undefined ? undefined : validateEscalationPolicy(raw.escalationPolicy)) !== canonical(config.escalationPolicy)) throw new Error("captured escalation policy mismatch");
   const prompts = record(v["prompts"], ["manifest", "phases", "subphases"], "captured prompts");
   base64(prompts["manifest"]);
   const manifest = record(JSON.parse(decode(prompts["manifest"] as string)), ["version", "id", "phases", "subphases"], "captured manifest");
@@ -154,11 +155,12 @@ async function assertMaterialDirectory(file: string, state: PersonalRunState): P
 }
 function assertMaterialState(material: LaunchMaterial, state: PersonalRunState): void {
   const c = material.config;
+  if (canonical(c.escalationPolicy) !== canonical(state.escalationPolicy) || (c.escalationPolicy ? escalationDigest(c.escalationPolicy) : undefined) !== state.escalationDigest) throw new Error("launch escalation policy mismatch");
   if (canonical(launchEvidence(material)) !== canonical(state.launchEvidence) || createHash("sha256").update(Buffer.from(material.rawConfig, "base64")).digest("hex") !== state.launchConfigDigest || c.repository.slug !== state.repository || c.repository.path !== state.repositoryPath || c.repository.sourceRef !== state.sourceRef || c.repository.baseBranch !== state.baseBranch) throw new Error("launch material state identity mismatch");
 }
 /** Validate normalized data without filesystem reads or environment resolution. */
 function validateCapturedConfig(value: unknown): PersonalMvpConfig {
-  const c = record(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured configuration");
+  const c = record(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "escalationPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured configuration");
   const text = (v: unknown) => { if (typeof v !== "string" || !v.trim() || v.includes("\0")) throw new Error("invalid captured configuration string"); };
   const absolute = (v: unknown) => { text(v); if (!path.isAbsolute(v as string)) throw new Error("captured path is not absolute"); };
   const repo = record(c["repository"], ["slug", "path", "sourceRef", "baseBranch"], "captured repository");
@@ -170,6 +172,7 @@ function validateCapturedConfig(value: unknown): PersonalMvpConfig {
   const sandbox = record(c["sandbox"], ["roleUser", "piExecutable", "piAgentDirectory", "piAuthFile", "template"], "captured sandbox");
   for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key]);
   for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key]);
+  if (c["escalationPolicy"] !== undefined) validateEscalationPolicy(c["escalationPolicy"]);
   validateModelPolicy(c["modelPolicy"]); validatePromptSelection(c["promptPolicy"]);
   if (c["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(c["phaseTimeoutMs"]);
   return c as unknown as PersonalMvpConfig;
