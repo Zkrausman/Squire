@@ -26,8 +26,20 @@ export function powershell(script: string, ...args: string[]): string {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["PSMODULEPATH", "PSHOME"].includes(key.toUpperCase())));
   env["PSModulePath"] = path.join(home, "Modules");
   env["SQUIRE_ACL_ARGS"] = JSON.stringify(args);
-  const source = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules'); Import-Module ([IO.Path]::Combine($env:PSModulePath,'Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop; Import-Module ([IO.Path]::Combine($env:PSModulePath,'Microsoft.PowerShell.Security','Microsoft.PowerShell.Security.psd1')) -ErrorAction Stop; $p=ConvertFrom-Json $env:SQUIRE_ACL_ARGS; ${script}`;
-  return execFileSync(path.join(home, "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(source, "utf16le").toString("base64")], { env, encoding: "utf8", timeout: 15_000 }).trim();
+  // Fixed, non-sensitive stderr markers distinguish shell startup, module
+  // loading and probe execution without exposing paths, arguments or ACLs.
+  const mark = (phase: string): string => `[Console]::Error.WriteLine('SQUIRE_ACL_PHASE:${phase}');`;
+  const source = `${mark("started")} $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules'); ${mark("utility-import")} Import-Module ([IO.Path]::Combine($env:PSModulePath,'Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop; ${mark("security-import")} Import-Module ([IO.Path]::Combine($env:PSModulePath,'Microsoft.PowerShell.Security','Microsoft.PowerShell.Security.psd1')) -ErrorAction Stop; ${mark("arguments")} $p=ConvertFrom-Json $env:SQUIRE_ACL_ARGS; ${mark("probe")} ${script}; ${mark("complete")}`;
+  try {
+    return execFileSync(path.join(home, "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(source, "utf16le").toString("base64")], { env, encoding: "utf8", stdio: "pipe", timeout: 15_000 }).trim();
+  } catch (error) {
+    if (error instanceof Error) {
+      const stderr = String((error as Error & { stderr?: unknown }).stderr ?? "");
+      const phases = [...stderr.matchAll(/SQUIRE_ACL_PHASE:(started|utility-import|security-import|arguments|probe|complete)/g)].map(match => match[1]);
+      error.message += ` [ACL probe last phase: ${phases.at(-1) ?? "no-start-marker"}; budget: 15000ms]`;
+    }
+    throw error;
+  }
 }
 export function acl(file: string): { owner: string; protected: boolean; rules: { sid: string; rights: number; inherited: boolean }[] } {
   return JSON.parse(powershell(`$a=Get-Acl -LiteralPath $p[0]; [pscustomobject]@{owner=$a.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; protected=$a.AreAccessRulesProtected; rules=@($a.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]) | ForEach-Object { [pscustomobject]@{sid=$_.IdentityReference.Value;rights=[int]$_.FileSystemRights;inherited=$_.IsInherited} })} | ConvertTo-Json -Depth 4 -Compress`, file));

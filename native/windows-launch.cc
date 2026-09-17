@@ -427,6 +427,8 @@ napi_value persist(napi_env e, napi_callback_info i) { return operation(e, i, 0)
 napi_value read(napi_env e, napi_callback_info i) { return operation(e, i, 1); }
 napi_value openLog(napi_env e, napi_callback_info i) { return operation(e, i, 2); }
 napi_value closeLog(napi_env e, napi_callback_info i) { return operation(e, i, 3); }
+#include "windows-state-replace.h"
+
 napi_value init(napi_env env, napi_value exports) {
   napi_set_instance_data(env, new Context(), [](napi_env, void* p, void*) { delete static_cast<Context*>(p); }, nullptr);
   napi_property_descriptor methods[] = {
@@ -436,9 +438,10 @@ napi_value init(napi_env env, napi_value exports) {
     {"persist", nullptr, persist, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"read", nullptr, read, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"openLog", nullptr, openLog, nullptr, nullptr, nullptr, napi_default, nullptr},
-    {"closeLog", nullptr, closeLog, nullptr, nullptr, nullptr, napi_default, nullptr}
+    {"closeLog", nullptr, closeLog, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"replaceState", nullptr, replaceState, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
-  napi_define_properties(env, exports, 7, methods); return exports;
+  napi_define_properties(env, exports, 8, methods); return exports;
 }
 } // namespace
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init)

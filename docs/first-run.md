@@ -180,3 +180,17 @@ Expected behavior:
 - A single PR URL is printed on success.
 - The PR remains open for the owner; Squire never merges it.
 - Retro lessons and proposed follow-ups appear in one `## Retro` PR section.
+
+## Optional staged escalation
+
+The `escalationPolicy` block in `squire.config.example.json` is an illustrative
+opt-in example, not a required model sequence. **Remove it for the existing
+fixed-profile behavior**, or replace all `YOUR_*` placeholders with available
+profiles and select your own bounds. Keep your current `modelPolicy` unchanged
+unless you independently intend to change it. Configure only future launches;
+active runs use their frozen schedules.
+
+Read [the staged-policy contract](staged-escalation.md) before enabling it:
+only validated failed results trigger automatic retry; infrastructure/auth errors,
+timeouts, cancellation and ambiguous output do not advance stages. Every reserved
+slot is consumed, remediation caps still apply globally, and exhaustion is terminal.

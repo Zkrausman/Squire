@@ -1,3 +1,4 @@
+import { validateEscalationPolicy, type EscalationPolicy } from "./model-policy.js";
 import { createHash } from "node:crypto";
 import { access, open, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -53,6 +54,7 @@ export interface PersonalMvpConfig {
   };
   /** Normalized policy; Plan is always exactly two equal buckets. */
   readonly modelPolicy: PersonalModelPolicy;
+  readonly escalationPolicy?: EscalationPolicy;
   readonly promptPolicy?: PromptSelection;
   readonly testCommands: readonly string[];
   /** Maximum Pi phase runtime; omitted means the runner's one-hour default. */
@@ -164,7 +166,7 @@ export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigP
 /** Pure schema validation for captured raw bytes; never resolves paths or reads the child environment. */
 export function validateCapturedRawConfig(raw: unknown): void {
   const value = object(raw, "captured raw configuration");
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "escalationPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
   for (const key of ["slug", "path", "baseBranch"]) text(repository[key], `repository.${key}`);
@@ -186,6 +188,7 @@ export function validateCapturedRawConfig(raw: unknown): void {
   rejectUnknownKeys(sandbox, ["template", "roleUser", "piExecutable", "piAgentDirectory", "piAuthFile"], "sandbox");
   for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key], `sandbox.${key}`);
   for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key], `sandbox.${key}`);
+  if (value["escalationPolicy"] !== undefined) validateEscalationPolicy(value["escalationPolicy"]);
   if (value["modelPolicy"] !== undefined) parseModelPolicy(value["modelPolicy"]);
   if (value["promptPolicy"] !== undefined) validatePromptSelection(value["promptPolicy"]);
   if (value["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(value["phaseTimeoutMs"]);
@@ -204,7 +207,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   for (const alias of legacyAliases) {
     if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
   }
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "escalationPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
 
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
@@ -286,6 +289,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
       ...(piAuthFile !== undefined ? { piAuthFile: resolveHostPath(base, text(piAuthFile, "sandbox.piAuthFile"), platform) } : {}),
     },
     modelPolicy,
+    ...(value["escalationPolicy"] === undefined ? {} : { escalationPolicy: validateEscalationPolicy(value["escalationPolicy"]) }),
     promptPolicy: value["promptPolicy"] === undefined ? DEFAULT_PROMPT_SELECTION : validatePromptSelection(value["promptPolicy"]),
     testCommands: [...testCommands] as string[],
     ...(phaseTimeoutMs === undefined ? {} : { phaseTimeoutMs }),
