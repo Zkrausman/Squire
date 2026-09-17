@@ -16,3 +16,5 @@ The executable selection is either legacy `[]` or exactly `requirements, impleme
 | Compatibility | Legacy Plan records readable; supervised launch cannot return legacy result; immutable captured prompt regressions |
 
 Focused tests are followed by `npm run validate:contracts` and `npm test`. Wiki verification is cumulative from the run base, including any remediation commits. No live rollout, recovery checkpoints, generic graph, or escalation is introduced.
+
+Windows capture CI additionally covers protected supervisor input/guard/artifact/journal staging, six-call foreground/detached parity, and the test-only executable transport shim. Direct remote-guard process-group/uid/gid tests run on POSIX only: Windows host transport tests are not Linux sandbox-close or live-provider acceptance evidence.

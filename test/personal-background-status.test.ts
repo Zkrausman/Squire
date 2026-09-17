@@ -1,9 +1,10 @@
+import { DetachedProcessFixture } from "./helpers/detached-process-fixture.js";
+import { launchTestRoot } from "./helpers/windows-launch.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { persistLaunchMaterial } from "../src/personal/launch-material.js";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { access, mkdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { execFileSync, spawn as nodeSpawn } from "node:child_process";
@@ -29,6 +30,7 @@ function controller(states: JsonRunStateStore, now = new Date("2026-09-10T00:00:
     states,
     now: () => now,
     newId: () => id,
+    onPersistenceError: error => { console.error("background test persistence failure:", error); },
     tickets: { async get() { throw new Error("credential lookup failed"); } },
     workspaces: {} as never,
     phases: {} as never,
@@ -37,7 +39,7 @@ function controller(states: JsonRunStateStore, now = new Date("2026-09-10T00:00:
 }
 
 test("background reservation is durable before ticket lookup and rejects a concurrent ticket", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-state-"));
+  const root = await launchTestRoot("squire-background-state-");
   try {
     const states = new JsonRunStateStore(root);
     const first = controller(states);
@@ -53,7 +55,7 @@ test("background reservation is durable before ticket lookup and rejects a concu
 });
 
 test("credential/bootstrap failure is recorded and status never needs live adapters", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-failure-"));
+  const root = await launchTestRoot("squire-background-failure-");
   try {
     const states = new JsonRunStateStore(root);
     const run = controller(states);
@@ -130,7 +132,7 @@ test("status renders persisted phase, timing, model, head, error, PR, and log ev
 });
 
 test("detached launcher uses file descriptors, no shell/window, and unrefs after spawn", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-launch-"));
+  const root = await launchTestRoot("squire-background-launch-");
   try {
     const requests: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
     class FakeChild extends EventEmitter {
@@ -169,7 +171,7 @@ test("detached launcher uses file descriptors, no shell/window, and unrefs after
 });
 
 test("detached launcher treats a supplied environment as an immutable snapshot", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-env-"));
+  const root = await launchTestRoot("squire-background-env-");
   const previous = process.env["SQUIRE_DATA_DIR"];
   try {
     const suppliedEnvironment: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "/usr/bin" };
@@ -201,7 +203,7 @@ test("detached launcher treats a supplied environment as an immutable snapshot",
 });
 
 test("POSIX log opening rejects a final-component symlink", { skip: process.platform === "win32" }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-log-link-"));
+  const root = await launchTestRoot("squire-background-log-link-");
   try {
     const target = path.join(root, "target.log");
     const stdoutPath = path.join(root, "stdout.log");
@@ -225,7 +227,7 @@ test("POSIX log opening rejects a final-component symlink", { skip: process.plat
 });
 
 test("post-spawn errors are diagnostic only after the child handoff", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-post-spawn-error-"));
+  const root = await launchTestRoot("squire-post-spawn-error-");
   try {
     class FakeChild extends EventEmitter {
       pid = 654;
@@ -289,7 +291,7 @@ test("status lookup supports a read-only embedder without reservation inspection
 });
 
 test("status lookup reports a missing or ambiguous selector with a useful code", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-errors-"));
+  const root = await launchTestRoot("squire-status-errors-");
   try {
     const states = new JsonRunStateStore(root);
     await assert.rejects(findRunState(states, "AIDEV-1"), (error: unknown) => error instanceof StatusLookupError && error.code === "missing");
@@ -300,7 +302,7 @@ test("status lookup reports a missing or ambiguous selector with a useful code",
 });
 
 test("a running background state without its reservation is ambiguous by run ID and ticket", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-missing-reservation-"));
+  const root = await launchTestRoot("squire-status-missing-reservation-");
   try {
     const states = new JsonRunStateStore(root);
     const reserved = await controller(states).reserve(REQUEST, {
@@ -317,7 +319,7 @@ test("a running background state without its reservation is ambiguous by run ID 
 });
 
 test("exact historical run IDs remain readable beside a valid replacement reservation", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-replacement-"));
+  const root = await launchTestRoot("squire-status-replacement-");
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states, new Date("2026-09-10T00:00:00.000Z"), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").reserve(REQUEST);
@@ -360,48 +362,37 @@ test("exact historical run IDs remain readable beside a valid replacement reserv
 });
 
 test("real detached child outlives launch handoff and inherits stdout/stderr logs", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-detached-"));
+  const fixture = new DetachedProcessFixture(await launchTestRoot("squire-real-detached-"));
   try {
-    const marker = path.join(root, "finished.txt");
-    const stdoutPath = path.join(root, "stdout.log");
-    const stderrPath = path.join(root, "stderr.log");
-    const launched = await new NodeBackgroundLauncher().launch({
-      executable: process.execPath,
-      args: [path.resolve("fixtures/background-child.mjs"), marker, "400"],
-      stdoutPath,
-      stderrPath,
-    });
-    assert.ok(launched.pid);
-    await assert.rejects(access(marker));
-    await waitForFile(marker);
-    assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
-    assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
+    await fixture.listen();
+    const launchedPid = await fixture.launchDirect();
+    assert.ok(launchedPid);
+    assert.equal(await fixture.ready(), launchedPid);
+    await fixture.challenge();
+    await fixture.assertLogs();
+    await fixture.releaseAndWait();
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await fixture.dispose();
   }
 });
 
 test("a short-lived launcher parent exits before the detached child and logs survive", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-real-parent-detached-"));
+  const fixture = new DetachedProcessFixture(await launchTestRoot("squire-real-parent-detached-"));
   try {
-    const marker = path.join(root, "finished.txt");
-    const stdoutPath = path.join(root, "stdout.log");
-    const stderrPath = path.join(root, "stderr.log");
-    const parentExit = await spawnExit(process.execPath, [
-      path.resolve("fixtures/background-launch-parent.mjs"), marker, stdoutPath, stderrPath, "800",
-    ]);
-    assert.equal(parentExit, 0);
-    await assert.rejects(access(marker));
-    await waitForFile(marker);
-    assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
-    assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
+    await fixture.listen();
+    fixture.launchParent();
+    await fixture.ready();
+    await fixture.parentClosed();
+    await fixture.acquireObserver();
+    await fixture.assertLogs();
+    await fixture.releaseAndWait();
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await fixture.dispose();
   }
 });
 
 test("background bootstrap transport does not add ambient variables to a captured environment", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-state-transport-"));
+  const root = await launchTestRoot("squire-background-state-transport-");
   const previous = process.env["SQUIRE_DATA_DIR"];
   try {
     delete process.env["SQUIRE_DATA_DIR"];
@@ -431,7 +422,7 @@ test("background bootstrap transport does not add ambient variables to a capture
 });
 
 test("background bootstrap transport follows the JSON store when no override is supplied", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-state-transport-"));
+  const root = await launchTestRoot("squire-background-state-transport-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     let launchEnvironment: NodeJS.ProcessEnv | undefined;
@@ -452,7 +443,7 @@ test("background bootstrap transport follows the JSON store when no override is 
 });
 
 test("background launch binds the source commit and child verifies it during preparation", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-source-binding-"));
+  const root = await launchTestRoot("squire-background-source-binding-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = TEST_CONFIG_DIGEST;
@@ -499,7 +490,7 @@ test("background launch binds the source commit and child verifies it during pre
 });
 
 test("background parent performs no post-spawn state write and child validates immutable identity", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-single-writer-"));
+  const root = await launchTestRoot("squire-single-writer-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = TEST_CONFIG_DIGEST;
@@ -530,7 +521,7 @@ test("background parent performs no post-spawn state write and child validates i
 });
 
 test("a detached child claims with a parent-monotonic timestamp before adapters when its clock moved backward", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-clock-regression-"));
+  const root = await launchTestRoot("squire-background-clock-regression-");
   try {
     const states = new JsonRunStateStore(root);
     const digest = TEST_CONFIG_DIGEST;
@@ -562,7 +553,7 @@ test("a detached child claims with a parent-monotonic timestamp before adapters 
 });
 
 test("runReserved rejects a concurrent call on one controller", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-local-claim-"));
+  const root = await launchTestRoot("squire-local-claim-");
   try {
     const states = new JsonRunStateStore(root);
     const digest = TEST_CONFIG_DIGEST;
@@ -591,7 +582,7 @@ test("runReserved rejects a concurrent call on one controller", async () => {
 });
 
 test("two detached claimants admit exactly one owner before ticket and workspace side effects", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-detached-claim-"));
+  const root = await launchTestRoot("squire-detached-claim-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = TEST_CONFIG_DIGEST;
@@ -625,7 +616,7 @@ test("two detached claimants admit exactly one owner before ticket and workspace
 });
 
 test("a detached child must own the exact reservation before adapter calls", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-owner-"));
+  const root = await launchTestRoot("squire-background-owner-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = TEST_CONFIG_DIGEST;
@@ -651,7 +642,7 @@ test("a detached child must own the exact reservation before adapter calls", asy
 });
 
 test("a reservation replacement during claim cannot admit a detached child", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-claim-race-"));
+  const root = await launchTestRoot("squire-background-claim-race-");
   try {
     let replaced = false;
     const states = new class extends JsonRunStateStore {
@@ -685,7 +676,7 @@ test("a reservation replacement during claim cannot admit a detached child", asy
 });
 
 test("launcher rejects a pre-handoff OS error and interruption closes the reservation", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-launch-failures-"));
+  const root = await launchTestRoot("squire-launch-failures-");
   try {
     class FakeChild extends EventEmitter {
       pid = undefined;
@@ -750,7 +741,7 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
 });
 
 test("CLI SIGINT and SIGTERM before child handoff persist interrupted evidence", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-cli-interrupt-"));
+  const root = await launchTestRoot("squire-cli-interrupt-");
   const originalLaunch = NodeBackgroundLauncher.prototype.launch;
   try {
     const repositoryPath = path.join(root, "repository");
@@ -797,7 +788,7 @@ test("CLI SIGINT and SIGTERM before child handoff persist interrupted evidence",
 });
 
 test("cross-process state CAS admits exactly one writer at the same version", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-state-cas-"));
+  const root = await launchTestRoot("squire-state-cas-");
   try {
     const states = new JsonRunStateStore(root);
     const reserved = await controller(states).reserve(REQUEST);
@@ -818,7 +809,7 @@ test("cross-process state CAS admits exactly one writer at the same version", as
 });
 
 test("cross-process ticket operations serialize two old releases around a replacement reservation", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-release-race-"));
+  const root = await launchTestRoot("squire-release-race-");
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states).reserve(REQUEST);
@@ -866,7 +857,7 @@ test("cross-process ticket operations serialize two old releases around a replac
 });
 
 test("failed reservation cleanup cannot remove a replacement acquired by another process", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-failed-reservation-race-"));
+  const root = await launchTestRoot("squire-failed-reservation-race-");
   try {
     const states = new JsonRunStateStore(root);
     const active = await controller(states).reserve(REQUEST);
@@ -913,7 +904,7 @@ test("failed reservation cleanup cannot remove a replacement acquired by another
 });
 
 test("child bootstrap failure clamps a future reservation timestamp and releases the reservation", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-fallback-"));
+  const root = await launchTestRoot("squire-bootstrap-fallback-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = TEST_CONFIG_DIGEST;
@@ -940,7 +931,7 @@ test("child bootstrap failure clamps a future reservation timestamp and releases
 });
 
 test("bootstrap fallback cannot terminalize a reservation with a different ticket or digest", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-identity-"));
+  const root = await launchTestRoot("squire-bootstrap-identity-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = TEST_CONFIG_DIGEST;
@@ -970,7 +961,7 @@ test("bootstrap fallback cannot terminalize a reservation with a different ticke
 });
 
 test("bootstrap fallback requires its reservation to be present and unchanged", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-bootstrap-owner-"));
+  const root = await launchTestRoot("squire-bootstrap-owner-");
   try {
     const states = new JsonRunStateStore(path.join(root, "state"));
     const digest = TEST_CONFIG_DIGEST;
@@ -1001,7 +992,7 @@ test("bootstrap fallback requires its reservation to be present and unchanged", 
 });
 
 test("background launch rejects direct and resolved destinations inside the repository", async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-background-paths-"));
+  const root = await launchTestRoot("squire-background-paths-");
   try {
     const repository = path.join(root, "repository");
     const repositoryRuntime = path.join(repository, "runtime");
@@ -1039,7 +1030,7 @@ test("background launch rejects direct and resolved destinations inside the repo
 });
 
 test("status reports orphan reservations over older terminal state", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-orphan-"));
+  const root = await launchTestRoot("squire-status-orphan-");
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states).reserve(REQUEST);
@@ -1055,7 +1046,7 @@ test("status reports orphan reservations over older terminal state", async () =>
 });
 
 test("status reports empty or malformed reservation records as ambiguous", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-status-malformed-lock-"));
+  const root = await launchTestRoot("squire-status-malformed-lock-");
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states).reserve(REQUEST);

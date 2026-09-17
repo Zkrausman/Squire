@@ -2,6 +2,7 @@ import { PhaseExecutionError, classifyExecutionFailure } from "./execution-failu
 import { randomUUID, createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
+import { persistWindowsPhaseInput } from "./windows-launch.js";
 import type { CommandPort } from "./command.js";
 import { composeSystemPrompt, validateLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
 import { validatePhaseProfile } from "./model-policy.js";
@@ -30,7 +31,13 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   const supervisorId = randomUUID();
   const root = `/run/squire-plan-${supervisorId}`;
   const local = path.join(options.stagingRoot, input.runId, "plan", String(input.attempt), supervisorId);
-  await mkdir(local, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await mkdir(local, { recursive: true, mode: 0o700 });
+  const created = new Set<string>();
+  const writeStaged = async (file: string, bytes: string) => {
+    if (process.platform === "win32") persistWindowsPhaseInput(file, bytes);
+    else await writeFile(file, bytes, { mode: 0o600, flag: "wx" });
+    created.add(file);
+  };
   const sbx = options.sbxExecutable ?? "sbx";
   const deadline = Date.now() + (options.timeoutMs ?? 3600000);
   const exec = (script: string, cancellation?: AbortSignal) => commands.run({ command: sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", script], timeoutMs: 30000, maxOutputBytes: 2 * 1024 * 1024 }, cancellation);
@@ -63,7 +70,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
         await exec(`set -eu; mkdir -m 700 ${sh(control)}; mkdir -p ${sh(path.posix.dirname(sessionFile))} ${sh(home)} ${sh(temporary)}; chown -R ${sh(options.roleUser ?? "1000:1000")} ${sh(path.posix.dirname(sessionFile))} ${sh(home)} ${sh(temporary)}`, signal);
         const copy = async (name: string, value: unknown, destination: string) => {
           const file = path.join(local, name);
-          await writeFile(file, JSON.stringify(value), { mode: 0o600, flag: "wx" });
+          await writeStaged(file, JSON.stringify(value));
           await commands.run({ command: sbx, args: ["cp", file, `${input.sandbox}:${destination}`], timeoutMs: 30000 }, signal);
           await exec(`chown root:root ${sh(destination)}; chmod 444 ${sh(destination)}`, signal);
         };
@@ -104,8 +111,10 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   } catch (error) { executionError = error; diagnostic = (error instanceof Error ? error.message : String(error)).slice(0, 6000); }
   // Inputs contain ticket text. Retain only validated artifacts on the host.
   for (const subphase of ["requirements", "implementation-design"]) {
-    await rm(path.join(local, `${subphase}-input.json`), { force: true });
-    await rm(path.join(local, `${subphase}-guard.json`), { force: true });
+    for (const suffix of ["input", "guard"]) {
+      const file = path.join(local, `${subphase}-${suffix}.json`);
+      if (process.platform !== "win32" || created.has(file)) await rm(file, { force: true });
+    }
   }
   if (signal.aborted || Date.now() >= deadline) diagnostic ??= "Plan interrupted or deadline exceeded";
   if (input.escalationDigest && diagnostic) throw executionError ?? new PhaseExecutionError(signal.aborted ? "cancelled" : "timeout", diagnostic);
@@ -120,7 +129,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   };
   validatePhaseResultShape(result, "plan");
   const journal = path.join(local, "result.json");
-  await writeFile(journal, `${JSON.stringify(result)}\n`, { mode: 0o600, flag: "wx" });
+  await writeStaged(journal, `${JSON.stringify(result)}\n`);
   // The compatibility session slot is a supervisor journal, not a Pi session.
   // A stopped attempt may have only the host aggregate, like a failed Pi launch.
   if (result.status === "passed") {

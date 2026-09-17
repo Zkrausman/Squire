@@ -94,3 +94,37 @@ jobs:
       - name: Run filesystem event integration
         timeout-minutes: 5
         run: node --test dist/test/personal-run-events.test.js
+
+  windows-launch-capture:
+    name: windows-launch-capture
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - "20.17.0"
+          - "22.9.0"
+          - "24"
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --engine-strict
+
+      - name: Build
+        run: npm run build
+
+      - name: Run Windows launch capture regression
+        timeout-minutes: 5
+        run: node --test --test-timeout=120000 dist/test/personal-windows-launch.test.js dist/test/personal-launch-material.test.js dist/test/personal-background-status.test.js dist/test/personal-plan-supervisor.test.js

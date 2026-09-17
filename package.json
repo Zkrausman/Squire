@@ -7,10 +7,11 @@
     "squire": "./dist/src/personal/cli.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.17.0 || >=22.9.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build-windows-launch.mjs && tsc -p tsconfig.json",
+    "install": "node scripts/build-windows-launch.mjs",
     "validate:contracts": "node scripts/validate-contracts.mjs",
     "squire": "node dist/src/personal/cli.js",
     "test": "npm run build && node --test test/contracts.test.mjs dist/test/*.test.js"
@@ -19,6 +20,7 @@
     "@types/node": "^26.4.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
+    "node-gyp": "^12.4.0",
     "typescript": "^7.0.2"
   }
 }
