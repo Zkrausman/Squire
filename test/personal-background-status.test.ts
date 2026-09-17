@@ -1,3 +1,4 @@
+import { DetachedProcessFixture } from "./helpers/detached-process-fixture.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { persistLaunchMaterial } from "../src/personal/launch-material.js";
@@ -361,43 +362,32 @@ test("exact historical run IDs remain readable beside a valid replacement reserv
 });
 
 test("real detached child outlives launch handoff and inherits stdout/stderr logs", async () => {
-  const root = await launchTestRoot("squire-real-detached-");
+  const fixture = new DetachedProcessFixture(await launchTestRoot("squire-real-detached-"));
   try {
-    const marker = path.join(root, "finished.txt");
-    const stdoutPath = path.join(root, "stdout.log");
-    const stderrPath = path.join(root, "stderr.log");
-    const launched = await new NodeBackgroundLauncher().launch({
-      executable: process.execPath,
-      args: [path.resolve("fixtures/background-child.mjs"), marker, "400"],
-      stdoutPath,
-      stderrPath,
-    });
-    assert.ok(launched.pid);
-    await assert.rejects(access(marker));
-    await waitForFile(marker);
-    assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
-    assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
+    await fixture.listen();
+    const launchedPid = await fixture.launchDirect();
+    assert.ok(launchedPid);
+    assert.equal(await fixture.ready(), launchedPid);
+    await fixture.challenge();
+    await fixture.assertLogs();
+    await fixture.releaseAndWait();
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await fixture.dispose();
   }
 });
 
 test("a short-lived launcher parent exits before the detached child and logs survive", async () => {
-  const root = await launchTestRoot("squire-real-parent-detached-");
+  const fixture = new DetachedProcessFixture(await launchTestRoot("squire-real-parent-detached-"));
   try {
-    const marker = path.join(root, "finished.txt");
-    const stdoutPath = path.join(root, "stdout.log");
-    const stderrPath = path.join(root, "stderr.log");
-    const parentExit = await spawnExit(process.execPath, [
-      path.resolve("fixtures/background-launch-parent.mjs"), marker, stdoutPath, stderrPath, "800",
-    ]);
-    assert.equal(parentExit, 0);
-    await assert.rejects(access(marker));
-    await waitForFile(marker);
-    assert.match(await readFile(stdoutPath, "utf8"), /detached stdout inherited/);
-    assert.match(await readFile(stderrPath, "utf8"), /detached stderr inherited/);
+    await fixture.listen();
+    fixture.launchParent();
+    await fixture.ready();
+    await fixture.parentClosed();
+    await fixture.acquireObserver();
+    await fixture.assertLogs();
+    await fixture.releaseAndWait();
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await fixture.dispose();
   }
 });
 
