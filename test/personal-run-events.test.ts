@@ -175,6 +175,10 @@ test("watch reconciles a missed terminal event and exits without live adapters",
 
 test("directory watcher observes atomic state replacement and coalesced notifications", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-atomic-watch-"));
+  let timer: NodeJS.Timeout | undefined;
+  let writer: Promise<void> | undefined;
+  let cancelWriter: (() => void) | undefined;
+  const abort = new AbortController();
   try {
     const states = new JsonRunStateStore(directory);
     const initial = state();
@@ -183,6 +187,7 @@ test("directory watcher observes atomic state replacement and coalesced notifica
     let changed = false;
     const watching = watchRun({
       states,
+      signal: abort.signal,
       selector: RUN_ID,
       debounceMs: 10,
       reconcileIntervalMs: 200,
@@ -190,16 +195,28 @@ test("directory watcher observes atomic state replacement and coalesced notifica
         seen.push(event);
         if (event.type === "run_started" && !changed) {
           changed = true;
-          setTimeout(() => { void states.save(terminal(initial)); }, 30).unref();
+          writer = new Promise<void>((resolve, reject) => {
+            cancelWriter = resolve;
+            timer = setTimeout(() => {
+              cancelWriter = undefined;
+              states.save(terminal(initial)).then(resolve, reject);
+            }, 30);
+          });
+          // Observe failures immediately and stop the watcher rather than hang.
+          void writer.catch(error => abort.abort(error));
         }
       },
     });
     const result = await watching;
+    await writer;
     assert.equal(result.state.status, "failed");
     assert.equal(seen.filter(event => event.type === "run_started").length, 1);
     assert.equal(seen.filter(event => event.type === "terminal_failed").length, 1);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    clearTimeout(timer);
+    cancelWriter?.();
+    try { await writer; }
+    finally { await rm(directory, { recursive: true, force: true }); }
   }
 });
 
