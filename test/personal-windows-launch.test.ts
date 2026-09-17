@@ -323,6 +323,16 @@ test("Windows test transport shim roundtrips argv, std handles and exit status w
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Windows ACL probe failures identify their phase without changing stdout", windows, () => {
+  assert.equal(powershell("'probe-output'"), "probe-output");
+  assert.throws(() => powershell("throw 'deliberate probe failure'"), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /deliberate probe failure/);
+    assert.match(error.message, /ACL probe last phase: probe; budget: 15000ms/);
+    return true;
+  });
+});
+
 test("Windows ACL probes ignore conflicting inherited PowerShell module and executable search paths", windows, async () => {
   const root = await launchTestRoot("squire-powershell-env-");
   const saved = new Map(["PSModulePath", "PSHOME", "PATH"].map(key => [key, process.env[key]]));
