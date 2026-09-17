@@ -3,6 +3,17 @@
 This page documents a minimal first run. Configuration and credentials belong
 to the user's Squire directory, not to a repository checkout.
 
+For a fresh session in another repository, use the portable
+[`squire-operator` skill](../skills/squire-operator/SKILL.md). Its bundled
+references include preflight stop gates, explicit owner-approved installation
+and a copyable cold-start handoff. Merge alone does not activate it. Maintainers
+can run `node scripts/validate-squire-operator.mjs` (also included in `npm test`)
+for an offline, isolated installed-layout proof using the actual installed Pi
+loader. If automatic discovery cannot locate the trusted Pi package, supply its
+absolute package directory as the helper's first argument or set
+`SQUIRE_OPERATOR_PI_PACKAGE`; unavailable loader is a validation blocker, not a
+reason to install/upgrade Pi globally.
+
 ## Prerequisites
 
 - Node.js (`npm`)

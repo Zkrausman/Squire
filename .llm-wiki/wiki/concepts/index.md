@@ -12,3 +12,4 @@
 - [token-burn-prevention-for-agent-sessions](token-burn-prevention-for-agent-sessions.md)
 - [trusted-controller-boundary](trusted-controller-boundary.md)
 - [Staged model escalation policy](staged-model-escalation-policy.md)
+- [Portable Squire operator skill](/concepts/squire-operator-skill.md)
