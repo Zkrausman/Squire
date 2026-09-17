@@ -698,10 +698,25 @@ export class PersonalMvpController {
 
   async #releaseReservation(context: RunContext): Promise<void> {
     if (!this.#states.release) return;
+    let failure: string | undefined;
     try {
       await this.#states.release(context.state.ticketId, context.state.runId);
+      if (this.#states.reservationOwner) {
+        const owner = await this.#states.reservationOwner(context.state.ticketId);
+        if (owner !== undefined) failure = `reservation release did not verify removal; current owner is ${owner}`;
+      }
     } catch (error) {
-      this.#reportPersistenceError(error);
+      failure = `reservation release blocked or unverified: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (failure === undefined) return;
+    try {
+      // Preserve the original terminal lastError and write a distinct,
+      // actionable cleanup outcome. The state CAS prevents this diagnostic
+      // from overwriting a newer owner or revision.
+      await context.persist({ reservationCleanupFailure: failure.slice(0, 2_000) });
+    } catch (diagnosticError) {
+      this.#reportPersistenceError(diagnosticError);
+      this.#reportPersistenceError(new Error(failure));
     }
   }
 

@@ -195,6 +195,8 @@ export interface PersonalRunState {
   readonly remediationAttempts?: RemediationAttemptEvidence;
   readonly prUrl: string | null;
   readonly lastError: string | null;
+  /** Durable, actionable reservation cleanup outcome when release is blocked or unverifiable. */
+  readonly reservationCleanupFailure?: string;
   readonly updatedAt: string;
 }
 

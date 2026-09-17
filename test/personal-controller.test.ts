@@ -12,6 +12,8 @@ const REMEDIATED = "c".repeat(40);
 
 class MemoryStates implements RunStatePort {
   state: PersonalRunState | undefined;
+  release?: (ticketId: string, runId: string) => Promise<void>;
+  reservationOwner?: (ticketId: string) => Promise<string | undefined>;
   constructor(readonly events: string[] = []) {}
   async create(state: PersonalRunState): Promise<void> { assert.equal(this.state, undefined); this.events.push("state:create"); this.state = state; }
   async save(state: PersonalRunState): Promise<void> { assert.equal(state.version, (this.state?.version ?? 0) + 1); this.events.push("state:save"); this.state = state; }
@@ -90,6 +92,18 @@ function replacePolicy(policy: PersonalModelPolicy): void {
     Object.assign(profile, { provider: "changed-provider", model: "changed-model", thinking: "low" });
   }
 }
+
+test("reservation release failure preserves terminal error and records actionable cleanup", async () => {
+  const harness = createHarness(implementAndPass);
+  const releaseError = new Error("ticket operation remained ambiguous");
+  harness.states.release = async () => { throw releaseError; };
+  harness.states.reservationOwner = async () => "aidev-1-0123456789";
+  const result = await harness.controller.run(REQUEST);
+  assert.equal(result.status, "completed");
+  assert.equal(result.lastError, null);
+  assert.match(result.reservationCleanupFailure ?? "", /blocked or unverified/);
+  assert.equal(harness.states.state?.reservationCleanupFailure, result.reservationCleanupFailure);
+});
 
 test("personal controller completes one ticket and publishes only fresh passing gates", async () => {
   const harness = createHarness(implementAndPass);
