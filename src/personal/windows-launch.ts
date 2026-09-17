@@ -6,6 +6,7 @@ interface WindowsLaunchNative {
   read(file: string, repository: string): string;
   openLog(file: string): number;
   closeLog(fd: number): void;
+  replaceState(source: string, destination: string): void;
 }
 let binding: WindowsLaunchNative | undefined;
 /** Native handle-relative ACL/reparse boundary; never substitute Node mode bits. */

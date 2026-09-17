@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { validateLaunchEvidence } from "./launch-material.js";
 import { deterministicFeatureBranch } from "./identity.js";
 import { renameOverExistingWithRetry, type RenameRetryOptions } from "./atomic-rename.js";
+import { windowsLaunch } from "./windows-launch.js";
 import { validatePhaseResultShape } from "./phase-result.js";
 import { canonicalPlanIdentity, PLAN_SELECTION_VERSION, validatePhaseProfile } from "./model-policy.js";
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type PlanSelection, type ResolvedPhaseProfiles, type RunExecutionMode, type RunLifecycle, type RunLaunchState, type RunPreparationState } from "./types.js";
@@ -345,7 +346,18 @@ export class JsonRunStateStore implements RunStatePort {
       await handle.writeFile(encode(state));
       await handle.sync();
       await handle.close();
-      await renameOverExistingWithRetry(temporary, target, this.#renameRetry);
+      // State files only. Outbox replacement deliberately retains its existing
+      // best-effort semantics. Keep the test seam and bounded retry policy.
+      const options = process.platform === "win32" && !this.#renameRetry?.rename
+        ? { ...this.#renameRetry, rename: async (source: string, destination: string): Promise<void> => {
+          try { windowsLaunch().replaceState(path.resolve(source), path.resolve(destination)); }
+          catch (error) {
+            if (error instanceof Error) Object.assign(error, { path: source, dest: destination });
+            throw error;
+          }
+        } }
+        : this.#renameRetry;
+      await renameOverExistingWithRetry(temporary, target, options);
       await syncDirectory(this.directory);
     } catch (error) {
       await handle.close().catch(() => undefined);
