@@ -113,6 +113,39 @@ test("terminal state commit followed by rejection is reconciled before release",
   assert.equal(releases, 1);
 });
 
+for (const field of ["head", "baseSha", "launchState", "lifecycle", "version", "controllerPid", "updatedAt"] as const) {
+  test(`terminal readback rejects changed ${field} without releasing reservation`, async () => {
+    const harness = createHarness(async () => { throw new Error("original phase failure"); });
+    const save = harness.states.save.bind(harness.states);
+    harness.states.save = async state => {
+      await save(state);
+      if (state.status === "running") return;
+      const value = field === "head" || field === "baseSha" ? REMEDIATED
+        : field === "launchState" ? "claimed"
+        : field === "lifecycle" ? "running"
+        : field === "version" ? state.version + 1
+        : field === "controllerPid" ? 123456 : "2026-09-11T00:00:00.000Z";
+      const replacement: PersonalRunState = { ...structuredClone(state), [field]: value };
+      harness.states.state = replacement;
+      throw new Error("terminal write outcome is ambiguous");
+    };
+    let releases = 0;
+    harness.states.release = async () => { releases++; };
+    await assert.rejects(harness.controller.run(REQUEST), /original phase failure/);
+    assert.equal(releases, 0);
+    assert.equal(harness.states.state?.lastError, "original phase failure");
+  });
+}
+
+test("terminal contract failure preserves its error when reservation release fails", async () => {
+  const harness = createHarness(async () => { throw new Error("original phase failure"); });
+  harness.states.release = async () => { throw new Error("ticket operation is locked or ambiguous"); };
+  await assert.rejects(harness.controller.run(REQUEST), /original phase failure/);
+  assert.equal(harness.states.state?.status, "failed");
+  assert.equal(harness.states.state?.lastError, "original phase failure");
+  assert.match(harness.states.state?.reservationCleanupFailure ?? "", /locked or ambiguous/);
+});
+
 test("reservation release failure preserves terminal error and records actionable cleanup", async () => {
   const harness = createHarness(implementAndPass);
   const releaseError = new Error("ticket operation remained ambiguous");
@@ -176,6 +209,44 @@ test("controller fails closed when not_required contradicts committed project-wi
   await assert.rejects(harness.controller.run(REQUEST), /not_required disposition contradicts committed diff/);
   assert.deepEqual(harness.calls, ["plan", "implement"]);
   assert.equal(harness.publications.length, 0);
+});
+
+test("controller rejects updated disposition omitting a cumulative wiki path", async () => {
+  const paths = [".llm-wiki/wiki/concepts/first.md", ".llm-wiki/wiki/concepts/second.md"];
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.head = IMPLEMENTED;
+      workspace.wikiPaths = paths;
+      return phaseResult(input, workspace.head, "passed", [], paths.slice(0, 1));
+    }
+    return phaseResult(input, workspace.head);
+  });
+  await assert.rejects(harness.controller.run(REQUEST), /project-wiki/);
+  assert.equal(harness.publications.length, 0);
+});
+
+test("controller accepts not_required after remediation reverts the earlier wiki change", async () => {
+  const firstPath = ".llm-wiki/wiki/concepts/first.md";
+  const harness = createHarness(async (input, workspace) => {
+    if (input.phase === "implement") {
+      workspace.head = input.attempt === 1 ? IMPLEMENTED : REMEDIATED;
+      workspace.wikiPaths = input.attempt === 1 ? [firstPath] : [];
+      assert.equal(input.originalTicketBaseSha, BASE);
+      if (input.attempt === 2) {
+        const prior = input.previousCumulative.find(result => result.phase === "implement");
+        assert.equal(prior?.phase === "implement" && prior.details.projectWiki.status, "updated");
+      }
+    }
+    if (input.phase === "review" && input.attempt === 1) {
+      return phaseResult(input, workspace.head, "remediation_required", ["revert the wiki addition"]);
+    }
+    return phaseResult(input, workspace.head, "passed", [], workspace.wikiPaths);
+  });
+  const result = await harness.controller.run(REQUEST);
+  assert.equal(result.status, "completed");
+  assert.equal(result.head, REMEDIATED);
+  assert.equal(result.results.implement?.phase === "implement" && result.results.implement.details.projectWiki.status, "not_required");
+  assert.equal(harness.publications.length, 1);
 });
 
 test("controller compares remediation dispositions with the cumulative wiki diff", async () => {

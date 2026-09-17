@@ -40,10 +40,10 @@ import type {
 
 interface RunContext {
   state: PersonalRunState;
-  persist: (changes: Partial<PersonalRunState>) => Promise<void>;
+  persist: (changes: Partial<PersonalRunState>, prepared?: (state: PersonalRunState) => void) => Promise<void>;
   bindSource: (sourceSha: string) => Promise<void>;
   claimReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
-  failReserved: (changes: Partial<PersonalRunState>) => Promise<void>;
+  failReserved: (changes: Partial<PersonalRunState>, prepared?: (state: PersonalRunState) => void) => Promise<void>;
 }
 
 export interface PersonalRunMetadata {
@@ -633,8 +633,9 @@ export class PersonalMvpController {
       version: context.state.version + 1,
       updatedAt,
     });
-    context.persist = async changes => {
+    context.persist = async (changes, prepared) => {
       const next = nextState(changes);
+      prepared?.(structuredClone(next));
       await this.#states.save(next);
       context.state = next;
     };
@@ -666,9 +667,10 @@ export class PersonalMvpController {
       }
       context.state = next;
     };
-    context.failReserved = async changes => {
+    context.failReserved = async (changes, prepared) => {
       const endedAt = this.#timestampAtOrAfter(context.state.updatedAt, ...(typeof changes.endedAt === "string" ? [changes.endedAt] : []));
       const next = nextState({ ...changes, endedAt }, this.#timestampAtOrAfter(endedAt));
+      prepared?.(structuredClone(next));
       if (this.#states.failReserved) {
         await this.#states.failReserved(next);
       } else {
@@ -733,13 +735,15 @@ export class PersonalMvpController {
       ...(context.state.preparationState === "pending" ? { preparationState: "failed" } : {}),
     };
     let terminalPersisted = context.state.status !== "running";
+    let expectedTerminal: PersonalRunState | undefined;
+    const captureTerminal = (state: PersonalRunState): void => { expectedTerminal = state; };
     const unclaimedBackground = context.state.executionMode === "background" && isReservedLaunch(context.state);
     try {
       if (context.state.status === "running") {
         // The JSON store combines this terminal write with the exact-owner
         // release under the ticket boundary. A pre-handoff failure must not
         // race a detached child claiming the same reservation.
-        await (unclaimedBackground ? context.failReserved(changes) : context.persist(changes));
+        await (unclaimedBackground ? context.failReserved(changes, captureTerminal) : context.persist(changes, captureTerminal));
         terminalPersisted = true;
       }
     } catch (persistenceError) {
@@ -747,18 +751,10 @@ export class PersonalMvpController {
       // notification. Reconcile only the exact expected terminal revision;
       // never treat a newer owner/revision as our successful write.
       const observed = await this.#readState(context.state.runId).catch(() => undefined);
-      if (
-        observed
-        && observed.runId === context.state.runId
-        && observed.ticketId === context.state.ticketId
-        && observed.repository === context.state.repository
-        && observed.baseBranch === context.state.baseBranch
-        && observed.branch === context.state.branch
-        && observed.version === context.state.version + 1
-        && observed.status === status
-        && observed.lastError === changes.lastError
-        && observed.endedAt === changes.endedAt
-      ) {
+      // Compare the complete prepared wire state, including candidate, launch
+      // claims, lifecycle, results and timestamps. A matching subset is not
+      // evidence that our write committed. The snapshot predates the port call.
+      if (observed && expectedTerminal && canonical(observed) === canonical(expectedTerminal)) {
         context.state = observed;
         terminalPersisted = true;
       }
