@@ -169,3 +169,18 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
     assert.deepEqual(captures[0]!.map(r => [r.prompt, r.digest, r.promptDigest]), captures[1]!.map(r => [r.prompt, r.digest, r.promptDigest]));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("correction policy raw/effective launch binding rejects mismatches before adapters", () => {
+  for (const maxAttempts of [0, 2, 3, 0.5]) {
+    const v: any = structuredClone(TEST_MATERIAL);
+    v.config.reportCorrectionPolicy = { maxAttempts, allowedErrorClasses: ["implement-unexpected-details-fields"] };
+    assert.throws(() => validateLaunchMaterial(rehash(v)), /correction policy|reportCorrectionPolicy/);
+  }
+  const v: any = structuredClone(TEST_MATERIAL);
+  const raw = JSON.parse(Buffer.from(v.rawConfig, "base64").toString());
+  raw.reportCorrectionPolicy = { maxAttempts: 0, allowedErrorClasses: [] };
+  v.rawConfig = Buffer.from(JSON.stringify(raw)).toString("base64");
+  assert.throws(() => validateLaunchMaterial(rehash(v)), /correction policy mismatch/);
+  v.config.reportCorrectionPolicy = raw.reportCorrectionPolicy;
+  assert.equal(validateLaunchMaterial(rehash(v)).config.reportCorrectionPolicy?.maxAttempts, 0);
+});

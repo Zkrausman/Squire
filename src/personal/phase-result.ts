@@ -157,11 +157,23 @@ function singleLineEvidence(value: unknown, label: string): value is string {
   return true;
 }
 
+export class PhaseShapeError extends Error {
+  readonly unexpected: readonly string[];
+  readonly missing: readonly string[];
+  constructor(readonly field: string, actual: readonly string[], required: readonly string[], allowed: readonly string[] = required) {
+    const unexpected = actual.filter(key => !allowed.includes(key));
+    const missing = required.filter(key => !actual.includes(key));
+    super(`${field} fields are invalid: unexpected=${JSON.stringify(unexpected)} missing=${JSON.stringify(missing)}`);
+    this.unexpected = Object.freeze(unexpected);
+    this.missing = Object.freeze(missing);
+  }
+}
+
 function exactObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   const object = value as Record<string, unknown>;
   const actual = Object.keys(object);
-  if (actual.length !== keys.length || actual.some(key => !keys.includes(key))) throw new Error(`${label} fields are invalid`);
+  if (actual.length !== keys.length || actual.some(key => !keys.includes(key))) throw new PhaseShapeError(label, actual, keys);
   return object;
 }
 
@@ -175,7 +187,7 @@ function requiredWithOptionalObject(value: unknown, requiredKeys: readonly strin
   const required = new Set(requiredKeys);
   const allowed = new Set([...requiredKeys, ...optionalKeys]);
   const actual = Object.keys(object);
-  if (actual.some(key => !allowed.has(key)) || [...required].some(key => !actual.includes(key))) throw new Error(`${label} fields are invalid`);
+  if (actual.some(key => !allowed.has(key)) || [...required].some(key => !actual.includes(key))) throw new PhaseShapeError(label, actual, requiredKeys, [...allowed]);
   return object;
 }
 

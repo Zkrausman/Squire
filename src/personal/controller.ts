@@ -1,3 +1,6 @@
+import { performance } from "node:perf_hooks";
+import { InvalidPhaseHandoff, CorrectionExecutionFailure, analyzeImplementReport, parseCorrectedReport, sameReportFacts, validateReportCorrectionPolicy, type ReportCorrectionPolicy, type CorrectionRecord, type ReportCapture } from "./report-correction.js";
+import { verifyReportEvidence } from "./report-evidence.js";
 import { requireStagedSlot, reservation } from "./staged-attempts.js";
 import { classifyExecutionFailure, PhaseExecutionError } from "./execution-failure.js";
 import { validateEscalationPolicy, escalationDigest, type EscalationPolicy } from "./model-policy.js";
@@ -64,10 +67,14 @@ export interface PersonalMvpControllerOptions {
   readonly publication: PublicationPort;
   readonly states: RunStatePort;
   readonly now?: () => Date;
+  /** Monotonic clock seam for deterministic offline deadline checks. */
+  readonly monotonicNow?: () => number;
   readonly newId?: () => string;
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
   readonly escalationPolicy?: EscalationPolicy;
+  readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
+  readonly phaseTimeoutMs?: number;
   /** Optional process identity for persisted foreground/background evidence. */
   readonly controllerPid?: number;
   /** Receives persistence failures that cannot be represented in run state. */
@@ -123,9 +130,12 @@ export class PersonalMvpController {
   readonly #publication: PublicationPort;
   readonly #states: RunStatePort;
   readonly #now: () => Date;
+  readonly #monotonicNow: () => number;
   readonly #newId: () => string;
   readonly #modelPolicy: PersonalModelPolicy;
   readonly #escalationPolicy: EscalationPolicy | undefined;
+  readonly #correctionPolicy: ReportCorrectionPolicy;
+  readonly #phaseTimeoutMs: number;
   readonly #controllerPid: number | undefined;
   readonly #onPersistenceError: (error: unknown) => void;
   readonly #contexts = new Map<string, RunContext>();
@@ -136,11 +146,15 @@ export class PersonalMvpController {
     if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
     const staged = this.#material?.config.escalationPolicy ?? options.escalationPolicy;
     this.#escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
+    this.#correctionPolicy = validateReportCorrectionPolicy(this.#material ? this.#material.config.reportCorrectionPolicy : options.reportCorrectionPolicy);
+    this.#phaseTimeoutMs = this.#material?.config.phaseTimeoutMs ?? options.phaseTimeoutMs ?? 3600000;
+    if (!Number.isSafeInteger(this.#phaseTimeoutMs) || this.#phaseTimeoutMs <= 0 || this.#phaseTimeoutMs > 14400000) throw new Error("invalid controller phase timeout");
     this.#tickets = options.tickets;
     this.#workspaces = options.workspaces;
     this.#phases = options.phases;
     this.#publication = options.publication;
     this.#states = options.states;
+    this.#monotonicNow = options.monotonicNow ?? (() => performance.now());
     this.#now = options.now ?? (() => new Date());
     this.#newId = options.newId ?? randomUUID;
     this.#controllerPid = options.controllerPid;
@@ -176,7 +190,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
-    const state: PersonalRunState = { ...baseline, ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
+    const state: PersonalRunState = { ...baseline, reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
       if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
@@ -502,11 +516,16 @@ export class PersonalMvpController {
     signal?: AbortSignal,
     stagedProfile?: PhaseProfile,
   ): Promise<PhaseResult> {
+    const deadline = this.#monotonicNow() + this.#phaseTimeoutMs;
+    const timeoutSignal = AbortSignal.timeout(this.#phaseTimeoutMs);
+    signal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     const expectedHead = requireHead(context.state);
     const attempt = context.state.attempts[phase] + (stagedProfile ? 0 : 1);
     if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
     const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
     const input: PhaseInput = Object.freeze({
+      deadline,
+      ...(phase === "implement" ? { reportSession: Object.freeze({ sessionId: randomUUID(), sessionFile: `/ticket/sessions/${phase}/${attempt}.jsonl` }) } : {}),
       runId: context.state.runId,
       ticket: Object.freeze({ ...ticket }),
       repository: request.repository,
@@ -567,6 +586,10 @@ export class PersonalMvpController {
       workspaceDiagnostic = error;
     }
     if (stagedProfile && signal?.aborted) throw new PhaseExecutionError("cancelled", "phase interrupted", { cause: signal.reason });
+    if (phaseFailed && phaseError instanceof InvalidPhaseHandoff && phase === "implement") {
+      result = await this.#correctHandoff(context, input, phaseError, observedHead, workspaceFailed ? workspaceDiagnostic ?? new Error("workspace inspection rejected without diagnostic") : undefined, signal);
+      phaseFailed = false;
+    }
     if (phaseFailed) {
       if (workspaceFailed) throw withSecondaryWorkspaceDiagnostic(phaseError, workspaceDiagnostic);
       throw phaseError;
@@ -605,6 +628,142 @@ export class PersonalMvpController {
       results: { ...context.state.results, [phase]: evidencedResult },
     });
     return evidencedResult;
+  }
+
+  async #correctHandoff(context: RunContext, input: PhaseInput, invalid: InvalidPhaseHandoff, observedHead: string | undefined, workspaceError: unknown, signal: AbortSignal): Promise<PhaseResult> {
+    const policy = context.state.reportCorrectionPolicy!;
+    const port = this.#phases.reportEvidence;
+    const original = structuredClone(invalid.capture);
+    const head = observedHead && /^[a-f0-9]{40,64}$/u.test(observedHead) ? observedHead : input.expectedHead;
+    let used = 0;
+    let diagnostic = invalid.message;
+    const verified: { ref: NonNullable<CorrectionRecord["evidence"]>; content: string }[] = [];
+    const references: string[] = [original.evidence?.path ?? "missing"];
+    const record = async (kind: CorrectionRecord["kind"], evidence?: CorrectionRecord["evidence"], producer?: string): Promise<void> => {
+      await context.persist({ reportCorrections: [...context.state.reportCorrections!, {
+        phase: "implement", attempt: input.attempt, kind, used, maximum: policy.maxAttempts, remaining: policy.maxAttempts - used,
+        timestamp: this.#timestamp(), diagnostic: diagnostic.slice(0, 2000), head,
+        ...(evidence ? { evidence } : {}), ...(producer ? { producer } : {}),
+      }] });
+    };
+    const verify = async (capture: ReportCapture): Promise<void> => {
+      if (!port) throw new Error("controller report evidence read port unavailable");
+      if (!capture || typeof capture.raw !== "string" || typeof capture.sessionId !== "string" || !capture.sessionId.trim() || capture.sessionId.length > 128 || typeof capture.sessionFile !== "string" || capture.sessionFile.length > 512 || !Number.isFinite(Date.parse(capture.timestamp))) throw new Error("invalid report capture provenance");
+      await verifyReportEvidence(port, capture.evidence, capture.raw);
+      verified.push({ ref: structuredClone(capture.evidence), content: capture.raw });
+    };
+    const observation = async (capture: ReportCapture, error?: unknown, snapshotHead = observedHead): Promise<void> => {
+      // Bind controller-generated content, not adapter assertions, to a separate
+      // exclusive artifact and independently read it back before persistence.
+      const content = JSON.stringify({ timestamp: this.#timestamp(), producer: "controller", runId: input.runId, phase: input.phase, attempt: input.attempt,
+        inputHead: input.expectedHead, originalTicketBaseSha: input.originalTicketBaseSha, candidateHead: snapshotHead && /^[a-f0-9]{40,64}$/u.test(snapshotHead) ? snapshotHead : null,
+        unchangedAndClean: error === undefined, diagnostic, report: capture.evidence, reportTimestamp: capture.timestamp, reportProducer: capture.sessionId, sessionFile: capture.sessionFile, profile: input.profile,
+        workspaceDiagnostic: error === undefined ? null : "controller.currentHead/assertClean failed; inspect workspace independently" });
+      const ref = structuredClone(await port!.write(content));
+      references.push(ref.path);
+      await verifyReportEvidence(port!, ref, content);
+      verified.push({ ref, content });
+      await record("observed", ref, "controller");
+    };
+    const active = (): void => {
+      signal.throwIfAborted();
+      if (!input.deadline || this.#monotonicNow() >= input.deadline) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
+    };
+    try {
+      await verify(original);
+      await record("observed", original.evidence, original.sessionId);
+      await observation(original, workspaceError);
+      if (workspaceError !== undefined) throw withSecondaryWorkspaceDiagnostic(invalid, workspaceError);
+      if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
+      active();
+      if (original.sessionId !== input.reportSession?.sessionId) throw new Error("original report producer mismatch");
+      if (original.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("original report session identity mismatch");
+      const analysis = analyzeImplementReport(original, input);
+      if (!analysis.unexpected.length) throw new Error("unsupported handoff error class");
+      validatePhaseResult(analysis.facts, input, observedHead);
+      if (analysis.facts.phase !== "implement" || analysis.facts.status !== "passed") throw new Error("failed/ambiguous phase reports are not format-correctable");
+      await this.#reconcileProjectWikiDisposition(context, analysis.facts, observedHead, signal);
+      if (!policy.allowedErrorClasses.includes("implement-unexpected-details-fields") || !this.#phases.correctReport) throw new Error("report correction disabled or unavailable");
+      const assertOwner = async (): Promise<void> => {
+        if (this.#states.reservationOwner && await this.#states.reservationOwner(input.ticket.id) !== input.runId) throw new Error("report correction reservation ownership mismatch");
+      };
+      await assertOwner();
+      let latest = original;
+      const producers = new Set([original.sessionId]);
+      while (used < policy.maxAttempts) {
+        active();
+        // Re-read all prior evidence before each continuation: a replaced old
+        // artifact cannot be hidden by a valid later response.
+        for (const item of verified) await verifyReportEvidence(port!, item.ref, item.content);
+        await assertOwner();
+        used++;
+        await record("launched"); // irrevocable charge BEFORE dispatch
+        const producerId = randomUUID();
+        let response: ReportCapture | undefined;
+        let executionError: unknown;
+        try {
+          response = structuredClone(await this.#phases.correctReport(structuredClone({ input, original, latest, diagnostic, diagnostics: analysis.unexpected.map(key => ({ path: ["details", key], code: "unexpected-field" as const })), correctionAttempt: used, producerId, deadline: input.deadline! }), signal));
+        } catch (error) {
+          if (error instanceof CorrectionExecutionFailure) response = structuredClone(error.capture);
+          executionError = error ?? new Error("correction execution rejected without diagnostic");
+        }
+        // Inspection is mandatory even after cancellation/command failure. It
+        // authorizes no further paid work and deliberately has no aborted signal.
+        let afterError: unknown;
+        let afterHead: string | undefined;
+        try {
+          const after = await this.#workspaces.currentHead(input.sandbox);
+          afterHead = after;
+          await this.#workspaces.assertClean(input.sandbox);
+          if (after !== observedHead) throw new Error("candidate HEAD changed during report correction");
+        } catch (error) { afterError = error ?? new Error("workspace inspection rejected without diagnostic"); }
+        if (response) {
+          references.push(response.evidence?.path ?? "missing");
+          try { parseCorrectedReport(response, original, input); diagnostic = "corrected schema valid; semantic and independent gates pending"; }
+          catch (error) { diagnostic = error instanceof Error ? error.message : String(error); }
+          await verify(response);
+          if (response.sessionId !== producerId || response.sessionFile !== `/run/squire-report-${producerId}/no-session`) throw new Error("correction producer mismatch");
+          if (producers.has(response.sessionId)) throw new Error("correction reused a producer session");
+          producers.add(response.sessionId);
+          await record("observed", response.evidence, response.sessionId);
+          await observation(response, afterError, afterHead);
+        } else await observation(latest, afterError ?? executionError, afterHead);
+        if (afterError !== undefined) throw withSecondaryWorkspaceDiagnostic(invalid, afterError);
+        if (executionError !== undefined) throw executionError;
+        active();
+        if (!response) throw new Error("correction returned no report");
+        latest = response;
+        try { JSON.parse(response.raw); } catch { diagnostic = "implement wrote malformed result JSON"; continue; }
+        // A well-formed response with any changed safety fact is terminal, even
+        // when its first schema error would otherwise be eligible.
+        const correctedAnalysis = analyzeImplementReport({ ...response, sessionId: original.sessionId, sessionFile: original.sessionFile }, input);
+        if (!sameReportFacts(analysis.facts, correctedAnalysis.facts)) throw new Error("corrected report changed original required facts or identity");
+        try {
+          const accepted = parseCorrectedReport(response, original, input);
+          validatePhaseResult(accepted, input, observedHead);
+          await this.#reconcileProjectWikiDisposition(context, accepted as ImplementPhaseResult, observedHead, signal);
+          const finalHead = await this.#workspaces.currentHead(input.sandbox, signal);
+          await this.#workspaces.assertClean(input.sandbox, signal);
+          if (finalHead !== observedHead) throw new Error("candidate changed before correction acceptance");
+          // Every evidence version must still exist with its original content.
+          await verify(original); await verify(response);
+          for (const item of verified) await verifyReportEvidence(port!, item.ref, item.content);
+          active();
+          await assertOwner();
+          diagnostic = "strict corrected report accepted; independent Review/Test still required";
+          await record("accepted");
+          return accepted;
+        } catch (error) {
+          if (!correctedAnalysis.unexpected.length) throw error;
+          diagnostic = error instanceof Error ? error.message : String(error);
+        }
+      }
+      throw new Error(`report correction budget exhausted (${used}/${policy.maxAttempts})`);
+    } catch (error) {
+      diagnostic = `${invalid.message}; report correction stopped: ${error instanceof Error ? error.message : String(error)}`;
+      try { await record("stopped"); } catch (persistenceError) { this.#reportPersistenceError(persistenceError); }
+      throw new PhaseExecutionError(signal.aborted ? "cancelled" : "protocol", `${diagnostic.slice(0, 1200)}; human action: inspect preserved report evidence ${references.join(", ").slice(0, 650)}; do not promote this candidate`, { cause: error });
+    }
   }
 
   async #reconcileProjectWikiDisposition(context: RunContext, result: ImplementPhaseResult, head: string, signal?: AbortSignal): Promise<void> {
@@ -882,8 +1041,10 @@ function appendRemediationAttempt(state: PersonalRunState, phase: "review" | "te
 
 function withSecondaryWorkspaceDiagnostic(primary: unknown, secondary: unknown): Error {
   const primaryMessage = primary instanceof Error ? primary.message : String(primary);
-  const secondaryMessage = secondary instanceof Error ? secondary.message : String(secondary);
-  const error = new PhaseExecutionError(classifyExecutionFailure(primary), `${primaryMessage}; secondary workspace diagnostic: ${secondaryMessage}`, { cause: primary });
+  const secondaryMessage = (secondary instanceof Error ? secondary.message : String(secondary))
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
+    .replace(/(bearer\s+|(?:token|password|api[_-]?key)\s*[=:]\s*)\S+/giu, "$1[redacted]").slice(0, 500);
+  const error = new PhaseExecutionError(classifyExecutionFailure(primary), `${primaryMessage}; secondary workspace diagnostic: ${secondaryMessage} [source=controller WorkspacePort.currentHead/assertClean]`, { cause: primary });
   return error;
 }
 

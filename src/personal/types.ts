@@ -1,3 +1,5 @@
+import type { ReportCorrectionPolicy, CorrectionRecord, ReportCapture, ReportCorrectionInput } from "./report-correction.js";
+import type { ReportEvidencePort } from "./report-evidence.js";
 import type { EscalationPolicy } from "./model-policy.js";
 import type { StagedTransition } from "./staged-attempts.js";
 import type { PlanEvidence, PlanProgress } from "./plan-artifacts.js";
@@ -93,6 +95,9 @@ export interface RetroPhaseResult extends PhaseResultBase {
 export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult | RetroPhaseResult;
 
 export interface PhaseInput {
+  /** Controller monotonic deadline, never reset for correction. */
+  readonly deadline?: number;
+  readonly reportSession?: { readonly sessionId: string; readonly sessionFile: string };
   readonly escalationDigest?: string;
   readonly runId: string;
   readonly ticket: Ticket;
@@ -146,6 +151,8 @@ export interface PublicationResult {
 }
 
 export interface PersonalRunState {
+  readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
+  readonly reportCorrections?: readonly CorrectionRecord[];
   readonly schemaVersion: 1;
   readonly version: number;
   readonly runId: string;
@@ -240,6 +247,8 @@ export interface WorkspacePort {
 }
 
 export interface PhasePort {
+  readonly reportEvidence?: ReportEvidencePort;
+  correctReport?(input: ReportCorrectionInput, signal?: AbortSignal): Promise<ReportCapture>;
   run(input: PhaseInput, signal?: AbortSignal, onProgress?: (progress: PlanProgress) => Promise<void>): Promise<PhaseResult>;
 }
 

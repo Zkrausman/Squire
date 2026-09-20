@@ -71,3 +71,16 @@ or invoke a model during idle waiting.
 Discord delivery and formatting are deliberately deferred. A Discord adapter,
 if added later, must sit above this event contract and must not become another
 state writer.
+
+### Report-format correction events
+
+`report_correction_observed`, `report_correction_launched`,
+`report_correction_accepted` and `report_correction_stopped` are distinct from
+phase completion, model-stage attempts and implementation remediation. They carry
+`phase: "implement"`, the actual phase `attempt`, and a bounded `correction`
+object `{sequence, maximum, used, remaining}`. `sequence` is the append-only ledger
+position and participates in deterministic event identity, so repeated calls and
+observations cannot collapse into one event. Charges are persisted before dispatch.
+Events contain no reports, paths, prompts or diagnostics: consult the state's
+`reportCorrections` ledger and referenced host evidence for those. Event pruning
+never restores correction allowance or changes a historical terminal run.

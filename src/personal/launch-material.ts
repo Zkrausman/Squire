@@ -1,3 +1,4 @@
+import { validateReportCorrectionPolicy, REPORT_CORRECTION_CORE, IMPLEMENT_CORRECTION_SCHEMA } from "./report-correction.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
@@ -26,7 +27,7 @@ export function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 function hash(value: unknown): string { return createHash("sha256").update("squire-launch-material-v1\0").update(canonical(value)).digest("hex"); }
-export function coreDigest(): string { return hash([...PERSONAL_PHASES.map(buildCorePrompt), ...PLAN_SUBPHASES.map(buildPlanChildCore)]); }
+export function coreDigest(): string { return hash([...PERSONAL_PHASES.map(buildCorePrompt), ...PLAN_SUBPHASES.map(buildPlanChildCore), REPORT_CORRECTION_CORE, IMPLEMENT_CORRECTION_SCHEMA]); }
 export async function captureLaunchMaterial(loaded: LoadedPersonalMvpConfig): Promise<LaunchMaterial> {
   const { rawConfig, digest } = loaded;
   base64(rawConfig);
@@ -45,6 +46,7 @@ export function validateLaunchMaterial(value: unknown): LaunchMaterial {
   validateCapturedRawConfig(raw);
   const config = validateCapturedConfig(v["config"]);
   if (canonical(raw.escalationPolicy === undefined ? undefined : validateEscalationPolicy(raw.escalationPolicy)) !== canonical(config.escalationPolicy)) throw new Error("captured escalation policy mismatch");
+  if (canonical(validateReportCorrectionPolicy(raw.reportCorrectionPolicy)) !== canonical(validateReportCorrectionPolicy(config.reportCorrectionPolicy))) throw new Error("captured correction policy mismatch");
   const prompts = record(v["prompts"], ["manifest", "phases", "subphases"], "captured prompts");
   base64(prompts["manifest"]);
   const manifest = record(JSON.parse(decode(prompts["manifest"] as string)), ["version", "id", "phases", "subphases"], "captured manifest");
@@ -155,12 +157,13 @@ async function assertMaterialDirectory(file: string, state: PersonalRunState): P
 }
 function assertMaterialState(material: LaunchMaterial, state: PersonalRunState): void {
   const c = material.config;
+  if (canonical(validateReportCorrectionPolicy(c.reportCorrectionPolicy)) !== canonical(validateReportCorrectionPolicy(state.reportCorrectionPolicy))) throw new Error("launch correction policy mismatch");
   if (canonical(c.escalationPolicy) !== canonical(state.escalationPolicy) || (c.escalationPolicy ? escalationDigest(c.escalationPolicy) : undefined) !== state.escalationDigest) throw new Error("launch escalation policy mismatch");
   if (canonical(launchEvidence(material)) !== canonical(state.launchEvidence) || createHash("sha256").update(Buffer.from(material.rawConfig, "base64")).digest("hex") !== state.launchConfigDigest || c.repository.slug !== state.repository || c.repository.path !== state.repositoryPath || c.repository.sourceRef !== state.sourceRef || c.repository.baseBranch !== state.baseBranch) throw new Error("launch material state identity mismatch");
 }
 /** Validate normalized data without filesystem reads or environment resolution. */
 function validateCapturedConfig(value: unknown): PersonalMvpConfig {
-  const c = record(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "escalationPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured configuration");
+  const c = record(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "escalationPolicy", "reportCorrectionPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured configuration");
   const text = (v: unknown) => { if (typeof v !== "string" || !v.trim() || v.includes("\0")) throw new Error("invalid captured configuration string"); };
   const absolute = (v: unknown) => { text(v); if (!path.isAbsolute(v as string)) throw new Error("captured path is not absolute"); };
   const repo = record(c["repository"], ["slug", "path", "sourceRef", "baseBranch"], "captured repository");
@@ -173,6 +176,7 @@ function validateCapturedConfig(value: unknown): PersonalMvpConfig {
   for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key]);
   for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key]);
   if (c["escalationPolicy"] !== undefined) validateEscalationPolicy(c["escalationPolicy"]);
+  validateReportCorrectionPolicy(c["reportCorrectionPolicy"]);
   validateModelPolicy(c["modelPolicy"]); validatePromptSelection(c["promptPolicy"]);
   if (c["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(c["phaseTimeoutMs"]);
   return c as unknown as PersonalMvpConfig;
