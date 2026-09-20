@@ -98,19 +98,43 @@ test("capacity/unsupported input rejects before preparation, Pi, repository muta
   ]) assert.throws(() => checkTransportCommand(commands, request), /phase_transport/);
 }));
 
-test("replacement during preparation revalidates immediately before invocation and retains failed bytes", async () => fixture(async (root, store) => {
+test("replacement during preparation revalidates immediately before invocation and retains failed bytes", async t => fixture(async (_root, store) => {
   let calls = 0;
+  let reference: Awaited<ReturnType<PhaseInputTransport["write"]>> | undefined;
+  const write = store.write.bind(store);
+  t.mock.method(store, "write", async (...args: Parameters<PhaseInputTransport["write"]>) => {
+    reference = await write(...args);
+    return reference;
+  });
+  let original: Buffer | undefined, replaced = false, mutationDenied: unknown;
   const commands = { byteInput: true as const, async run() { calls++; return { stdout: "", stderr: "" }; } };
   const payload = guardPayload(binding, { cwd: "/ticket/workspace", uid: 1000, gid: 1000, deadline: Date.now() + 60000, executable: "pi", env: {}, args: [] }, "policy", JSON.stringify(input));
   await assert.rejects(launchProtected(commands, store, binding, payload, "sbx", "fixture", {}, 60000, undefined, async () => {
-    // Windows denies replacement while the producer lease is retained. A
-    // failed mutation itself aborts preparation; neither path may invoke Pi.
-    const names = await readdir(path.join(root, "phase-transport"));
-    const file = path.join(root, "phase-transport", names[0]!);
-    await rename(file, file + ".failed"); await writeFile(file, "substitute");
-  }));
+    // Target a consumed chunk, not a randomly ordered probe or manifest file.
+    assert.ok(reference);
+    const file = reference.chunks[0]!.path;
+    original = await readFile(file);
+    try { await rename(file, file + ".failed"); }
+    catch (error) {
+      // Native Windows leases may deny replacement itself. That denial must
+      // abort preparation, while retaining the original referenced bytes.
+      assert.equal(process.platform, "win32");
+      assert.ok(["EACCES", "EPERM", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? ""));
+      mutationDenied = error;
+      throw error;
+    }
+    replaced = true;
+    await writeFile(file, "substitute");
+  }), error => mutationDenied ? error === mutationDenied : /phase_transport/.test(String(error)));
   assert.equal(calls, 0);
-  assert.ok((await readdir(path.join(root, "phase-transport"))).length >= 2);
+  assert.ok(reference);
+  assert.ok(original);
+  const file = reference.chunks[0]!.path;
+  assert.deepEqual(await readFile(replaced ? file + ".failed" : file), original);
+  if (replaced) {
+    assert.equal(await readFile(file, "utf8"), "substitute");
+    await assert.rejects(store.read(reference, binding), /phase_transport/);
+  }
 }));
 
 test("Windows/Linux actual child argv and environment stay bounded for every production route with oversized effective policy and cumulative/correction input", async () => fixture(async (root) => {
