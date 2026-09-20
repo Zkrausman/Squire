@@ -52,7 +52,8 @@ export interface CorrectionRecord {
   readonly diagnostic: string;
   readonly evidence?: ReportEvidence;
   readonly producer?: string;
-  readonly head: string;
+  /** Independently observed candidate identity; null when unavailable/invalid. */
+  readonly head: string | null;
 }
 
 /** Exact closed payload schema. Additional semantic constraints are enforced by
@@ -146,10 +147,11 @@ export function validateCorrectionState(state: PersonalRunState): void {
   const used = new Map<number, number>();
   const closed = new Set<number>();
   const observed = new Set<number>();
-  const heads = new Map<number, string>();
+  const heads = new Map<number, string | null>();
   const evidencePaths = new Set<string>();
   for (const r of state.reportCorrections) {
-    if (!r || Object.keys(r).some(k => !["phase", "attempt", "kind", "used", "maximum", "remaining", "timestamp", "diagnostic", "evidence", "producer", "head"].includes(k)) || r.phase !== "implement" || !Number.isSafeInteger(r.attempt) || r.attempt < 1 || r.attempt > state.attempts.implement || !["observed", "launched", "accepted", "stopped"].includes(r.kind) || r.maximum !== policy.maxAttempts || !Number.isSafeInteger(r.used) || r.used < 0 || r.used > r.maximum || r.remaining !== r.maximum - r.used || !/^[a-f0-9]{40,64}$/u.test(r.head) || typeof r.diagnostic !== "string" || r.diagnostic.length > 2000 || !Number.isFinite(Date.parse(r.timestamp))) throw new Error("invalid correction record");
+    if (!r || Object.keys(r).some(k => !["phase", "attempt", "kind", "used", "maximum", "remaining", "timestamp", "diagnostic", "evidence", "producer", "head"].includes(k)) || r.phase !== "implement" || !Number.isSafeInteger(r.attempt) || r.attempt < 1 || r.attempt > state.attempts.implement || !["observed", "launched", "accepted", "stopped"].includes(r.kind) || r.maximum !== policy.maxAttempts || !Number.isSafeInteger(r.used) || r.used < 0 || r.used > r.maximum || r.remaining !== r.maximum - r.used || (r.head !== null && (typeof r.head !== "string" || !/^[a-f0-9]{40,64}$/u.test(r.head))) || typeof r.diagnostic !== "string" || r.diagnostic.length > 2000 || !Number.isFinite(Date.parse(r.timestamp))) throw new Error("invalid correction record");
+    if (r.head === null && (r.used !== 0 || r.kind === "launched" || r.kind === "accepted")) throw new Error("correction requires a known candidate identity");
     if (heads.has(r.attempt) && heads.get(r.attempt) !== r.head) throw new Error("correction candidate identity is immutable");
     heads.set(r.attempt, r.head);
     if (r.kind === "accepted" && r.used < 1) throw new Error("correction acceptance requires a charged call");

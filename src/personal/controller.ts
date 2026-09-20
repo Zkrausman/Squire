@@ -634,7 +634,10 @@ export class PersonalMvpController {
     const policy = context.state.reportCorrectionPolicy!;
     const port = this.#phases.reportEvidence;
     const original = structuredClone(invalid.capture);
-    const head = observedHead && /^[a-f0-9]{40,64}$/u.test(observedHead) ? observedHead : input.expectedHead;
+    const head = observedHead && /^[a-f0-9]{40,64}$/u.test(observedHead) ? observedHead : null;
+    // An input HEAD is not evidence of the candidate's identity. Fail closed
+    // before recording any clean observation when Git returned no valid SHA.
+    if (head === null && workspaceError === undefined) workspaceError = new Error("controller.currentHead returned invalid Git SHA");
     let used = 0;
     let diagnostic = invalid.message;
     const verified: { ref: NonNullable<CorrectionRecord["evidence"]>; content: string }[] = [];
@@ -652,12 +655,12 @@ export class PersonalMvpController {
       await verifyReportEvidence(port, capture.evidence, capture.raw);
       verified.push({ ref: structuredClone(capture.evidence), content: capture.raw });
     };
-    const observation = async (capture: ReportCapture, error?: unknown, snapshotHead = observedHead): Promise<void> => {
+    const observation = async (capture: ReportCapture, error: unknown, snapshotHead: string | undefined): Promise<void> => {
       // Bind controller-generated content, not adapter assertions, to a separate
       // exclusive artifact and independently read it back before persistence.
       const content = JSON.stringify({ timestamp: this.#timestamp(), producer: "controller", runId: input.runId, phase: input.phase, attempt: input.attempt,
         inputHead: input.expectedHead, originalTicketBaseSha: input.originalTicketBaseSha, candidateHead: snapshotHead && /^[a-f0-9]{40,64}$/u.test(snapshotHead) ? snapshotHead : null,
-        unchangedAndClean: error === undefined, diagnostic, report: capture.evidence, reportTimestamp: capture.timestamp, reportProducer: capture.sessionId, sessionFile: capture.sessionFile, profile: input.profile,
+        unchangedAndClean: error === undefined && head !== null && snapshotHead === head, diagnostic, report: capture.evidence, reportTimestamp: capture.timestamp, reportProducer: capture.sessionId, sessionFile: capture.sessionFile, profile: input.profile,
         workspaceDiagnostic: error === undefined ? null : "controller.currentHead/assertClean failed; inspect workspace independently" });
       const ref = structuredClone(await port!.write(content));
       references.push(ref.path);
@@ -672,7 +675,7 @@ export class PersonalMvpController {
     try {
       await verify(original);
       await record("observed", original.evidence, original.sessionId);
-      await observation(original, workspaceError);
+      await observation(original, workspaceError, observedHead);
       if (workspaceError !== undefined) throw withSecondaryWorkspaceDiagnostic(invalid, workspaceError);
       if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
       active();
@@ -705,7 +708,7 @@ export class PersonalMvpController {
           response = structuredClone(await this.#phases.correctReport(structuredClone({ input, original, latest, diagnostic, diagnostics: analysis.unexpected.map(key => ({ path: ["details", key], code: "unexpected-field" as const })), correctionAttempt: used, producerId, deadline: input.deadline! }), signal));
         } catch (error) {
           if (error instanceof CorrectionExecutionFailure) response = structuredClone(error.capture);
-          executionError = error ?? new Error("correction execution rejected without diagnostic");
+          executionError = error instanceof PhaseExecutionError ? error : new PhaseExecutionError(classifyExecutionFailure(error), error instanceof Error ? error.message : "correction execution rejected without diagnostic", { cause: error });
         }
         // Inspection is mandatory even after cancellation/command failure. It
         // authorizes no further paid work and deliberately has no aborted signal.
@@ -728,7 +731,7 @@ export class PersonalMvpController {
           await record("observed", response.evidence, response.sessionId);
           await observation(response, afterError, afterHead);
         } else await observation(latest, afterError ?? executionError, afterHead);
-        if (afterError !== undefined) throw withSecondaryWorkspaceDiagnostic(invalid, afterError);
+        if (afterError !== undefined) throw withSecondaryWorkspaceDiagnostic(executionError ?? invalid, afterError);
         if (executionError !== undefined) throw executionError;
         active();
         if (!response) throw new Error("correction returned no report");
@@ -762,7 +765,7 @@ export class PersonalMvpController {
     } catch (error) {
       diagnostic = `${invalid.message}; report correction stopped: ${error instanceof Error ? error.message : String(error)}`;
       try { await record("stopped"); } catch (persistenceError) { this.#reportPersistenceError(persistenceError); }
-      throw new PhaseExecutionError(signal.aborted ? "cancelled" : "protocol", `${diagnostic.slice(0, 1200)}; human action: inspect preserved report evidence ${references.join(", ").slice(0, 650)}; do not promote this candidate`, { cause: error });
+      throw new PhaseExecutionError(signal.aborted ? "cancelled" : error instanceof PhaseExecutionError ? error.classification : "protocol", `${diagnostic.slice(0, 1200)}; human action: inspect preserved report evidence ${references.join(", ").slice(0, 650)}; do not promote this candidate`, { cause: error });
     }
   }
 

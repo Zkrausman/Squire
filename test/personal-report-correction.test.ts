@@ -9,7 +9,7 @@ import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { SandboxPiPhaseRunner } from "../src/personal/pi-phase-runner.js";
 import { parsePhaseResult } from "../src/personal/phase-payload.js";
 import { PhaseExecutionError } from "../src/personal/execution-failure.js";
-import { InvalidPhaseHandoff, CorrectionExecutionFailure, correctionSchema, validateReportCorrectionPolicy, type ReportCapture, type ReportCorrectionInput } from "../src/personal/report-correction.js";
+import { InvalidPhaseHandoff, CorrectionExecutionFailure, correctionSchema, validateCorrectionState, validateReportCorrectionPolicy, type ReportCapture, type ReportCorrectionInput } from "../src/personal/report-correction.js";
 import { FileReportEvidence, verifyReportEvidence, reportHash, MAX_REPORT_BYTES, type ReportEvidence, type ReportEvidencePort } from "../src/personal/report-evidence.js";
 import { deriveRunEvents } from "../src/personal/run-events.js";
 import type { PhaseInput, PhaseResult, PersonalRunState } from "../src/personal/types.js";
@@ -202,9 +202,27 @@ for (const [name, mutate] of Object.entries({
 
 test("cumulative wiki contradiction cannot enter correction", async () => { await failure({ wiki: [".llm-wiki/prior.md"] }, /contradicts committed diff/); });
 test("dirty original cannot enter correction", async () => { await failure({ beforeOriginal: h => { h.clean = false; } }, /dirty worktree/); });
-test("actual invalid Git identity retains primary format diagnostic", async () => {
-  const state = await failure({ beforeOriginal: h => { h.head = "invalid"; } }, /implement details.*invalid Git SHA/);
-  assert.match(state.lastError!, /controller.currentHead/);
+test("actual invalid Git identity is unknown in evidence and ledger, never the input HEAD", async () => {
+  const h = await harness({ beforeOriginal: h => { h.head = "invalid"; } });
+  try {
+    await assert.rejects(h.controller.run(REQUEST), /implement details.*invalid Git SHA/);
+    const state = (await h.states.read("aidev-295-0123456789"))!;
+    assert.equal(state.status, "failed");
+    assert.match(state.lastError!, /controller.currentHead/);
+    assert.equal(h.corrections.length, 0);
+    assert.equal(h.published, 0);
+    const ledger = state.reportCorrections!;
+    assert.deepEqual(ledger.map(r => [r.kind, r.head, r.used]), [["observed", null, 0], ["observed", null, 0], ["stopped", null, 0]]);
+    const observation = JSON.parse((await h.evidence.read(ledger[1]!.evidence!)).toString());
+    assert.equal(observation.candidateHead, null);
+    assert.equal(observation.inputHead, BASE);
+    assert.equal(observation.unchangedAndClean, false);
+    assert.match(observation.workspaceDiagnostic, /controller.currentHead/);
+    validateCorrectionState(state);
+    for (const kind of ["launched", "accepted"] as const) {
+      assert.throws(() => validateCorrectionState({ ...state, reportCorrections: [...ledger.slice(0, 2), { ...ledger[2]!, kind, used: 1, remaining: 0 }] }), /known candidate identity/);
+    }
+  } finally { await h.cleanup(); }
 });
 for (const classification of ["authentication", "infrastructure", "cancelled", "protocol"] as const) test(`${classification} execution failure never invokes correction`, async () => {
   await failure({ phaseFailure: new PhaseExecutionError(classification, `${classification} failure`) }, /failure/);
@@ -221,11 +239,12 @@ for (const change of ["head", "dirty", "status", "wiki", "identity"] as const) t
   } }, /report correction stopped/, 1);
 });
 test("shared deadline expiry after charged correction stops without renewed allowance", async () => {
-  await failure({ maximum: 2, correction: async (request, h) => {
+  const state = await failure({ staged: true, maximum: 2, correction: async (request, h) => {
     // Advance the injected controller clock, not the immutable deadline.
     h.expireDeadline();
     return JSON.stringify(payload(request.input));
   } }, /aborted|timeout|deadline/i, 1);
+  assert.equal(state.stagedTransitions?.at(-1)?.classification, "timeout");
 });
 test("cancellation records charged call and preserves returned evidence", async () => {
   const abort = new AbortController();
@@ -342,8 +361,42 @@ test("ownership loss before correction never launches or removes retained owner"
     assert.equal(h.published, 0);
   } finally { await h.cleanup(); }
 });
-test("correction launch failure is charged once and never retried", async () => {
-  await failure({ maximum: 2, correction: async () => { throw new PhaseExecutionError("authentication", "correction authentication failure"); } }, /authentication failure/, 1);
+for (const staged of [false, true]) for (const captured of [false, true]) for (const classification of ["authentication", "infrastructure", "timeout", "cancelled"] as const) test(`${staged ? "staged" : "ordinary"} ${captured ? "captured" : "launch"} correction ${classification} preserves classification without retry`, async () => {
+  const h = await harness({ staged, maximum: 2, correction: async (request, h) => {
+    const error = new PhaseExecutionError(classification, `correction ${classification} failure`);
+    if (!captured) throw error;
+    // Even a strictly valid response from a failed execution is evidence only.
+    const raw = JSON.stringify(payload(request.input));
+    throw new CorrectionExecutionFailure({ raw, timestamp: new Date().toISOString(), sessionId: request.producerId, sessionFile: `/run/squire-report-${request.producerId}/no-session`, evidence: await h.evidence.write(raw) }, error);
+  } });
+  try {
+    await assert.rejects(h.controller.run(REQUEST), error => {
+      assert.ok(error instanceof PhaseExecutionError);
+      assert.equal(error.classification, classification);
+      assert.match(error.message, /implement details.*correction .* failure.*human action/);
+      return true;
+    });
+    const state = (await h.states.read("aidev-295-0123456789"))!;
+    assert.equal(state.status, classification === "cancelled" ? "interrupted" : "failed");
+    assert.deepEqual(h.calls, ["plan", "implement"]);
+    assert.equal(h.published, 0);
+    assert.equal(h.corrections.length, 1);
+    assert.equal(state.reportCorrections?.at(-1)?.kind, "stopped");
+    assert.equal(state.reportCorrections?.at(-1)?.used, 1);
+    assert.equal(state.reportCorrections?.at(-1)?.remaining, 1);
+    if (captured) {
+      const response = state.reportCorrections!.find(r => r.producer === h.corrections[0]!.producerId)!;
+      assert.ok(response.evidence);
+      await verifyReportEvidence(h.evidence, response.evidence, JSON.stringify(payload(h.corrections[0]!.input)));
+    }
+    if (staged) {
+      assert.equal(state.stagedTransitions?.at(-1)?.reason, "execution_failure");
+      assert.equal(state.stagedTransitions?.at(-1)?.classification, classification);
+      const events = await h.states.readEvents(state.runId);
+      assert.ok(events.some(e => e.staged?.kind === "closed" && e.staged.classification === classification));
+    }
+    assert.equal(await h.states.reservationOwner(REQUEST.ticketId), undefined);
+  } finally { await h.cleanup(); }
 });
 
 test("staged attempt accounting is independent from correction charges", async () => {
