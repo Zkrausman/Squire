@@ -314,3 +314,81 @@ Evidence is stored under the host staging root's `report-evidence/`, not model-w
 `squire status` shows correction maximum/used/remaining and lifecycle independently of remediation/escalation. The ledger remains authoritative if bounded events are pruned. Exhaustion, unavailable safe evidence, mismatches or cancellation produce one terminal human escalation with primary schema failure and evidence references. Inspect the preserved artifacts and candidate independently; do not promote the candidate or reset the run. Secondary Git inspection failures retain sanitized operation/source diagnostics separately; this feature does not establish a root cause for the owner-reported `invalid Git SHA`. Exact-owner cleanup remains unchanged, including a separate cleanup-failure field and no retained-lock takeover. Historical failed runs are immutable.
 
 `test/personal-report-correction.test.ts` uses synthetic reports and offline fake ports; it does not recover or authenticate the owner-reported incident artifacts. No original incident run ID/candidate SHA was supplied. The separately described failed delivery finding motivates independent content reads, not adoption or repair of its candidate. Live model acceptance requires separate scoped approval.
+
+## Read-only live-owner status
+
+`status <run-id>` and `status <ticket-id>` do not acquire or wait on the
+`ticket-operations` mutation mutex. They open existing local evidence with
+read/query rights only: no directory creation, lock-byte changes, release,
+recovery, state writes, model calls, Git, Linear, Docker, or App access. A
+successful running result includes `Reservation: verified live owner
+(read-only observation)`. This is a point-in-time observation, not a lease or
+permission to mutate the run.
+
+The authoritative combination is:
+
+* exactly one readable running state for the ticket (even with an exact-run
+  selector), matching the reservation's exact run ID;
+* a versioned `owner-observations/<ticket>.owner` record bound to ticket/run,
+  a random fencing generation, the reservation's file identity and the owner
+  record's own file identity;
+* an exact live process creation identity, **not** PID existence. Windows uses
+  volume/file index/creation identity on local fixed NTFS and a retained
+  `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE)` reference,
+  creation time and nonblocking exit checks. Linux retains the `/proc/<pid>`
+  directory and checks boot ID, process start ticks and non-zombie state;
+* when present, a ticket-operation marker with matching file identity,
+  process identity, ticket and owner fencing evidence. The marker's original
+  handle remains owned by the mutator; observation never closes or duplicates
+  it. Observer-owned file/process references are closed after revalidation.
+
+The owner publishes evidence inside the existing reserve/claim boundaries.
+Before detached handoff the live parent is a `reserver`; the child publishes a
+fresh `controller` generation while claiming the started state. Evidence role
+and persisted launch state must agree. Incomplete publication, an interrupted
+handoff, a legacy live reservation lacking this evidence, or an unsupported
+observation platform is ambiguity, never a PID-only fallback. These diagnostic
+records **do not authorize** reservation acquisition, release, or stranded-lock
+recovery; the original mutation ownership and serialization checks remain in
+force. The reservation pathname lasts for the run; the separate operation
+handle lasts only for its serialized operation, not the controller lifetime.
+
+Reads retain file references, verify exact process liveness, and re-open paths
+to check identity and bytes before returning. Ownership observations also
+bracket state selection. Same-content replacement, missing/empty/malformed or
+unreadable evidence, contradictory operation markers, competing running states,
+process exit/PID reuse, and release/handoff races fail closed. Diagnostics use
+bounded reasons (`unreadable`, `inconsistent`, `owner-not-live`) and recommend
+retrying observation or inspecting controller diagnostics, **not** stealing,
+releasing, or repairing the reservation. A PID or readable state alone is not
+sufficient evidence for recovery.
+
+Terminal history needs no live process when ownership is absent. An exact
+historical record can also be read beside a verified active replacement for
+that same ticket; ticket status selects that replacement. An orphan reservation
+or a terminal run retaining its own reservation is still ambiguous. Lightweight
+embedded state ports without the optional observation API retain state-only
+lookup; status never substitutes their mutation-authorizing `reservationOwner`
+method for observation.
+
+### Native validation boundary
+
+`personal-windows-status.test` starts a separate fixture-owned controller using
+production reserve/claim, holds its original ticket-operation handle at a
+lifecycle barrier, pins the exact reservation file, and runs both installed CLI
+selectors in separate processes. Fresh IPC challenges prove the owner stays
+responsive after each query; snapshots prove unchanged state/evidence and a
+competing reserve remains excluded. Normal shutdown is awaited through actual
+child-process close before fixture removal. The fixture also covers background
+handoff and stranded evidence after exact owner exit. Deterministic observation
+tests cover replacement and inconsistent evidence; an incompatible Windows
+reader proves unreadable evidence cannot be bypassed.
+
+These fixtures are included explicitly in the existing `windows-launch-capture`
+Node 20.17.0, 22.9.0 and 24 matrix. Linux executes the portable multiprocess and
+negative checks but cannot establish native Windows handle behavior. The
+App-authored PR's **exact-head** Windows jobs and existing
+`filesystem-event-integration` gates must complete successfully before merge;
+no native gate may be skipped, weakened, or declared passing from Linux-only
+results. This feature does not authorize intervention in any unrelated live or
+stranded run.

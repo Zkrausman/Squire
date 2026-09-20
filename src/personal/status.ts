@@ -28,72 +28,52 @@ export function validateStatusSelector(value: string): string {
  */
 export async function findRunState(states: RunStatePort, selector: string): Promise<PersonalRunState> {
   validateStatusSelector(selector);
-  // Lightweight embedders may expose persisted reads without a reservation
-  // primitive. The production JSON store has one, and an absent owner there
-  // is meaningful evidence of ambiguity; do not confuse that with an optional
-  // port that cannot perform the check.
-  const canCheckReservation = states.reservationOwner !== undefined;
-  if (RUN_PATTERN.test(selector)) {
-    const state = states.read ? await states.read(selector) : undefined;
-    if (!state) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
-    // An exact run ID identifies one persisted record. A terminal historical
-    // record remains readable when its ticket has since been reserved by a
-    // different, readable active run; the ticket selector will still return
-    // that replacement. Do not apply that exception to a second running
-    // record or to an owner that cannot be proved active and on this ticket.
-    let owner: string | undefined;
-    try {
-      owner = canCheckReservation ? await states.reservationOwner!(state.ticketId) : undefined;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${state.ticketId}: ${detail}`);
-    }
-    if (canCheckReservation && state.status === "running") {
-      if (owner !== state.runId) {
-        throw new StatusLookupError("ambiguous", `run reservation does not match active run ${state.runId}: ${owner ?? "absent"}`);
-      }
-    } else if (canCheckReservation && owner === state.runId) {
-      throw new StatusLookupError("ambiguous", `run reservation does not match terminal run ${state.runId}`);
-    } else if (canCheckReservation && owner) {
-      let replacement: PersonalRunState | undefined;
-      try {
-        replacement = states.read ? await states.read(owner) : undefined;
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new StatusLookupError("ambiguous", `replacement run is unreadable for ${state.ticketId}: ${detail}`);
-      }
-      if (!replacement || replacement.ticketId !== state.ticketId || replacement.status !== "running") {
-        throw new StatusLookupError("ambiguous", `run reservation does not match a readable active run for ${state.ticketId}: ${owner}`);
-      }
-    }
-    return state;
-  }
-
-  const candidates = states.findByTicket
-    ? [...await states.findByTicket(selector)]
-    : await fallbackTicketStates(states, selector);
-  let owner: string | undefined;
+  const exact = RUN_PATTERN.test(selector);
+  let initial: PersonalRunState | undefined;
+  try { initial = exact && states.read ? await states.read(selector) : undefined; }
+  catch { throw new StatusLookupError("ambiguous", "run state is unreadable; retry status or inspect controller diagnostics"); }
+  if (exact && !initial) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
+  const ticket = initial?.ticketId ?? selector;
+  const ambiguous = (detail: string): never => {
+    throw new StatusLookupError("ambiguous", `run reservation is ambiguous for ${ticket}: ${detail}; retry status or inspect controller diagnostics; do not remove or reclaim ownership evidence`);
+  };
+  const observe = async () => {
+    if (!states.observeReservation) return undefined;
+    let value;
+    try { value = await states.observeReservation(ticket); }
+    catch { return ambiguous("owner evidence unreadable"); }
+    if (!value || !["absent", "owner", "ambiguous"].includes(value.kind)) ambiguous("owner evidence unreadable");
+    if (value.kind === "ambiguous") ambiguous(`owner evidence ${value.reason}`);
+    return value;
+  };
+  // Never call reservationOwner: it is a mutation-authorization query and
+  // acquires the ticket mutex. Ports without observation retain state-only use.
+  const before = await observe();
+  let candidates: PersonalRunState[];
   try {
-    owner = canCheckReservation ? await states.reservationOwner!(selector) : undefined;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${selector}: ${detail}`);
-  }
-  if (candidates.length === 0) {
-    if (canCheckReservation && owner) throw new StatusLookupError("ambiguous", `run reservation exists without a readable state: ${owner}`);
-    throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
-  }
+    candidates = states.findByTicket ? [...await states.findByTicket(ticket)]
+      : exact && !states.observeReservation ? [initial!] : await fallbackTicketStates(states, ticket);
+  } catch { return ambiguous("state evidence unreadable"); }
+  const selectedExact = exact ? (states.findByTicket ? candidates.find(s => s.runId === selector) : initial) : undefined;
   const active = candidates.filter(state => state.status === "running");
-  if (active.length > 1) throw new StatusLookupError("ambiguous", `multiple active runs found for ${selector}`);
-  // A lock is meaningful even when an older terminal state exists, and an
-  // active state is authoritative only while its exact reservation remains.
-  // Every other combination is ambiguous and must not be hidden.
-  if (canCheckReservation && active.length === 1 && owner !== active[0]!.runId) {
-    throw new StatusLookupError("ambiguous", `run reservation does not match a readable active state: ${owner ?? "absent"}`);
+  if (active.length > 1) ambiguous("multiple active runs found");
+  const after = await observe();
+  if (JSON.stringify(before) !== JSON.stringify(after)) ambiguous("ownership changed during observation");
+  if (after?.kind === "owner") {
+    const running = active[0];
+    if (!running || running.runId !== after.runId || (running.controllerPid != null && running.controllerPid !== after.pid) ||
+        (after.role === "reserver" ? running.launchState !== "reserved" || running.controllerPid !== null : running.launchState === "reserved")) {
+      ambiguous("verified live owner does not match a readable active state");
+    }
+    if (selectedExact?.status !== "running" && selectedExact?.runId === after.runId) ambiguous("terminal run retains reservation");
+  } else if (after?.kind === "absent" && active.length > 0) {
+    ambiguous("reservation absent for active run");
   }
-  if (canCheckReservation && owner && active.length === 0) {
-    throw new StatusLookupError("ambiguous", `run reservation does not match a readable active state: ${owner}`);
+  if (exact) {
+    if (!selectedExact) ambiguous("selected state disappeared");
+    return selectedExact!;
   }
+  if (candidates.length === 0) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
   return [...(active.length === 1 ? active : candidates)].sort(compareStates)[0]!;
 }
 

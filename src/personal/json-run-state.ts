@@ -1,3 +1,4 @@
+import { observeReservation, publishOwner, removeOwner, operationEvidence, currentProcessIdentity, fileIdentity, type ObservationOptions } from "./reservation-observation.js";
 import { validateCorrectionState, assertCorrectionUnchanged } from "./report-correction.js";
 import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
 import { validatePlanProgress } from "./plan-artifacts.js";
@@ -60,6 +61,8 @@ export interface JsonRunStateStoreOptions {
   readonly onEventPersistenceError?: (error: unknown) => void;
   /** Internal deterministic seam for Windows rename contention handling. */
   readonly renameRetry?: RenameRetryOptions;
+  /** Internal read-only consistency race seam. */
+  readonly observation?: ObservationOptions;
 }
 
 export class JsonRunStateStore implements RunStatePort {
@@ -68,6 +71,7 @@ export class JsonRunStateStore implements RunStatePort {
   readonly eventsDirectory: string;
   readonly #onEventPersistenceError: (error: unknown) => void;
   readonly #renameRetry: RenameRetryOptions;
+  readonly #observation: ObservationOptions;
 
   constructor(readonly directory: string, options: JsonRunStateStoreOptions = {}) {
     this.eventOutbox = new JsonRunEventOutbox(directory, {
@@ -80,6 +84,7 @@ export class JsonRunStateStore implements RunStatePort {
     this.eventsDirectory = this.eventDirectory;
     this.#onEventPersistenceError = options.onEventPersistenceError ?? (() => undefined);
     this.#renameRetry = options.renameRetry ?? {};
+    this.#observation = options.observation ?? {};
   }
 
   async create(state: PersonalRunState): Promise<void> {
@@ -103,12 +108,13 @@ export class JsonRunStateStore implements RunStatePort {
     // short-lived boundary serializes reserve/release against one another.
     // Without it, an old releaser can read its owner, a replacement can be
     // installed, and the old releaser can unlink the replacement.
-    return withTicketOperation(this.directory, state.ticketId, async () => {
+    return withTicketOperation(this.directory, state.ticketId, async refresh => {
       const locks = path.join(this.directory, "locks");
       await mkdir(locks, { recursive: true, mode: 0o700 });
       const lockPath = path.join(locks, `${state.ticketId.toLowerCase()}.lock`);
       let lockHandle;
       let lockAcquired = false;
+      let publishedOwner = false;
       try {
         lockHandle = await open(lockPath, "wx", 0o600);
         lockAcquired = true;
@@ -138,14 +144,19 @@ export class JsonRunStateStore implements RunStatePort {
         // reserve and release in every Squire process.
         const active = (await this.findByTicket(state.ticketId)).filter(candidate => candidate.status === "running");
         if (active.length > 0) throw new Error(`ticket already has an active run: ${state.ticketId}`);
+        await publishOwner(this.directory, state.ticketId, state.runId, lockPath, state.launchState === "reserved" ? "reserver" : "controller");
+        publishedOwner = true;
+        await refresh();
         await atomicCreate(this.#path(state.runId), encode(state), this.directory, state.runId);
         await this.#publishTransition(undefined, state);
+        await waitForTicketOperationBarrier("reserve-after-publication");
       } catch (error) {
         // Only remove a reservation whose owner is still this run. If an
         // operator or a non-Squire process replaced it, fail closed and leave
         // the ambiguity visible rather than deleting another owner's lock.
         await waitForTicketOperationBarrier("reserve-before-failed-cleanup");
         await removeReservationIfOwned(lockPath, state.runId).catch(() => undefined);
+        if (publishedOwner) await removeOwner(this.directory, state.ticketId, state.runId).catch(() => undefined);
         throw error;
       }
     });
@@ -198,7 +209,7 @@ export class JsonRunStateStore implements RunStatePort {
     validateState(state);
     if (!isStartedChild(state)) throw new Error("reserved run claim target is invalid");
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    return withTicketOperation(this.directory, state.ticketId, async () => {
+    return withTicketOperation(this.directory, state.ticketId, async refresh => {
       const lockPath = this.#reservationPath(state.ticketId);
       if (await readLock(lockPath) !== state.runId) throw new Error(`reserved run reservation ownership mismatch: ${state.runId}`);
       const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
@@ -209,8 +220,11 @@ export class JsonRunStateStore implements RunStatePort {
         if (!isReservedLaunch(current)) throw new Error(`reserved run claim is no longer available: ${state.runId}`);
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
         assertExactStartedChildTarget(current, state);
+        await publishOwner(this.directory, state.ticketId, state.runId, lockPath, "controller");
+        await refresh();
         await this.#replaceState(target, state);
         await this.#publishTransition(current, state);
+        await waitForTicketOperationBarrier("claim-after-publication");
       } finally {
         await releaseUpdate();
       }
@@ -242,6 +256,7 @@ export class JsonRunStateStore implements RunStatePort {
         await releaseUpdate();
       }
       await removeReservationIfOwned(lockPath, state.runId);
+      await removeOwner(this.directory, state.ticketId, state.runId);
     });
   }
 
@@ -281,8 +296,9 @@ export class JsonRunStateStore implements RunStatePort {
   }
 
   async list(): Promise<readonly PersonalRunState[]> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const files = await readdir(this.directory);
+    let files: string[];
+    try { files = await readdir(this.directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
     const matches: PersonalRunState[] = [];
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
@@ -296,6 +312,11 @@ export class JsonRunStateStore implements RunStatePort {
 
   async read(runId: string): Promise<PersonalRunState | undefined> {
     return this.#read(this.#path(runId), runId);
+  }
+
+  async observeReservation(ticketId: string) {
+    assertTicketId(ticketId);
+    return observeReservation(this.directory, ticketId, this.#observation);
   }
 
   async reservationOwner(ticketId: string): Promise<string | undefined> {
@@ -329,6 +350,7 @@ export class JsonRunStateStore implements RunStatePort {
       if (state.ticketId !== ticketId) throw new Error(`ticket reservation identity mismatch: ${ticketId}`);
       if (state.status === "running") throw new Error(`cannot release an active ticket reservation: ${ticketId}`);
       await removeReservationIfOwned(lockPath, runId);
+      await removeOwner(this.directory, ticketId, runId);
     });
   }
 
@@ -564,16 +586,16 @@ function assertExactReservedFailureTarget(current: PersonalRunState, next: Perso
   }
 }
 
-async function withTicketOperation<T>(directory: string, ticketId: string, operation: () => Promise<T>): Promise<T> {
-  const release = await acquireTicketOperation(directory, ticketId);
+async function withTicketOperation<T>(directory: string, ticketId: string, operation: (refresh: () => Promise<void>) => Promise<T>): Promise<T> {
+  const boundary = await acquireTicketOperation(directory, ticketId);
   try {
-    return await operation();
+    return await operation(boundary.refresh);
   } finally {
-    await release();
+    await boundary.release();
   }
 }
 
-async function acquireTicketOperation(directory: string, ticketId: string): Promise<() => Promise<void>> {
+async function acquireTicketOperation(directory: string, ticketId: string): Promise<{ release: () => Promise<void>; refresh: () => Promise<void> }> {
   const operations = path.join(directory, "ticket-operations");
   await mkdir(operations, { recursive: true, mode: 0o700 });
   const lockPath = path.join(operations, `${ticketId.toLowerCase()}.lock`);
@@ -591,10 +613,18 @@ async function acquireTicketOperation(directory: string, ticketId: string): Prom
       continue;
     }
 
-    const owner = `${process.pid}-${randomUUID()}\n`;
-    try {
-      await handle.writeFile(owner, "utf8");
+    let owner = "";
+    const token = randomUUID();
+    const refresh = async (): Promise<void> => {
+      owner = `${JSON.stringify({ version: 1, ticketId, pid: process.pid, token,
+        process: await currentProcessIdentity(), identity: await fileIdentity(handle),
+        owner: await operationEvidence(directory, ticketId) })}\n`;
+      await handle.truncate(0);
+      await handle.write(owner, 0, "utf8");
       await handle.sync();
+    };
+    try {
+      await refresh();
     } catch (error) {
       await handle.close().catch(() => undefined);
       // Never unconditionally unlink a path after an I/O failure. If the
@@ -605,19 +635,19 @@ async function acquireTicketOperation(directory: string, ticketId: string): Prom
     }
 
     let released = false;
-    return async () => {
+    return { refresh, release: async () => {
       if (released) return;
       released = true;
       await handle.close().catch(() => undefined);
       // Verify the ownership marker before removing the operation lock. This
       // keeps a delayed old process from deleting a replacement boundary.
       await removeFileIfExactContents(lockPath, owner);
-    };
+    } };
   }
   throw new Error(`ticket operation is locked or ambiguous: ${ticketId}`);
 }
 
-async function waitForTicketOperationBarrier(stage: "reserve-before-failed-cleanup" | "release-after-owner-read"): Promise<void> {
+async function waitForTicketOperationBarrier(stage: "reserve-before-failed-cleanup" | "release-after-owner-read" | "reserve-after-publication" | "claim-after-publication"): Promise<void> {
   if (process.env["NODE_ENV"] !== "test" || process.env["SQUIRE_TEST_ONLY_TICKET_OPERATION_STAGE"] !== stage) return;
   const ready = testOnlyBarrierPath("SQUIRE_TEST_ONLY_TICKET_OPERATION_READY_PATH");
   const release = testOnlyBarrierPath("SQUIRE_TEST_ONLY_TICKET_OPERATION_RELEASE_PATH");

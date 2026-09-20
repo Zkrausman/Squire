@@ -270,6 +270,7 @@ async function statusCommand(parsed: ParsedStatusArguments): Promise<number> {
     const config = await loadPersonalMvpConfig(parsed.config);
     const state = await findRunState(new JsonRunStateStore(config.paths.state), parsed.selector);
     process.stdout.write(formatRunStatus(state));
+    if (state.status === "running") process.stdout.write("Reservation: verified live owner (read-only observation)\n");
     return 0;
   } catch (error) {
     writeError(error);

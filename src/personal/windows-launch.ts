@@ -2,6 +2,10 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 interface WindowsLaunchNative {
+  observationFileIdentity(fd: number): string;
+  openObservationProcess(pid: number): object;
+  readObservationProcess(lease: object): string;
+  closeObservationProcess(lease: object): void;
   openSource(root: string, repository: string): object;
   readSource(lease: object, name: string): Buffer;
   closeSource(lease: object): void;

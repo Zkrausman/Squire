@@ -428,10 +428,15 @@ napi_value read(napi_env e, napi_callback_info i) { return operation(e, i, 1); }
 napi_value openLog(napi_env e, napi_callback_info i) { return operation(e, i, 2); }
 napi_value closeLog(napi_env e, napi_callback_info i) { return operation(e, i, 3); }
 #include "windows-state-replace.h"
+#include "windows-owner-observation.h"
 
 napi_value init(napi_env env, napi_value exports) {
   napi_set_instance_data(env, new Context(), [](napi_env, void* p, void*) { delete static_cast<Context*>(p); }, nullptr);
   napi_property_descriptor methods[] = {
+    {"observationFileIdentity", nullptr, observationFileIdentity, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"openObservationProcess", nullptr, openObservationProcess, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"readObservationProcess", nullptr, readObservationProcess, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"closeObservationProcess", nullptr, closeObservationProcess, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"openSource", nullptr, openSource, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"readSource", nullptr, readSource, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeSource", nullptr, closeSource, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -441,7 +446,7 @@ napi_value init(napi_env env, napi_value exports) {
     {"closeLog", nullptr, closeLog, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"replaceState", nullptr, replaceState, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
-  napi_define_properties(env, exports, 8, methods); return exports;
+  napi_define_properties(env, exports, sizeof(methods) / sizeof(methods[0]), methods); return exports;
 }
 } // namespace
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init)
