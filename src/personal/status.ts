@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort } from "./types.js";
 import type { RunEvent } from "./run-events.js";
 
@@ -28,6 +29,7 @@ export function validateStatusSelector(value: string): string {
  */
 export async function findRunState(states: RunStatePort, selector: string): Promise<PersonalRunState> {
   validateStatusSelector(selector);
+  if (states.observeReservation) return observedRunState(states, selector);
   // Lightweight embedders may expose persisted reads without a reservation
   // primitive. The production JSON store has one, and an absent owner there
   // is meaningful evidence of ambiguity; do not confuse that with an optional
@@ -36,6 +38,9 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
   if (RUN_PATTERN.test(selector)) {
     const state = states.read ? await states.read(selector) : undefined;
     if (!state) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
+    if (states.findByTicket && (await states.findByTicket(state.ticketId)).filter(candidate => candidate.status === "running").length > 1) {
+      throw new StatusLookupError("ambiguous", `multiple active runs found for ${state.ticketId}`);
+    }
     // An exact run ID identifies one persisted record. A terminal historical
     // record remains readable when its ticket has since been reserved by a
     // different, readable active run; the ticket selector will still return
@@ -95,6 +100,46 @@ export async function findRunState(states: RunStatePort, selector: string): Prom
     throw new StatusLookupError("ambiguous", `run reservation does not match a readable active state: ${owner}`);
   }
   return [...(active.length === 1 ? active : candidates)].sort(compareStates)[0]!;
+}
+
+/** Bracket all selected-ticket states with repeatable, read-only owner evidence. */
+async function observedRunState(states: RunStatePort, selector: string): Promise<PersonalRunState> {
+  const exact = RUN_PATTERN.test(selector);
+  let selected: PersonalRunState | undefined;
+  try { selected = exact ? await states.read?.(selector) : undefined; }
+  catch { throw new StatusLookupError("ambiguous", `persisted run is unreadable for ${selector}; inspect state without changing locks`); }
+  if (exact && !selected) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
+  const ticket = selected?.ticketId ?? selector;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const before = await states.observeReservation!(ticket);
+      const candidates = states.findByTicket ? [...await states.findByTicket(ticket)] : await fallbackTicketStates(states, ticket);
+      const after = await states.observeReservation!(ticket);
+      const repeated = states.findByTicket ? [...await states.findByTicket(ticket)] : await fallbackTicketStates(states, ticket);
+      if (!isDeepStrictEqual(before, after) || !isDeepStrictEqual(candidates, repeated)) continue;
+      if (after.kind === "ambiguous") throw new Error("owner evidence unreadable or inconsistent");
+      const active = candidates.filter(state => state.status === "running");
+      if (active.length > 1) throw new StatusLookupError("ambiguous", `multiple active runs found for ${ticket}`);
+      if (after.kind === "owner") {
+        const owner = active[0];
+        if (!owner || owner.runId !== after.runId || owner.ticketId !== ticket) throw new Error("owner evidence inconsistent");
+        // A claimant publishes its identity before replacing reserved state.
+        // Null is the reserving parent, not a contradictory controller PID.
+        if (owner.launchState === "reserved" && after.stage === "claim" && !after.transition) throw new Error("claim transition is no longer live");
+        if (owner.controllerPid != null && owner.controllerPid !== after.pid) throw new Error("controller identity inconsistent");
+        if (owner.launchState === "started" && after.stage !== "claim" && owner.executionMode === "background") throw new Error("claim evidence missing");
+      } else if (active.length) throw new Error("reservation absent for active run");
+      const state = exact ? candidates.find(candidate => candidate.runId === selector) : [...(active.length ? active : candidates)].sort(compareStates)[0];
+      if (!state) throw new StatusLookupError("missing", `no persisted run found for ${selector}`);
+      return state;
+    } catch (error) {
+      if (error instanceof StatusLookupError) throw error;
+      // A transition may publish proof immediately before its atomic state.
+      // No retry can turn stable contradictory evidence into an owner.
+      if (attempt === 2) throw new StatusLookupError("ambiguous", `run reservation is unreadable for ${ticket}: owner evidence unreadable or inconsistent; retry status, then inspect the owning controller without deleting locks`);
+    }
+  }
+  throw new StatusLookupError("ambiguous", `run reservation changed during observation for ${ticket}; retry status without changing locks`);
 }
 
 /** Render status solely from the persisted state. No live process or Git read is performed. */

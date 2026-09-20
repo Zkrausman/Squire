@@ -260,6 +260,11 @@ export interface PublicationPort {
   publish(input: PublicationInput, signal?: AbortSignal): Promise<PublicationResult>;
 }
 
+export type ReservationObservation =
+  | { readonly kind: "absent"; readonly snapshot: string }
+  | { readonly kind: "owner"; readonly runId: string; readonly pid: number; readonly stage: "reserve" | "claim"; readonly transition: boolean; readonly snapshot: string }
+  | { readonly kind: "ambiguous"; readonly reason: string };
+
 export interface RunStatePort {
   create(state: PersonalRunState): Promise<void>;
   save(state: PersonalRunState): Promise<void>;
@@ -285,6 +290,7 @@ export interface RunStatePort {
   /** Read/query methods are optional for in-memory foreground embedders. */
   read?(runId: string): Promise<PersonalRunState | undefined>;
   findByTicket?(ticketId: string): Promise<readonly PersonalRunState[]>;
+  observeReservation?(ticketId: string): Promise<ReservationObservation>;
   reservationOwner?(ticketId: string): Promise<string | undefined>;
   /** Optional durable event outbox read surface used by non-LLM consumers. */
   readEvents?(runId: string): Promise<readonly RunEvent[]>;

@@ -2,6 +2,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 interface WindowsLaunchNative {
+  observeOwnerFile(file: string): { bytes: string; identity: string } | undefined;
+  ownerProcessIdentity(pid: number): string;
   openReport(file: string, bytes?: Buffer): { lease: object; identity: string };
   readReport(lease: object): Buffer;
   closeReport(lease: object): void;

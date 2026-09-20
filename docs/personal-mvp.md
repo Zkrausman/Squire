@@ -230,6 +230,22 @@ The controller:
 7. reconciles that section without duplication when reusing an exact existing PR;
 8. records the PR URL and discards the token.
 
+Before checking an existing PR head or its body-marker ancestry, publication
+fetches only the validated deterministic ticket branch from the validated HTTPS
+repository into an isolated ref in its disposable checkout. This fetch is
+App-authenticated, noninteractive, sensitive, time-bounded and cancellable; it
+writes neither tags nor FETCH_HEAD. The fetched object must exactly equal the
+observed remote head and itself be a commit (not a peeled tag). The no-matching-PR
+path explicitly observes the remote branch too: absence is never inferred from
+a missing PR. Remote movement/disappearance, invalid identity/body and unrelated
+ancestry stop publication. Existing branches retain previous-head ancestry checks
+and an exact force-with-lease; absent branches use an absence lease. PR identity,
+head and body are rechecked before mutation, with branch-head verification before
+body edits. Fetching a prior failed candidate supplies missing objects only; it
+does not authorize promotion or replacement of unrelated history. Tokens and the
+checkout are discarded on success and failure. GitHub body edits are not an
+atomic Git lease: post-edit verification still fails closed on concurrent changes.
+
 Retro publication is limited to the PR body. Squire does not automatically create follow-up Linear issues or mutate a wiki during Retro; this does not prohibit an Implement change to the committed project wiki.
 
 The first MVP does not implement GitHub App onboarding, automatic approval, automatic drafting/closing compensation, or exactly-once distributed settlement. Unexpected remote state stops for the owner. No code path may call a merge endpoint.

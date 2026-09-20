@@ -1,3 +1,4 @@
+import { NodeCommandRunner } from "../src/personal/command.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -27,16 +28,22 @@ class FakeCommands implements CommandPort {
   ) {}
   async run(request: CommandRequest): Promise<CommandResult> {
     this.requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
-    if (request.command === "git" && request.args.includes("rev-parse")) return { stdout: `${HEAD}\n`, stderr: "" };
+    if (request.command === "git" && request.args.includes("ls-remote")) {
+      const pushed = this.requests.some(item => item.args.includes("push"));
+      const head = ["fast-forward", "eventual-head", "diverged", "concurrent"].includes(this.behavior) && !pushed ? PREVIOUS_HEAD : HEAD;
+      return { stdout: (this.behavior === "create" || this.behavior === "ambiguous") && !pushed ? "" : `${head}\trefs/heads/${BRANCH}\n`, stderr: "" };
+    }
+    if (request.command === "git" && request.args.includes("rev-parse")) return { stdout: `${request.args.includes("refs/squire-publication/observed-head") && ["fast-forward", "eventual-head", "diverged", "concurrent"].includes(this.behavior) ? PREVIOUS_HEAD : HEAD}\n`, stderr: "" };
+    if (request.command === "git" && request.args.includes("cat-file") && request.args.includes("-t")) return { stdout: "commit\n", stderr: "" };
     if (request.command === "git" && request.args.includes("cat-file") && request.args.some(argument => argument.startsWith("e".repeat(40)))) throw new Error("missing commit");
     if (request.command === "git" && request.args.includes("merge-base") && (this.behavior === "diverged" || (request.args.includes(HEAD) && request.args.includes(PREVIOUS_HEAD) && request.args.indexOf(HEAD) < request.args.indexOf(PREVIOUS_HEAD)))) throw new Error("not an ancestor");
     if (request.command === "gh" && request.args[1] === "list") {
       this.listCalls += 1;
-      const exists = this.behavior !== "create" && (this.behavior !== "ambiguous" || this.listCalls > 1);
+      const exists = this.behavior !== "create" && (this.behavior !== "ambiguous" || this.listCalls > 2);
       const headRefOid = this.behavior === "fast-forward"
-        ? (this.listCalls === 1 ? PREVIOUS_HEAD : HEAD)
+        ? (this.listCalls <= 2 ? PREVIOUS_HEAD : HEAD)
         : this.behavior === "eventual-head"
-          ? (this.listCalls <= 2 ? PREVIOUS_HEAD : HEAD)
+          ? (this.listCalls <= 3 ? PREVIOUS_HEAD : HEAD)
         : this.behavior === "concurrent"
           ? (this.listCalls === 1 ? PREVIOUS_HEAD : CONCURRENT_HEAD)
           : this.behavior === "exact-concurrent"
@@ -114,7 +121,7 @@ async function input(directory: string): Promise<PublicationInput> {
 }
 
 function assertTokenScope(requests: readonly CommandRequest[]): void {
-  const publication = requests.filter(request => request.command === "gh" || request.args.includes("push"));
+  const publication = requests.filter(request => request.command === "gh" || request.args.includes("push") || request.args.includes("fetch") || request.args.includes("ls-remote"));
   assert.ok(publication.length > 0);
   for (const request of publication) {
     assert.equal(request.sensitive, true);
@@ -184,7 +191,7 @@ test("publisher safely fast-forwards one existing PR before reconciling its body
     const commands = new FakeCommands("fast-forward");
     const published = await new GitHubPublisher({ commands, tokens }).publish(await input(directory));
     assert.equal(published.reused, true);
-    assert.equal(commands.listCalls, 3);
+    assert.equal(commands.listCalls, 4);
     const push = commands.requests.find(request => request.args.includes("push"));
     assert.ok(push?.args.includes(`${HEAD}:refs/heads/${BRANCH}`));
     assert.ok(push?.args.includes(`--force-with-lease=refs/heads/${BRANCH}:${PREVIOUS_HEAD}`));
@@ -201,7 +208,7 @@ test("publisher tolerates bounded stale GitHub reads after a leased fast-forward
     const commands = new FakeCommands("eventual-head");
     const published = await new GitHubPublisher({ commands, tokens, consistencyDelayMs: 0 }).publish(await input(directory));
     assert.equal(published.reused, true);
-    assert.equal(commands.listCalls, 4);
+    assert.equal(commands.listCalls, 5);
     assert.equal(commands.requests.filter(request => request.args.includes("push")).length, 1);
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -217,8 +224,8 @@ test("publisher rejects divergent or concurrently changed existing PR heads", as
     });
     await t.test("concurrent fast-forward", async () => {
       const commands = new FakeCommands("concurrent");
-      await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /changed during fast-forward publication/);
-      assert.equal(commands.requests.filter(request => request.args.includes("push")).length, 1);
+      await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(await input(directory)), /changed before publication/);
+      assert.equal(commands.requests.filter(request => request.args.includes("push")).length, 0);
       assert.equal(commands.requests.some(request => request.command === "gh" && request.args[1] === "edit"), false);
     });
     await t.test("concurrent exact-head reuse", async () => {
@@ -355,7 +362,7 @@ test("ambiguous create failure re-queries and reuses the exact PR", async () => 
     const published = await new GitHubPublisher({ commands, tokens }).publish(await input(directory));
     assert.equal(published.reused, true);
     assert.equal(published.number, 7);
-    assert.equal(commands.listCalls, 3);
+    assert.equal(commands.listCalls, 5);
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "create").length, 1);
     assert.equal(commands.requests.filter(request => request.command === "gh" && request.args[1] === "edit").length, 1);
     assert.equal(commands.writtenBodies.at(-1)?.match(/^## Retro$/gmu)?.length, 1);
@@ -387,4 +394,92 @@ test("command token provider uses a sensitive host-only command", async () => {
   assert.equal(await provider.getToken(), TOKEN);
   assert.deepEqual(requests[0]?.args, ["--installation", "123"]);
   assert.equal(requests[0]?.sensitive, true);
+});
+
+for (const failure of ["fetch-failure", "timeout", "cancelled", "moved", "tag-object", "missing-branch", "malformed-ref", "no-pr-diverged", "edited-before-push"]) {
+  test(`publisher preflight rejects ${failure} without remote mutation`, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "squire-fetch-negative-"));
+    const base = new FakeCommands(failure === "no-pr-diverged" || failure === "malformed-ref" ? "create" : "fast-forward");
+    const abort = new AbortController();
+    try {
+      const commands: CommandPort = { async run(request, signal) {
+        assert.equal(signal, abort.signal);
+        if (request.args.includes("fetch")) {
+          assert.equal(request.timeoutMs, 180_000);
+          assert.equal(request.sensitive, true);
+          assert.ok(request.args.includes("--no-tags"));
+          assert.ok(request.args.includes("--no-write-fetch-head"));
+          assert.ok(request.args.includes(`+refs/heads/${BRANCH}:refs/squire-publication/observed-head`));
+          assert.equal(request.env?.["GIT_TERMINAL_PROMPT"], "0");
+          if (["fetch-failure", "timeout", "cancelled", "missing-branch"].includes(failure)) throw new Error(failure);
+        }
+        if (request.args.includes("ls-remote")) return { stdout: failure === "malformed-ref" ? `${PREVIOUS_HEAD}\trefs/heads/other\n` : `${PREVIOUS_HEAD}\trefs/heads/${BRANCH}\n`, stderr: "" };
+        if (request.args.includes("rev-parse") && request.args.includes("refs/squire-publication/observed-head")) return { stdout: failure === "moved" ? CONCURRENT_HEAD : PREVIOUS_HEAD, stderr: "" };
+        if (request.args.includes("cat-file") && request.args.includes("-t") && failure === "tag-object") return { stdout: "tag", stderr: "" };
+        if (request.args.includes("merge-base") && request.args.includes(PREVIOUS_HEAD) && failure === "no-pr-diverged") throw new Error("not an ancestor");
+        const result = await base.run(request);
+        if (request.command === "gh" && request.args[1] === "list" && base.listCalls === 2 && failure === "edited-before-push") {
+          const records = JSON.parse(result.stdout); records[0].body += "owner edit";
+          return { stdout: JSON.stringify(records), stderr: "" };
+        }
+        return result;
+      } };
+      await assert.rejects(new GitHubPublisher({ commands, tokens, consistencyDelayMs: 0 }).publish(await input(directory), abort.signal));
+      assert.equal(base.requests.some(request => request.args.includes("push") || request.args[1] === "edit" || request.args[1] === "create"), false);
+      const clone = base.requests.find(request => request.args[0] === "clone");
+      if (clone) await assert.rejects(readFile(path.join(clone.args[2]!, ".git", "HEAD")), { code: "ENOENT" });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+}
+
+test("authenticated fetch supplies an absent real remote head but cannot authorize unrelated replacement", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "squire-fetch-real-"));
+  const runner = new NodeCommandRunner();
+  const git = async (args: readonly string[]) => (await runner.run({ command: "git", args })).stdout.trim();
+  try {
+    const repository = path.join(directory, "source");
+    const remote = path.join(directory, "remote.git");
+    await git(["init", repository]); await git(["init", "--bare", remote]);
+    await git(["-C", repository, "config", "user.email", "fixture@example.invalid"]);
+    await git(["-C", repository, "config", "user.name", "Fixture"]);
+    await writeFile(path.join(repository, "file"), "base");
+    await git(["-C", repository, "add", "."]); await git(["-C", repository, "commit", "-m", "base"]);
+    const baseSha = await git(["-C", repository, "rev-parse", "HEAD"]);
+    await writeFile(path.join(repository, "file"), "previous failed candidate");
+    await git(["-C", repository, "commit", "-am", "previous"]);
+    const previous = await git(["-C", repository, "rev-parse", "HEAD"]);
+    await git(["-C", repository, "push", remote, `HEAD:refs/heads/${BRANCH}`]);
+    await git(["-C", repository, "checkout", "-B", BRANCH, baseSha]);
+    await writeFile(path.join(repository, "file"), "fresh candidate");
+    await git(["-C", repository, "commit", "-am", "candidate"]);
+    const head = await git(["-C", repository, "rev-parse", "HEAD"]);
+    const original = await input(directory);
+    await rm(original.bundle.path);
+    await git(["-C", repository, "bundle", "create", original.bundle.path, `refs/heads/${BRANCH}`]);
+    const bytes = await readFile(original.bundle.path);
+    const candidate: PublicationInput = { ...original, head, phases: JSON.parse(JSON.stringify(original.phases).replaceAll(HEAD, head).replaceAll(BASE, baseSha)), bundle: { ...original.bundle, baseSha, head, byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } };
+    const fake = new FakeCommands("fast-forward");
+    let fetched = false; let absentBeforeFetch = false;
+    const commands: CommandPort = { async run(request, signal) {
+      if (request.command === "gh") {
+        const result = await fake.run(request);
+        return { ...result, stdout: result.stdout.replaceAll(PREVIOUS_HEAD, previous).replaceAll(HEAD, head) };
+      }
+      assert.equal(request.args.includes("push"), false, "unrelated candidate must never push");
+      if (request.args.includes("fetch")) {
+        const checkout = request.args[1]!;
+        await assert.rejects(git(["-C", checkout, "cat-file", "-e", previous]));
+        absentBeforeFetch = true;
+        assert.equal(request.sensitive, true); assert.equal(request.timeoutMs, 180_000);
+        assert.ok(request.env?.["GIT_CONFIG_VALUE_0"]);
+        const result = await runner.run({ ...request, args: request.args.map(arg => arg === "https://github.com/example/repo.git" ? remote : arg) }, signal);
+        assert.equal(await git(["-C", checkout, "cat-file", "-t", previous]), "commit");
+        fetched = true; return result;
+      }
+      return runner.run(request, signal);
+    } };
+    await assert.rejects(new GitHubPublisher({ commands, tokens }).publish(candidate));
+    assert.equal(absentBeforeFetch, true); assert.equal(fetched, true);
+    assert.equal(await git(["--git-dir", remote, "rev-parse", `refs/heads/${BRANCH}`]), previous);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
