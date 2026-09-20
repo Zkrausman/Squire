@@ -248,6 +248,10 @@ export interface WorkspacePort {
 
 export interface PhasePort {
   readonly reportEvidence?: ReportEvidencePort;
+  /** Internal transport envelope, never a model-authored result field.
+   * Supervised Plan has its own artifact protocol instead. */
+  reportCapture?(result: PhaseResult): ReportCapture | undefined;
+  prepareReportCorrection?(): Promise<void>;
   correctReport?(input: ReportCorrectionInput, signal?: AbortSignal): Promise<ReportCapture>;
   run(input: PhaseInput, signal?: AbortSignal, onProgress?: (progress: PlanProgress) => Promise<void>): Promise<PhaseResult>;
 }

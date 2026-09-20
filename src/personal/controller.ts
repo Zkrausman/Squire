@@ -1,6 +1,8 @@
+import { parsePhaseResult } from "./phase-payload.js";
+import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
 import { InvalidPhaseHandoff, CorrectionExecutionFailure, analyzeImplementReport, parseCorrectedReport, sameReportFacts, validateReportCorrectionPolicy, type ReportCorrectionPolicy, type CorrectionRecord, type ReportCapture } from "./report-correction.js";
-import { verifyReportEvidence } from "./report-evidence.js";
+import { decodeReport, verifyReportEvidence } from "./report-evidence.js";
 import { requireStagedSlot, reservation } from "./staged-attempts.js";
 import { classifyExecutionFailure, PhaseExecutionError } from "./execution-failure.js";
 import { validateEscalationPolicy, escalationDigest, type EscalationPolicy } from "./model-policy.js";
@@ -507,7 +509,12 @@ export class PersonalMvpController {
     }
   }
 
-  async #executePhaseOnce(
+  async #executePhaseOnce(...args: Parameters<PersonalMvpController["executePhaseWithEvidence"]>): Promise<PhaseResult> {
+    try { return await this.executePhaseWithEvidence(...args); }
+    finally { await this.#phases.reportEvidence?.release?.(); }
+  }
+
+  private async executePhaseWithEvidence(
     context: RunContext,
     ticket: Ticket,
     request: RunRequest,
@@ -551,6 +558,8 @@ export class PersonalMvpController {
       if (startingHead !== expectedHead) throw new Error(`${phase} started at an unexpected Git HEAD`);
     }
     let result: PhaseResult | undefined;
+    let successfulCapture: ReportCapture | undefined;
+    let successfulBytes: Buffer | undefined;
     let phaseFailed = false;
     let phaseError: unknown;
     let acceptingProgress = true;
@@ -568,6 +577,19 @@ export class PersonalMvpController {
         });
         return progressWrites;
       });
+      successfulCapture = this.#phases.reportCapture?.(result);
+      if (this.#phases.reportCapture && !successfulCapture && !(result.phase === "plan" && result.details.supervision)) throw new Error("phase adapter omitted report evidence");
+      if (successfulCapture) {
+        successfulCapture = structuredClone(successfulCapture);
+        if (!this.#phases.reportEvidence) throw new Error("controller report evidence read port unavailable");
+        if (!Number.isFinite(Date.parse(successfulCapture.timestamp)) || (input.reportSession && (successfulCapture.sessionId !== input.reportSession.sessionId || successfulCapture.sessionFile !== input.reportSession.sessionFile))) throw new Error("report capture provenance mismatch");
+        successfulBytes = await verifyReportEvidence(this.#phases.reportEvidence, successfulCapture.evidence);
+        const raw = decodeReport(successfulBytes);
+        if (raw !== successfulCapture.raw) throw new Error("report capture content mismatch");
+        const parsed = parsePhaseResult(raw, input, successfulCapture.sessionId, successfulCapture.sessionFile, expectedProfile);
+        if (!isDeepStrictEqual(parsed, result)) throw new Error("report capture/result mismatch");
+        result = parsed;
+      }
     } catch (error) {
       phaseFailed = true;
       phaseError = error;
@@ -586,7 +608,7 @@ export class PersonalMvpController {
       workspaceDiagnostic = error;
     }
     if (stagedProfile && signal?.aborted) throw new PhaseExecutionError("cancelled", "phase interrupted", { cause: signal.reason });
-    if (phaseFailed && phaseError instanceof InvalidPhaseHandoff && phase === "implement") {
+    if (phaseFailed && (phaseError instanceof InvalidPhaseHandoff || phaseError instanceof CorrectionExecutionFailure) && phase === "implement") {
       result = await this.#correctHandoff(context, input, phaseError, observedHead, workspaceFailed ? workspaceDiagnostic ?? new Error("workspace inspection rejected without diagnostic") : undefined, signal);
       phaseFailed = false;
     }
@@ -622,6 +644,7 @@ export class PersonalMvpController {
     if (phase === "implement" && evidencedResult.status !== "passed" && !(stagedProfile && evidencedResult.status === "failed")) throw new Error("Implement must return passed or failed");
     if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
     if (phase === "implement") await this.#reconcileProjectWikiDisposition(context, evidencedResult as ImplementPhaseResult, observedHead, signal);
+    if (successfulCapture) await verifyReportEvidence(this.#phases.reportEvidence!, successfulCapture.evidence, successfulBytes);
     await context.persist({
       head: observedHead,
       sessions: { ...context.state.sessions, [phase]: evidencedResult.sessionId },
@@ -630,7 +653,7 @@ export class PersonalMvpController {
     return evidencedResult;
   }
 
-  async #correctHandoff(context: RunContext, input: PhaseInput, invalid: InvalidPhaseHandoff, observedHead: string | undefined, workspaceError: unknown, signal: AbortSignal): Promise<PhaseResult> {
+  async #correctHandoff(context: RunContext, input: PhaseInput, invalid: InvalidPhaseHandoff | CorrectionExecutionFailure, observedHead: string | undefined, workspaceError: unknown, signal: AbortSignal): Promise<PhaseResult> {
     const policy = context.state.reportCorrectionPolicy!;
     const port = this.#phases.reportEvidence;
     const original = structuredClone(invalid.capture);
@@ -640,7 +663,7 @@ export class PersonalMvpController {
     if (head === null && workspaceError === undefined) workspaceError = new Error("controller.currentHead returned invalid Git SHA");
     let used = 0;
     let diagnostic = invalid.message;
-    const verified: { ref: NonNullable<CorrectionRecord["evidence"]>; content: string }[] = [];
+    const verified: { ref: NonNullable<CorrectionRecord["evidence"]>; content: Buffer | string }[] = [];
     const references: string[] = [original.evidence?.path ?? "missing"];
     const record = async (kind: CorrectionRecord["kind"], evidence?: CorrectionRecord["evidence"], producer?: string): Promise<void> => {
       await context.persist({ reportCorrections: [...context.state.reportCorrections!, {
@@ -649,11 +672,13 @@ export class PersonalMvpController {
         ...(evidence ? { evidence } : {}), ...(producer ? { producer } : {}),
       }] });
     };
-    const verify = async (capture: ReportCapture): Promise<void> => {
+    const verify = async (capture: ReportCapture): Promise<Buffer> => {
       if (!port) throw new Error("controller report evidence read port unavailable");
       if (!capture || typeof capture.raw !== "string" || typeof capture.sessionId !== "string" || !capture.sessionId.trim() || capture.sessionId.length > 128 || typeof capture.sessionFile !== "string" || capture.sessionFile.length > 512 || !Number.isFinite(Date.parse(capture.timestamp))) throw new Error("invalid report capture provenance");
-      await verifyReportEvidence(port, capture.evidence, capture.raw);
-      verified.push({ ref: structuredClone(capture.evidence), content: capture.raw });
+      const bytes = await verifyReportEvidence(port, capture.evidence);
+      if (bytes.toString("utf8") !== capture.raw) throw new Error("report evidence bytes/content/length/digest mismatch");
+      verified.push({ ref: structuredClone(capture.evidence), content: bytes });
+      return bytes;
     };
     const observation = async (capture: ReportCapture, error: unknown, snapshotHead: string | undefined): Promise<void> => {
       // Bind controller-generated content, not adapter assertions, to a separate
@@ -673,14 +698,16 @@ export class PersonalMvpController {
       if (!input.deadline || this.#monotonicNow() >= input.deadline) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
     };
     try {
-      await verify(original);
+      const originalBytes = await verify(original);
       await record("observed", original.evidence, original.sessionId);
       await observation(original, workspaceError, observedHead);
+      if (invalid instanceof CorrectionExecutionFailure) throw invalid;
       if (workspaceError !== undefined) throw withSecondaryWorkspaceDiagnostic(invalid, workspaceError);
       if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
       active();
       if (original.sessionId !== input.reportSession?.sessionId) throw new Error("original report producer mismatch");
       if (original.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("original report session identity mismatch");
+      decodeReport(originalBytes); // invalid UTF-8 stays preserved, never trusted facts
       const analysis = analyzeImplementReport(original, input);
       if (!analysis.unexpected.length) throw new Error("unsupported handoff error class");
       validatePhaseResult(analysis.facts, input, observedHead);
@@ -699,10 +726,13 @@ export class PersonalMvpController {
         // artifact cannot be hidden by a valid later response.
         for (const item of verified) await verifyReportEvidence(port!, item.ref, item.content);
         await assertOwner();
+        await this.#phases.prepareReportCorrection?.();
+        active();
         used++;
         await record("launched"); // irrevocable charge BEFORE dispatch
         const producerId = randomUUID();
         let response: ReportCapture | undefined;
+        let responseBytes: Buffer | undefined;
         let executionError: unknown;
         try {
           response = structuredClone(await this.#phases.correctReport(structuredClone({ input, original, latest, diagnostic, diagnostics: analysis.unexpected.map(key => ({ path: ["details", key], code: "unexpected-field" as const })), correctionAttempt: used, producerId, deadline: input.deadline! }), signal));
@@ -722,9 +752,9 @@ export class PersonalMvpController {
         } catch (error) { afterError = error ?? new Error("workspace inspection rejected without diagnostic"); }
         if (response) {
           references.push(response.evidence?.path ?? "missing");
-          try { parseCorrectedReport(response, original, input); diagnostic = "corrected schema valid; semantic and independent gates pending"; }
+          responseBytes = await verify(response);
+          try { decodeReport(responseBytes); parseCorrectedReport(response, original, input); diagnostic = "corrected schema valid; semantic and independent gates pending"; }
           catch (error) { diagnostic = error instanceof Error ? error.message : String(error); }
-          await verify(response);
           if (response.sessionId !== producerId || response.sessionFile !== `/run/squire-report-${producerId}/no-session`) throw new Error("correction producer mismatch");
           if (producers.has(response.sessionId)) throw new Error("correction reused a producer session");
           producers.add(response.sessionId);
@@ -734,7 +764,8 @@ export class PersonalMvpController {
         if (afterError !== undefined) throw withSecondaryWorkspaceDiagnostic(executionError ?? invalid, afterError);
         if (executionError !== undefined) throw executionError;
         active();
-        if (!response) throw new Error("correction returned no report");
+        if (!response || !responseBytes) throw new Error("correction returned no report");
+        decodeReport(responseBytes);
         latest = response;
         try { JSON.parse(response.raw); } catch { diagnostic = "implement wrote malformed result JSON"; continue; }
         // A well-formed response with any changed safety fact is terminal, even

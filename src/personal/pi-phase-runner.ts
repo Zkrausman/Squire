@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { FileReportEvidence, type ReportEvidencePort } from "./report-evidence.js";
+import { createReportEvidence, decodeReport, type ReportEvidencePort } from "./report-evidence.js";
 import { InvalidPhaseHandoff, CorrectionExecutionFailure, correctionSchema, REPORT_CORRECTION_CORE, type ReportCapture, type ReportCorrectionInput } from "./report-correction.js";
 import { PhaseExecutionError } from "./execution-failure.js";
 import { PlanSupervisorRunner } from "./plan-supervisor-runner.js";
@@ -31,6 +31,8 @@ export interface SandboxPiPhaseRunnerOptions {
 
 export class SandboxPiPhaseRunner implements PhasePort {
   readonly reportEvidence: ReportEvidencePort;
+  readonly #captures = new WeakMap<PhaseResult, ReportCapture>();
+  #correctionPrepared = false;
   readonly #supervisor: PlanSupervisorRunner | undefined;
   readonly #commands: CommandPort;
   readonly #stagingRoot: string;
@@ -49,7 +51,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
     this.#supervisor = this.#material?.config.promptPolicy!.plan.length ? new PlanSupervisorRunner({ ...supervisorOptions, launchMaterial: this.#material }, this) : undefined;
     this.#commands = options.commands;
     this.#stagingRoot = path.resolve(options.stagingRoot);
-    this.reportEvidence = new FileReportEvidence(path.join(this.#stagingRoot, "report-evidence"));
+    this.reportEvidence = createReportEvidence(path.join(this.#stagingRoot, "report-evidence"));
     this.#testCommands = Object.freeze([...options.testCommands]);
     this.#roleUser = options.roleUser ?? "1000:1000";
     this.#pi = options.piExecutable ?? "pi";
@@ -121,14 +123,17 @@ export class SandboxPiPhaseRunner implements PhasePort {
         args: ["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment],
         timeoutMs: remaining(deadline),
         maxOutputBytes: 2 * 1024 * 1024,
-      }, signal);
+      }, signal).catch(async error => {
+        if (error instanceof CommandExecutionError && error.stdoutBytes) throw new CorrectionExecutionFailure(await this.#capture(error.stdoutBytes, sessionId, sessionFile), error);
+        throw error;
+      });
 
-      const capture = process.platform === "linux" ? await this.#capture(output.stdout, sessionId, sessionFile) : undefined;
-      try { return parsePhaseResult(output.stdout, input, sessionId, sessionFile, profile); }
-      catch (error) {
-        if (capture) throw new InvalidPhaseHandoff(capture, String(error));
-        throw new PhaseExecutionError("protocol", `${String(error)}; safe correction evidence unavailable on this platform`, { cause: error });
-      }
+      const capture = await this.#capture(output.stdoutBytes, sessionId, sessionFile);
+      try {
+        const result = parsePhaseResult(decodeReport(output.stdoutBytes!), input, sessionId, sessionFile, profile);
+        this.#captures.set(result, capture);
+        return result;
+      } catch (error) { throw new InvalidPhaseHandoff(capture, String(error)); }
     } finally {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
@@ -136,13 +141,22 @@ export class SandboxPiPhaseRunner implements PhasePort {
       if (process.platform !== "win32" || localInputCreated) await rm(localInput, { force: true });
     }
   }
-  async #capture(raw: string, sessionId: string, sessionFile: string): Promise<ReportCapture> {
-    return Object.freeze({ raw, sessionId, sessionFile, timestamp: new Date().toISOString(), evidence: await this.reportEvidence.write(raw) });
+  reportCapture(result: PhaseResult): ReportCapture | undefined { return this.#captures.get(result); }
+  async prepareReportCorrection(): Promise<void> {
+    if (this.#commands.byteOutput !== true) throw new PhaseExecutionError("infrastructure", "Report evidence requires byte-capable command transport; use NodeCommandRunner, not decoded stdout adapters");
+    await this.reportEvidence.preflight?.();
+    this.#correctionPrepared = true;
+  }
+  async #capture(bytes: Buffer | undefined, sessionId: string, sessionFile: string): Promise<ReportCapture> {
+    if (!Buffer.isBuffer(bytes)) throw new PhaseExecutionError("infrastructure", "Report evidence requires exact stdout bytes; configure byte-capable command transport (NodeCommandRunner)");
+    return Object.freeze({ raw: bytes.toString("utf8"), sessionId, sessionFile, timestamp: new Date().toISOString(), evidence: await this.reportEvidence.write(bytes) });
   }
 
   async correctReport(request: ReportCorrectionInput, signal?: AbortSignal): Promise<ReportCapture> {
     signal?.throwIfAborted();
     remaining(request.deadline);
+    if (!this.#correctionPrepared) await this.prepareReportCorrection();
+    this.#correctionPrepared = false;
     const sessionId = request.producerId;
     if (!/^[a-f0-9-]{36}$/u.test(sessionId)) throw new Error("invalid correction producer identity");
     const root = `/run/squire-report-${sessionId}`;
@@ -162,10 +176,10 @@ export class SandboxPiPhaseRunner implements PhasePort {
       this.#pi, "--print", "--mode", "text", "--no-session", "--provider", profile.provider, "--model", profile.model, "--thinking", profile.thinking,
       "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt, data],
       timeoutMs: remaining(request.deadline), maxOutputBytes: 2 * 1024 * 1024 }, signal).catch(async error => {
-      if (error instanceof CommandExecutionError) throw new CorrectionExecutionFailure(await this.#capture(error.stdout, sessionId, `${root}/no-session`), error);
+      if (error instanceof CommandExecutionError) throw new CorrectionExecutionFailure(await this.#capture(error.stdoutBytes, sessionId, `${root}/no-session`), error);
       throw error;
     });
-    return this.#capture(output.stdout, sessionId, `${root}/no-session`);
+    return this.#capture(output.stdoutBytes, sessionId, `${root}/no-session`);
   }
 }
 

@@ -50,5 +50,6 @@ NodeCommandRunner.prototype.run = async function(request) {
     review: { findings: [] }, test: { commands: [{ command: 'npm test', exitCode: 0, summary: 'fixture passed' }] },
     retro: { lessons: ['fixture'], followUps: [] },
   }[input.phase];
-  return { stdout: JSON.stringify({ outputHead: head, status: 'passed', summary: 'fixture passed', details }), stderr: '' };
+  const stdout = JSON.stringify({ outputHead: head, status: 'passed', summary: 'fixture passed', details });
+  return { stdout, stdoutBytes: Buffer.from(stdout), stderr: '' };
 };

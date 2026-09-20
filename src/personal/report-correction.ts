@@ -17,6 +17,8 @@ export function validateReportCorrectionPolicy(value: unknown = { maxAttempts: 1
   return Object.freeze({ maxAttempts: v.maxAttempts, allowedErrorClasses: Object.freeze([...v.allowedErrorClasses]) });
 }
 export interface ReportCapture {
+  /** Compatibility rendering only. Evidence bytes must verify and strictly
+   * decode before this text can supply any report facts. */
   readonly raw: string;
   readonly sessionId: string;
   readonly sessionFile: string;

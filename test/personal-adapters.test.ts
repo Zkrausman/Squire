@@ -20,17 +20,19 @@ const BASE = "a".repeat(40);
 const TOKEN = `ghs_${"x".repeat(40)}`;
 const execFileAsync = promisify(execFile);
 
+function byteResult(stdout: string): CommandResult { return { stdout, stdoutBytes: Buffer.from(stdout), stderr: "" }; }
+
 class RecordingCommands implements CommandPort {
   readonly requests: CommandRequest[] = [];
   dirty = false;
   wikiDiffOutput = "";
   async run(request: CommandRequest): Promise<CommandResult> {
     this.requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
-    if (request.command === "git" && request.args.includes("rev-parse")) return { stdout: `${BASE}\n`, stderr: "" };
-    if (request.command === "sbx" && request.args.includes("rev-parse")) return { stdout: `${BASE}\n`, stderr: "" };
-    if (request.command === "sbx" && request.args.includes("--porcelain")) return { stdout: this.dirty ? " M file.ts\n" : "", stderr: "" };
-    if (request.command === "sbx" && request.args.includes("diff")) return { stdout: this.wikiDiffOutput, stderr: "" };
-    return { stdout: "", stderr: "" };
+    if (request.command === "git" && request.args.includes("rev-parse")) return byteResult(`${BASE}\n`);
+    if (request.command === "sbx" && request.args.includes("rev-parse")) return byteResult(`${BASE}\n`);
+    if (request.command === "sbx" && request.args.includes("--porcelain")) return byteResult(this.dirty ? " M file.ts\n" : "");
+    if (request.command === "sbx" && request.args.includes("diff")) return byteResult(this.wikiDiffOutput);
+    return byteResult("");
   }
 }
 
@@ -87,9 +89,9 @@ async function runPiOutput(
       if (request.command === "sbx" && request.args.includes("--print")) {
         launch = { ...request, args: [...request.args] };
         assert.ok(document);
-        return { stdout: stdout(document), stderr: "" };
+        return byteResult(stdout(document));
       }
-      return { stdout: "", stderr: "" };
+      return byteResult("");
     },
   };
   try {
@@ -111,9 +113,9 @@ test("Pi phase timeout is propagated to the actual sandbox launch command", asyn
       async run(request) {
         if (request.command === "sbx" && request.args.includes("--print")) {
           launch = request;
-          return { stdout: JSON.stringify(reducedPayload("plan")), stderr: "" };
+          return byteResult(JSON.stringify(reducedPayload("plan")));
         }
-        return { stdout: "", stderr: "" };
+        return byteResult("");
       },
     };
     await new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: [], timeoutMs: 123_456 }).run(phaseInput("plan"));
@@ -196,11 +198,11 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
         if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
         if (request.command === "sbx" && request.args.includes("--print")) {
           const phase = phaseDocument?.["phase"] as PersonalPhase;
-          return { stdout: JSON.stringify({
+          return byteResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
-          }), stderr: "" };
+          }));
         }
-        return { stdout: "", stderr: "" };
+        return byteResult("");
       },
     };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
@@ -360,11 +362,11 @@ test("Pi adapter launches every approved policy triple exactly", async () => {
         if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
         if (request.command === "sbx" && request.args.includes("--print")) {
           const phase = phaseDocument?.["phase"] as PersonalPhase;
-          return { stdout: JSON.stringify({
+          return byteResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
-          }), stderr: "" };
+          }));
         }
-        return { stdout: "", stderr: "" };
+        return byteResult("");
       },
     };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
@@ -400,11 +402,11 @@ test("Pi adapter launches both deterministic Plan buckets with their exact profi
         requests.push({ ...request, args: [...request.args] });
         if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
         if (request.command === "sbx" && request.args.includes("--print")) {
-          return { stdout: JSON.stringify({
+          return byteResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase: "plan", attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: "plan passed", details: details("plan"),
-          }), stderr: "" };
+          }));
         }
-        return { stdout: "", stderr: "" };
+        return byteResult("");
       },
     };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
@@ -432,7 +434,7 @@ test("Pi adapter removes host phase input when a launch fails", async () => {
   try {
     const commands: CommandPort = { async run(request) {
       if (request.args.includes("--print")) throw new Error("Pi launch failed");
-      return { stdout: "", stderr: "" };
+      return byteResult("");
     } };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     await assert.rejects(runner.run(phaseInput("plan")), /Pi launch failed/);
@@ -449,8 +451,8 @@ test("passing Plan output without actionable steps is rejected", async () => {
     let document: Record<string, unknown> | undefined;
     const commands: CommandPort = { async run(request) {
       if (request.args[0] === "cp") document = JSON.parse(await readFile(request.args[1]!, "utf8"));
-      if (request.args.includes("--print")) return { stdout: JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }), stderr: "" };
-      return { stdout: "", stderr: "" };
+      if (request.args.includes("--print")) return byteResult(JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }));
+      return byteResult("");
     } };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     await assert.rejects(runner.run(phaseInput("plan")), /Plan steps/);
