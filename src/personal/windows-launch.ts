@@ -2,6 +2,9 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 interface WindowsLaunchNative {
+  openReport(file: string, bytes?: Buffer): { lease: object; identity: string };
+  readReport(lease: object): Buffer;
+  closeReport(lease: object): void;
   openSource(root: string, repository: string): object;
   readSource(lease: object, name: string): Buffer;
   closeSource(lease: object): void;
