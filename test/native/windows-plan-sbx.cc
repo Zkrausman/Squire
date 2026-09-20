@@ -23,6 +23,14 @@ int wmain(int argc, wchar_t** argv) {
   if (!length || length >= buffer.size()) return 120;
   std::wstring executable(buffer.data(), length);
   auto directory = executable.substr(0, executable.find_last_of(L'\\') + 1);
+  // Inspect the actual native command line, not a reconstructed argv vector.
+  const wchar_t* actualCommand = GetCommandLineW();
+  HANDLE observation = CreateFileW((directory + L"command-line.utf16").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+  if (observation == INVALID_HANDLE_VALUE) return 129;
+  DWORD written = 0;
+  BOOL recorded = WriteFile(observation, actualCommand, static_cast<DWORD>(wcslen(actualCommand) * sizeof(wchar_t)), &written, nullptr);
+  CloseHandle(observation);
+  if (!recorded) return 130;
   HANDLE config = CreateFileW((directory + L"node-path.utf16").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
   if (config == INVALID_HANDLE_VALUE) return 121;
   DWORD size = GetFileSize(config, nullptr), read = 0;

@@ -152,12 +152,6 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
         assert.ok(runs.some(s => s.launchEvidence?.digest === r.digest));
       }
       if (process.platform === "win32") {
-        for (const r of records) {
-          assert.ok(r.stagingPath);
-          await assert.rejects(readFile(r.stagingPath), /ENOENT/);
-          if (r.guardStagingPath) await assert.rejects(readFile(r.guardStagingPath), /ENOENT/);
-          assertProtectedAcl(path.dirname(r.stagingPath));
-        }
         for (const run of runs.filter(s => s.executionMode === "background")) {
           assertProtectedAcl(materialPath(path.join(data, "state"), run.runId));
           assertProtectedAcl(run.stdoutPath!);

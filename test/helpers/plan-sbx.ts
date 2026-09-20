@@ -24,18 +24,18 @@ const a = process.argv.slice(windowsShim ? 3 : 2);
 if (a[0] === '--argv-probe') { process.stdout.write(JSON.stringify(a.slice(1))); process.stderr.write('shim-stderr'); process.exit(17); }
 const native = process.platform === 'win32' ? require(${JSON.stringify(path.resolve("build/Release/windows_launch.node"))}) : undefined;
 const mapped = p => path.join(root, Buffer.from(p).toString('hex'));
-if (a[0] === 'cp') {
-  if (native) native.read(a[1], ''); // Native ACL/reparse verification at actual captured-byte consumption.
-  const target = mapped(a[2].slice(a[2].indexOf(':')+1));
-  fs.copyFileSync(a[1], target); fs.writeFileSync(target + '.source', a[1]);
-}
-else if (a.includes('node')) {
-  const c = JSON.parse(fs.readFileSync(mapped(a.at(-1)), 'utf8'));
-  const inputPath = c.args.at(-1).match(/from (.+)\\. Treat/)[1];
-  const input = JSON.parse(fs.readFileSync(mapped(inputPath), 'utf8'));
-  const prompt = c.args[c.args.indexOf('--system-prompt')+1];
-  fs.appendFileSync(record, JSON.stringify({phase: input.subphase, prompt, digest: input.launchDigest, promptDigest: input.systemPromptDigest, args: c.args, data: input, stagingPath: fs.readFileSync(mapped(inputPath) + '.source', 'utf8'), guardStagingPath: fs.readFileSync(mapped(a.at(-1)) + '.source', 'utf8'), supervisorPid, envKeys: Object.keys(process.env)})+'\\n');
-  const artifact = input.subphase === 'requirements' ? { version:1,inputHead:input.expectedHead,problem:'deliver change',acceptanceCriteria:['verified'],nonGoals:[],assumptions:[],dependencies:[],openQuestions:[],readiness:'ready' } : {version:1,inputHead:input.expectedHead,requirementsDigest:input.requirements.digest,steps:['implement'],affectedComponents:['src'],tests:['npm test'],risks:[],exactHeadEvidence:{head:input.expectedHead,observations:['inspected repository']},projectWiki:{status:'not_required',reason:'fixture adds no durable knowledge'}};
+if (a.includes('node')) {
+  const bytes=fs.readFileSync(0);const payload=JSON.parse(bytes);
+  if (!payload.config) { fs.writeFileSync(mapped(a.at(-1)),bytes); process.exit(0); }
+  if(require('node:crypto').createHash('sha256').update(bytes).digest('hex')!==a.at(-1))throw new Error('transport digest');
+  const c=payload.config,input=JSON.parse(payload.data),prompt=payload.prompt;
+  fs.appendFileSync(record, JSON.stringify({phase: input.subphase || input.phase || input.trusted.phase, correction: !!input.trusted, prompt, digest: input.launchDigest, promptDigest: input.systemPromptDigest, args: c.args, data: input, wireArgs:a, actualArgv:process.argv, actualCommandLine: windowsShim ? fs.readFileSync(path.join(root,'bin','command-line.utf16')).toString('utf16le') : null, environment:process.env, bytes:bytes.length, sha256:require('node:crypto').createHash('sha256').update(bytes).digest('hex'), transportId:payload.id, supervisorPid, envKeys: Object.keys(process.env)})+'\\n');
+  let artifact = input.subphase === 'requirements' ? { version:1,inputHead:input.expectedHead,problem:'deliver change',acceptanceCriteria:['verified'],nonGoals:[],assumptions:[],dependencies:[],openQuestions:[],readiness:'ready' } : {version:1,inputHead:input.expectedHead,requirementsDigest:input.requirements?.digest,steps:['implement'],affectedComponents:['src'],tests:['npm test'],risks:[],exactHeadEvidence:{head:input.expectedHead,observations:['inspected repository']},projectWiki:{status:'not_required',reason:'fixture adds no durable knowledge'}};
+  if (!input.subphase) {
+    const phase=input.phase||input.trusted.phase;
+    const details=phase==='plan'?{steps:['implement']}:phase==='implement'?{changes:['fixture'],projectWiki:{status:'not_required',reason:'fixture adds no durable knowledge'}}:phase==='review'?{findings:[]}:phase==='test'?{commands:[{command:'npm test',exitCode:0,summary:'passed'}]}:{lessons:['fixture'],followUps:[]};
+    artifact={outputHead:input.expectedHead||input.trusted.inputHead,status:'passed',summary:'fixture passed',details};
+  }
   process.stdout.write(JSON.stringify(artifact));
 } else if (a.at(-1).includes('rev-parse HEAD')) process.stdout.write('a'.repeat(40)+'\\n');
 `, { mode: 0o700 });

@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -83,10 +84,10 @@ async function runPiOutput(
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-payload-"));
   let document: Record<string, unknown> | undefined;
   let launch: CommandRequest | undefined;
-  const commands: CommandPort = {
+  const commands: CommandPort = { byteInput: true,
     async run(request) {
-      if (request.command === "sbx" && request.args[0] === "cp") document = JSON.parse(await readFile(request.args[1]!, "utf8"));
-      if (request.command === "sbx" && request.args.includes("--print")) {
+      if (request.stdin) document = JSON.parse(JSON.parse(request.stdin.toString()).data);
+      if (request.command === "sbx" && !!request.stdin) {
         launch = { ...request, args: [...request.args] };
         assert.ok(document);
         return byteResult(stdout(document));
@@ -99,7 +100,7 @@ async function runPiOutput(
     assert.ok(document);
     assert.ok(launch);
     assert.deepEqual(launch.args.filter(argument => argument === ""), []);
-    return { result, document, launch };
+    return { result, document, launch: { ...launch, args: JSON.parse(launch.stdin!.toString()).config.args } };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -109,9 +110,9 @@ test("Pi phase timeout is propagated to the actual sandbox launch command", asyn
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-timeout-"));
   try {
     let launch: CommandRequest | undefined;
-    const commands: CommandPort = {
+    const commands: CommandPort = { byteInput: true,
       async run(request) {
-        if (request.command === "sbx" && request.args.includes("--print")) {
+        if (request.command === "sbx" && !!request.stdin) {
           launch = request;
           return byteResult(JSON.stringify(reducedPayload("plan")));
         }
@@ -192,11 +193,11 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
   try {
     let phaseDocument: Record<string, unknown> | undefined;
     const requests: CommandRequest[] = [];
-    const commands: CommandPort = {
+    const commands: CommandPort = { byteInput: true,
       async run(request) {
         requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
-        if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
-        if (request.command === "sbx" && request.args.includes("--print")) {
+        if (request.stdin) phaseDocument = JSON.parse(JSON.parse(request.stdin.toString()).data);
+        if (request.command === "sbx" && !!request.stdin) {
           const phase = phaseDocument?.["phase"] as PersonalPhase;
           return byteResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
@@ -207,24 +208,24 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
     };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     for (const phase of ["plan", "review", "test", "retro", "implement"] as const) await runner.run(phaseInput(phase));
-    const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
+    const launches = requests.filter(request => request.command === "sbx" && !!request.stdin);
     assert.equal(launches.length, 5);
     for (const [index, phase] of (["plan", "review", "test", "retro", "implement"] as const).entries()) {
-      const launch = launches[index]!;
+      const wire = launches[index]!;
+      const payload = JSON.parse(wire.stdin!.toString());
+      const launch = { ...wire, args: payload.config.args as string[] };
       assert.deepEqual(launch.args.filter(argument => argument === ""), []);
-      const envIndex = launch.args.indexOf("/usr/bin/env");
-      assert.equal(launch.args[envIndex + 1], "-i");
-      assert.equal(launch.args.includes("PI_OFFLINE=1"), true);
-      assert.equal(launch.args.includes("PI_TELEMETRY=0"), true);
+      assert.equal(payload.config.env.PI_OFFLINE, "1");
+      assert.equal(payload.config.env.PI_TELEMETRY, "0");
+      assert.equal(wire.args.includes(payload.prompt), false);
       assert.equal(launch.args[launch.args.indexOf("--provider") + 1], PROFILES[phase].provider);
       assert.equal(launch.args[launch.args.indexOf("--model") + 1], PROFILES[phase].model);
       assert.equal(launch.args[launch.args.indexOf("--thinking") + 1], PROFILES[phase].thinking);
       assert.equal(launch.args.includes("--session-id"), false);
       assert.equal(launch.args.some(argument => argument.includes(TOKEN) || argument.includes("LINEAR_API_KEY") || argument.includes("GH_TOKEN")), false);
-      assert.ok(launch.args.includes("--system-prompt"));
+      assert.ok(!launch.args.includes("--system-prompt"));
       assert.ok(launch.args.includes("--no-approve"));
-      assert.match(launch.args.at(-1) ?? "", /Read your complete JSON input/);
-      const prompt = launch.args[launch.args.indexOf("--system-prompt") + 1] ?? "";
+      const prompt = payload.prompt;
       assert.match(prompt, /Return only outputHead, status, summary, and the phase-specific details/);
       for (const trustedField of ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "profile"]) {
         assert.equal(prompt.includes(`"${trustedField}":`), false);
@@ -356,11 +357,11 @@ test("Pi adapter launches every approved policy triple exactly", async () => {
   try {
     let phaseDocument: Record<string, unknown> | undefined;
     const requests: CommandRequest[] = [];
-    const commands: CommandPort = {
+    const commands: CommandPort = { byteInput: true,
       async run(request) {
         requests.push({ ...request, args: [...request.args], ...(request.env ? { env: { ...request.env } } : {}) });
-        if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
-        if (request.command === "sbx" && request.args.includes("--print")) {
+        if (request.stdin) phaseDocument = JSON.parse(JSON.parse(request.stdin.toString()).data);
+        if (request.command === "sbx" && !!request.stdin) {
           const phase = phaseDocument?.["phase"] as PersonalPhase;
           return byteResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
@@ -374,10 +375,12 @@ test("Pi adapter launches every approved policy triple exactly", async () => {
     const results = [];
     for (const phase of phases) results.push(await runner.run(phaseInput(phase, APPROVED_PROFILES)));
 
-    const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
+    const launches = requests.filter(request => request.command === "sbx" && !!request.stdin);
     assert.equal(launches.length, phases.length);
     for (const [index, phase] of phases.entries()) {
-      const launch = launches[index]!;
+      const wire = launches[index]!;
+      const payload = JSON.parse(wire.stdin!.toString());
+      const launch = { ...wire, args: payload.config.args as string[] };
       assert.deepEqual(launch.args.filter(argument => argument === ""), []);
       const profile = APPROVED_PROFILES[phase];
       assert.deepEqual(results[index]?.profile, profile);
@@ -397,11 +400,11 @@ test("Pi adapter launches both deterministic Plan buckets with their exact profi
   try {
     let phaseDocument: Record<string, unknown> | undefined;
     const requests: CommandRequest[] = [];
-    const commands: CommandPort = {
+    const commands: CommandPort = { byteInput: true,
       async run(request) {
         requests.push({ ...request, args: [...request.args] });
-        if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
-        if (request.command === "sbx" && request.args.includes("--print")) {
+        if (request.stdin) phaseDocument = JSON.parse(JSON.parse(request.stdin.toString()).data);
+        if (request.command === "sbx" && !!request.stdin) {
           return byteResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase: "plan", attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: "plan passed", details: details("plan"),
           }));
@@ -417,9 +420,10 @@ test("Pi adapter launches both deterministic Plan buckets with their exact profi
 
     assert.deepEqual(resolved.map(selection => selection.planSelection.bucket), ["b", "a"]);
     assert.deepEqual(outputs.map(output => output.profile), resolved.map(selection => selection.profiles.plan));
-    const launches = requests.filter(request => request.command === "sbx" && request.args.includes("--print"));
+    const launches = requests.filter(request => request.command === "sbx" && !!request.stdin);
     assert.equal(launches.length, tickets.length);
-    for (const [index, launch] of launches.entries()) {
+    for (const [index, wire] of launches.entries()) {
+      const launch = { ...wire, args: JSON.parse(wire.stdin!.toString()).config.args };
       const profile = resolved[index]!.profiles.plan;
       assert.deepEqual(
         [launch.args[launch.args.indexOf("--provider") + 1], launch.args[launch.args.indexOf("--model") + 1], launch.args[launch.args.indexOf("--thinking") + 1]],
@@ -429,19 +433,17 @@ test("Pi adapter launches both deterministic Plan buckets with their exact profi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("Pi adapter removes host phase input when a launch fails", async () => {
+test("Pi adapter retains immutable transport evidence when a launch fails", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-cleanup-"));
   try {
-    const commands: CommandPort = { async run(request) {
-      if (request.args.includes("--print")) throw new Error("Pi launch failed");
+    const commands: CommandPort = { byteInput: true, async run(request) {
+      if (!!request.stdin) throw new Error("Pi launch failed");
       return byteResult("");
     } };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });
     await assert.rejects(runner.run(phaseInput("plan")), /Pi launch failed/);
-    await assert.rejects(
-      readFile(path.join(root, "aidev-1-0123456789", "phase-inputs", "plan-1.json")),
-      error => (error as NodeJS.ErrnoException).code === "ENOENT",
-    );
+    assert.ok((await readdir(path.join(root, "phase-transport"))).length >= 2);
+
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -449,9 +451,9 @@ test("passing Plan output without actionable steps is rejected", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-phase-"));
   try {
     let document: Record<string, unknown> | undefined;
-    const commands: CommandPort = { async run(request) {
-      if (request.args[0] === "cp") document = JSON.parse(await readFile(request.args[1]!, "utf8"));
-      if (request.args.includes("--print")) return byteResult(JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }));
+    const commands: CommandPort = { byteInput: true, async run(request) {
+      if (request.stdin) document = JSON.parse(JSON.parse(request.stdin.toString()).data);
+      if (!!request.stdin) return byteResult(JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }));
       return byteResult("");
     } };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });

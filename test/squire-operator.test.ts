@@ -67,7 +67,7 @@ test("non-Squire command evidence stays tied to shipped build and native argv", 
   assert.ok(workspace.includes('["create", "--name", input.sandbox]'));
   assert.ok(workspace.includes('createArgs.push("--template", this.#template)'));
   assert.ok(workspace.includes('createArgs.push("shell", bridge)'));
-  assert.ok((await read("src/personal/pi-phase-runner.ts")).includes('["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment]'));
+  assert.ok((await read("src/personal/phase-input-transport.ts")).includes('["exec", "-i", "-u", "root", sandbox, "node", "-e", PHASE_GUARD'));
   assert.ok(text.includes("sbx create --name <sandbox> --template <template> shell <bridge-path>"));
   assert.ok(text.includes("sbx exec -u <role-user> -w /ticket/workspace <sandbox> <command> <arg>..."));
   assert.ok(text.includes("not independently host-help-tested"));

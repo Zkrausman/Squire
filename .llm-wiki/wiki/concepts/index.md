@@ -14,3 +14,4 @@
 - [Staged model escalation policy](staged-model-escalation-policy.md)
 - [Portable Squire operator skill](/concepts/squire-operator-skill.md)
 - [Report-only format correction](report-only-format-correction.md)
+- [Protected phase-input transport](protected-phase-input-transport.md)

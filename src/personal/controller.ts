@@ -664,7 +664,7 @@ export class PersonalMvpController {
     let used = 0;
     let diagnostic = invalid.message;
     const verified: { ref: NonNullable<CorrectionRecord["evidence"]>; content: Buffer | string }[] = [];
-    const references: string[] = [original.evidence?.path ?? "missing"];
+    const references: string[] = [original.evidence?.sha256.slice(0, 12) ?? "missing"];
     const record = async (kind: CorrectionRecord["kind"], evidence?: CorrectionRecord["evidence"], producer?: string): Promise<void> => {
       await context.persist({ reportCorrections: [...context.state.reportCorrections!, {
         phase: "implement", attempt: input.attempt, kind, used, maximum: policy.maxAttempts, remaining: policy.maxAttempts - used,
@@ -751,7 +751,7 @@ export class PersonalMvpController {
           if (after !== observedHead) throw new Error("candidate HEAD changed during report correction");
         } catch (error) { afterError = error ?? new Error("workspace inspection rejected without diagnostic"); }
         if (response) {
-          references.push(response.evidence?.path ?? "missing");
+          references.push(response.evidence?.sha256.slice(0, 12) ?? "missing");
           responseBytes = await verify(response);
           try { decodeReport(responseBytes); parseCorrectedReport(response, original, input); diagnostic = "corrected schema valid; semantic and independent gates pending"; }
           catch (error) { diagnostic = error instanceof Error ? error.message : String(error); }

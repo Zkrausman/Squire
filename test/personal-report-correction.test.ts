@@ -312,14 +312,16 @@ test("restricted runner uses no tools/inherited session and remaining deadline; 
     const request = h.corrections[0]!;
     const commands: CommandRequest[] = [];
     const raw = JSON.stringify(payload(request.input));
-    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteOutput: true, async run(spec) { commands.push(spec); return { stdout: raw, stdoutBytes: Buffer.from(raw), stderr: "", exitCode: 0 }; } } });
+    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteInput: true, byteOutput: true, async run(spec) { commands.push(spec); return { stdout: raw, stdoutBytes: Buffer.from(raw), stderr: "", exitCode: 0 }; } } });
     const capture = await runner.correctReport(request);
-    const launch = commands.at(-1)!;
+    const wire = commands.find(c => c.stdin)!;
+    const p = JSON.parse(wire.stdin!.toString());
+    const launch = { ...wire, args: p.config.args };
     for (const flag of ["--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-approve"]) assert.ok(launch.args.includes(flag));
     assert.ok(!launch.args.includes("/ticket/workspace"));
     assert.ok(!launch.args.includes("--session"));
     assert.ok(launch.timeoutMs! > 0 && launch.timeoutMs! < 60000);
-    const data = JSON.parse(launch.args.at(-1)!);
+    const data = JSON.parse(p.data);
     assert.deepEqual(data.schema, correctionSchema(request.input, request.original));
     assert.equal(data.diagnostic, request.diagnostic);
     assert.equal(capture.sessionId, request.producerId);
@@ -419,8 +421,8 @@ test("restricted runner preserves partial stdout from a failed correction but ca
   try {
     await h.controller.run(REQUEST);
     const request = h.corrections[0]!;
-    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteOutput: true, async run(spec) {
-      if (spec.args.includes("--no-tools")) throw new CommandExecutionError("timeout", "timed out", '{"outputHead":', undefined, Buffer.from('{"outputHead":'));
+    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteInput: true, byteOutput: true, async run(spec) {
+      if (spec.stdin) throw new CommandExecutionError("timeout", "timed out", '{"outputHead":', undefined, Buffer.from('{"outputHead":'));
       return { stdout: "", stderr: "" };
     } } });
     let failure: unknown;

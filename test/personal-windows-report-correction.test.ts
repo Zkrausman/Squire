@@ -29,17 +29,18 @@ async function fixture(fault?: Fault, maximum = 1) {
       input.phase === "implement" ? { changes: ["fixture"], projectWiki: { status: "not_required", reason: "fixture changes no durable knowledge" } } : input.phase === "plan" ? { steps: ["implement"] } : input.phase === "review" ? { findings: [] } : input.phase === "test" ? { commands: [{ command: "independent fixture test", exitCode: 0, summary: "passed" }] } : { lessons: ["fixture"], followUps: [] } };
   }
   const commands: CommandPort = {
-    byteOutput: true,
+    byteInput: true, byteOutput: true,
     async run(spec) {
-      if (spec.args[0] === "cp") document = JSON.parse(await readFile(spec.args[1]!, "utf8"));
-      if (!spec.args.includes("--print")) return { stdout: "", stdoutBytes: Buffer.alloc(0), stderr: "" };
+      if (!spec.stdin) return { stdout: "", stdoutBytes: Buffer.alloc(0), stderr: "" };
+      const p = JSON.parse(spec.stdin!.toString());
+      if (!p.config.args.includes("--no-tools")) document = JSON.parse(p.data);
       const value = payload(document);
       let bytes: Buffer;
-      if (spec.args.includes("--no-tools")) {
+      if (p.config.args.includes("--no-tools")) {
         corrections.push(spec);
         assert.equal(snapshots.at(-1)?.reportCorrections?.at(-1)?.kind, "launched");
-        assert.ok(spec.args.includes("--no-session"));
-        assert.ok(!spec.args.includes("/ticket/workspace"));
+        assert.ok(p.config.args.includes("--no-session"));
+        assert.ok(!p.config.args.includes("/ticket/workspace"));
         assert.ok(spec.timeoutMs! <= 60000);
         if (fault === "facts") value.details.projectWiki.reason = "invented";
         bytes = corrected = Buffer.from(JSON.stringify(value) + "\r\n");

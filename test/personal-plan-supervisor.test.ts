@@ -2,9 +2,11 @@ import { PersonalMvpController } from "../src/personal/controller.js";
 import { validateState } from "../src/personal/json-run-state.js";
 import type { PersonalRunState } from "../src/personal/types.js";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { guardPayload, transportBinding } from "../src/personal/phase-input-transport.js";
+import { createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { readFile, rm, writeFile, mkdir, chmod } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { captureLaunchMaterial, composeSystemPrompt } from "../src/personal/launch-material.js";
@@ -26,6 +28,7 @@ const requirements = (): RequirementsArtifact => ({ version: 1, inputHead: head,
 const design = (r = requirements()) => ({ version: 1, inputHead: head, requirementsDigest: digestArtifact(r), steps: ["implement", "test"], affectedComponents: ["src"], tests: ["npm test"], risks: [], exactHeadEvidence: { head, observations: ["inspected source"] }, projectWiki: { status: "planned", paths: [".llm-wiki/wiki/concepts/plan.md"], summary: "document architecture" } });
 
 class Commands implements CommandPort {
+  readonly byteInput = true;
   readonly calls: CommandRequest[] = [];
   readonly copies = new Map<string, any>();
   readonly launches: any[] = [];
@@ -44,9 +47,11 @@ class Commands implements CommandPort {
       this.gitChecks++;
       return { stdout: this.gitChecks >= this.gitDriftAt ? "b".repeat(40) : head, stderr: "" };
     }
-    if (args.includes("node")) {
-      const config = this.copies.get(args.at(-1)!);
-      const childInput = this.copies.get(config.args.at(-1).match(/from (.+)\. Treat/)[1]);
+    if (request.stdin) {
+      const p = JSON.parse(request.stdin.toString());
+      if (!p.config) { this.copies.set(args.at(-1)!, p); return { stdout: "", stderr: "" }; }
+      const config = p.config;
+      const childInput = JSON.parse(p.data);
       this.launches.push({ config, input: childInput });
       await this.guard?.();
       return { stdout: typeof this.requirement === "string" && childInput.subphase === "requirements" ? this.requirement : JSON.stringify(childInput.subphase === "requirements" ? this.requirement : this.design ?? design(this.requirement as RequirementsArtifact)), stderr: "" };
@@ -205,12 +210,15 @@ test("HEAD drift at every inspection blocks aggregation/next child", async t => 
 
 test("failure at preparation, input copy, child exit, close observation, artifact persistence propagates", async t => {
   for (const stage of ["prepare", "input", "child", "reap", "artifact"]) await t.test(stage, () => fixture(async (root, commands) => {
-    commands.fail = request => stage === "prepare" ? request.args.at(-1)!.includes("mkdir -m 755") : stage === "input" ? request.args[0] === "cp" && request.args[1]!.endsWith("requirements-input.json") : stage === "child" ? request.args.includes("node") : stage === "reap" ? request.args.at(-1)!.includes("termination unobserved") : request.args[0] === "cp" && request.args[1]!.endsWith("requirements.json");
-    const result = await run(root, commands);
-    assert.equal(result.status, "failed");
-    assert.equal(result.details.supervision!.outcome, "failed");
-    assert.ok(commands.launches.length <= 1);
-    validatePhaseResultShape(result);
+    commands.fail = request => stage === "prepare" ? request.args.at(-1)!.includes("mkdir -m 755") : stage === "input" ? !!request.stdin && request.args.includes(REMOTE_GUARD) : stage === "child" ? request.args.includes("node") : stage === "reap" ? request.args.at(-1)!.includes("termination unobserved") : !!request.stdin && request.args.at(-1)!.endsWith("requirements.json");
+    if (stage === "reap") await assert.rejects(run(root, commands), /termination unobserved/);
+    else {
+      const result = await run(root, commands);
+      assert.equal(result.status, "failed");
+      assert.equal(result.details.supervision!.outcome, "failed");
+      assert.ok(commands.launches.length <= 1);
+      validatePhaseResultShape(result);
+    }
   }));
 });
 
@@ -263,10 +271,7 @@ test("real adapter forks one credential-free supervisor; only that supervisor in
     assert.ok(result.phase === "plan");
     const local = path.join(root, input.runId, "plan", String(input.attempt), result.details.supervision!.supervisorId);
     for (const name of ["requirements.json", "implementation-design.json", "result.json"]) assertProtectedAcl(path.join(local, name));
-    for (const launch of launches) {
-      await assert.rejects(readFile(launch.stagingPath), /ENOENT/);
-      await assert.rejects(readFile(launch.guardStagingPath), /ENOENT/);
-    }
+
   }
 }));
 
@@ -279,13 +284,24 @@ test("real adapter cancellation at acknowledged progress cannot launch either Pi
   await assert.rejects(readFile(record), /ENOENT/);
 }));
 
-test("remote guard observes child close after cancellation, rather than sbx-client exit", { skip: process.platform === "win32" }, async () => fixture(async root => {
+const canRoot = process.platform === "linux" && (process.getuid?.() === 0 || spawnSync("sudo", ["-n", "true"]).status === 0);
+async function startGuard(root: string, config: any) {
+  if (process.getuid?.() === 0) { await chmod(root, 0o755); config = { ...config, uid: 1000, gid: 1000 }; }
+  // The production guard is root; never weaken its owner checks for a fixture.
+  const payload = guardPayload(transportBinding(input), { ...config, args: [...config.args, "--provider", input.profile.provider, "--model", input.profile.model, "--thinking", input.profile.thinking] }, "fixture system policy", JSON.stringify(input));
+  const bytes = Buffer.from(JSON.stringify(payload));
+  const args = ["-e", REMOTE_GUARD, createHash("sha256").update(bytes).digest("hex")];
+  const child = process.getuid?.() === 0 ? spawn(process.execPath, args, { stdio: ["pipe", "pipe", "pipe"] }) : spawn("sudo", ["-n", process.execPath, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+  child.once("exit", () => { spawnSync("sudo", ["-n", "rm", "-rf", `/run/squire-input-${payload.id}`]); });
+  child.stdin.end(bytes);
+  return child;
+}
+
+test("remote guard observes child close after cancellation, rather than sbx-client exit", { skip: !canRoot }, async () => fixture(async root => {
   const control = path.join(root, "control"); await mkdir(control);
   const childFile = path.join(root, "child.cjs");
   await writeFile(childFile, "process.on('SIGTERM', () => process.exit(0)); console.log('READY'); setInterval(() => {}, 1000);");
-  const config = path.join(root, "config.json");
-  await writeFile(config, JSON.stringify({ control, cwd: root, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000, deadline: Date.now() + 30000, executable: process.execPath, args: [childFile], env: {} }));
-  const guard = spawn(process.execPath, ["-e", REMOTE_GUARD, config], { stdio: ["ignore", "pipe", "pipe"] });
+  const guard = await startGuard(root, { control, cwd: root, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000, deadline: Date.now() + 30000, executable: process.execPath, args: [childFile], env: {} });
   const exited = once(guard, "exit");
   try {
     const [ready] = await once(guard.stdout, "data");
@@ -315,13 +331,11 @@ test("adapter deadline cancels only its supervisor and waits for exit", async ()
   await assert.rejects(runner.run(input), /deadline/);
 }));
 
-test("remote guard observes noncooperative child exit after forced termination", { skip: process.platform === "win32" }, async () => fixture(async root => {
+test("remote guard observes noncooperative child exit after forced termination", { skip: !canRoot }, async () => fixture(async root => {
   const control = path.join(root, "control"); await mkdir(control);
   const childFile = path.join(root, "child.cjs");
   await writeFile(childFile, "process.on('SIGTERM', () => {}); console.log('READY'); setInterval(() => {}, 1000);");
-  const config = path.join(root, "config.json");
-  await writeFile(config, JSON.stringify({ control, cwd: root, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000, deadline: Date.now() + 30000, executable: process.execPath, args: [childFile], env: {} }));
-  const guard = spawn(process.execPath, ["-e", REMOTE_GUARD, config], { stdio: ["ignore", "pipe", "pipe"] });
+  const guard = await startGuard(root, { control, cwd: root, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000, deadline: Date.now() + 30000, executable: process.execPath, args: [childFile], env: {} });
   const exited = once(guard, "exit");
   try {
     await once(guard.stdout, "data"); // Synchronize before cancellation, no timing sleep.
@@ -332,14 +346,12 @@ test("remote guard observes noncooperative child exit after forced termination",
   } finally { guard.kill("SIGKILL"); }
 }));
 
-test("remote guard enforces the phase deadline without a controller cancellation", { skip: process.platform === "win32" }, async () => fixture(async root => {
+test("remote guard enforces the phase deadline without a controller cancellation", { skip: !canRoot }, async () => fixture(async root => {
   const control = path.join(root, "control"); await mkdir(control);
-  const config = path.join(root, "config.json");
-  await writeFile(config, JSON.stringify({ control, cwd: root, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000, deadline: Date.now() - 1, executable: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"], env: {} }));
-  const guard = spawn(process.execPath, ["-e", REMOTE_GUARD, config], { stdio: "ignore" });
+  const guard = await startGuard(root, { control, cwd: root, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000, deadline: Date.now() - 1, executable: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"], env: {} });
   const [code] = await once(guard, "exit");
-  assert.equal(code, 1);
-  assert.equal(await readFile(path.join(control, "done"), "utf8"), "closed");
+  assert.equal(code, 78);
+  await assert.rejects(readFile(path.join(control, "done")), /ENOENT/);
 }));
 
 test("staged Plan uses one profile for both fresh children and preserves clarification as terminal evidence", async () => fixture(async (root, commands) => {

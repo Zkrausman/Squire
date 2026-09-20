@@ -33,17 +33,11 @@ let input;
 let stagingPath;
 NodeCommandRunner.prototype.run = async function(request) {
   if (request.command === 'sbx' && request.args.some(argument => argument === '')) throw new Error('sandbox argv contains an empty element');
-  if (request.args[0] === 'cp') {
-    stagingPath = request.args[1];
-    if (process.platform === 'win32') {
-      const { assertProtectedAcl } = await import('../dist/test/helpers/windows-launch.js');
-      assertProtectedAcl(stagingPath);
-    }
-    input = JSON.parse(await readFile(stagingPath, 'utf8'));
-  }
-  if (!request.args.includes('--print')) return { stdout: '', stderr: '' };
-  const prompt = request.args[request.args.indexOf('--system-prompt') + 1];
-  await appendFile(process.env.SQUIRE_FIXTURE_RECORD, JSON.stringify({ phase: input.phase, prompt, digest: input.launchDigest, promptDigest: input.systemPromptDigest, args: request.args, data: input, stagingPath }) + '\n');
+  if (!request.stdin) return { stdout: '', stderr: '' };
+  const payload = JSON.parse(request.stdin.toString());
+  input = JSON.parse(payload.data);
+  const prompt = payload.prompt;
+  await appendFile(process.env.SQUIRE_FIXTURE_RECORD, JSON.stringify({ phase: input.phase, prompt, digest: input.launchDigest, promptDigest: input.systemPromptDigest, args: payload.config.args, data: input, wireArgs: request.args }) + '\n');
   const details = {
     plan: { steps: ['implement'] },
     implement: { changes: ['no-op fixture'], projectWiki: { status: 'not_required', reason: 'fixture adds no knowledge' } },

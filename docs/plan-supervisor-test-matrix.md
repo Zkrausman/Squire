@@ -5,6 +5,7 @@ The executable selection is either legacy `[]` or exactly `requirements, impleme
 | Boundary | Required evidence / negative case |
 | --- | --- |
 | Selection | Empty legacy path; reject partial, reversed, duplicate, unknown before launch |
+| Transport | Protected controller/supervisor artifact reference; same stdin guard as normal phases/correction; oversized task and effective policy absent from actual argv/environment; wrong digest/binding/reference rejects before Pi |
 | Ownership | Controller starts one supervisor; only supervisor launches children; no state/publication ports or credential environment |
 | Order | Requirements completes and validates before Design; distinct sessions; same profile and HEAD |
 | Contracts | Closed bounded artifacts, unknown fields/extra JSON rejected; validated Requirements digest passed to Design |
@@ -17,4 +18,4 @@ The executable selection is either legacy `[]` or exactly `requirements, impleme
 
 Focused tests are followed by `npm run validate:contracts` and `npm test`. Wiki verification is cumulative from the run base, including any remediation commits. No live rollout, recovery checkpoints, generic graph, or escalation is introduced.
 
-Windows capture CI additionally covers protected supervisor input/guard/artifact/journal staging, six-call foreground/detached parity, and the test-only executable transport shim. Direct remote-guard process-group/uid/gid tests run on POSIX only: Windows host transport tests are not Linux sandbox-close or live-provider acceptance evidence.
+Windows capture CI additionally covers protected supervisor input manifests/chunks and artifact/journal staging, six-call foreground/detached parity, and the test-only executable transport shim. See [the transport protocol and AIDEV-308/AIDEV-304 deferrals](phase-input-transport.md). Direct remote-guard process-group/uid/gid tests require a Linux root fixture (root or passwordless sudo): Windows host transport tests are not Linux sandbox-close or live-provider acceptance evidence.

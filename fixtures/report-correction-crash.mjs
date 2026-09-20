@@ -9,15 +9,17 @@ const root = process.argv[2], base = 'a'.repeat(40), head = 'b'.repeat(40);
 const states = new JsonRunStateStore(path.join(root, 'state'));
 let input, current = base;
 const runner = new SandboxPiPhaseRunner({ stagingRoot: root, testCommands: [], commands: {
-  byteOutput: true,
+  byteInput: true, byteOutput: true,
   async run(spec) {
-    if (spec.args[0] === 'cp') input = JSON.parse(await readFile(spec.args[1], 'utf8'));
-    if (spec.args.includes('--no-tools')) {
+    if (!spec.stdin) return { stdout: '', stdoutBytes: Buffer.alloc(0), stderr: '' };
+    const p = JSON.parse(spec.stdin.toString());
+    if (!p.config.args.includes('--no-tools')) input = JSON.parse(p.data);
+    if (p.config.args.includes('--no-tools')) {
       const state = await states.read('aidev-306-crash0123');
       if (state.reportCorrections.at(-1).kind !== 'launched') throw new Error('not charged before dispatch');
       process.exit(73); // hard controller exit, no finally/lease cleanup
     }
-    if (!spec.args.includes('--print')) return { stdout: '', stdoutBytes: Buffer.alloc(0), stderr: '' };
+    if (!p.config.args.includes('--print')) return { stdout: '', stdoutBytes: Buffer.alloc(0), stderr: '' };
     const implement = input.phase === 'implement';
     if (implement) current = head;
     const stdout = JSON.stringify({ outputHead: current, status: 'passed', summary: 'fixture', details: implement ? {
