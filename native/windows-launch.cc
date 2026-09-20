@@ -429,10 +429,13 @@ napi_value openLog(napi_env e, napi_callback_info i) { return operation(e, i, 2)
 napi_value closeLog(napi_env e, napi_callback_info i) { return operation(e, i, 3); }
 #include "windows-state-replace.h"
 #include "windows-report-evidence.h"
+#include "windows-owner-observation.h"
 
 napi_value init(napi_env env, napi_value exports) {
   napi_set_instance_data(env, new Context(), [](napi_env, void* p, void*) { delete static_cast<Context*>(p); }, nullptr);
   napi_property_descriptor methods[] = {
+    {"observeOwnerFile", nullptr, observeOwnerFile, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"ownerProcessIdentity", nullptr, ownerProcessIdentity, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"openReport", nullptr, openReport, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"readReport", nullptr, readReport, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeReport", nullptr, closeReport, nullptr, nullptr, nullptr, napi_default, nullptr},

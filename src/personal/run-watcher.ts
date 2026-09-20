@@ -243,18 +243,29 @@ async function resolveWatchedState(states: RunEventConsumerOptions["states"], se
     // but status's conservative reservation ambiguity check still sees the
     // terminal owner. A watcher may consume that terminal record directly;
     // it must not use this exception for a running or mismatched owner.
-    if (!(error instanceof StatusLookupError) || error.code !== "ambiguous" || !states.reservationOwner || !states.read) throw error;
+    if (!(error instanceof StatusLookupError) || error.code !== "ambiguous" || (!states.observeReservation && !states.reservationOwner) || !states.read) throw error;
     let ticketId = selector;
     if (/^[a-z]/u.test(selector)) {
       const exact = await states.read(selector);
       if (!exact) throw error;
       ticketId = exact.ticketId;
     }
-    const owner = await states.reservationOwner(ticketId).catch(() => undefined);
+    const observation = await states.observeReservation?.(ticketId);
+    const owner = observation
+      ? observation.kind === "owner" ? observation.runId : undefined
+      : await states.reservationOwner!(ticketId).catch(() => undefined);
     if (!owner) throw error;
     const candidate = await states.read(owner);
     if (!candidate || !isTerminal(candidate)) throw error;
     if (selector !== candidate.runId && selector !== candidate.ticketId) throw error;
+    if (observation) {
+      const after = await states.observeReservation!(ticketId);
+      const candidates = await states.findByTicket?.(ticketId);
+      if (after.kind !== "owner" || observation.kind !== "owner" || after.snapshot !== observation.snapshot ||
+          candidates?.some(state => state.status === "running")) throw error;
+      const repeated = await states.read(owner);
+      if (repeated?.version !== candidate.version) throw error;
+    }
     return candidate;
   }
 }

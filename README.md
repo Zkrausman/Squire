@@ -80,8 +80,10 @@ configuration paths cannot silently resolve against another copy. Before
 handoff, the production Docker workspace resolves `repository.sourceRef` to one
 commit and persists that source SHA; child preparation verifies the ref still
 names the bound commit before creating bridge, staging, or sandbox resources.
-`status` reads only persisted JSON records and reservation ownership; it does
-not contact Linear, Git, Docker, Pi, or GitHub. State writes
+`status` reads persisted JSON and read-only, exact-process owner evidence without
+acquiring the mutation mutex, including while a Windows controller holds it. It
+does not contact Linear, Git, Docker, Pi, or GitHub. See
+[read-only status](docs/read-only-status.md) for authoritative evidence and ambiguity. State writes
 are versioned and serialized per run, while reservation reserve/release
 operations use a short-lived per-ticket boundary; malformed or orphan
 reservations are reported as ambiguous rather than reclaimed. A detached child
@@ -90,8 +92,9 @@ can leave an ambiguous reservation, and ticket status reports it even when an
 older terminal run exists. Exact run-ID status remains available for a
 historical record beside a readable active replacement, but reports a
 reservation whose owner is missing or inactive as ambiguous. Do not delete or
-reuse that run's sandbox; inspect the log and state, and remove the exact
-reservation only after confirming no controller remains.
+reuse that run's sandbox or reservation based on status or PID liveness. Inspect
+the logs, state and exact controller identity; observation does not authorize
+stranded-lock recovery.
 
 > Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.
 

@@ -1,3 +1,4 @@
+import { observeOwnerFile, ownerProcessIdentity, parseOperation, type OperationEvidence } from "./owner-observation.js";
 import { validateCorrectionState, assertCorrectionUnchanged } from "./report-correction.js";
 import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
 import { validatePlanProgress } from "./plan-artifacts.js";
@@ -103,7 +104,7 @@ export class JsonRunStateStore implements RunStatePort {
     // short-lived boundary serializes reserve/release against one another.
     // Without it, an old releaser can read its owner, a replacement can be
     // installed, and the old releaser can unlink the replacement.
-    return withTicketOperation(this.directory, state.ticketId, async () => {
+    return withTicketOperation(this.directory, state.ticketId, async (operation) => {
       const locks = path.join(this.directory, "locks");
       await mkdir(locks, { recursive: true, mode: 0o700 });
       const lockPath = path.join(locks, `${state.ticketId.toLowerCase()}.lock`);
@@ -138,7 +139,9 @@ export class JsonRunStateStore implements RunStatePort {
         // reserve and release in every Squire process.
         const active = (await this.findByTicket(state.ticketId)).filter(candidate => candidate.status === "running");
         if (active.length > 0) throw new Error(`ticket already has an active run: ${state.ticketId}`);
+        await this.#publishOwner(state, operation, "reserve");
         await atomicCreate(this.#path(state.runId), encode(state), this.directory, state.runId);
+        await waitForTicketOperationBarrier("reserve-published");
         await this.#publishTransition(undefined, state);
       } catch (error) {
         // Only remove a reservation whose owner is still this run. If an
@@ -198,7 +201,7 @@ export class JsonRunStateStore implements RunStatePort {
     validateState(state);
     if (!isStartedChild(state)) throw new Error("reserved run claim target is invalid");
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    return withTicketOperation(this.directory, state.ticketId, async () => {
+    return withTicketOperation(this.directory, state.ticketId, async (operation) => {
       const lockPath = this.#reservationPath(state.ticketId);
       if (await readLock(lockPath) !== state.runId) throw new Error(`reserved run reservation ownership mismatch: ${state.runId}`);
       const releaseUpdate = await acquireUpdateLock(this.directory, state.runId);
@@ -209,7 +212,10 @@ export class JsonRunStateStore implements RunStatePort {
         if (!isReservedLaunch(current)) throw new Error(`reserved run claim is no longer available: ${state.runId}`);
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
         assertExactStartedChildTarget(current, state);
+        await this.#publishOwner(state, operation, "claim");
+        await waitForTicketOperationBarrier("claim-before-state");
         await this.#replaceState(target, state);
+        await waitForTicketOperationBarrier("claim-published");
         await this.#publishTransition(current, state);
       } finally {
         await releaseUpdate();
@@ -242,6 +248,7 @@ export class JsonRunStateStore implements RunStatePort {
         await releaseUpdate();
       }
       await removeReservationIfOwned(lockPath, state.runId);
+      await waitForTicketOperationBarrier("abandon-published");
     });
   }
 
@@ -281,8 +288,10 @@ export class JsonRunStateStore implements RunStatePort {
   }
 
   async list(): Promise<readonly PersonalRunState[]> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const files = await readdir(this.directory);
+    const files = await readdir(this.directory).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
     const matches: PersonalRunState[] = [];
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
@@ -296,6 +305,65 @@ export class JsonRunStateStore implements RunStatePort {
 
   async read(runId: string): Promise<PersonalRunState | undefined> {
     return this.#read(this.#path(runId), runId);
+  }
+
+  async #publishOwner(state: PersonalRunState, operation: OperationEvidence, stage: "reserve" | "claim"): Promise<void> {
+    const reservation = await observeOwnerFile(this.#reservationPath(state.ticketId));
+    if (!reservation || reservation.bytes !== `${state.runId}\n`) throw new Error("reservation changed before owner publication");
+    const target = `${this.#reservationPath(state.ticketId)}.owner`;
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(JSON.stringify({ ...operation, runId: state.runId, reservationIdentity: reservation.identity, stage }));
+      await handle.sync();
+      await handle.close();
+      const existing = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (!existing) {
+        await link(temporary, target); // exclusive initial proof publication
+      } else {
+        const options = process.platform === "win32" ? { rename: async (source: string, destination: string): Promise<void> => {
+          windowsLaunch().replaceState(path.resolve(source), path.resolve(destination));
+        } } : {};
+        await renameOverExistingWithRetry(temporary, target, options);
+      }
+    } finally {
+      await handle.close().catch(() => undefined);
+      await rm(temporary, { force: true });
+    }
+  }
+
+  /** Owner-published proof is observational only, never permission to recover. */
+  async observeReservation(ticketId: string): Promise<import("./types.js").ReservationObservation> {
+    assertTicketId(ticketId);
+    try {
+      const operation = await observeOwnerFile(path.join(this.directory, "ticket-operations", `${ticketId.toLowerCase()}.lock`));
+      let operationOwner: OperationEvidence | undefined;
+      if (operation) {
+        const owner = parseOperation(operation.bytes, ticketId);
+        if (await ownerProcessIdentity(owner.pid) !== owner.processIdentity) throw new Error("operation process identity changed");
+        operationOwner = owner;
+      }
+      const reservation = await observeOwnerFile(this.#reservationPath(ticketId));
+      if (!reservation) return { kind: "absent", snapshot: JSON.stringify({ operation }) };
+      const runId = reservation.bytes.endsWith("\n") ? reservation.bytes.slice(0, -1) : reservation.bytes;
+      if (!RUN_ID_PATTERN.test(runId) || !runId.startsWith(`${ticketId.toLowerCase()}-`)) throw new Error("reservation identity inconsistent");
+      const proof = await observeOwnerFile(`${this.#reservationPath(ticketId)}.owner`);
+      if (!proof) throw new Error("owner evidence missing");
+      const value = JSON.parse(proof.bytes) as OperationEvidence & { runId: string; reservationIdentity: string; stage: string };
+      const { runId: proofRun, reservationIdentity, stage, ...identity } = value;
+      const owner = parseOperation(JSON.stringify(identity), ticketId);
+      if (proofRun !== runId || reservationIdentity !== reservation.identity || !["reserve", "claim"].includes(stage) ||
+          await ownerProcessIdentity(owner.pid) !== owner.processIdentity) throw new Error("owner evidence inconsistent");
+      if (operationOwner && (operationOwner.operationReservationIdentity !== null
+        ? operationOwner.operationReservationIdentity !== reservation.identity
+        : operationOwner.token !== owner.token)) throw new Error("operation fencing inconsistent");
+      return { kind: "owner", runId, pid: owner.pid, stage: stage as "reserve" | "claim", transition: operationOwner?.token === owner.token && operationOwner.pid === owner.pid && operationOwner.processIdentity === owner.processIdentity, snapshot: JSON.stringify({ operation, reservation, proof }) };
+    } catch {
+      return { kind: "ambiguous", reason: "owner evidence unreadable or inconsistent" };
+    }
   }
 
   async reservationOwner(ticketId: string): Promise<string | undefined> {
@@ -564,16 +632,17 @@ function assertExactReservedFailureTarget(current: PersonalRunState, next: Perso
   }
 }
 
-async function withTicketOperation<T>(directory: string, ticketId: string, operation: () => Promise<T>): Promise<T> {
-  const release = await acquireTicketOperation(directory, ticketId);
+async function withTicketOperation<T>(directory: string, ticketId: string, operation: (evidence: OperationEvidence) => Promise<T>): Promise<T> {
+  const lock = await acquireTicketOperation(directory, ticketId);
   try {
-    return await operation();
+    return await operation(lock.evidence);
   } finally {
-    await release();
+    await lock.release();
   }
 }
 
-async function acquireTicketOperation(directory: string, ticketId: string): Promise<() => Promise<void>> {
+async function acquireTicketOperation(directory: string, ticketId: string): Promise<{ evidence: OperationEvidence; release: () => Promise<void> }> {
+  const processIdentity = await ownerProcessIdentity(process.pid);
   const operations = path.join(directory, "ticket-operations");
   await mkdir(operations, { recursive: true, mode: 0o700 });
   const lockPath = path.join(operations, `${ticketId.toLowerCase()}.lock`);
@@ -591,7 +660,18 @@ async function acquireTicketOperation(directory: string, ticketId: string): Prom
       continue;
     }
 
-    const owner = `${process.pid}-${randomUUID()}\n`;
+    let operationReservationIdentity: string | null;
+    try {
+      operationReservationIdentity = (await observeOwnerFile(path.join(directory, "locks", `${ticketId.toLowerCase()}.lock`)))?.identity ?? null;
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      // No usable marker was published. Leave ambiguity, not an unverified unlink.
+      throw error;
+    }
+    const evidence: OperationEvidence = {
+      version: 1, ticketId, pid: process.pid, token: randomUUID(), processIdentity, operationReservationIdentity,
+    };
+    const owner = `${JSON.stringify(evidence)}\n`;
     try {
       await handle.writeFile(owner, "utf8");
       await handle.sync();
@@ -605,19 +685,19 @@ async function acquireTicketOperation(directory: string, ticketId: string): Prom
     }
 
     let released = false;
-    return async () => {
+    return { evidence, release: async () => {
       if (released) return;
       released = true;
       await handle.close().catch(() => undefined);
       // Verify the ownership marker before removing the operation lock. This
       // keeps a delayed old process from deleting a replacement boundary.
       await removeFileIfExactContents(lockPath, owner);
-    };
+    } };
   }
   throw new Error(`ticket operation is locked or ambiguous: ${ticketId}`);
 }
 
-async function waitForTicketOperationBarrier(stage: "reserve-before-failed-cleanup" | "release-after-owner-read"): Promise<void> {
+async function waitForTicketOperationBarrier(stage: "reserve-before-failed-cleanup" | "release-after-owner-read" | "reserve-published" | "claim-before-state" | "claim-published" | "abandon-published"): Promise<void> {
   if (process.env["NODE_ENV"] !== "test" || process.env["SQUIRE_TEST_ONLY_TICKET_OPERATION_STAGE"] !== stage) return;
   const ready = testOnlyBarrierPath("SQUIRE_TEST_ONLY_TICKET_OPERATION_READY_PATH");
   const release = testOnlyBarrierPath("SQUIRE_TEST_ONLY_TICKET_OPERATION_RELEASE_PATH");

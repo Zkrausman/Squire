@@ -30,7 +30,7 @@ function state(version = 1): PersonalRunState {
     executionMode: "foreground",
     startedAt: "2026-09-10T00:00:00.000Z",
     endedAt: null,
-    controllerPid: 1,
+    controllerPid: process.pid,
     stdoutPath: "/secret/stdout.log",
     stderrPath: "/secret/stderr.log",
     repositoryPath: "/secret/repository",

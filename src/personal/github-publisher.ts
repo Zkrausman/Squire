@@ -1,3 +1,4 @@
+import { deterministicFeatureBranch } from "./identity.js";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -97,7 +98,11 @@ export class GitHubPublisher implements PublicationPort {
       const authorization = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
       const gitEnvironment = publicationEnvironment({
         GIT_TERMINAL_PROMPT: "0",
-        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+        GIT_CONFIG_COUNT: "2",
+        GIT_CONFIG_KEY_1: "http.followRedirects",
+        GIT_CONFIG_VALUE_1: "false",
         GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
         GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${authorization}`,
       });
@@ -105,6 +110,7 @@ export class GitHubPublisher implements PublicationPort {
         const remote = `https://github.com/${input.repository}.git`;
         const existing = await this.#findPullRequest(input, ghEnvironment, signal);
         if (existing) {
+          await this.#fetchObservedHead(checkout, input, existing.headRefOid, gitEnvironment, signal);
           // Validate and prepare the body before the first possible remote
           // mutation. A correction run must not advance a branch and only then
           // discover that an owner-edited PR body is ambiguous.
@@ -112,13 +118,12 @@ export class GitHubPublisher implements PublicationPort {
           let confirmed: PullRequestRecord;
           let body: string;
           if (existing.headRefOid !== input.head) {
-            // The accepted candidate bundle is the only trusted source for a
-            // prior PR head. Prove ancestry locally, then bind the remote
-            // update to the exact observed head. This lease cannot overwrite
-            // a concurrent branch change and the independent ancestry check
-            // prevents using the lease as an unconditional force push.
+            // Fetch supplies objects, never permission to replace unrelated history.
+            // Keep the independent ancestry check and exact remote lease.
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "cat-file", "-e", `${existing.headRefOid}^{commit}`] }, signal);
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "merge-base", "--is-ancestor", existing.headRefOid, input.head] }, signal);
+            await this.#confirmUnchanged(input, existing, ghEnvironment, signal);
+            if (await this.#observeBranch(checkout, input, gitEnvironment, signal) !== existing.headRefOid) throw new Error("remote ticket branch changed before publication");
             await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", `--force-with-lease=refs/heads/${input.branch}:${existing.headRefOid}`, remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
             const refreshed = await this.#waitForHead(input, existing, input.head, ghEnvironment, signal);
             confirmed = refreshed;
@@ -129,12 +134,20 @@ export class GitHubPublisher implements PublicationPort {
             confirmed = refreshed;
             body = initialBody;
           }
+          if (await this.#observeBranch(checkout, input, gitEnvironment, signal) !== input.head) throw new Error("remote ticket branch changed before body reconciliation");
           await this.#editPullRequestBody(input, confirmed.number, body, temporary, ghEnvironment, signal);
           const verified = await this.#waitForBody(input, confirmed, body, ghEnvironment, signal);
           return { url: verified.url, number: verified.number, reused: true };
         }
 
-        await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
+        // A missing PR does not imply a missing deterministic branch.
+        const previousHead = await this.#observeBranch(checkout, input, gitEnvironment, signal);
+        if (previousHead) {
+          await this.#fetchObservedHead(checkout, input, previousHead, gitEnvironment, signal);
+          await this.#commands.run({ command: this.#git, args: ["-C", checkout, "merge-base", "--is-ancestor", previousHead, input.head] }, signal);
+        }
+        if (await this.#findPullRequest(input, ghEnvironment, signal)) throw new Error("matching pull request appeared before publication");
+        await this.#commands.run({ command: this.#git, args: ["-C", checkout, "push", `--force-with-lease=refs/heads/${input.branch}:${previousHead ?? ""}`, remote, `${input.head}:refs/heads/${input.branch}`], env: gitEnvironment, timeoutMs: 180_000, sensitive: true }, signal);
         const bodyPath = path.join(temporary, "pull-request.md");
         await writeFile(bodyPath, pullRequestBody(input), { mode: 0o600 });
         try {
@@ -152,7 +165,10 @@ export class GitHubPublisher implements PublicationPort {
         } catch (error) {
           const reconciled = await this.#findPullRequest(input, ghEnvironment, signal);
           if (reconciled?.headRefOid === input.head) {
+            await this.#fetchObservedHead(checkout, input, reconciled.headRefOid, gitEnvironment, signal);
             const body = await this.#prepareReconciledBody(checkout, input, reconciled, signal);
+            await this.#confirmUnchanged(input, reconciled, ghEnvironment, signal);
+            if (await this.#observeBranch(checkout, input, gitEnvironment, signal) !== input.head) throw new Error("remote ticket branch changed before body reconciliation");
             await this.#editPullRequestBody(input, reconciled.number, body, temporary, ghEnvironment, signal);
             const verified = await this.#waitForBody(input, reconciled, body, ghEnvironment, signal);
             return { url: verified.url, number: verified.number, reused: true };
@@ -167,6 +183,31 @@ export class GitHubPublisher implements PublicationPort {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  }
+
+  async #confirmUnchanged(input: PublicationInput, previous: PullRequestRecord, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
+    const current = await this.#findPullRequest(input, environment, signal);
+    if (!samePullRequest(previous, current) || current.headRefOid !== previous.headRefOid || current.body !== previous.body) throw new Error("matching pull request changed before publication");
+  }
+
+  async #observeBranch(checkout: string, input: PublicationInput, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string | undefined> {
+    const ref = `refs/heads/${input.branch}`;
+    const result = await this.#commands.run({ command: this.#git, args: ["-C", checkout, "ls-remote", "--refs", `https://github.com/${input.repository}.git`, ref], env: environment, timeoutMs: 120_000, maxOutputBytes: 4096, sensitive: true }, signal);
+    if (result.stdout === "") return undefined;
+    const match = /^([a-f0-9]{40,64})\t([^\r\n]+)\n?$/u.exec(result.stdout);
+    if (!match || match[2] !== ref) throw new Error("remote ticket branch evidence is invalid");
+    return match[1];
+  }
+
+  async #fetchObservedHead(checkout: string, input: PublicationInput, expected: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
+    // Isolated disposable ref: no FETCH_HEAD, tags, origin tracking refs, or
+    // arbitrary SHA fetches. Credentials never enter arguments or local config.
+    const ref = "refs/squire-publication/observed-head";
+    await this.#commands.run({ command: this.#git, args: ["-C", checkout, "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", `https://github.com/${input.repository}.git`, `+refs/heads/${input.branch}:${ref}`], env: environment, timeoutMs: 180_000, maxOutputBytes: 8192, sensitive: true }, signal);
+    const actual = (await this.#commands.run({ command: this.#git, args: ["-C", checkout, "rev-parse", "--verify", ref] }, signal)).stdout.trim();
+    if (actual !== expected) throw new Error("remote ticket branch changed during fetch");
+    const type = (await this.#commands.run({ command: this.#git, args: ["-C", checkout, "cat-file", "-t", ref] }, signal)).stdout.trim();
+    if (type !== "commit") throw new Error("remote ticket branch is not a commit");
   }
 
   async #prepareReconciledBody(checkout: string, input: PublicationInput, pullRequest: PullRequestRecord, signal?: AbortSignal): Promise<string> {
@@ -535,10 +576,10 @@ function reconcileManagedSections(body: string, knowledge: string, retro: string
 }
 
 function validatePublication(input: PublicationInput): void {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(input.repository)) throw new Error("invalid GitHub repository");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(input.repository)) throw new Error("invalid GitHub repository");
   if (!/^[A-Za-z0-9._/-]+$/u.test(input.baseBranch) || input.baseBranch.includes("..") || input.baseBranch.startsWith("/") || input.baseBranch.endsWith("/")) throw new Error("invalid publication base branch");
   if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(input.ticket.id)) throw new Error("invalid publication ticket");
-  if (!/^squire\/[a-z0-9][a-z0-9._/-]{1,127}$/u.test(input.branch) || input.branch.includes("..")) throw new Error("invalid publication branch");
+  if (input.branch !== deterministicFeatureBranch(input.repository, input.ticket.id)) throw new Error("invalid publication branch");
   if (!/^[a-f0-9]{40,64}$/u.test(input.head) || input.bundle.head !== input.head || input.bundle.branch !== input.branch) throw new Error("invalid publication identity");
   if (typeof input.bundle.path !== "string" || input.bundle.path.length === 0 || !path.isAbsolute(input.bundle.path)) throw new Error("invalid candidate bundle path");
   if (!/^[a-f0-9]{64}$/u.test(input.bundle.sha256)) throw new Error("invalid candidate bundle digest");
