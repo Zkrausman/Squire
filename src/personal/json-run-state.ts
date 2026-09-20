@@ -1,3 +1,4 @@
+import { validateCorrectionState, assertCorrectionUnchanged } from "./report-correction.js";
 import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
 import { validatePlanProgress } from "./plan-artifacts.js";
 import { access, lstat, mkdir, open, readFile, readdir, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
@@ -16,6 +17,7 @@ import { JsonRunEventOutbox } from "./run-events.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
+  "reportCorrectionPolicy", "reportCorrections",
   "escalationPolicy", "escalationDigest", "stagedTransitions",
   "profiles",
   "planSelection",
@@ -691,6 +693,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   nullableSha(state["head"], "head");
   if ((state["baseSha"] === null) !== (state["head"] === null)) throw new Error("run state Git identity is incomplete");
   validateResolvedProfiles(state);
+  validateCorrectionState(state as unknown as PersonalRunState);
   validateStagedState(state as unknown as PersonalRunState);
 
   const attempts = exactObject(state["attempts"], PERSONAL_PHASES, "run state attempts");
@@ -966,6 +969,7 @@ async function acquireUpdateLock(directory: string, runId: string): Promise<() =
 }
 
 function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  assertCorrectionUnchanged(current, next);
   assertStagedUnchanged(current, next);
   if (current.profiles) {
     if (!next.profiles || !next.planSelection || !current.planSelection || !sameProfiles(current.profiles, next.profiles) || !sameSelection(current.planSelection, next.planSelection)) throw new Error("resolved phase profiles are immutable");

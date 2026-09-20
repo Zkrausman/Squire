@@ -1,3 +1,6 @@
+import { performance } from "node:perf_hooks";
+import { FileReportEvidence, type ReportEvidencePort } from "./report-evidence.js";
+import { InvalidPhaseHandoff, CorrectionExecutionFailure, correctionSchema, REPORT_CORRECTION_CORE, type ReportCapture, type ReportCorrectionInput } from "./report-correction.js";
 import { PhaseExecutionError } from "./execution-failure.js";
 import { PlanSupervisorRunner } from "./plan-supervisor-runner.js";
 import { validateExecutablePlan } from "./prompt-policy.js";
@@ -7,10 +10,10 @@ import { composeSystemPrompt, validateLaunchMaterial, type LaunchMaterial } from
 import { persistWindowsPhaseInput } from "./windows-launch.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { CommandPort } from "./command.js";
-import { validatePhaseResultPayloadShape, validatePhaseResultShape } from "./phase-result.js";
+import { CommandExecutionError, type CommandPort } from "./command.js";
+import { parsePhaseResult } from "./phase-payload.js";
 import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
-import type { PersonalPhase, PhaseInput, PhasePort, PhaseResult } from "./types.js";
+import type { PhaseInput, PhasePort, PhaseResult } from "./types.js";
 
 export type { PhaseProfile } from "./model-policy.js";
 
@@ -27,6 +30,7 @@ export interface SandboxPiPhaseRunnerOptions {
 }
 
 export class SandboxPiPhaseRunner implements PhasePort {
+  readonly reportEvidence: ReportEvidencePort;
   readonly #supervisor: PlanSupervisorRunner | undefined;
   readonly #commands: CommandPort;
   readonly #stagingRoot: string;
@@ -45,6 +49,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
     this.#supervisor = this.#material?.config.promptPolicy!.plan.length ? new PlanSupervisorRunner({ ...supervisorOptions, launchMaterial: this.#material }, this) : undefined;
     this.#commands = options.commands;
     this.#stagingRoot = path.resolve(options.stagingRoot);
+    this.reportEvidence = new FileReportEvidence(path.join(this.#stagingRoot, "report-evidence"));
     this.#testCommands = Object.freeze([...options.testCommands]);
     this.#roleUser = options.roleUser ?? "1000:1000";
     this.#pi = options.piExecutable ?? "pi";
@@ -58,8 +63,9 @@ export class SandboxPiPhaseRunner implements PhasePort {
     // Validate the controller-bound profile before creating any staging or
     // sandbox artifacts. A malformed profile must not partially launch a
     // phase with an ambiguous model identity.
+    const deadline = input.deadline ?? performance.now() + this.#timeoutMs;
     const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
-    const sessionId = randomUUID();
+    const sessionId = input.reportSession?.sessionId ?? randomUUID();
     const phaseDirectory = `/ticket/sessions/${input.phase}`;
     const sessionFile = `${phaseDirectory}/${input.attempt}.jsonl`;
     const inputPath = `/ticket/artifacts/inputs/${input.phase}-${input.attempt}.json`;
@@ -113,12 +119,16 @@ export class SandboxPiPhaseRunner implements PhasePort {
       const output = await this.#commands.run({
         command: this.#sbx,
         args: ["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment],
-        timeoutMs: this.#timeoutMs,
+        timeoutMs: remaining(deadline),
         maxOutputBytes: 2 * 1024 * 1024,
       }, signal);
 
+      const capture = process.platform === "linux" ? await this.#capture(output.stdout, sessionId, sessionFile) : undefined;
       try { return parsePhaseResult(output.stdout, input, sessionId, sessionFile, profile); }
-      catch (error) { throw new PhaseExecutionError("protocol", String(error), { cause: error }); }
+      catch (error) {
+        if (capture) throw new InvalidPhaseHandoff(capture, String(error));
+        throw new PhaseExecutionError("protocol", `${String(error)}; safe correction evidence unavailable on this platform`, { cause: error });
+      }
     } finally {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
@@ -126,53 +136,46 @@ export class SandboxPiPhaseRunner implements PhasePort {
       if (process.platform !== "win32" || localInputCreated) await rm(localInput, { force: true });
     }
   }
-}
+  async #capture(raw: string, sessionId: string, sessionFile: string): Promise<ReportCapture> {
+    return Object.freeze({ raw, sessionId, sessionFile, timestamp: new Date().toISOString(), evidence: await this.reportEvidence.write(raw) });
+  }
 
-function parsePhaseResult(raw: string, input: PhaseInput, sessionId: string, sessionFile: string, profile: PhaseProfile): PhaseResult {
-  let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new Error(`${input.phase} wrote malformed result JSON`); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${input.phase} result is not an object`);
-  validatePhaseResultPayloadShape(value, input.phase);
-  const payload = value;
-
-  if (
-    (hasOwn(payload, "runId") && payload.runId !== input.runId)
-    || (hasOwn(payload, "phase") && payload.phase !== input.phase)
-    || (hasOwn(payload, "attempt") && payload.attempt !== input.attempt)
-    || (hasOwn(payload, "sessionId") && payload.sessionId !== sessionId)
-    || (hasOwn(payload, "sessionFile") && payload.sessionFile !== sessionFile)
-  ) throw new Error(`${input.phase} result identity mismatch`);
-  if (hasOwn(payload, "inputHead") && payload.inputHead !== input.expectedHead) throw new Error(`${input.phase} result Git identity mismatch`);
-  const echoedProfile = payload.profile;
-  if (hasOwn(payload, "profile") && (
-    echoedProfile === undefined
-    || echoedProfile.provider !== profile.provider
-    || echoedProfile.model !== profile.model
-    || echoedProfile.thinking !== profile.thinking
-  )) throw new Error(`${input.phase} result profile identity mismatch`);
-
-  const result: unknown = {
-    runId: input.runId,
-    phase: input.phase,
-    attempt: input.attempt,
-    sessionId,
-    sessionFile,
-    inputHead: input.expectedHead,
-    outputHead: payload.outputHead,
-    status: payload.status,
-    summary: payload.summary,
-    details: payload.details,
-    profile: { ...profile },
-  };
-  validatePhaseResultShape(result, input.phase);
-  return result;
-}
-
-function hasOwn(value: object, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+  async correctReport(request: ReportCorrectionInput, signal?: AbortSignal): Promise<ReportCapture> {
+    signal?.throwIfAborted();
+    remaining(request.deadline);
+    const sessionId = request.producerId;
+    if (!/^[a-f0-9-]{36}$/u.test(sessionId)) throw new Error("invalid correction producer identity");
+    const root = `/run/squire-report-${sessionId}`;
+    // Fresh root-owned context, not the implementation home/session. No
+    // extensions/context files or tools. Pi may lock/refresh only its separate
+    // auth copy in the private runtime directory; no implementation resources
+    // or writable workspace artifacts are supplied to the model.
+    const prepare = `set -eu; mkdir -m 755 ${sh(root)}; mkdir -m 700 ${sh(root + "/agent")} ${sh(root + "/tmp")}; cp ${sh(this.#agentDirectory + "/auth.json")} ${sh(root + "/agent/auth.json")}; chown -R ${sh(this.#roleUser)} ${sh(root + "/agent")} ${sh(root + "/tmp")}; chmod 600 ${sh(root + "/agent/auth.json")}`;
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", request.input.sandbox, "sh", "-lc", prepare], timeoutMs: remaining(request.deadline) }, signal);
+    const profile = validatePhaseProfile(request.input.profile);
+    const prompt = REPORT_CORRECTION_CORE;
+    const data = JSON.stringify({ schema: correctionSchema(request.input, request.original), diagnostic: request.diagnostic, diagnostics: request.diagnostics,
+      trusted: { runId: request.input.runId, phase: request.input.phase, attempt: request.input.attempt, inputHead: request.input.expectedHead, originalTicketBaseSha: request.input.originalTicketBaseSha, profile, sessionId: request.original.sessionId, sessionFile: request.original.sessionFile },
+      original: request.original, latestReference: request.latest.evidence, correctionAttempt: request.correctionAttempt });
+    const output = await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, "-w", root, request.input.sandbox,
+      "/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", `HOME=${root}`, `TMPDIR=${root}/tmp`, `PI_CODING_AGENT_DIR=${root}/agent`, "PI_OFFLINE=1", "PI_TELEMETRY=0",
+      this.#pi, "--print", "--mode", "text", "--no-session", "--provider", profile.provider, "--model", profile.model, "--thinking", profile.thinking,
+      "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt, data],
+      timeoutMs: remaining(request.deadline), maxOutputBytes: 2 * 1024 * 1024 }, signal).catch(async error => {
+      if (error instanceof CommandExecutionError) throw new CorrectionExecutionFailure(await this.#capture(error.stdout, sessionId, `${root}/no-session`), error);
+      throw error;
+    });
+    return this.#capture(output.stdout, sessionId, `${root}/no-session`);
+  }
 }
 
 function sh(value: string): string {
   if (value.includes("\0")) throw new Error("shell value contains NUL");
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function remaining(deadline: number): number {
+  const ms = Math.floor(deadline - performance.now());
+  if (!Number.isFinite(ms) || ms <= 0) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
+  return ms;
 }

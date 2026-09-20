@@ -290,3 +290,27 @@ The MVP is accepted when a real invocation of `squire run <ticket>`:
 - never exposes host delivery credentials to phase processes.
 
 Expansion begins only after this path works reliably.
+## Report-only handoff correction
+
+The existing personal JSON config accepts this dedicated policy (omission uses the shown default):
+
+```json
+"reportCorrectionPolicy": {
+  "maxAttempts": 1,
+  "allowedErrorClasses": ["implement-unexpected-details-fields"]
+}
+```
+
+Both fields are required when the policy is supplied. `maxAttempts` is an integer 0–2; 0 disables calls. An empty class list also disables correction. Unknown fields/classes and nonfinite/fractional bounds are rejected before model work. Raw and effective policy are captured and compared at detached launch and bound to immutable run state. AIDEV-294 will migrate this policy into repo-owned configuration separately; this feature does not implement that system.
+
+Only Implement reports containing valid required facts plus unexpected `details` fields are initially eligible. For example, `details.verification` is rejected by strict validation, preserved verbatim, and can be removed **by a report-only model response**, never silently by the controller. The correction must preserve HEAD, status, summary, changes, wiki disposition and any supplied trusted identity echoes. All original facts and the net original-ticket-base-to-candidate wiki diff must validate first. Failed status, missing/contradictory wiki, forged run/phase/attempt/profile/session/head, dirty/changed candidates, invalid Git identity, execution/auth/security/ownership errors and other phases fail closed. Malformed original JSON has no independent structured-facts protocol yet and is not eligible; malformed correction output may consume only the remaining allowance after original facts were preserved.
+
+Each actual Implement attempt (including staged or remediation attempts) gets a distinct allowance. A correction launch is durably charged **before** dispatch; charges are never refunded, borrowed, or reset by model escalation or Review/Test. All preparation, execution and correction share the original monotonic phase deadline and cancellation signal. There is no extra elapsed-time grant or authoritative per-call token/cost ceiling in this runtime. No token/cost claim in a report creates such a ceiling or independent acceptance evidence.
+
+Correction uses a fresh no-tools, no-session Pi context, with extensions, skills, templates and project context disabled. It runs outside `/ticket/workspace` with only a separate auth copy, exact schema/diagnostics and controller-bound report context. It never invokes implementation again. Before/after independent HEAD and cleanliness checks, including after a failed/cancelled correction, guard candidate identity. A corrected report only rejoins the normal independent Review, Test, Retro and exact-head publication gates.
+
+Evidence is stored under the host staging root's `report-evidence/`, not model-writable workspace artifacts. Original response, each correction response and controller observations have distinct exclusive-create references. The append-only state ledger binds timestamps, original/correction producer, attempt, candidate, validation diagnostics, byte length, SHA-256 and filesystem identity. The controller independently exact-reads **every** artifact, checks content against the actual captured response or its own observation, and repeats verification before continuation/acceptance. Metadata-only evidence is rejected. Initial file evidence support uses Linux `/proc/self/fd` pinned directories, no-follow bounded regular-file reads and before/after identity checks. On non-Linux hosts safe report correction is unavailable and invalid reports fail closed; valid ordinary reports remain supported. Do not substitute POSIX modes for Windows ACL/reparse guarantees. Hostile privileged/same-UID controller processes are outside the personal-host trust model.
+
+`squire status` shows correction maximum/used/remaining and lifecycle independently of remediation/escalation. The ledger remains authoritative if bounded events are pruned. Exhaustion, unavailable safe evidence, mismatches or cancellation produce one terminal human escalation with primary schema failure and evidence references. Inspect the preserved artifacts and candidate independently; do not promote the candidate or reset the run. Secondary Git inspection failures retain sanitized operation/source diagnostics separately; this feature does not establish a root cause for the owner-reported `invalid Git SHA`. Exact-owner cleanup remains unchanged, including a separate cleanup-failure field and no retained-lock takeover. Historical failed runs are immutable.
+
+`test/personal-report-correction.test.ts` uses synthetic reports and offline fake ports; it does not recover or authenticate the owner-reported incident artifacts. No original incident run ID/candidate SHA was supplied. The separately described failed delivery finding motivates independent content reads, not adoption or repair of its candidate. Live model acceptance requires separate scoped approval.
