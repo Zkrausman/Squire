@@ -30,6 +30,12 @@ export class CommandExecutionError extends PhaseExecutionError {
   constructor(classification: ExecutionFailure, message: string, readonly stdout: string, options?: ErrorOptions, readonly stdoutBytes?: Buffer) { super(classification, message, options); }
 }
 
+/** OS-confirmed failure to create a process, with no child PID or output.
+ * Only the phase adapter may translate this into phase-launch retry authority. */
+export class ProcessLaunchError extends CommandExecutionError {
+  constructor(readonly code: "EAGAIN") { super("infrastructure", "Process launch temporarily unavailable", "", undefined, Buffer.alloc(0)); }
+}
+
 export class NodeCommandRunner implements CommandPort {
   readonly byteOutput = true;
   async run(request: CommandRequest, signal?: AbortSignal): Promise<CommandResult> {
@@ -48,6 +54,10 @@ export class NodeCommandRunner implements CommandPort {
           return;
         }
         const failure = error as Error & { code?: string | number };
+        if (failure.code === "EAGAIN" && child.pid === undefined && !signal?.aborted && stdout.length === 0 && stderr.length === 0) {
+          reject(new ProcessLaunchError("EAGAIN"));
+          return;
+        }
         const detail = request.sensitive || request.redactDiagnostics ? "sensitive command failed" : stderr.toString("utf8").trim() || stdout.toString("utf8").trim() || failure.message;
         reject(new CommandExecutionError(signal?.aborted ? "cancelled" : (failure as Error & { killed?: boolean }).killed ? "timeout" : typeof failure.code === "string" && ["ENOENT", "EACCES", "ENOBUFS"].includes(failure.code) ? "infrastructure" : "unknown", `${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, request.sensitive ? "" : stdout.toString("utf8"), { cause: error }, request.sensitive ? Buffer.alloc(0) : stdout));
       });

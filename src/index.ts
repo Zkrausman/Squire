@@ -56,3 +56,6 @@ export * from "./personal/notification-worker.js";
 export { TelemetryStore, validateRunTelemetry, formatTelemetry, telemetryTotals } from "./personal/telemetry-store.js";
 export type { RunTelemetry, TelemetrySession, TelemetryTotals, TelemetryInvocation } from "./personal/telemetry-store.js";
 export type { UsageAccounting, TokenField, Diagnostic as TelemetryDiagnostic } from "./personal/telemetry-stream.js";
+
+export { LAUNCH_CLASSIFIER, LAUNCH_BACKOFF_MS, validateLaunchRetryPolicy, classifyLaunchFailure, TransientLaunchFailure } from "./personal/launch-retry.js";
+export type { LaunchRetryPolicy, LaunchGeneration, LaunchRecord } from "./personal/launch-retry.js";

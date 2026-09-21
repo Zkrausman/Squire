@@ -59,8 +59,34 @@ Bounds: 64 MiB captured stdout per invocation; 2 MiB independently verified raw 
 
 `RunTelemetry`, `TelemetrySession`, `TelemetryTotals`, `TelemetryInvocation`, `UsageAccounting`, `TelemetryStore.read`, `validateRunTelemetry`, `telemetryTotals` and `formatTelemetry` are exported from `src/index.ts`. `schemaVersion: 1`, `authority: pi-0.84.4-controller-json-v1` identify this authority model. Readers validate the closed normalized schema, exact run identity, bounded values, private storage and session-to-phase-to-run reconciliation before exposing output. Token/duration totals contain `known` and `complete`; recorded cost adds `source: pi-recorded`. Null session dimensions are unknown, not zero. Plan subphase totals are nested within Plan and must not be added to Plan again.
 
-AIDEV-309 owns historical backfill, cohort comparison, baseline reproduction, exact-head CI/merge binding and scorecards. There is no arbitrary directory scan, historical rewrite or multi-run command here. Preserve pre-change artifacts and policy identities now. Future comparisons must select comparable gate classes, distinguish completed from merged tickets, retain retry/correction/infrastructure costs, disclose missing accounting and small sample sizes, and avoid causal model-quality claims. This delivery changes no retry, context, model-selection, remediation-budget, review, test or merge policy.
+AIDEV-309 owns historical backfill, cohort comparison, baseline reproduction, exact-head CI/merge binding and scorecards. There is no arbitrary directory scan, historical rewrite or multi-run command here. Preserve pre-change artifacts and policy identities now. Future comparisons must select comparable gate classes, distinguish completed from merged tickets, retain retry/correction/infrastructure costs, disclose missing accounting and small sample sizes, and avoid causal model-quality claims. Generation attribution does not change context, model-selection, remediation-budget, review, test or merge policy. The narrowly scoped launch-retry policy is documented in personal-mvp.md.
 
 ## Checks
 
 Parser, private-store and production-controller fixtures cover the six-session run, remediation, staged profiles, report correction, interruption, unknown endpoints/cost, malformed/duplicate/unsupported streams, privacy and session-file tampering. They run in the normal suite and the existing bounded unconditional Windows launch matrix. Workflow commands, executable validator expectations and negative probes must change together; Linux tests do not replace the exact-head Windows gate.
+
+## Transient launch generations
+
+New invocation rows optionally carry `launchGeneration` (0 or 1); absence denotes
+the legacy schema. This is separate from staged/remediation `attempt` and report
+`correction`. Inventory completeness reconciles each dispatched generation against
+its session UUID, expected HEAD and session-path digest. A failed generation and
+its replacement remain separate rows; Plan/Implement are not repeated to recover
+a Review launch. The logical phase outcome and independent acceptance gates do not
+change. The CLI includes generation numbers in its per-session view.
+
+The strict Daybreak pre-result provider rule is an explicit exception to ordinary
+error-stream incompleteness: a complete allowlisted empty error turn with zero
+usage/cost retains those recorded zeros and the observed command-failure endpoint.
+This counts one failed assistant message, not a successful model result. Unknown
+errors, partial streams and ambiguous cancellation/timeouts still have unknown
+accounting/endpoints. A process-creation failure has no Pi usage evidence; do not
+invent recorded billing even though no provider invocation could have occurred.
+
+Accounting publication and its warnings are diagnostic-only, including after a
+successful replacement generation. Neither can enter the launch classifier,
+refetch a ticket, invoke another phase, issue a post-terminal external request or
+change a completed workflow to failed. Missing launch capture keeps totals marked
+incomplete. Comparisons can sum failed/replacement rows and compare the retained
+single Plan/Implement rows against an explicit replay counterfactual; this is not
+an empirical incident savings claim or provider invoice.

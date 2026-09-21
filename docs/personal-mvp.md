@@ -338,3 +338,65 @@ The production runner/controller fixture in `test/personal-windows-report-correc
 ### Current-run efficiency reporting
 
 Use `squire telemetry RUN-ID [--json] [--config FILE]` for private per-session, Plan-subphase, phase and run token/time/Pi-recorded-cost accounting. Missing or incomplete usage never changes phase outcomes. See [telemetry authority, completeness and retention](telemetry.md); legacy backfill and multi-run comparisons are deferred.
+
+### Transient phase-launch retry
+
+`launchRetryPolicy: { "maxRetries": 1 }` is the default; the only override is `0`.
+It is captured with the raw/effective launch material and immutable run policy.
+This is **not** a model remediation attempt or a general command retry. The
+controller owns one replacement generation within the same logical phase attempt,
+profile, candidate, sandbox, prompt policy, input snapshot and original deadline.
+Accepted earlier phases are never relaunched. Each adapter receives a detached
+copy of the same logical input. Preparation/backoff/dispatch and report correction
+share the original deadline. There is no new token/cost ceiling: this runtime has
+no authoritative per-call cost budget, and the allowlist requires zero recorded
+provider use or proof that no process was created.
+
+The versioned `pre-result-provider-v1` classifier accepts only:
+
+- The pinned Pi structured, single failed Codex turn with the exact error
+  `Unable to verify Daybreak Blue access. Please try again.`, matching session and
+  profile, empty assistant content, no provider response ID, no tool/output/update
+  events, complete turn/agent closure and explicit zero usage/cost.
+- The command adapter's typed `EAGAIN` process-creation failure, with no child PID
+  or stdout/stderr, **only at the phase invocation boundary**. Preparation/tool
+  failures are not translated into launch authority.
+
+Arbitrary stderr, model-authored text, unknown protocol variants, hard auth,
+moderation, timeouts, malformed reports, implementation failures and accounting or
+publication warnings do not retry. A mandatory clean/exact-HEAD observation plus
+no consumed result or Plan progress is also required. Missing proof stops the run.
+The backoff is a fixed 1,000 ms, abortable and deadline-bounded; actual elapsed delay
+is recorded. Broader transport/service retry codes require a new reviewed rule,
+not substring matching or expansion by a model.
+
+`launchGenerations` is an append-only ledger. `reserved` and `dispatched` are
+separate version-CAS commits before calling the adapter; `failed`, `retrying` and
+`returned` retain the original identity and sanitized rule/error code. Replacement
+sessions have new UUIDs and `-g1` input/session paths; generation zero retains the
+existing unsuffixed path spelling for compatibility. Input/session destinations
+are exclusively created; collisions never authorize overwrite, dispatch or deletion
+of another writer's host input. The logical input digest excludes only the new
+session/generation identity. Captured launch evidence binds the prompt/config
+policy independently. Telemetry attributes both invocations, not two attempts.
+Status shows `retry_backoff` separately from `model_work`; bounded `launch_*`
+events reconcile using phase, attempt and generation identities, without raw errors.
+
+The JSON store's ticket operation, reservation owner and version CAS fence every
+ledger append. A stale writer never reloads and dispatches. There is no automatic
+controller takeover or interrupted-run resume API: crashes at failed, retrying,
+reserved, dispatched or returned boundaries remain fail-closed for human inspection.
+A durable returned record is not acceptance, and a terminal state is never repaired.
+The supervised Plan protocol remains independently authoritative; once it has
+started subphase work/progress or returned a result it cannot qualify for relaunch.
+
+The production launch-retry fixture uses real private/report-evidence roots (native
+NTFS ACL/canonical containment on Windows), JSON-store CAS and crash boundaries.
+It runs alongside launch-material, controller, report-correction and telemetry in
+all existing Windows Node 20.17/22.9/24 gates with unchanged timeouts. Offline
+foreground/detached fixtures stub Linear at `fetch`, count exactly one initial
+issue request and reject all other network activity. This avoids relying on one
+ESM prototype identity across Windows URL spellings. They exercise incomplete
+accounting while retaining source deletion, child-exit, reservation cleanup and
+captured prompt/digest assertions. Linux runs are not native Windows evidence;
+all exact-head hosted gates remain required before merge.
