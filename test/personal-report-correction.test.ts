@@ -1,3 +1,4 @@
+import { piJson } from "./helpers/pi-json.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, readFile, writeFile, chmod, unlink, symlink, rename, mkdir } from "node:fs/promises";
@@ -312,12 +313,12 @@ test("restricted runner uses no tools/inherited session and remaining deadline; 
     const request = h.corrections[0]!;
     const commands: CommandRequest[] = [];
     const raw = JSON.stringify(payload(request.input));
-    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteOutput: true, async run(spec) { commands.push(spec); return { stdout: raw, stdoutBytes: Buffer.from(raw), stderr: "", exitCode: 0 }; } } });
+    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteOutput: true, async run(spec) { commands.push(spec); return { stdout: piJson(raw).toString(), stdoutBytes: piJson(raw), stderr: "", exitCode: 0 }; } } });
     const capture = await runner.correctReport(request);
     const launch = commands.at(-1)!;
-    for (const flag of ["--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-approve"]) assert.ok(launch.args.includes(flag));
+    for (const flag of ["--no-tools", "--session", "--no-extensions", "--no-skills", "--no-context-files", "--no-approve"]) assert.ok(launch.args.includes(flag));
     assert.ok(!launch.args.includes("/ticket/workspace"));
-    assert.ok(!launch.args.includes("--session"));
+    assert.match(launch.args[launch.args.indexOf("--session") + 1]!, /^\/run\/squire-report-.*\/agent\/session.jsonl$/u);
     assert.ok(launch.timeoutMs! > 0 && launch.timeoutMs! < 60000);
     const data = JSON.parse(launch.args.at(-1)!);
     assert.deepEqual(data.schema, correctionSchema(request.input, request.original));
@@ -385,7 +386,7 @@ for (const staged of [false, true]) for (const captured of [false, true]) for (c
     assert.equal(state.reportCorrections?.at(-1)?.used, 1);
     assert.equal(state.reportCorrections?.at(-1)?.remaining, 1);
     if (captured) {
-      const response = state.reportCorrections!.find(r => r.producer === h.corrections[0]!.producerId)!;
+      const response = state.reportCorrections!.find(r => r.producer === h.corrections[0]!.producerId && r.kind === "observed")!;
       assert.ok(response.evidence);
       await verifyReportEvidence(h.evidence, response.evidence, JSON.stringify(payload(h.corrections[0]!.input)));
     }
@@ -427,6 +428,6 @@ test("restricted runner preserves partial stdout from a failed correction but ca
     try { await runner.correctReport(request); } catch (error) { failure = error; }
     assert.ok(failure instanceof CorrectionExecutionFailure);
     assert.equal(failure.classification, "timeout");
-    await verifyReportEvidence(runner.reportEvidence, failure.capture.evidence, '{"outputHead":');
+    await verifyReportEvidence(runner.reportEvidence, failure.capture.evidence, "");
   } finally { await h.cleanup(); }
 });

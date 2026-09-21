@@ -1,3 +1,4 @@
+import { piJson } from "./helpers/pi-json.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
@@ -34,17 +35,18 @@ async function fixture(fault?: Fault, maximum = 1) {
       if (spec.args[0] === "cp") document = JSON.parse(await readFile(spec.args[1]!, "utf8"));
       if (!spec.args.includes("--print")) return { stdout: "", stdoutBytes: Buffer.alloc(0), stderr: "" };
       const value = payload(document);
+      const identity = spec.args.includes("--no-tools") ? spec.args[spec.args.indexOf("--session") + 1]!.match(/squire-report-([a-f0-9-]{36})/)![1]! : (document as PhaseInput & { sessionId: string }).sessionId;
       let bytes: Buffer;
       if (spec.args.includes("--no-tools")) {
         corrections.push(spec);
         assert.equal(snapshots.at(-1)?.reportCorrections?.at(-1)?.kind, "launched");
-        assert.ok(spec.args.includes("--no-session"));
+        assert.ok(spec.args.includes("--session"));
         assert.ok(!spec.args.includes("/ticket/workspace"));
         assert.ok(spec.timeoutMs! <= 60000);
         if (fault === "facts") value.details.projectWiki.reason = "invented";
         bytes = corrected = Buffer.from(JSON.stringify(value) + "\r\n");
         if (fault === "cancel") abort.abort(new Error("fixture cancellation"));
-        if (fault === "command") throw new CommandExecutionError("timeout", "fixture command timeout", bytes.toString(), undefined, bytes);
+        if (fault === "command") throw new CommandExecutionError("timeout", "fixture command timeout", bytes.toString(), undefined, piJson(bytes.toString(), identity, document.profile));
       } else {
         phases.push(document.phase);
         if (document.phase === "review") assert.equal(snapshots.at(-1)?.results.implement?.status, "passed");
@@ -63,7 +65,10 @@ async function fixture(fault?: Fault, maximum = 1) {
           original = bytes;
         }
       }
-      return { stdout: bytes.toString("utf8"), stdoutBytes: bytes, stderr: "" };
+      // Invalid report encoding remains an unparseable report, never accepted.
+      if (fault === "utf8" && document.phase === "implement") { bytes = original = Buffer.alloc(0); }
+      const stream = fault === "utf8" && document.phase === "implement" ? Buffer.concat([piJson("invalid UTF8", identity, document.profile), Buffer.from([255])]) : piJson(bytes.toString("utf8"), identity, document.profile);
+      return { stdout: stream.toString("utf8"), stdoutBytes: stream, stderr: "" };
     },
   };
   const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: [] });
@@ -95,6 +100,13 @@ test("native production capture corrects eligible JSON shape only, then independ
     assert.deepEqual(f.phases, ["plan", "implement", "review", "test", "retro"]);
     assert.equal(f.corrections.length, 1);
     assert.equal(f.published, true);
+    const telemetry = (await f.runner.telemetry.read(state.runId))!;
+    assert.equal(telemetry.sessions.length, 6);
+    assert.equal(telemetry.complete, true);
+    assert.equal(telemetry.totals.tokens.input.known, 60);
+    const original = telemetry.sessions.find(s => s.phase === "implement" && !s.correction)!;
+    assert.equal(original.outcome, "report-rejected"); assert.equal(original.phaseOutcome, "passed");
+    assert.equal(telemetry.sessions.find(s => s.correction === 1)!.outcome, "passed");
     const ledger = state.reportCorrections!;
     assert.equal(ledger.at(-1)?.kind, "accepted");
     assert.equal(ledger.at(-1)?.used, 1); assert.equal(ledger.at(-1)?.remaining, 0);

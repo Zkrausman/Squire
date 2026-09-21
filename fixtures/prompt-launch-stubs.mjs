@@ -1,3 +1,4 @@
+import { piJson } from "../dist/test/helpers/pi-json.js";
 // Test-only Node preloader: real CLI + detached bootstrap, external services
 // stubbed below the controller. No production environment injection surface.
 import { appendFile, readFile, rm } from 'node:fs/promises';
@@ -51,5 +52,6 @@ NodeCommandRunner.prototype.run = async function(request) {
     retro: { lessons: ['fixture'], followUps: [] },
   }[input.phase];
   const stdout = JSON.stringify({ outputHead: head, status: 'passed', summary: 'fixture passed', details });
-  return { stdout, stdoutBytes: Buffer.from(stdout), stderr: '' };
+  const bytes = piJson(stdout, input.sessionId, input.profile);
+  return { stdout: bytes.toString(), stdoutBytes: bytes, stderr: '' };
 };

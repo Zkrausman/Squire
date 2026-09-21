@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
 import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -37,7 +38,8 @@ export interface ParsedWatchArguments {
   readonly config: string;
 }
 
-export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments;
+export interface ParsedTelemetryArguments { readonly command: "telemetry"; readonly selector: string; readonly config: string; readonly json: boolean; }
+export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments | ParsedTelemetryArguments;
 
 interface ParsedReservedArguments extends ParsedRunArguments {
   readonly reservedRunId: string;
@@ -50,10 +52,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   const parsed = parseArguments(argv);
   if (!parsed) {
-    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n");
+    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire telemetry <RUN-ID> [--json] [--config <file>]\n");
     return 2;
   }
 
+  if (parsed.command === "telemetry") return telemetryCommand(parsed);
   if (parsed.command === "status") return statusCommand(parsed);
   if (parsed.command === "watch") return watchCommand(parsed);
   return runCommand(parsed);
@@ -61,10 +64,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
 export function parseArguments(argv: readonly string[]): ParsedArguments | undefined {
   const command = argv[0];
-  if (command !== "run" && command !== "status" && command !== "watch") return undefined;
+  if (command !== "run" && command !== "status" && command !== "watch" && command !== "telemetry") return undefined;
   let positional: string | undefined;
   let explicit: string | undefined;
   let background = false;
+  let json = false;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--config") {
@@ -73,6 +77,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments | undef
       index += 1;
       continue;
     }
+    if (argument === "--json" && command === "telemetry") { if (json) return undefined; json = true; continue; }
     if (argument === "--background" && command === "run") {
       if (background) return undefined;
       background = true;
@@ -87,8 +92,21 @@ export function parseArguments(argv: readonly string[]): ParsedArguments | undef
     if (!TICKET_PATTERN.test(positional)) return undefined;
     return { command, ticketId: positional, config: resolveConfigPath(explicit), background };
   }
+  if (command === "telemetry") {
+    if (!RUN_PATTERN.test(positional)) return undefined;
+    return { command, selector: positional, config: resolveConfigPath(explicit), json };
+  }
   if (!TICKET_PATTERN.test(positional) && !RUN_PATTERN.test(positional)) return undefined;
   return { command, selector: positional, config: resolveConfigPath(explicit) };
+}
+
+export async function telemetryCommand(parsed: ParsedTelemetryArguments): Promise<number> {
+  try {
+    const config = await loadPersonalMvpConfig(parsed.config);
+    const artifact = await new TelemetryStore(config.paths.staging).read(parsed.selector);
+    process.stdout.write((parsed.json ? JSON.stringify(artifact ?? { schemaVersion: 1, runId: parsed.selector, available: false, complete: false, reason: "no_terminal_artifact" }) : formatTelemetry(artifact, parsed.selector)) + "\n");
+    return 0;
+  } catch { process.stderr.write("Telemetry unavailable: check configuration and private terminal artifact integrity.\n"); return 1; }
 }
 
 async function runCommand(parsed: ParsedRunArguments): Promise<number> {

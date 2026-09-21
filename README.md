@@ -108,3 +108,7 @@ See [staged escalation](docs/staged-escalation.md) for validation bounds, exact
 attempt charging, terminal failure classes, immutable launch capture, exhaustion,
 remediation-limit intersection and status/watch evidence. Independent gates are
 unchanged; configuration changes never affect an active run.
+
+### Run efficiency
+
+`squire telemetry RUN-ID [--json] [--config FILE]` reads the private current-run terminal summary: separate Plan subphases, attempts/profiles/outcomes, token classes, invocation/run duration, Pi-recorded cost or unknown, and accounting completeness. It never reads model-writable transcripts. See [telemetry authority and retention](docs/telemetry.md). Historical backfill and cohort comparisons are not included.

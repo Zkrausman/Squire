@@ -429,6 +429,7 @@ export class PersonalMvpController {
       }, signal);
       if (!/^https:\/\/[^\s]+$/u.test(published.url)) throw new Error("publisher returned an invalid PR URL");
       await context.persist({ step: "complete", status: "completed", lifecycle: "completed", endedAt: this.#timestamp(), prUrl: published.url, lastError: null });
+      await this.#publishTelemetry(context.state);
       await this.#releaseReservation(context);
       this.#contexts.delete(context.state.runId);
       return context.state;
@@ -530,7 +531,9 @@ export class PersonalMvpController {
     const attempt = context.state.attempts[phase] + (stagedProfile ? 0 : 1);
     if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
     const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
+    const stagedAccounting = context.state.stagedTransitions?.find(t => t.phase === phase && t.attempt === attempt && t.kind === "reserved");
     const input: PhaseInput = Object.freeze({
+      telemetryAttribution: { trigger: stagedAccounting ? stagedAccounting.reason as "initial" | "retry" | "stage_advanced" | "remediation" : attempt > 1 ? "remediation" : "initial", stageIndex: stagedAccounting?.stageIndex ?? null, stageAttempt: stagedAccounting?.stageAttempt ?? null },
       deadline,
       ...(phase === "implement" ? { reportSession: Object.freeze({ sessionId: randomUUID(), sessionFile: `/ticket/sessions/${phase}/${attempt}.jsonl` }) } : {}),
       runId: context.state.runId,
@@ -638,6 +641,7 @@ export class PersonalMvpController {
       throw new PhaseExecutionError("protocol", error instanceof Error ? error.message : String(error), { cause: error });
     }
     if (!stagedProfile && evidencedResult.status === "failed") {
+      await this.#phases.telemetrySettled?.(evidencedResult).catch(() => undefined);
       if (evidencedResult.phase === "plan" && evidencedResult.details.supervision) await context.persist({ results: { ...context.state.results, plan: evidencedResult }, sessions: { ...context.state.sessions, plan: evidencedResult.sessionId } });
       throw new Error(`${phase} failed: ${evidencedResult.summary}`);
     }
@@ -650,6 +654,7 @@ export class PersonalMvpController {
       sessions: { ...context.state.sessions, [phase]: evidencedResult.sessionId },
       results: { ...context.state.results, [phase]: evidencedResult },
     });
+    await this.#phases.telemetrySettled?.(evidencedResult).catch(() => undefined);
     return evidencedResult;
   }
 
@@ -729,8 +734,8 @@ export class PersonalMvpController {
         await this.#phases.prepareReportCorrection?.();
         active();
         used++;
-        await record("launched"); // irrevocable charge BEFORE dispatch
         const producerId = randomUUID();
+        await record("launched", undefined, producerId); // irrevocable charge BEFORE dispatch
         let response: ReportCapture | undefined;
         let responseBytes: Buffer | undefined;
         let executionError: unknown;
@@ -785,7 +790,7 @@ export class PersonalMvpController {
           active();
           await assertOwner();
           diagnostic = "strict corrected report accepted; independent Review/Test still required";
-          await record("accepted");
+          await record("accepted", undefined, producerId);
           return accepted;
         } catch (error) {
           if (!correctedAnalysis.unexpected.length) throw error;
@@ -953,7 +958,20 @@ export class PersonalMvpController {
       }
       this.#reportPersistenceError(persistenceError);
     }
-    if (terminalPersisted) await this.#releaseReservation(context);
+    if (terminalPersisted) {
+      await this.#publishTelemetry(context.state);
+      await this.#releaseReservation(context);
+    }
+  }
+
+  async #publishTelemetry(state: PersonalRunState): Promise<void> {
+    if (!this.#phases.telemetryTerminal) return;
+    try {
+      const summary = await this.#phases.telemetryTerminal(state);
+      if (summary && !summary.complete) this.#reportPersistenceError(new Error(`Run accounting incomplete; inspect squire telemetry ${state.runId}`));
+    } catch {
+      this.#reportPersistenceError(new Error(`Run accounting unavailable/incomplete; inspect squire telemetry ${state.runId}`));
+    }
   }
 
   #reportPersistenceError(error: unknown): void {

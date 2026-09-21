@@ -125,6 +125,12 @@ try {
     await expectValidatorRejects(workflow.replace(marker, marker.replace(/timeout-minutes: \d+/, "timeout-minutes: 360")), `excessive timeout: ${marker}`);
   }
 
+  for (const name of ["stream", "store", "controller"]) {
+    const regression = ` dist/test/personal-telemetry-${name}.test.js`;
+    assert.equal(workflow.includes(regression), true, `Windows telemetry ${name} regression missing`);
+    await expectValidatorRejects(workflow.replace(regression, ""), `missing Windows telemetry ${name} coverage`);
+  }
+
   const controllerRegression = " dist/test/personal-controller.test.js";
   assert.equal(workflow.includes(controllerRegression), true, "Windows controller regression missing");
   await expectValidatorRejects(workflow.replace(controllerRegression, ""), "missing Windows controller cleanup coverage");
