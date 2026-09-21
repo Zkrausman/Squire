@@ -38,3 +38,23 @@ Every independent read opens relative to retained ancestors, checks the creation
 `native/windows-owner-observation.h` is distinct from immutable launch/report leases: it opens separate read-only, share-read/write/delete handles on local fixed NTFS, rejects reparse/nonregular/multilink or oversized records, reads through the opened handle, and revalidates file identity. Descendant opens are relative to retained ancestor handles. Exact process evidence uses `OpenProcess` query/synchronize access, native creation time and a zero-time exit check; it never closes an owner's handle or grants mutation/recovery authority. Operation and reservation proof bytes are published by writers, not observers. This boundary intentionally coexists with a legitimate operation handle; it does not relax the exclusive-create mutation mutex or exact-content release rules.
 
 The real-process `personal-owner-observation.test.ts` belongs in every existing Windows launch matrix version. Reserve, claimant-proof-before-state, claim and abandon barriers exercise both independent CLI selectors, including the historical-terminal/replacement regression in the background suite. All configured Windows jobs on the new published exact head remain required before merge; Linux fixture success is not native Windows evidence.
+
+## Retry generations and captured-source lifecycle
+
+Generation-specific phase inputs use native exclusive protected publication;
+existing immutable collisions must survive a failed launch untouched. Private
+original-input evidence uses the same report-evidence containment/ACL/lease
+boundary, with explicit phase-finally release. Production retry/CAS/crash fixtures
+must use `launchTestRoot` and actual native absolute paths, not POSIX-shaped temp
+strings. Run `personal-launch-retry` together with launch-material, controller,
+JSON-state, background CLI and telemetry suites in the unchanged Node
+20.17.0/22.9.0/24 gate.
+
+The foreground/detached captured-source fixture exercises the real Linear client
+against a loopback HTTP server, counts exactly one initial request per run and
+fences all unexpected network requests. The server removes original config/prompt
+sources before returning the captured ticket, while the detached launcher also
+removes them before handoff. Assertions wait for actual child exit, verify deletion
+and reservation cleanup, and retain the incomplete-accounting warning. A
+prototype-only Linear stub cannot prove this lifecycle or exclude an unstubbed
+post-terminal request; terminal telemetry diagnostics never authorize retry.

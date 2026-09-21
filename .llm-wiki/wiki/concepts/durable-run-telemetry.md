@@ -17,3 +17,16 @@ Durations derive only from persisted host dispatch/observed successful-command b
 `squire telemetry RUN-ID [--json] [--config FILE]` is a single-run host-only artifact reader without external adapters or mutable-session inspection. Legacy/missing artifacts explicitly report unavailable/incomplete; unsafe artifacts fail with sanitized errors. Terminal accounting warnings do not relabel accepted workflow evidence. The typed reader/validator and versioned artifact are exported for AIDEV-309, which owns backfill, cohorts, baseline reproduction and merge/CI scorecards. Squire completion is not a merge or exact-head CI claim.
 
 Implementation and authority details: `src/personal/telemetry-{capture,stream,store}.ts`, `pi-phase-runner.ts`, `plan-supervisor.ts`, `controller.ts`, and [docs/telemetry.md](../../../docs/telemetry.md). The three telemetry suites run in the ordinary tests and the bounded unconditional Windows gate. Keep workflow test commands, executable validator expectations and negative validator probes in lockstep.
+
+## Launch retry attribution
+
+[Transient phase-launch retry](transient-phase-launch-retry.md) adds separate
+`transient-retry` sessions within one logical attempt, distinct from staged retry
+and remediation. Inventory checks match all dispatched generation session IDs,
+input HEADs and session-file digests. Missing failed-launch usage remains unknown;
+it does not erase either launch or fabricate zero cost. Conclusively stopped typed
+pre-session failures can retain an observed end boundary; ambiguous transport
+termination still cannot. Terminal telemetry warnings remain additive and outside
+retry dispatch: they cannot fetch Linear again, perform post-terminal external
+requests, or relabel accepted workflow evidence. The captured CLI fixture counts
+real loopback ticket requests while deliberately exercising incomplete accounting.

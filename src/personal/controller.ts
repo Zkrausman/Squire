@@ -1,9 +1,10 @@
+import { dispatchPhaseLaunch, validateLaunchRetryPolicy, type LaunchRetryPolicy } from "./launch-retry.js";
 import { parsePhaseResult } from "./phase-payload.js";
 import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
 import { InvalidPhaseHandoff, CorrectionExecutionFailure, analyzeImplementReport, parseCorrectedReport, sameReportFacts, validateReportCorrectionPolicy, type ReportCorrectionPolicy, type CorrectionRecord, type ReportCapture } from "./report-correction.js";
 import { decodeReport, verifyReportEvidence } from "./report-evidence.js";
-import { requireStagedSlot, reservation } from "./staged-attempts.js";
+import { requireStagedSlot, reservation, stagedSelection } from "./staged-attempts.js";
 import { classifyExecutionFailure, PhaseExecutionError } from "./execution-failure.js";
 import { validateEscalationPolicy, escalationDigest, type EscalationPolicy } from "./model-policy.js";
 import { validatePlanProgress } from "./plan-artifacts.js";
@@ -75,6 +76,7 @@ export interface PersonalMvpControllerOptions {
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
   readonly escalationPolicy?: EscalationPolicy;
+  readonly launchRetryPolicy?: LaunchRetryPolicy;
   readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly phaseTimeoutMs?: number;
   /** Optional process identity for persisted foreground/background evidence. */
@@ -136,6 +138,7 @@ export class PersonalMvpController {
   readonly #newId: () => string;
   readonly #modelPolicy: PersonalModelPolicy;
   readonly #escalationPolicy: EscalationPolicy | undefined;
+  readonly #retryPolicy: LaunchRetryPolicy;
   readonly #correctionPolicy: ReportCorrectionPolicy;
   readonly #phaseTimeoutMs: number;
   readonly #controllerPid: number | undefined;
@@ -148,6 +151,7 @@ export class PersonalMvpController {
     if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
     const staged = this.#material?.config.escalationPolicy ?? options.escalationPolicy;
     this.#escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
+    this.#retryPolicy = validateLaunchRetryPolicy(this.#material ? this.#material.config.launchRetryPolicy : options.launchRetryPolicy);
     this.#correctionPolicy = validateReportCorrectionPolicy(this.#material ? this.#material.config.reportCorrectionPolicy : options.reportCorrectionPolicy);
     this.#phaseTimeoutMs = this.#material?.config.phaseTimeoutMs ?? options.phaseTimeoutMs ?? 3600000;
     if (!Number.isSafeInteger(this.#phaseTimeoutMs) || this.#phaseTimeoutMs <= 0 || this.#phaseTimeoutMs > 14400000) throw new Error("invalid controller phase timeout");
@@ -192,7 +196,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
-    const state: PersonalRunState = { ...baseline, reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
+    const state: PersonalRunState = { ...baseline, launchRetryPolicy: this.#retryPolicy, launchTransitions: [], reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
       if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
@@ -412,27 +416,7 @@ export class PersonalMvpController {
       await this.#ensureTest(context, ticket, request, signal);
       await this.#ensureRetro(context, ticket, request, signal);
 
-      const completeResults = requirePassingResults(context.state);
-      const head = requireHead(context.state);
-      await context.persist({ step: "publishing", lifecycle: "publishing" });
-      const bundle = await this.#workspaces.exportBundle({ runId: context.state.runId, sandbox: context.state.sandbox, branch: context.state.branch, baseSha: requireBase(context.state), head }, signal);
-      if (bundle.baseSha !== context.state.baseSha || bundle.head !== head || bundle.branch !== context.state.branch) throw new Error("candidate bundle identity mismatch");
-      const published = await this.#publication.publish({
-        runId: context.state.runId,
-        ticket,
-        repository: request.repository,
-        baseBranch: request.baseBranch,
-        branch: context.state.branch,
-        head,
-        bundle,
-        phases: completeResults,
-      }, signal);
-      if (!/^https:\/\/[^\s]+$/u.test(published.url)) throw new Error("publisher returned an invalid PR URL");
-      await context.persist({ step: "complete", status: "completed", lifecycle: "completed", endedAt: this.#timestamp(), prUrl: published.url, lastError: null });
-      await this.#publishTelemetry(context.state);
-      await this.#releaseReservation(context);
-      this.#contexts.delete(context.state.runId);
-      return context.state;
+      return await this.#publishCompleted(context, ticket, request, signal);
     } catch (error) {
       await this.#recordTerminal(context, error, signal?.aborted === true || classifyExecutionFailure(error) === "cancelled");
       this.#contexts.delete(context.state.runId);
@@ -440,8 +424,60 @@ export class PersonalMvpController {
     }
   }
 
-  async #ensureReview(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal): Promise<void> {
-    let result = await this.#executePhase(context, ticket, request, "review", [], signal);
+  async #publishCompleted(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal): Promise<PersonalRunState> {
+    const completeResults = requirePassingResults(context.state);
+    const head = requireHead(context.state);
+    await context.persist({ step: "publishing", lifecycle: "publishing" });
+    const bundle = await this.#workspaces.exportBundle({ runId: context.state.runId, sandbox: context.state.sandbox, branch: context.state.branch, baseSha: requireBase(context.state), head }, signal);
+    if (bundle.baseSha !== context.state.baseSha || bundle.head !== head || bundle.branch !== context.state.branch) throw new Error("candidate bundle identity mismatch");
+    const published = await this.#publication.publish({
+      runId: context.state.runId,
+      ticket,
+      repository: request.repository,
+      baseBranch: request.baseBranch,
+      branch: context.state.branch,
+      head,
+      bundle,
+      phases: completeResults,
+    }, signal);
+    if (!/^https:\/\/[^\s]+$/u.test(published.url)) throw new Error("publisher returned an invalid PR URL");
+    await context.persist({ step: "complete", status: "completed", lifecycle: "completed", endedAt: this.#timestamp(), prUrl: published.url, lastError: null });
+    await this.#publishTelemetry(context.state);
+    await this.#releaseReservation(context);
+    this.#contexts.delete(context.state.runId);
+    return context.state;
+  }
+
+  /** Owner-only reconciliation, not a general resume or ownership transfer.
+   * A process supervisor must already own this exact reservation. A different
+   * PID, terminal state, dispatched generation, or absent private input needs
+   * human authorization; this method never repairs those states. */
+  async reconcileReservedLaunch(runId: string, signal?: AbortSignal): Promise<PersonalRunState> {
+    const state = await this.#readState(runId);
+    const launch = state?.launchTransitions?.at(-1);
+    if (!state || state.status !== "running" || state.controllerPid !== process.pid || launch?.kind !== "reserved" || !launch.inputEvidence || !this.#phases.reportEvidence || !this.#states.transitionLaunch || !this.#states.reservationOwner || await this.#states.reservationOwner(state.ticketId) !== runId) throw new Error("launch reconciliation requires exact controller ownership and reserved private input; human authorization required");
+    if (state.launchEvidence && state.launchEvidence.digest !== this.#material?.digest) throw new Error("launch reconciliation material mismatch");
+    let input: PhaseInput;
+    try { input = JSON.parse(decodeReport(await verifyReportEvidence(this.#phases.reportEvidence, launch.inputEvidence))) as PhaseInput; }
+    catch (error) { await this.#phases.reportEvidence.release?.(); throw error; }
+    if (input.phase === "plan" && state.planExecution === "supervised-v1") { await this.#phases.reportEvidence.release?.(); throw new Error("composite Plan cannot be relaunched"); }
+    const request: RunRequest = { ticketId: state.ticketId, repository: state.repository, repositoryPath: state.repositoryPath!, sourceRef: state.sourceRef!, baseBranch: state.baseBranch };
+    const context = this.#context(state);
+    try {
+      const result = await this.#executePhase(context, input.ticket, request, input.phase, input.feedback, signal, input);
+      if (input.phase === "plan") await this.#executePhase(context, input.ticket, request, "implement", [], signal);
+      if (["plan", "implement", "review"].includes(input.phase)) await this.#ensureReview(context, input.ticket, request, signal, input.phase === "review" ? result : undefined);
+      if (input.phase !== "retro") await this.#ensureTest(context, input.ticket, request, signal, input.phase === "test" ? result : undefined);
+      if (input.phase !== "retro") await this.#ensureRetro(context, input.ticket, request, signal);
+      return await this.#publishCompleted(context, input.ticket, request, signal);
+    } catch (error) {
+      await this.#recordTerminal(context, error, signal?.aborted === true || classifyExecutionFailure(error) === "cancelled");
+      throw error;
+    } finally { await this.#phases.reportEvidence.release?.(); }
+  }
+
+  async #ensureReview(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal, accepted?: PhaseResult): Promise<void> {
+    let result = accepted ?? await this.#executePhase(context, ticket, request, "review", [], signal);
     if (result.status === "remediation_required") {
       if (context.state.remediations.review >= 1) throw new Error("Review remediation budget exhausted");
       for (const phase of ["implement", "review"] as const) requireStagedSlot(context.state, phase, "remediation_required");
@@ -455,8 +491,8 @@ export class PersonalMvpController {
     if (result.status !== "passed") throw new Error(`Review did not pass: ${result.summary}`);
   }
 
-  async #ensureTest(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal): Promise<void> {
-    let result = await this.#executePhase(context, ticket, request, "test", [], signal);
+  async #ensureTest(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal, accepted?: PhaseResult): Promise<void> {
+    let result = accepted ?? await this.#executePhase(context, ticket, request, "test", [], signal);
     if (result.status === "remediation_required") {
       if (context.state.remediations.test >= 1) throw new Error("Test remediation budget exhausted");
       for (const phase of ["implement", "review", "test"] as const) requireStagedSlot(context.state, phase, "remediation_required");
@@ -479,23 +515,25 @@ export class PersonalMvpController {
     if (result.status !== "passed") throw new Error(`Retro did not pass: ${result.summary}`);
   }
 
-  async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, phaseFeedback: readonly string[], signal?: AbortSignal): Promise<PhaseResult> {
-    if (!context.state.escalationPolicy?.[phase]) return this.#executePhaseOnce(context, ticket, request, phase, phaseFeedback, signal);
+  async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, phaseFeedback: readonly string[], signal?: AbortSignal, recoveryInput?: PhaseInput): Promise<PhaseResult> {
+    if (!context.state.escalationPolicy?.[phase]) return this.#executePhaseOnce(context, ticket, request, phase, phaseFeedback, signal, undefined, recoveryInput);
     let nextFeedback = phaseFeedback.slice(0, 20).map(item => item.slice(0, 2000));
     let trigger = phaseFeedback.length ? "remediation_required" : "initial";
     for (;;) {
       signal?.throwIfAborted();
-      const slot = requireStagedSlot(context.state, phase, trigger)!;
+      const slot = recoveryInput ? stagedSelection(context.state, phase, recoveryInput.attempt)! : requireStagedSlot(context.state, phase, trigger)!;
+      if (!slot) throw new Error("missing reserved staged selection");
       // No attempt is charged for controller-owned preflight failures.
       if (signal?.aborted) throw signal.reason;
       await this.#workspaces.assertClean(context.state.sandbox, signal);
       if (await this.#workspaces.currentHead(context.state.sandbox, signal) !== requireHead(context.state)) throw new Error(`${phase} started at an unexpected Git HEAD`);
       signal?.throwIfAborted();
       const reserved = reservation(context.state, slot);
-      await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: slot.attempt }, stagedTransitions: [...context.state.stagedTransitions!, reserved] });
+      if (!recoveryInput) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: slot.attempt }, stagedTransitions: [...context.state.stagedTransitions!, reserved] });
       let result: PhaseResult;
       try {
-        result = await this.#executePhaseOnce(context, ticket, request, phase, nextFeedback, signal, slot.profile);
+        result = await this.#executePhaseOnce(context, ticket, request, phase, nextFeedback, signal, slot.profile, recoveryInput);
+        recoveryInput = undefined;
       } catch (error) {
         const classification = classifyExecutionFailure(error, signal);
         await context.persist({ stagedTransitions: [...context.state.stagedTransitions!, { ...slot, kind: "closed", reason: "execution_failure", classification }] });
@@ -523,16 +561,19 @@ export class PersonalMvpController {
     phaseFeedback: readonly string[],
     signal?: AbortSignal,
     stagedProfile?: PhaseProfile,
+    recoveryInput?: PhaseInput,
   ): Promise<PhaseResult> {
-    const deadline = this.#monotonicNow() + this.#phaseTimeoutMs;
-    const timeoutSignal = AbortSignal.timeout(this.#phaseTimeoutMs);
+    const budget = recoveryInput ? context.state.launchTransitions!.at(-1)!.expiresAt - Date.now() : this.#phaseTimeoutMs;
+    if (budget <= 0 || budget > this.#phaseTimeoutMs) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
+    const deadline = this.#monotonicNow() + budget;
+    const timeoutSignal = AbortSignal.timeout(budget);
     signal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     const expectedHead = requireHead(context.state);
-    const attempt = context.state.attempts[phase] + (stagedProfile ? 0 : 1);
-    if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
+    const attempt = recoveryInput?.attempt ?? context.state.attempts[phase] + (stagedProfile ? 0 : 1);
+    if (!stagedProfile && !recoveryInput) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
     const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
     const stagedAccounting = context.state.stagedTransitions?.find(t => t.phase === phase && t.attempt === attempt && t.kind === "reserved");
-    const input: PhaseInput = Object.freeze({
+    let input: PhaseInput = recoveryInput ?? Object.freeze({
       telemetryAttribution: { trigger: stagedAccounting ? stagedAccounting.reason as "initial" | "retry" | "stage_advanced" | "remediation" : attempt > 1 ? "remediation" : "initial", stageIndex: stagedAccounting?.stageIndex ?? null, stageAttempt: stagedAccounting?.stageAttempt ?? null },
       deadline,
       ...(phase === "implement" ? { reportSession: Object.freeze({ sessionId: randomUUID(), sessionFile: `/ticket/sessions/${phase}/${attempt}.jsonl` }) } : {}),
@@ -569,7 +610,7 @@ export class PersonalMvpController {
     let progressWrites = Promise.resolve();
     let progressCount = 0;
     try {
-      result = await this.#phases.run(input, signal, progress => {
+      const run = (dispatchInput: PhaseInput) => { input = dispatchInput; return this.#phases.run(structuredClone(dispatchInput), signal, progress => {
         validatePlanProgress(progress);
         const snapshot = structuredClone(progress);
         if (!acceptingProgress || phase !== "plan" || context.state.planExecution !== "supervised-v1" || snapshot.runId !== input.runId || snapshot.attempt !== attempt || snapshot.subphase !== ["requirements", "implementation-design"][progressCount]) return Promise.reject(new Error("stale or unordered Plan progress"));
@@ -580,6 +621,15 @@ export class PersonalMvpController {
         });
         return progressWrites;
       });
+      };
+      // Supervised Plan owns two independently gated children; a child failure is
+      // not a pre-session failure of the parent. Never replay that composite.
+      if (phase === "plan" && context.state.planExecution === "supervised-v1") result = await run(input);
+      else {
+        const launched = await dispatchPhaseLaunch({ context, input, allowRetry: this.#states.transitionLaunch !== undefined, workspaces: this.#workspaces, run, ...(recoveryInput ? { reconcile: true } : {}), ...(this.#phases.reportEvidence ? { evidence: this.#phases.reportEvidence } : {}), signal, monotonicNow: this.#monotonicNow });
+        input = launched.input;
+        result = launched.result;
+      }
       successfulCapture = this.#phases.reportCapture?.(result);
       if (this.#phases.reportCapture && !successfulCapture && !(result.phase === "plan" && result.details.supervision)) throw new Error("phase adapter omitted report evidence");
       if (successfulCapture) {
@@ -660,6 +710,7 @@ export class PersonalMvpController {
 
   async #correctHandoff(context: RunContext, input: PhaseInput, invalid: InvalidPhaseHandoff | CorrectionExecutionFailure, observedHead: string | undefined, workspaceError: unknown, signal: AbortSignal): Promise<PhaseResult> {
     const policy = context.state.reportCorrectionPolicy!;
+    const correctionDeadline = input.launchGeneration?.deadline ?? input.deadline;
     const port = this.#phases.reportEvidence;
     const original = structuredClone(invalid.capture);
     const head = observedHead && /^[a-f0-9]{40,64}$/u.test(observedHead) ? observedHead : null;
@@ -700,7 +751,7 @@ export class PersonalMvpController {
     };
     const active = (): void => {
       signal.throwIfAborted();
-      if (!input.deadline || this.#monotonicNow() >= input.deadline) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
+      if (!correctionDeadline || this.#monotonicNow() >= correctionDeadline) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
     };
     try {
       const originalBytes = await verify(original);
@@ -711,7 +762,7 @@ export class PersonalMvpController {
       if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
       active();
       if (original.sessionId !== input.reportSession?.sessionId) throw new Error("original report producer mismatch");
-      if (original.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("original report session identity mismatch");
+      if (original.sessionFile !== (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("original report session identity mismatch");
       decodeReport(originalBytes); // invalid UTF-8 stays preserved, never trusted facts
       const analysis = analyzeImplementReport(original, input);
       if (!analysis.unexpected.length) throw new Error("unsupported handoff error class");
@@ -740,7 +791,7 @@ export class PersonalMvpController {
         let responseBytes: Buffer | undefined;
         let executionError: unknown;
         try {
-          response = structuredClone(await this.#phases.correctReport(structuredClone({ input, original, latest, diagnostic, diagnostics: analysis.unexpected.map(key => ({ path: ["details", key], code: "unexpected-field" as const })), correctionAttempt: used, producerId, deadline: input.deadline! }), signal));
+          response = structuredClone(await this.#phases.correctReport(structuredClone({ input, original, latest, diagnostic, diagnostics: analysis.unexpected.map(key => ({ path: ["details", key], code: "unexpected-field" as const })), correctionAttempt: used, producerId, deadline: correctionDeadline! }), signal));
         } catch (error) {
           if (error instanceof CorrectionExecutionFailure) response = structuredClone(error.capture);
           executionError = error instanceof PhaseExecutionError ? error : new PhaseExecutionError(classifyExecutionFailure(error), error instanceof Error ? error.message : "correction execution rejected without diagnostic", { cause: error });
@@ -834,7 +885,8 @@ export class PersonalMvpController {
     context.persist = async (changes, prepared) => {
       const next = nextState(changes);
       prepared?.(structuredClone(next));
-      await this.#states.save(next);
+      if (changes.launchTransitions && this.#states.transitionLaunch) await this.#states.transitionLaunch(next);
+      else await this.#states.save(next);
       context.state = next;
     };
     context.bindSource = async sourceSha => {
@@ -1076,7 +1128,7 @@ function validateRequest(request: RunRequest): void {
 function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHead: string): void {
   validatePhaseResultShape(result, input.phase);
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt) throw new Error("phase result identity mismatch");
-  if (result.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("phase result session file mismatch");
+  if (result.sessionFile !== (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("phase result session file mismatch");
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
   if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");

@@ -1,3 +1,4 @@
+import type { LaunchRetryPolicy, LaunchTransition, LaunchGeneration } from "./launch-retry.js";
 import type { ReportCorrectionPolicy, CorrectionRecord, ReportCapture, ReportCorrectionInput } from "./report-correction.js";
 import type { ReportEvidencePort } from "./report-evidence.js";
 import type { EscalationPolicy } from "./model-policy.js";
@@ -95,8 +96,9 @@ export interface RetroPhaseResult extends PhaseResultBase {
 export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult | RetroPhaseResult;
 
 export interface PhaseInput {
+  readonly launchGeneration?: LaunchGeneration;
   /** Controller-owned accounting attribution; never selected by the model. */
-  readonly telemetryAttribution?: { readonly trigger: "initial" | "retry" | "stage_advanced" | "remediation"; readonly stageIndex: number | null; readonly stageAttempt: number | null };
+  readonly telemetryAttribution?: { readonly trigger: "initial" | "retry" | "stage_advanced" | "remediation" | "transient-retry"; readonly stageIndex: number | null; readonly stageAttempt: number | null };
   /** Controller monotonic deadline, never reset for correction. */
   readonly deadline?: number;
   readonly reportSession?: { readonly sessionId: string; readonly sessionFile: string };
@@ -153,6 +155,8 @@ export interface PublicationResult {
 }
 
 export interface PersonalRunState {
+  readonly launchRetryPolicy?: LaunchRetryPolicy;
+  readonly launchTransitions?: readonly LaunchTransition[];
   readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly reportCorrections?: readonly CorrectionRecord[];
   readonly schemaVersion: 1;
@@ -270,6 +274,8 @@ export type ReservationObservation =
   | { readonly kind: "ambiguous"; readonly reason: string };
 
 export interface RunStatePort {
+  /** Owner-checked version CAS for one append-only launch transition. */
+  transitionLaunch?(state: PersonalRunState): Promise<void>;
   create(state: PersonalRunState): Promise<void>;
   save(state: PersonalRunState): Promise<void>;
   findActive(ticketId: string): Promise<PersonalRunState | undefined>;

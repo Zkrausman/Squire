@@ -338,3 +338,67 @@ The production runner/controller fixture in `test/personal-windows-report-correc
 ### Current-run efficiency reporting
 
 Use `squire telemetry RUN-ID [--json] [--config FILE]` for private per-session, Plan-subphase, phase and run token/time/Pi-recorded-cost accounting. Missing or incomplete usage never changes phase outcomes. See [telemetry authority, completeness and retention](telemetry.md); legacy backfill and multi-run comparisons are deferred.
+
+### Transient phase-launch availability
+
+`launchRetryPolicy` defaults to `{ "maxRetries": 1, "backoffMs": 1000 }`.
+When supplied, both fields are required: `maxRetries` is exactly 0 or 1 and
+`backoffMs` is an integer 0–5000. Unknown fields fail validation. Raw/effective
+policy and captured prompts/config are digest-bound before adapters run.
+
+Only the trusted typed pre-result launch classifier (version 1) can authorize
+one automatic relaunch of the **same logical attempt**. Its allowlist includes
+the exact Codex Daybreak Blue entitlement-verification condition and affirmative
+pre-session transport/service-unavailable signals. The process adapter recognizes
+the exact failed-process stderr condition only with empty stdout, or the closed
+Pi error-event envelope with empty assistant content and zero usage. Unknown
+errors, ordinary HTTP/error text, hard authentication, moderation, schema/tool/
+implementation errors, cancellation, ambiguous timeouts, telemetry warnings and
+Linear/controller failures are not retry signals. Output/tool/result/ambiguity
+flags must all be explicitly false. The controller independently requires a clean
+workspace at the identical HEAD before reserving and dispatching the retry.
+Supervised Plan is composite: its child failure does not prove the parent never
+acted, so the parent is never automatically replayed.
+
+Each dispatch has a fresh generation UUID, session UUID/file and exclusive host
+input artifact. The append-only run ledger records `reserved → dispatched →
+failed|returned`, sanitized error codes, classifier version/rule, input SHA-256,
+private original-input reference, captured launch digest, deadline, timestamps and
+elapsed backoff. `returned` means transport return, **not** accepted phase evidence.
+Normal report, wiki, Review/Test, remediation, escalation and publication gates
+still decide acceptance. Accepted earlier phases and candidates are not replayed.
+Backoff and both generations share the original phase timeout; late results cannot
+extend it. This runtime has no separate authoritative monetary ceiling; both
+launches remain accounted and missing billing remains unknown.
+
+JSON-store launch transitions require the existing exact ticket reservation,
+live controller process identity and serialized version CAS. Ordinary saves cannot
+append a launch transition. A stale controller loses before model dispatch.
+Legacy embedded state ports without `transitionLaunch` cannot automatically retry.
+`PersonalMvpController.reconcileReservedLaunch` is an owner-only continuation seam:
+it independently reads the original private input and matching captured material,
+dispatches only a still-reserved generation, then continues outstanding gates.
+It never fetches Linear/config/prompts again or reruns accepted phases. It does
+not acquire a dead controller's reservation or provide a general CLI resume.
+Foreign/reused process identities, terminal runs, `failed`, `dispatched` without
+return, and already `returned` generations require human authorization; no paid
+work or success is inferred after a crash. Existing ownership must be proved,
+not reassigned automatically.
+
+Status/watch show reserved retry waiting separately from dispatched model work.
+Only bounded generation/rule metadata enters events. Sensitive original inputs
+remain under private report-evidence storage with Linux fd-relative or Windows
+native local-NTFS ACL/containment/lease checks; transient staging copies are
+removed only when created by that invocation, including failures. An immutable
+collision never overwrites or deletes the existing artifact.
+
+The production `personal-launch-retry` suite uses real private cross-platform
+roots and JSON CAS/evidence, including failed/reserved/dispatched/returned crash
+states. Run it with launch-material, telemetry, controller and background CLI
+fixtures. The launch-material fixture exercises the real Linear adapter against
+a counted loopback server and fences unexpected network requests: exactly one
+initial lookup per foreground/detached run, original sources deleted before
+completion, and no post-terminal lookup even with an incomplete-accounting
+warning. Prototype-only ticket stubs are not sufficient evidence for this contract.
+The unconditional Windows Node 20.17.0/22.9.0/24 native gate remains required on
+the exact published head; Linux/shared-contract runs do not substitute for it.

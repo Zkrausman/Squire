@@ -1,3 +1,4 @@
+import { validateLaunchState, assertLaunchAppendOnly } from "./launch-retry.js";
 import { observeOwnerFile, ownerProcessIdentity, parseOperation, type OperationEvidence } from "./owner-observation.js";
 import { validateCorrectionState, assertCorrectionUnchanged } from "./report-correction.js";
 import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
@@ -18,7 +19,7 @@ import { JsonRunEventOutbox } from "./run-events.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
-  "reportCorrectionPolicy", "reportCorrections",
+  "reportCorrectionPolicy", "reportCorrections", "launchRetryPolicy", "launchTransitions",
   "escalationPolicy", "escalationDigest", "stagedTransitions",
   "profiles",
   "planSelection",
@@ -154,7 +155,23 @@ export class JsonRunStateStore implements RunStatePort {
     });
   }
 
-  async save(state: PersonalRunState): Promise<void> {
+  async transitionLaunch(state: PersonalRunState): Promise<void> {
+    return withTicketOperation(this.directory, state.ticketId, async () => {
+      if (await readLock(this.#reservationPath(state.ticketId)) !== state.runId) throw new Error("launch reservation ownership mismatch");
+      const proof = await this.observeReservation(state.ticketId);
+      if (proof.kind !== "owner" || proof.runId !== state.runId || proof.pid !== process.pid) throw new Error("launch controller process ownership is ambiguous");
+      const current = await this.read(state.runId);
+      if (!current || current.status !== "running" || current.controllerPid !== state.controllerPid || (state.controllerPid != null && state.controllerPid !== process.pid) || (state.launchTransitions?.length ?? 0) !== (current.launchTransitions?.length ?? 0) + 1) throw new Error("launch controller ownership/transition mismatch");
+      const stable = (s: PersonalRunState) => { const { version: _version, updatedAt: _updated, launchTransitions: _launches, ...rest } = s; return rest; };
+      const nextLaunch = state.launchTransitions!.at(-1)!;
+      if (!isDeepStrictEqual(stable(current), stable(state)) || nextLaunch.inputHead !== current.head || nextLaunch.phase !== current.step || nextLaunch.attempt !== current.attempts[nextLaunch.phase]) throw new Error("launch CAS must preserve the exact run/candidate identity");
+      await this.#save(state, true);
+    });
+  }
+
+  async save(state: PersonalRunState): Promise<void> { return this.#save(state, false); }
+
+  async #save(state: PersonalRunState, launchAuthorized: boolean): Promise<void> {
     validateState(state);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const target = this.#path(state.runId);
@@ -175,6 +192,7 @@ export class JsonRunStateStore implements RunStatePort {
         const current = await this.#read(target, state.runId);
         if (!current) throw new Error(`run state does not exist: ${state.runId}`);
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+        if (!launchAuthorized && (current.launchTransitions?.length ?? 0) !== (state.launchTransitions?.length ?? 0)) throw new Error("launch transitions require owner-checked CAS");
         assertResolvedProfilesUnchanged(current, state);
         assertLaunchIdentityUnchanged(current, state);
         assertRemediationAttemptsAppendOnly(current, state);
@@ -764,6 +782,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   if (!text(state["ticketTitle"], 2_000)) throw new Error("invalid run state ticketTitle");
   if (typeof state["status"] !== "string" || !RUN_STATUSES.includes(state["status"] as (typeof RUN_STATUSES)[number])) throw new Error("invalid run state status");
   if (typeof state["step"] !== "string" || !RUN_STEPS.includes(state["step"] as (typeof RUN_STEPS)[number])) throw new Error("invalid run state step");
+  validateLaunchState(value as PersonalRunState);
   validateLifecycleMetadata(state);
   if (state["sandbox"] !== `squire-${state["runId"]}`) throw new Error("run state sandbox identity mismatch");
   if (!text(state["repository"], 256) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(state["repository"])) throw new Error("invalid run state repository");
@@ -796,7 +815,9 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   for (const [key, result] of Object.entries(results)) {
     const phase = key as PersonalPhase;
     validatePhaseResultShape(result, phase, { allowLegacyImplementProjectWiki: state["profiles"] === undefined && phase === "implement" });
-    if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || result.sessionFile !== `/ticket/sessions/${phase}/${result.attempt}.jsonl`) throw new Error(`run state ${phase} result identity mismatch`);
+    const launch = (state as unknown as PersonalRunState).launchTransitions?.filter(t => t.phase === phase && t.attempt === result.attempt).at(-1);
+    if (launch?.number === 1 && result.sessionId !== launch.sessionId) throw new Error("run state retry session identity mismatch");
+    if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || result.sessionFile !== (launch?.sessionFile ?? `/ticket/sessions/${phase}/${result.attempt}.jsonl`)) throw new Error(`run state ${phase} result identity mismatch`);
     if (result.phase === "plan" && state["planExecution"] === "supervised-v1") {
       if (!result.details.supervision || result.details.supervision.launchDigest !== (state["launchEvidence"] as { digest: string }).digest) throw new Error("supervised Plan evidence missing or mismatched");
     }
@@ -1049,6 +1070,7 @@ async function acquireUpdateLock(directory: string, runId: string): Promise<() =
 }
 
 function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  assertLaunchAppendOnly(current, next);
   assertCorrectionUnchanged(current, next);
   assertStagedUnchanged(current, next);
   if (current.profiles) {

@@ -17,7 +17,7 @@ export interface TelemetryInvocation {
   runId: string; phase: PersonalPhase; subphase: "requirements" | "implementation-design" | null;
   attempt: number; correction: number; sessionId: string; sessionArtifactDigest: string;
   inputHead: string; profile: PhaseProfile; escalationDigest: string | null;
-  trigger: "initial" | "retry" | "stage_advanced" | "remediation" | "report-correction";
+  trigger: "initial" | "retry" | "stage_advanced" | "remediation" | "report-correction" | "transient-retry";
   stageIndex: number | null; stageAttempt: number | null;
   startedAt: string;
 }
@@ -56,7 +56,7 @@ function validateInvocation(v: TelemetryInvocation) {
   validatePhaseProfile(v.profile);
   assert(/^[a-z0-9][a-z0-9-]{0,63}$/u.test(v.profile.provider) && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u.test(v.profile.model));
   assert(v.escalationDigest === null || HASH.test(v.escalationDigest));
-  assert(["initial", "retry", "stage_advanced", "remediation", "report-correction"].includes(v.trigger) && timestamp(v.startedAt));
+  assert(["initial", "retry", "stage_advanced", "remediation", "report-correction", "transient-retry"].includes(v.trigger) && timestamp(v.startedAt));
   assert((v.stageIndex === null && v.stageAttempt === null) || (Number.isSafeInteger(v.stageIndex) && v.stageIndex! >= 0 && v.stageIndex! < 100 && Number.isSafeInteger(v.stageAttempt) && v.stageAttempt! > 0 && v.stageAttempt! <= 1_000_000));
 }
 const INVOCATION_KEYS = ["runId", "phase", "subphase", "attempt", "correction", "sessionId", "sessionArtifactDigest", "inputHead", "profile", "escalationDigest", "trigger", "stageIndex", "stageAttempt", "startedAt"];
@@ -158,7 +158,7 @@ export class TelemetryStore {
   constructor(stagingRoot: string) { this.root = path.resolve(stagingRoot, "telemetry"); }
   directory(runId: string) { validateTelemetryRunId(runId); return path.join(this.root, runId); }
   async begin(value: TelemetryInvocation): Promise<void> { validateInvocation(value); await publish(path.join(this.directory(value.runId), `${value.sessionId}.start.json`), value); }
-  async end(value: TelemetryInvocation, bytes: Buffer | undefined, exited: boolean): Promise<void> {
+  async end(value: TelemetryInvocation, bytes: Buffer | undefined, exited: boolean, stopped = false): Promise<void> {
     const directory = this.directory(value.runId);
     const evidence = createReportEvidence(path.join(directory, "streams"));
     const streams: ReportEvidence[] = [];
@@ -169,7 +169,7 @@ export class TelemetryStore {
         await verifyReportEvidence(evidence, ref, chunk);
         streams.push(ref);
       }
-      await publish(path.join(directory, `${value.sessionId}.end.json`), { endedAt: exited ? new Date().toISOString() : null, exited, streams } satisfies End);
+      await publish(path.join(directory, `${value.sessionId}.end.json`), { endedAt: exited || stopped ? new Date().toISOString() : null, exited, streams } satisfies End);
     } finally { await evidence.release?.(); }
   }
   async settle(runId: string, sessionId: string, outcome: TelemetrySession["outcome"]): Promise<void> {
@@ -221,7 +221,12 @@ export class TelemetryStore {
         const rows = sessions.filter(s => s.phase === phase && s.attempt === attempt && !s.correction);
         if (phase === "plan" && state.planExecution === "supervised-v1") {
           if (rows.length !== 2 || !rows.some(s => s.subphase === "requirements") || !rows.some(s => s.subphase === "implementation-design")) return false;
-        } else if (rows.length !== 1) return false;
+        } else {
+          const launches = state.launchTransitions?.filter(t => t.phase === phase && t.attempt === attempt && t.kind === "dispatched");
+          if (launches?.length) {
+            if (rows.length !== launches.length || !launches.every(t => rows.some(s => s.sessionId === t.sessionId && s.inputHead === t.inputHead && s.sessionArtifactDigest === hash(t.sessionFile) && (t.number === 0 || s.trigger === "transient-retry")))) return false;
+          } else if (rows.length !== 1) return false;
+        }
       }
       return true;
     }) && sessions.every(s => s.attempt <= state.attempts[s.phase]) && (state.reportCorrections ?? []).filter(c => c.kind === "launched").every(c => sessions.some(s => s.sessionId === c.producer));

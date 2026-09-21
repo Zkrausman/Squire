@@ -44,6 +44,7 @@
     "id": "default",
     "plan": []
   },
+  "launchRetryPolicy": { "maxRetries": 1, "backoffMs": 1000 },
   "testCommands": [
     "npm test"
   ],

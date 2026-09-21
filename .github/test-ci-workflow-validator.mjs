@@ -131,6 +131,12 @@ try {
     await expectValidatorRejects(workflow.replace(regression, ""), `missing Windows telemetry ${name} coverage`);
   }
 
+  for (const name of ["launch-retry", "json-run-state"]) {
+    const regression = ` dist/test/personal-${name}.test.js`;
+    assert.equal(workflow.includes(regression), true, `Windows ${name} regression missing`);
+    await expectValidatorRejects(workflow.replace(regression, ""), `missing Windows ${name} coverage`);
+  }
+
   const controllerRegression = " dist/test/personal-controller.test.js";
   assert.equal(workflow.includes(controllerRegression), true, "Windows controller regression missing");
   await expectValidatorRejects(workflow.replace(controllerRegression, ""), "missing Windows controller cleanup coverage");
