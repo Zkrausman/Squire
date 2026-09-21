@@ -4,6 +4,7 @@ import path from "node:path";
 interface WindowsLaunchNative {
   observeOwnerFile(file: string): { bytes: string; identity: string } | undefined;
   ownerProcessIdentity(pid: number): string;
+  openHistorical(file: string): { lease: object; identity: string };
   openReport(file: string, bytes?: Buffer): { lease: object; identity: string };
   readReport(lease: object): Buffer;
   closeReport(lease: object): void;

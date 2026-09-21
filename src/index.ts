@@ -59,3 +59,11 @@ export type { UsageAccounting, TokenField, Diagnostic as TelemetryDiagnostic } f
 
 export { LAUNCH_CLASSIFIER, LAUNCH_BACKOFF_MS, validateLaunchRetryPolicy, classifyLaunchFailure, TransientLaunchFailure } from "./personal/launch-retry.js";
 export type { LaunchRetryPolicy, LaunchGeneration, LaunchRecord } from "./personal/launch-retry.js";
+
+export { scanJson, parseBoundedJson, canonicalJson, JsonScanError, type JsonLimits, type JsonScan } from "./personal/canonical-json.js";
+export { validateCohortManifest, parseCohortManifest, type CohortManifest, type CohortRun, type HistoricalSource, type ArtifactReference } from "./personal/cohort-manifest.js";
+export { validateTrustRoots, parseTrustRoots, verifyDisposition, type TrustRoots, type SignatureEnvelope, type DispositionManifest, type VerifiedDisposition } from "./personal/evidence-verification.js";
+export { extractHistoricalSession, historicalTotals, type HistoricalSession, type HistoricalTotals } from "./personal/historical-telemetry.js";
+export { buildScorecards, type HistoricalRun, type TicketScore, type Scorecard } from "./personal/cohort-scorecard.js";
+export { readPrivateArtifact, readBoundArtifact, publishCohort, type CohortPublication } from "./personal/private-cohort-store.js";
+export { backfillCohort, backfillCohortFiles, reconcileBaseline, type CohortReport, type BaselineReconciliation } from "./personal/cohort-backfill.js";

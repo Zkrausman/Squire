@@ -24,6 +24,7 @@ struct ReportLease {
   std::unique_ptr<Snapshot> snapshot;
   std::wstring path;
   bool busy = false;
+  size_t maxBytes = ReportMaxBytes;
   void verify() {
     if (!file) fail("closed report evidence lease");
     chain->verify();
@@ -41,7 +42,7 @@ struct ReportLease {
     protectedEvidence(chain->policy, reader->value, false);
     if (!snapshot->same(Snapshot(reader->value))) fail("report evidence replaced");
     LARGE_INTEGER size; check(GetFileSizeEx(reader->value, &size), "report evidence size");
-    if (size.QuadPart < 0 || size.QuadPart > ReportMaxBytes) fail("report evidence exceeds size bound");
+    if (size.QuadPart < 0 || size.QuadPart > maxBytes) fail("report evidence exceeds size bound");
     std::vector<char> bytes(static_cast<size_t>(size.QuadPart) + 1);
     DWORD used = 0;
     // Deterministic race probe after a partial native read. Not used by the
@@ -73,8 +74,11 @@ napi_value reportOperation(napi_env env, napi_callback_info info, int op) {
     napi_value args[2], result; size_t count = 2;
     napi_get_cb_info(env, info, &count, args, nullptr, nullptr); napi_get_undefined(env, &result);
     if (count < 1) fail("missing report evidence arguments");
-    if (op == 0) {
-      auto lease = std::make_unique<ReportLease>(); lease->path = stringArg(env, args[0]);
+    if (op == 0 || op == 3) {
+      if (op == 3 && count != 1) fail("historical evidence is read-only");
+      auto lease = std::make_unique<ReportLease>();
+      if (op == 3) lease->maxBytes = 64 * 1024 * 1024;
+      lease->path = stringArg(env, args[0]);
       lease->chain = std::make_unique<Chain>(lease->path, count == 2, L"");
       auto& chain = *lease->chain;
       wchar_t filesystem[32];
@@ -130,3 +134,6 @@ napi_value reportOperation(napi_env env, napi_callback_info info, int op) {
 napi_value openReport(napi_env e, napi_callback_info i) { return reportOperation(e, i, 0); }
 napi_value readReport(napi_env e, napi_callback_info i) { return reportOperation(e, i, 1); }
 napi_value closeReport(napi_env e, napi_callback_info i) { return reportOperation(e, i, 2); }
+
+// Historical input shares the protected lease but has a separate read-only bound.
+napi_value openHistorical(napi_env e, napi_callback_info i) { return reportOperation(e, i, 3); }
