@@ -59,3 +59,11 @@ export type { UsageAccounting, TokenField, Diagnostic as TelemetryDiagnostic } f
 
 export { LAUNCH_CLASSIFIER, LAUNCH_BACKOFF_MS, validateLaunchRetryPolicy, classifyLaunchFailure, TransientLaunchFailure } from "./personal/launch-retry.js";
 export type { LaunchRetryPolicy, LaunchGeneration, LaunchRecord } from "./personal/launch-retry.js";
+
+// Host-only historical cohort APIs; historical evidence never becomes RunTelemetry.
+export { canonicalJson as canonicalCohortJson, parseBoundedJson, parseCanonicalJson } from "./personal/canonical-json.js";
+export * from "./personal/cohort-domain.js";
+export * from "./personal/disposition-evidence.js";
+export * from "./personal/historical-telemetry.js";
+export * from "./personal/cohort-scorecard.js";
+export * from "./personal/cohort-store.js";

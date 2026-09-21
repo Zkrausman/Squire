@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runCohort } from "./cohort-store.js";
 import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
 import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
@@ -39,7 +40,8 @@ export interface ParsedWatchArguments {
 }
 
 export interface ParsedTelemetryArguments { readonly command: "telemetry"; readonly selector: string; readonly config: string; readonly json: boolean; }
-export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments | ParsedTelemetryArguments;
+export interface ParsedCohortArguments { readonly command: "cohort"; readonly spec: string; readonly trustRoots: string; readonly config: string; }
+export type ParsedArguments = ParsedCohortArguments | ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments | ParsedTelemetryArguments;
 
 interface ParsedReservedArguments extends ParsedRunArguments {
   readonly reservedRunId: string;
@@ -52,10 +54,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   const parsed = parseArguments(argv);
   if (!parsed) {
-    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire telemetry <RUN-ID> [--json] [--config <file>]\n");
+    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire telemetry <RUN-ID> [--json] [--config <file>]\n       squire cohort <cohort-spec> --trust-roots <file> [--config <file>]\n");
     return 2;
   }
 
+  if (parsed.command === "cohort") return cohortCommand(parsed);
   if (parsed.command === "telemetry") return telemetryCommand(parsed);
   if (parsed.command === "status") return statusCommand(parsed);
   if (parsed.command === "watch") return watchCommand(parsed);
@@ -64,6 +67,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
 export function parseArguments(argv: readonly string[]): ParsedArguments | undefined {
   const command = argv[0];
+  if (command === "cohort") {
+    const spec = argv[1]; if (!spec || spec.startsWith("-") || /[\x00-\x1f\x7f]/u.test(spec)) return undefined;
+    let trustRoots: string | undefined, config: string | undefined;
+    for (let i = 2; i < argv.length; i += 2) {
+      const flag = argv[i], value = argv[i + 1];
+      if (!value || value.startsWith("-") || !value.trim() || /[\x00-\x1f\x7f]/u.test(value)) return undefined;
+      if (flag === "--trust-roots" && trustRoots === undefined) trustRoots = value;
+      else if (flag === "--config" && config === undefined) config = value;
+      else return undefined;
+    }
+    return trustRoots ? { command, spec: path.resolve(spec), trustRoots: path.resolve(trustRoots), config: resolveConfigPath(config) } : undefined;
+  }
   if (command !== "run" && command !== "status" && command !== "watch" && command !== "telemetry") return undefined;
   let positional: string | undefined;
   let explicit: string | undefined;
@@ -107,6 +122,14 @@ export async function telemetryCommand(parsed: ParsedTelemetryArguments): Promis
     process.stdout.write((parsed.json ? JSON.stringify(artifact ?? { schemaVersion: 1, runId: parsed.selector, available: false, complete: false, reason: "no_terminal_artifact" }) : formatTelemetry(artifact, parsed.selector)) + "\n");
     return 0;
   } catch { process.stderr.write("Telemetry unavailable: check configuration and private terminal artifact integrity.\n"); return 1; }
+}
+
+export async function cohortCommand(parsed: ParsedCohortArguments): Promise<number> {
+  try {
+    const config = await loadPersonalMvpConfig(parsed.config);
+    const result = await runCohort({ specFile: parsed.spec, trustRootsFile: parsed.trustRoots, repositoryPath: config.repository.path, dataDirectory: config.dataDirectory, stateDirectory: config.paths.state, stagingDirectory: config.paths.staging });
+    process.stdout.write(JSON.stringify(result) + "\n"); return 0;
+  } catch { process.stderr.write("Cohort unavailable: check configuration and private evidence integrity.\n"); return 1; }
 }
 
 async function runCommand(parsed: ParsedRunArguments): Promise<number> {

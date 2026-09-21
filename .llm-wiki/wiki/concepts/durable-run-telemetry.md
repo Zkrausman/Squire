@@ -32,3 +32,11 @@ ambiguous failures remain incomplete; pre-spawn failures have no Pi billing to
 invent. This narrow exception does not make arbitrary error streams authoritative.
 Accounting warnings remain diagnostic-only after completion and cannot trigger
 another ticket fetch or launch. See [Transient phase-launch retry](transient-phase-launch-retry.md).
+
+## Historical cohorts
+
+The host-only [historical cohort workflow](historical-telemetry-cohort-scorecards.md)
+now consumes validated terminal telemetry without changing this authority. Retained
+Pi session backfill remains provisional and is never promoted to a controller
+summary or added to overlapping current usage. Exact-head CI/merge comes only from
+independently bound Ed25519 imports; Squire completion remains a separate fact.

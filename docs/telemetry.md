@@ -90,3 +90,11 @@ change a completed workflow to failed. Missing launch capture keeps totals marke
 incomplete. Comparisons can sum failed/replacement rows and compare the retained
 single Plan/Implement rows against an explicit replay counterfactual; this is not
 an empirical incident savings claim or provider invoice.
+
+## Historical cohorts and disposition imports
+
+The separate host-only `squire cohort` command supports explicit retained-session
+backfill, authenticated disposition imports and private comparable scorecards.
+See [cohort schemas, trust roots and metrics](cohort-scorecards.md). Historical Pi
+session usage stays provisional and cannot validate as `RunTelemetry`; no current
+summary is rewritten. CI and merge remain independently authenticated facts.

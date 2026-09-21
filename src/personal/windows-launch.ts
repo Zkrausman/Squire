@@ -12,6 +12,7 @@ interface WindowsLaunchNative {
   closeSource(lease: object): void;
   persist(file: string, repository: string, bytes: string): void;
   read(file: string, repository: string): string;
+  readPrivateBytes(file: string, repository: string, maximum: number): Buffer;
   openLog(file: string): number;
   closeLog(fd: number): void;
   replaceState(source: string, destination: string): void;

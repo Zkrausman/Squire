@@ -391,24 +391,27 @@ napi_value operation(napi_env env, napi_callback_info info, int op) {
     if (count < (op == 2 ? 1u : 2u)) fail("missing arguments");
     auto filePath = stringArg(env, args[0]);
     auto repository = op == 2 ? L"" : stringArg(env, args[1]);
-    auto chain = std::make_unique<Chain>(filePath, op != 1, repository);
+    auto chain = std::make_unique<Chain>(filePath, op != 1 && op != 4, repository);
     if (op == 0) {
       if (count < 3) fail("missing bytes");
       write(*chain, bytesArg(env, args[2]), env, count >= 4 ? args[3] : nullptr);
-    } else if (op == 1) {
+    } else if (op == 1 || op == 4) {
       auto file = relative(chain->parent(), chain->leaf, FILE_READ_DATA, Open, false, chain->policy, true, false);
       // Explicit synchronous race-test seam, called only after native pinning.
-      if (count >= 3) {
+      if (op == 1 && count >= 3) {
         napi_value ignored;
         if (napi_call_function(env, result, args[2], 0, nullptr, &ignored) != napi_ok) return nullptr;
       }
       LARGE_INTEGER size; check(GetFileSizeEx(file->value, &size), "read size");
-      if (size.QuadPart < 0 || size.QuadPart > MaxBytes) fail("oversized launch material");
+      int64_t maximum = MaxBytes;
+      if (op == 4 && (count != 3 || napi_get_value_int64(env, args[2], &maximum) != napi_ok || maximum < 0 || maximum > 64 * 1024 * 1024)) fail("invalid private read bound");
+      if (size.QuadPart < 0 || size.QuadPart > maximum) fail("oversized launch material");
       std::vector<char> bytes(static_cast<size_t>(size.QuadPart) + 1); DWORD n;
       check(ReadFile(file->value, bytes.data(), static_cast<DWORD>(bytes.size()), &n, nullptr), "read bytes");
       if (n != size.QuadPart) fail("changed launch material size");
       chain->verify(); chain->policy.verify(file->value, false, true);
-      napi_create_string_utf8(env, bytes.data(), n, &result);
+      if (op == 4) napi_create_buffer_copy(env, n, bytes.data(), nullptr, &result);
+      else napi_create_string_utf8(env, bytes.data(), n, &result);
     } else {
       auto file = relative(chain->parent(), chain->leaf, FILE_APPEND_DATA, OpenIf, false, chain->policy, true, true);
       chain->verify();
@@ -425,6 +428,7 @@ napi_value operation(napi_env env, napi_callback_info info, int op) {
 }
 napi_value persist(napi_env e, napi_callback_info i) { return operation(e, i, 0); }
 napi_value read(napi_env e, napi_callback_info i) { return operation(e, i, 1); }
+napi_value readPrivateBytes(napi_env e, napi_callback_info i) { return operation(e, i, 4); }
 napi_value openLog(napi_env e, napi_callback_info i) { return operation(e, i, 2); }
 napi_value closeLog(napi_env e, napi_callback_info i) { return operation(e, i, 3); }
 #include "windows-state-replace.h"
@@ -444,6 +448,7 @@ napi_value init(napi_env env, napi_value exports) {
     {"closeSource", nullptr, closeSource, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"persist", nullptr, persist, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"read", nullptr, read, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"readPrivateBytes", nullptr, readPrivateBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"openLog", nullptr, openLog, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeLog", nullptr, closeLog, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"replaceState", nullptr, replaceState, nullptr, nullptr, nullptr, napi_default, nullptr}
