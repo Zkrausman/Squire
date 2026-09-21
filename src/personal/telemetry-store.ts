@@ -1,3 +1,4 @@
+import { providerLaunchFailure, generationIdentity } from "./launch-retry.js";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, link, unlink, readdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -14,6 +15,7 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
 export function validateTelemetryRunId(v: string): void { if (!/^[a-z0-9][a-z0-9-]{7,127}$/u.test(v)) throw new Error("invalid telemetry run identity"); }
 export interface TelemetryInvocation {
+  launchGeneration?: 0 | 1;
   runId: string; phase: PersonalPhase; subphase: "requirements" | "implementation-design" | null;
   attempt: number; correction: number; sessionId: string; sessionArtifactDigest: string;
   inputHead: string; profile: PhaseProfile; escalationDigest: string | null;
@@ -49,6 +51,7 @@ function duration(start: string | null, end: string | null): number | null { ret
 function assert(v: unknown): asserts v { if (!v) throw new Error("invalid telemetry artifact"); }
 function exact(v: object, names: string[]) { assert(v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).sort().join() === names.sort().join()); }
 function validateInvocation(v: TelemetryInvocation) {
+  assert(v.launchGeneration === undefined || v.launchGeneration === 0 || v.launchGeneration === 1);
   validateTelemetryRunId(v.runId);
   assert(PERSONAL_PHASES.includes(v.phase) && (v.subphase === null || (v.phase === "plan" && ["requirements", "implementation-design"].includes(v.subphase))));
   assert(Number.isSafeInteger(v.attempt) && v.attempt > 0 && v.attempt <= 1_000_000 && Number.isSafeInteger(v.correction) && v.correction >= 0 && v.correction <= 10);
@@ -61,7 +64,7 @@ function validateInvocation(v: TelemetryInvocation) {
 }
 const INVOCATION_KEYS = ["runId", "phase", "subphase", "attempt", "correction", "sessionId", "sessionArtifactDigest", "inputHead", "profile", "escalationDigest", "trigger", "stageIndex", "stageAttempt", "startedAt"];
 export function invocation(input: PhaseInput, sessionId: string, sessionFile: string, subphase: TelemetryInvocation["subphase"] = null, correction = 0): TelemetryInvocation {
-  const value: TelemetryInvocation = { runId: input.runId, phase: input.phase, subphase, attempt: input.attempt, correction, sessionId,
+  const value: TelemetryInvocation = { ...(input.launchGeneration ? { launchGeneration: input.launchGeneration.generation } : {}), runId: input.runId, phase: input.phase, subphase, attempt: input.attempt, correction, sessionId,
     sessionArtifactDigest: hash(sessionFile), inputHead: input.expectedHead, profile: validatePhaseProfile(input.profile), escalationDigest: input.escalationDigest ?? null,
     trigger: correction ? "report-correction" : input.telemetryAttribution?.trigger ?? (input.attempt > 1 ? "retry" : "initial"), stageIndex: input.telemetryAttribution?.stageIndex ?? null, stageAttempt: input.telemetryAttribution?.stageAttempt ?? null, startedAt: new Date().toISOString() };
   return value;
@@ -158,7 +161,7 @@ export class TelemetryStore {
   constructor(stagingRoot: string) { this.root = path.resolve(stagingRoot, "telemetry"); }
   directory(runId: string) { validateTelemetryRunId(runId); return path.join(this.root, runId); }
   async begin(value: TelemetryInvocation): Promise<void> { validateInvocation(value); await publish(path.join(this.directory(value.runId), `${value.sessionId}.start.json`), value); }
-  async end(value: TelemetryInvocation, bytes: Buffer | undefined, exited: boolean): Promise<void> {
+  async end(value: TelemetryInvocation, bytes: Buffer | undefined, exited: boolean, terminalObserved = exited): Promise<void> {
     const directory = this.directory(value.runId);
     const evidence = createReportEvidence(path.join(directory, "streams"));
     const streams: ReportEvidence[] = [];
@@ -169,7 +172,7 @@ export class TelemetryStore {
         await verifyReportEvidence(evidence, ref, chunk);
         streams.push(ref);
       }
-      await publish(path.join(directory, `${value.sessionId}.end.json`), { endedAt: exited ? new Date().toISOString() : null, exited, streams } satisfies End);
+      await publish(path.join(directory, `${value.sessionId}.end.json`), { endedAt: terminalObserved ? new Date().toISOString() : null, exited, streams } satisfies End);
     } finally { await evidence.release?.(); }
   }
   async settle(runId: string, sessionId: string, outcome: TelemetrySession["outcome"]): Promise<void> {
@@ -190,7 +193,7 @@ export class TelemetryStore {
     const starts = names.filter(n => /^[a-f0-9-]{36}\.start\.json$/u.test(n)).sort(); assert(starts.length <= 1000);
     const sessions: TelemetrySession[] = [];
     for (const name of starts) {
-      const start = await readPrivate(path.join(directory, name)) as TelemetryInvocation; exact(start, INVOCATION_KEYS); validateInvocation(start); assert(start.runId === state.runId && name === `${start.sessionId}.start.json`);
+      const start = await readPrivate(path.join(directory, name)) as TelemetryInvocation; exact(start, [...INVOCATION_KEYS, ...(start.launchGeneration === undefined ? [] : ["launchGeneration"])]); validateInvocation(start); assert(start.runId === state.runId && name === `${start.sessionId}.start.json`);
       let end: End | undefined; let bytes: Buffer | undefined; let usage: UsageAccounting;
       const evidence = createReportEvidence(path.join(directory, "streams"));
       try {
@@ -198,6 +201,7 @@ export class TelemetryStore {
         exact(end, ["endedAt", "exited", "streams"]); assert((end.endedAt === null || timestamp(end.endedAt)) && typeof end.exited === "boolean" && Array.isArray(end.streams) && end.streams.length <= 32);
         bytes = Buffer.concat(await Promise.all(end.streams.map(ref => verifyReportEvidence(evidence, ref))));
         usage = parseUsageStream(bytes, start.sessionId, start.profile, end.exited);
+        if (start.launchGeneration !== undefined && providerLaunchFailure(bytes, { profile: start.profile, launchGeneration: generationIdentity(start.phase, start.attempt, start.launchGeneration, start.sessionId) })) usage = { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, recordedCost: "0", costSource: "pi-recorded", messages: 1, diagnostics: [] };
       } catch { usage = emptyUsage("capture_failure"); end = undefined; }
       finally { await evidence.release?.(); }
       const results = [...Object.values(state.results), ...(state.stagedTransitions ?? []).flatMap(t => t.result ? [t.result] : [])];
@@ -209,7 +213,7 @@ export class TelemetryStore {
       const receipt = await readPrivate(path.join(directory, `${start.sessionId}.phase-outcome.json`)).catch(() => undefined) as { outcome: NonNullable<TelemetrySession["phaseOutcome"]> } | undefined;
       if (receipt) exact(receipt, ["outcome"]);
       const phaseOutcome = receipt?.outcome ?? result?.status ?? (child?.outcome === "passed" ? "passed" : child ? "failed" : correction ? "passed" : null);
-      const outcome: TelemetrySession["outcome"] = settled?.outcome ?? phaseOutcome ?? (child?.outcome === "passed" ? "passed" : child ? "failed" : correction ? "passed" : !end ? "unknown" : end.exited ? "report-rejected" : state.status === "interrupted" ? "interrupted" : "execution-failed");
+      const outcome: TelemetrySession["outcome"] = settled?.outcome ?? phaseOutcome ?? (child?.outcome === "passed" ? "passed" : child ? "failed" : correction ? "passed" : state.launchGenerations?.some(r => r.sessionId === start.sessionId && r.kind === "failed") ? "execution-failed" : !end ? "unknown" : end.exited ? "report-rejected" : state.status === "interrupted" ? "interrupted" : "execution-failed");
       if (duration(start.startedAt, end?.endedAt ?? null) === null) usage.diagnostics = [...new Set([...usage.diagnostics, "missing_endpoint" as const])];
       sessions.push({ ...start, endedAt: end?.endedAt ?? null, durationMs: duration(start.startedAt, end?.endedAt ?? null), outcome, phaseOutcome, streamDigest: bytes ? hash(bytes) : null, usage });
     }
@@ -221,7 +225,11 @@ export class TelemetryStore {
         const rows = sessions.filter(s => s.phase === phase && s.attempt === attempt && !s.correction);
         if (phase === "plan" && state.planExecution === "supervised-v1") {
           if (rows.length !== 2 || !rows.some(s => s.subphase === "requirements") || !rows.some(s => s.subphase === "implementation-design")) return false;
-        } else if (rows.length !== 1) return false;
+        } else {
+          const launches = state.launchGenerations?.filter(r => r.phase === phase && r.attempt === attempt && r.kind === "dispatched");
+          if (rows.length !== (launches?.length || 1)) return false;
+          if (launches?.length && rows.some(row => !launches.some(r => r.sessionId === row.sessionId && r.generation === row.launchGeneration && r.expectedHead === row.inputHead && hash(r.sessionFile) === row.sessionArtifactDigest))) return false;
+        }
       }
       return true;
     }) && sessions.every(s => s.attempt <= state.attempts[s.phase]) && (state.reportCorrections ?? []).filter(c => c.kind === "launched").every(c => sessions.some(s => s.sessionId === c.producer));
@@ -283,7 +291,7 @@ export function validateRunTelemetry(value: unknown, runId: string): asserts val
   assert(PERSONAL_PHASES.every(p => ["passed", "failed", "remediation_required", "unknown", "not_run"].includes(v.phaseOutcomes[p])));
   const seen = new Set<string>();
   for (const s of v.sessions) {
-    exact(s, [...INVOCATION_KEYS, "endedAt", "durationMs", "outcome", "phaseOutcome", "streamDigest", "usage"]); validateInvocation(s);
+    exact(s, [...INVOCATION_KEYS, ...(s.launchGeneration === undefined ? [] : ["launchGeneration"]), "endedAt", "durationMs", "outcome", "phaseOutcome", "streamDigest", "usage"]); validateInvocation(s);
     assert(s.runId === runId && !seen.has(s.sessionId)); seen.add(s.sessionId);
     assert((s.endedAt === null || timestamp(s.endedAt)) && s.durationMs === duration(s.startedAt, s.endedAt) && (s.streamDigest === null || HASH.test(s.streamDigest)));
     assert(s.phaseOutcome === null || ["passed", "failed", "remediation_required"].includes(s.phaseOutcome));
@@ -303,6 +311,6 @@ export function formatTelemetry(v: RunTelemetry | undefined, runId: string): str
   if (!v) return `${runId}: telemetry unavailable/incomplete (no terminal artifact)`;
   const amounts = (t: TelemetryTotals) => `sessions=${t.sessions} ms=${t.durationMs.known}${t.durationMs.complete ? "" : "+unknown"} ${TOKEN_FIELDS.map(f => `${f}=${t.tokens[f].known}${t.tokens[f].complete ? "" : "+unknown"}`).join(" ")} Pi-recorded USD=${t.recordedCost.known}${t.recordedCost.complete ? "" : "+unknown"}`;
   return [`${v.runId}: ${v.outcome}; accounting ${v.complete ? "complete" : "incomplete"}; wall-ms=${v.wallDurationMs ?? "unknown"}`,
-    ...v.sessions.map(s => `${s.phase}/${s.subphase ?? "main"} #${s.attempt}${s.correction ? ` correction-${s.correction}` : ""} ${s.sessionId} ${s.profile.provider}/${s.profile.model}/${s.profile.thinking} ${s.trigger} ${s.outcome} phase-outcome=${s.phaseOutcome ?? "unknown"} ${amounts(telemetryTotals([s]))}`),
+    ...v.sessions.map(s => `${s.phase}/${s.subphase ?? "main"} #${s.attempt}${s.launchGeneration === undefined ? "" : ` generation-${s.launchGeneration}`}${s.correction ? ` correction-${s.correction}` : ""} ${s.sessionId} ${s.profile.provider}/${s.profile.model}/${s.profile.thinking} ${s.trigger} ${s.outcome} phase-outcome=${s.phaseOutcome ?? "unknown"} ${amounts(telemetryTotals([s]))}`),
     ...v.phases.flatMap(p => [`${p.phase} ${v.phaseOutcomes[p.phase]}: ${amounts(p.totals)}`, ...p.subphases.map(s => `  ${s.subphase}: ${amounts(s.totals)}`)]), `Run: ${amounts(v.totals)}`].join("\n");
 }

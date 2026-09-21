@@ -109,11 +109,12 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       const record = path.join(root, `${background}.jsonl`);
       await createPlanSbx(root, record);
       const exitMarker = path.join(root, "detached-exit");
-      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${path.join(root, "bin")}${path.delimiter}${process.env["PATH"]}`, SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${pathToFileURL(path.resolve("fixtures/prompt-launch-stubs.mjs")).href}` };
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${path.join(root, "bin")}${path.delimiter}${process.env["PATH"]}`, SQUIRE_FIXTURE_LINEAR: path.join(root, `${background}-linear.jsonl`), SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${pathToFileURL(path.resolve("fixtures/prompt-launch-stubs.mjs")).href}` };
       delete env["SQUIRE_DATA_DIR"]; delete env["SQUIRE_CONFIG"];
+      let childStderr = "";
       const exit = await new Promise<number | null>((resolve, reject) => {
         const child = spawn(process.execPath, [path.resolve("dist/src/personal/cli.js"), "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
-        let stderr = ""; child.stderr.on("data", d => { stderr += d; }); child.on("error", reject); child.on("exit", code => code === 0 ? resolve(code) : reject(new Error(stderr)));
+        child.stderr.on("data", d => { childStderr += d; }); child.on("error", reject); child.on("close", code => code === 0 ? resolve(code) : reject(new Error(childStderr)));
       });
       assert.equal(exit, 0);
       let runs = await states.findByTicket("AIDEV-1");
@@ -129,6 +130,9 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
           }
         }
       }
+      assert.deepEqual((await readFile(env["SQUIRE_FIXTURE_LINEAR"]!, "utf8")).trim().split("\n").map(line => JSON.parse(line)), [{ purpose: "initial-ticket", id: "AIDEV-1" }]);
+      const diagnostic = background ? await readFile(runs.find(r => r.executionMode === "background")!.stderrPath!, "utf8") : childStderr;
+      assert.match(diagnostic, /Run accounting incomplete/);
       assert.equal(await states.reservationOwner("AIDEV-1"), undefined);
       await assert.rejects(readFile(configFile), /ENOENT/);
       await assert.rejects(readFile(path.join(prompts, "manifest.json")), /ENOENT/);
@@ -183,4 +187,18 @@ test("correction policy raw/effective launch binding rejects mismatches before a
   assert.throws(() => validateLaunchMaterial(rehash(v)), /correction policy mismatch/);
   v.config.reportCorrectionPolicy = raw.reportCorrectionPolicy;
   assert.equal(validateLaunchMaterial(rehash(v)).config.reportCorrectionPolicy?.maxAttempts, 0);
+});
+
+test("launch retry policy is bound in raw/effective immutable material", () => {
+  const v: any = structuredClone(TEST_MATERIAL);
+  const raw = JSON.parse(Buffer.from(v.rawConfig, "base64").toString());
+  raw.launchRetryPolicy = { maxRetries: 0 };
+  v.rawConfig = Buffer.from(JSON.stringify(raw)).toString("base64");
+  assert.throws(() => validateLaunchMaterial(rehash(v)), /retry policy mismatch/);
+  v.config.launchRetryPolicy = raw.launchRetryPolicy;
+  assert.equal(validateLaunchMaterial(rehash(v)).config.launchRetryPolicy?.maxRetries, 0);
+  for (const maxRetries of [-1, 2, 0.5]) {
+    v.config.launchRetryPolicy = { maxRetries };
+    assert.throws(() => validateLaunchMaterial(rehash(v)), /maxRetries/);
+  }
 });

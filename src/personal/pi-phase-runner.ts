@@ -1,3 +1,4 @@
+import { providerLaunchFailure, TransientLaunchFailure } from "./launch-retry.js";
 import { captureInvocation, sessionSeed } from "./telemetry-capture.js";
 import { invocation, TelemetryStore } from "./telemetry-store.js";
 import { MAX_STREAM_BYTES, terminalReport } from "./telemetry-stream.js";
@@ -13,7 +14,7 @@ import { composeSystemPrompt, validateLaunchMaterial, type LaunchMaterial } from
 import { persistWindowsPhaseInput } from "./windows-launch.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { CommandExecutionError, type CommandPort } from "./command.js";
+import { CommandExecutionError, ProcessLaunchError, type CommandPort } from "./command.js";
 import { parsePhaseResult } from "./phase-payload.js";
 import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
 import type { PersonalRunState, PhaseInput, PhasePort, PhaseResult } from "./types.js";
@@ -72,21 +73,23 @@ export class SandboxPiPhaseRunner implements PhasePort {
     // phase with an ambiguous model identity.
     const deadline = input.deadline ?? performance.now() + this.#timeoutMs;
     const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
-    const sessionId = input.reportSession?.sessionId ?? randomUUID();
+    const sessionId = input.launchGeneration?.sessionId ?? input.reportSession?.sessionId ?? randomUUID();
     const phaseDirectory = `/ticket/sessions/${input.phase}`;
-    const sessionFile = `${phaseDirectory}/${input.attempt}.jsonl`;
-    const inputPath = `/ticket/artifacts/inputs/${input.phase}-${input.attempt}.json`;
+    const sessionFile = input.launchGeneration?.sessionFile ?? `${phaseDirectory}/${input.attempt}.jsonl`;
+    const inputPath = input.launchGeneration?.inputPath ?? `/ticket/artifacts/inputs/${input.phase}-${input.attempt}.json`;
     const localDirectory = path.join(this.#stagingRoot, input.runId, "phase-inputs");
-    const localInput = path.join(localDirectory, `${input.phase}-${input.attempt}.json`);
+    const localInput = path.join(localDirectory, path.posix.basename(inputPath));
     if (process.platform !== "win32") await mkdir(localDirectory, { recursive: true, mode: 0o700 });
     let localInputCreated = false;
     try {
       const prompt = composeSystemPrompt(this.#material, input.phase);
       const bytes = `${JSON.stringify({ ...input, sessionId, sessionFile, testCommands: this.#testCommands, launchDigest: this.#material?.digest, systemPromptDigest: createHash("sha256").update(prompt).digest("hex") }, null, 2)}\n`;
       if (process.platform === "win32") persistWindowsPhaseInput(localInput, bytes);
-      else await writeFile(localInput, bytes, { mode: 0o600 });
+      else await writeFile(localInput, bytes, { mode: 0o600, flag: "wx" });
       localInputCreated = true;
 
+      // Reserve sandbox destinations before copying; never overwrite failed evidence.
+      if (input.launchGeneration) await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", `set -eu; mkdir -p ${sh(phaseDirectory)} /ticket/artifacts/inputs; (set -C; : > ${sh(inputPath)}); test ! -e ${sh(sessionFile)}`] }, signal);
       await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
       const home = `/ticket/runtime/home/${input.phase}`;
       const temporary = `/ticket/runtime/tmp/${input.phase}`;
@@ -129,10 +132,17 @@ export class SandboxPiPhaseRunner implements PhasePort {
         timeoutMs: remaining(deadline),
         maxOutputBytes: MAX_STREAM_BYTES,
       }, signal).catch(async error => {
+        if (error instanceof ProcessLaunchError && error.code === "EAGAIN" && !signal?.aborted) throw new TransientLaunchFailure("process-spawn-unavailable");
+        if (error instanceof CommandExecutionError && !signal?.aborted && !["timeout", "cancelled"].includes(error.classification)) {
+          const failure = providerLaunchFailure(error.stdoutBytes, input);
+          if (failure) throw failure;
+        }
         if (error instanceof CommandExecutionError && error.stdoutBytes) throw new CorrectionExecutionFailure(await this.#capture(error.stdoutBytes, sessionId, sessionFile), error);
         throw error;
       });
 
+      const failure = providerLaunchFailure(output.stdoutBytes, input);
+      if (failure) throw failure;
       const capture = await this.#capture(output.stdoutBytes, sessionId, sessionFile);
       try {
         const result = parsePhaseResult(capture.raw, input, sessionId, sessionFile, profile);
@@ -146,7 +156,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
       // launches, rather than retaining sensitive run material indefinitely.
-      if (process.platform !== "win32" || localInputCreated) await rm(localInput, { force: true });
+      if (localInputCreated) await rm(localInput, { force: true });
     }
   }
   async telemetryTerminal(state: PersonalRunState): Promise<{ complete: boolean }> { return { complete: (await this.telemetry.finalize(state)).complete }; }

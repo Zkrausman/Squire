@@ -38,3 +38,21 @@ Every independent read opens relative to retained ancestors, checks the creation
 `native/windows-owner-observation.h` is distinct from immutable launch/report leases: it opens separate read-only, share-read/write/delete handles on local fixed NTFS, rejects reparse/nonregular/multilink or oversized records, reads through the opened handle, and revalidates file identity. Descendant opens are relative to retained ancestor handles. Exact process evidence uses `OpenProcess` query/synchronize access, native creation time and a zero-time exit check; it never closes an owner's handle or grants mutation/recovery authority. Operation and reservation proof bytes are published by writers, not observers. This boundary intentionally coexists with a legitimate operation handle; it does not relax the exclusive-create mutation mutex or exact-content release rules.
 
 The real-process `personal-owner-observation.test.ts` belongs in every existing Windows launch matrix version. Reserve, claimant-proof-before-state, claim and abandon barriers exercise both independent CLI selectors, including the historical-terminal/replacement regression in the background suite. All configured Windows jobs on the new published exact head remain required before merge; Linux fixture success is not native Windows evidence.
+
+## Launch-retry fixture lifecycle
+
+Launch-retry production fixtures use `launchTestRoot` and native host path joins,
+not POSIX-shaped temporary evidence paths on Windows. The same private input,
+report-evidence canonical-containment and ACL boundaries apply to each generation;
+existing destination collisions must preserve their bytes and never launch or
+unlink another writer's input. JSON CAS races and failed/retrying/reserved/
+dispatched/returned crash boundaries belong in every supported Windows gate.
+
+Foreground/detached launch-material fixtures stub Linear at the network `fetch`
+boundary instead of relying on one ESM prototype identity across Windows URL
+spellings. They accept exactly one initial ticket query and reject every other
+network request, including post-terminal activity. Incomplete telemetry is
+explicitly exercised without suppressing its warning. Config/manifest deletion,
+captured prompt/digest parity, reservation cleanup and actual detached child exit
+remain required before fixture completion/cleanup. No extra controller retry or
+external ticket request is authorized by telemetry/state publication diagnostics.

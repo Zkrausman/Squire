@@ -17,3 +17,18 @@ Durations derive only from persisted host dispatch/observed successful-command b
 `squire telemetry RUN-ID [--json] [--config FILE]` is a single-run host-only artifact reader without external adapters or mutable-session inspection. Legacy/missing artifacts explicitly report unavailable/incomplete; unsafe artifacts fail with sanitized errors. Terminal accounting warnings do not relabel accepted workflow evidence. The typed reader/validator and versioned artifact are exported for AIDEV-309, which owns backfill, cohorts, baseline reproduction and merge/CI scorecards. Squire completion is not a merge or exact-head CI claim.
 
 Implementation and authority details: `src/personal/telemetry-{capture,stream,store}.ts`, `pi-phase-runner.ts`, `plan-supervisor.ts`, `controller.ts`, and [docs/telemetry.md](../../../docs/telemetry.md). The three telemetry suites run in the ordinary tests and the bounded unconditional Windows gate. Keep workflow test commands, executable validator expectations and negative validator probes in lockstep.
+
+## Launch generations
+
+`launchGeneration` is optional additive invocation attribution (legacy rows omit
+it), separate from logical/staged attempts and correction attempts. Inventory
+reconciles every dispatched generation with UUID, expected HEAD and session-path
+digest. Failed and replacement launches retain independent outcomes/cost/time;
+accepted Plan/Implement rows are not replayed to recover Review availability.
+
+The closed Daybreak launch rule permits explicit recorded zero usage/cost and an
+observed command-failure endpoint for its complete empty error turn. Unknown or
+ambiguous failures remain incomplete; pre-spawn failures have no Pi billing to
+invent. This narrow exception does not make arbitrary error streams authoritative.
+Accounting warnings remain diagnostic-only after completion and cannot trigger
+another ticket fetch or launch. See [Transient phase-launch retry](transient-phase-launch-retry.md).
