@@ -20,6 +20,14 @@ engine-strict. Existing historical state/telemetry/artifact readers stay intact
 on Node 24; readability neither establishes older-major support nor recovers a
 failed run.
 
+`.nvmrc` selects major 24 for developer version managers; npm does not apply it
+automatically. Noninteractive Review/Test environments must select Node 24 on
+PATH for npm, lifecycle scripts and children, not merely invoke npm with a Node
+24 executable. Unsupported-major refusal during `npm test` is a runner
+prerequisite failure, not suite success or grounds to relax the runtime policy.
+The runner owner must provision/select the supported runtime, then rerun the
+unchanged exact-head checks. See `docs/node-runtime.md` for selection examples.
+
 `.github/required-checks.json` version 1 / `squire-node24-v1` declares exact
 contexts for Linux clean-install/build/test, Ubuntu and Windows filesystem
 integration, Windows native launch-capture (24), and CodeQL. Executable workflow

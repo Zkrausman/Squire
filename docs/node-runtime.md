@@ -48,6 +48,36 @@ Historical state, telemetry and run artifacts remain readable on Node 24 through
 existing compatibility readers. They are not rewritten, recovered, promoted or
 made successful by migration, and do not establish current runtime support.
 
+## Selecting the runtime for local and automated tests
+
+The checkout includes `.nvmrc` selecting major 24. With an already installed
+POSIX `nvm`, run `nvm install && nvm use` from the repository root before the
+migration/check commands above. Other version managers and Windows runners must
+select Node 24 explicitly. `.nvmrc` is a selection aid, not an automatic switch
+performed by npm or Squire.
+
+Noninteractive Review/Test runners must also select Node 24 in the environment
+that executes `npm test`; an interactive shell's selection may not carry over.
+For an already provisioned Node 24 installation on POSIX, for example:
+
+```sh
+export PATH="/absolute/path/to/node24/bin:$PATH"
+node --version
+node scripts/check-node-runtime.mjs
+npm ci --engine-strict
+npm test
+```
+
+Keep that PATH for the entire command sequence so npm lifecycle scripts and
+child processes resolve the same Node. Do not invoke only the npm entrypoint
+with an absolute Node 24 executable while leaving `node` on PATH at Node 22.
+If `npm test` reports an unsupported Node 20/22/25+ version during build, it has
+stopped at the intended preflight, before the test suite. Correct the runner's
+runtime selection and rerun the unchanged checks at the same candidate head;
+do not weaken the preflight, add a fallback, or count the refusal as a passing
+test suite. Controller-managed runner images/environments must be provisioned
+by their owner, not changed through repository test scripts.
+
 ## Required gates and cohort boundary
 
 `.github/required-checks.json` schema version 1 identifies gate policy

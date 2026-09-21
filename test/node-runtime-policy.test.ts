@@ -8,6 +8,14 @@ import { main } from "../src/personal/cli.js";
 
 const unsupported = ["20.17.0", "22.9.0", "25.0.0", "26.0.0", "100.0.0", "", "24", "v24.0.0", "24.01.0", "24.0.0-pre", "24.0.0\n", "24.0.0\u001b[31m", "x".repeat(1000)];
 
+test("developer runtime selection agrees with the Node 24 package contract", async () => {
+  assert.equal((await readFile(".nvmrc", "utf8")).trim(), "24");
+  for (const file of ["package.json", ".github/runtime/package.json"]) {
+    const manifest = JSON.parse(await readFile(file, "utf8")) as { engines: { node: string } };
+    assert.equal(manifest.engines.node, NODE_RUNTIME_RANGE);
+  }
+});
+
 test("runtime policy accepts only Node 24 releases and bounds sanitized refusal diagnostics", () => {
   assert.equal(NODE_RUNTIME_RANGE, ">=24 <25");
   for (const version of ["24.0.0", "24.21.0", "24.999.999"]) {
