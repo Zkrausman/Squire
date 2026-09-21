@@ -27,7 +27,7 @@ This promises atomic visibility, not new power-loss durability guarantees beyond
 - A test-only PowerShell FileStream denies delete sharing, signals readiness before publication and waits for explicit release. Both terminal transitions fail with EBUSY/Win32 32, retaining exact state bytes and reservation. PowerShell is not used in the production replacement path.
 - Boundary tests retain source/destination on rejection. Existing cross-process CAS, old-owner replacement, child claim and immutable-state tests remain mandatory.
 
-The Windows CI matrix includes the new tests on Node 20.17.0, 22.9.0 and 24. Local isolated Node distributions do not change global runtimes. A focused matrix is not a claim that every Windows test or filesystem has been exercised; unsupported-API/other-filesystem availability must be reported explicitly.
+The Windows CI matrix includes the new tests on Node 24 only. Local isolated Node distributions do not change global runtimes. A focused matrix is not a claim that every Windows test or filesystem has been exercised; unsupported-API/other-filesystem availability must be reported explicitly.
 
 ## Separate dispositions
 
@@ -37,3 +37,7 @@ The Windows CI matrix includes the new tests on Node 20.17.0, 22.9.0 and 24. Loc
 4. **Detached-log EBUSY:** separate PR33 fix; not credited to this primitive.
 
 Original investigation and invalidated-buffer evidence remain outside the repository. No historical state is repaired, no elevated tracing is introduced, and PR30 remains subject to its own exact-head integration/security acceptance.
+
+Current application support is Node.js 24 only (`>=24 <25`). See the
+[runtime and gate-policy boundary](node-runtime.md); legacy records remain
+readable on Node 24 but are not evidence of current runtime support.

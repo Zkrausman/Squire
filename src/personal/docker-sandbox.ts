@@ -1,3 +1,4 @@
+import { NODE_RUNTIME_PREFLIGHT } from "../node-runtime-policy.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -119,6 +120,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     // pinned commands CI uses, without granting it sandbox-root privileges.
     const runtimeSetup = [
       "set -eu",
+      `node -e ${sh(NODE_RUNTIME_PREFLIGHT)}`,
       // Only repositories that declare the pinned ticket runtime need the
       // additional installation. A normal configured checkout must remain
       // usable without Squire's repository-specific CI fixtures.
@@ -131,7 +133,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "  test -f /ticket/workspace/.github/validate-ticket-runtime.mjs && test ! -L /ticket/workspace/.github/validate-ticket-runtime.mjs",
       "  cp /ticket/workspace/.github/runtime/package.json /ticket/runtime/package.json",
       "  cp /ticket/workspace/.github/runtime/package-lock.json /ticket/runtime/package-lock.json",
-      "  npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
+      "  npm ci --prefix /ticket/runtime --engine-strict --ignore-scripts --no-audit --no-fund",
       "  node /ticket/workspace/.github/validate-ticket-runtime.mjs",
       "fi",
     ].join("\n");

@@ -6,12 +6,12 @@ const WORKFLOW_PATH = ".github/workflows/ci.yml";
 const RUNTIME_MANIFEST_PATH = ".github/runtime/package.json";
 const RUNTIME_LOCK_PATH = ".github/runtime/package-lock.json";
 const RUNTIME_VALIDATOR_PATH = ".github/validate-ticket-runtime.mjs";
-const EXPECTED_RUNTIME_VALIDATOR_SHA256 = "a6656246b9ccc62a4ecf1600ff4817eb7bb51c5178c71472c1305ae08c10fdbf";
+const EXPECTED_RUNTIME_VALIDATOR_SHA256 = "ac6474e4d3df173363f5bb0b4fbf10f2c6a1b56361e81d6cf351318baba243b4";
 const EXPECTED_PROVISION_RUN = [
   'sudo install -d -m 700 -o "$(id -u)" -g "$(id -g)" /ticket /ticket/runtime /ticket/workspace',
   "install -m 600 .github/runtime/package.json /ticket/runtime/package.json",
   "install -m 600 .github/runtime/package-lock.json /ticket/runtime/package-lock.json",
-  "npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund",
+  "npm ci --prefix /ticket/runtime --engine-strict --ignore-scripts --no-audit --no-fund",
 ].join("\n") + "\n";
 
 function indentation(line) {
@@ -205,7 +205,7 @@ exactKeys(document.on.push, ["branches"], "workflow.on.push");
 assert.deepEqual(document.on.push.branches, ["main"]);
 exactKeys(document.permissions, ["contents"], "workflow.permissions");
 assert.equal(document.permissions.contents, "read");
-exactKeys(document.jobs, ["clean-install-build-test", "filesystem-event-integration", "windows-launch-capture"], "workflow.jobs");
+exactKeys(document.jobs, ["clean-install-build-test", "filesystem-event-integration", "windows-launch-capture", "codeql"], "workflow.jobs");
 const job = document.jobs["clean-install-build-test"];
 exactKeys(job, ["name", "runs-on", "timeout-minutes", "steps"], "clean-install-build-test job");
 assert.equal(job["timeout-minutes"], "15", "full CI job must be bounded to 15 minutes");
@@ -215,7 +215,7 @@ assert.equal(Array.isArray(job.steps), true);
 const filesystemJob = document.jobs["filesystem-event-integration"];
 exactKeys(filesystemJob, ["name", "strategy", "runs-on", "timeout-minutes", "steps"], "filesystem-event-integration job");
 assert.equal(filesystemJob["timeout-minutes"], "15", "filesystem CI job must be bounded to 15 minutes");
-assert.equal(filesystemJob.name, "filesystem-event-integration");
+assert.equal(filesystemJob.name, "filesystem-event-integration (${{ matrix.os }})");
 exactKeys(filesystemJob.strategy, ["matrix"], "filesystem-event-integration strategy");
 exactKeys(filesystemJob.strategy.matrix, ["os"], "filesystem-event-integration matrix");
 assert.deepEqual(filesystemJob.strategy.matrix.os, ["ubuntu-latest", "windows-latest"]);
@@ -247,7 +247,7 @@ assert.equal(checkout.with["persist-credentials"], false);
 exactKeys(setupNode, ["name", "uses", "with"], "Set up Node.js step");
 assert.equal(setupNode.uses, "actions/setup-node@v4");
 exactKeys(setupNode.with, ["node-version", "cache", "cache-dependency-path"], "Set up Node.js.with");
-assert.equal(setupNode.with["node-version"], "22");
+assert.equal(setupNode.with["node-version"], "24");
 assert.equal(setupNode.with.cache, "npm");
 assert.deepEqual(setupNode.with["cache-dependency-path"].trim().split("\n"), ["package-lock.json", ".github/runtime/package-lock.json"]);
 exactKeys(workflowValidation, ["name", "run"], "workflow validation step");
@@ -255,7 +255,7 @@ exactRun(workflowValidation, "node .github/validate-ci-workflow.mjs", "workflow 
 exactKeys(negativeProbes, ["name", "run"], "negative probes step");
 exactRun(negativeProbes, "node .github/test-ci-workflow-validator.mjs", "negative probes");
 exactKeys(install, ["name", "run"], "root install step");
-exactRun(install, "npm ci", "root install");
+exactRun(install, "npm ci --engine-strict", "root install");
 exactKeys(provision, ["name", "run"], "runtime provisioning step");
 exactRun(provision, EXPECTED_PROVISION_RUN, "runtime provisioning");
 exactKeys(runtimeValidation, ["name", "run"], "runtime validation step");
@@ -281,11 +281,11 @@ assert.equal(filesystemCheckout.with["persist-credentials"], false);
 exactKeys(filesystemSetupNode, ["name", "uses", "with"], "filesystem Set up Node.js step");
 assert.equal(filesystemSetupNode.uses, "actions/setup-node@v4");
 exactKeys(filesystemSetupNode.with, ["node-version", "cache", "cache-dependency-path"], "filesystem Set up Node.js.with");
-assert.equal(filesystemSetupNode.with["node-version"], "22");
+assert.equal(filesystemSetupNode.with["node-version"], "24");
 assert.equal(filesystemSetupNode.with.cache, "npm");
 assert.equal(filesystemSetupNode.with["cache-dependency-path"], "package-lock.json");
 exactKeys(filesystemInstall, ["name", "run"], "filesystem install step");
-assert.equal(filesystemInstall.run, "npm ci");
+assert.equal(filesystemInstall.run, "npm ci --engine-strict");
 exactKeys(filesystemBuild, ["name", "run"], "filesystem build step");
 assert.equal(filesystemBuild.run, "npm run build");
 exactKeys(filesystemTests, ["name", "timeout-minutes", "run"], "filesystem event integration step");
@@ -294,7 +294,7 @@ assert.equal(filesystemTests.run, "node --test dist/test/personal-run-events.tes
 
 const windowsLaunchJob = document.jobs["windows-launch-capture"];
 assert.deepEqual(windowsLaunchJob, {
-  name: "windows-launch-capture", strategy: { "fail-fast": false, matrix: { node: ["20.17.0", "22.9.0", "24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
+  name: "windows-launch-capture (${{ matrix.node }})", strategy: { "fail-fast": false, matrix: { node: ["24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
   steps: [
     { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
     { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "${{ matrix.node }}", cache: "npm", "cache-dependency-path": "package-lock.json" } },
@@ -322,6 +322,7 @@ for (const forbidden of [
 assert.deepEqual(runtimeManifest, {
   private: true,
   type: "module",
+  engines: { node: ">=24 <25" },
   dependencies: {
     "@earendil-works/pi-coding-agent": "0.84.4",
     "@zosmaai/pi-llm-wiki": "0.11.8",
@@ -329,6 +330,7 @@ assert.deepEqual(runtimeManifest, {
 });
 assert.equal(runtimeLock.lockfileVersion, 3);
 assert.deepEqual(runtimeLock.packages?.[""], {
+  engines: { node: ">=24 <25" },
   dependencies: {
     "@earendil-works/pi-coding-agent": "0.84.4",
     "@zosmaai/pi-llm-wiki": "0.11.8",
@@ -353,5 +355,38 @@ const requiredRuntimePackages = {
   "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui": "0.84.4",
 };
 for (const [packagePath, version] of Object.entries(requiredRuntimePackages)) assert.equal(runtimeLock.packages[packagePath]?.version, version, `${packagePath} version is not pinned`);
+
+
+// Explicit names make these the emitted check contexts, including matrix values.
+const requiredChecks = JSON.parse(await readFile(".github/required-checks.json", "utf8"));
+assert.deepEqual(requiredChecks, {
+  version: 1,
+  policyId: "squire-node24-v1",
+  nodeRange: ">=24 <25",
+  requiredChecks: [
+    job.name,
+    ...filesystemJob.strategy.matrix.os.map(os => filesystemJob.name.replace("${{ matrix.os }}", os)),
+    ...windowsLaunchJob.strategy.matrix.node.map(node => windowsLaunchJob.name.replace("${{ matrix.node }}", node)),
+    "CodeQL",
+  ],
+}, "required-check policy/cohort boundary changed");
+for (const file of ["package.json", "package-lock.json"]) {
+  const metadata = JSON.parse(await readFile(file, "utf8"));
+  assert.deepEqual((metadata.packages?.[""] ?? metadata).engines, { node: ">=24 <25" }, `${file} runtime policy changed`);
+}
+assert.deepEqual(document.jobs.codeql, {
+  name: "CodeQL",
+  "runs-on": "ubuntu-latest",
+  "timeout-minutes": "15",
+  permissions: { actions: "read", contents: "read", "security-events": "write" },
+  steps: [
+    { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
+    { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "24", cache: "npm", "cache-dependency-path": "package-lock.json" } },
+    { name: "Initialize CodeQL", uses: "github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd", with: { languages: "javascript-typescript", "build-mode": "none" } },
+    { name: "Install dependencies", run: "npm ci --engine-strict" },
+    { name: "Build", run: "npm run build" },
+    { name: "Analyze CodeQL", uses: "github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd", with: { category: "/language:javascript-typescript" } },
+  ],
+}, "CodeQL must remain pinned, bounded, unconditional and use Node 24");
 
 console.log(`CI workflow, unconditional gate order, ${runtimePackages.length} integrity-bound runtime packages, and pinned ticket-runtime manifest: valid`);

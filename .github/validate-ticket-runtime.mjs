@@ -1,6 +1,9 @@
+import { assertSupportedNode } from "../src/node-runtime-policy.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+
+assertSupportedNode();
 
 const runtimeRoot = process.argv[2] ?? "/ticket/runtime";
 const nestedPackageRoot = "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works";

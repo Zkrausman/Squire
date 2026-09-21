@@ -90,3 +90,15 @@ change a completed workflow to failed. Missing launch capture keeps totals marke
 incomplete. Comparisons can sum failed/replacement rows and compare the retained
 single Plan/Implement rows against an explicit replay counterfactual; this is not
 an empirical incident savings claim or provider invoice.
+
+## Runtime/gate-policy cohorts
+
+Read historical artifacts with Node.js 24 (`>=24 <25`); retiring Node 20/22
+changes execution support, not legacy artifact readers or recorded outcomes.
+For cohort comparisons, record the candidate/base commit and that commit's
+`.github/required-checks.json` `policyId` and contexts. `squire-node24-v1` marks
+the Node-24-only boundary; older commits without a manifest are the legacy,
+unversioned policy, not implicitly this cohort. Disclose the boundary instead
+of pooling old matrix evidence into current exact-head results. This manifest
+is repository gate policy, not a new telemetry schema field or permission to
+rewrite earlier run outcomes. See [runtime policy](node-runtime.md).

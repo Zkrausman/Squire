@@ -16,7 +16,7 @@ reason to install/upgrade Pi globally.
 
 ## Prerequisites
 
-- Node.js (`npm`)
+- Node.js 24 only (`>=24 <25`) and `npm`, on the host and in the sandbox template
 - Docker
 - `pi` CLI (`pi --version`)
 - GitHub App token helper available to your shell
@@ -27,7 +27,8 @@ reason to install/upgrade Pi globally.
 From the repository root:
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
+node scripts/check-node-runtime.mjs
+npm ci --engine-strict --ignore-scripts --no-audit --no-fund
 npm run build
 ```
 
@@ -37,6 +38,10 @@ inside the ticket sandbox before phases run and validates it with
 `.github/validate-ticket-runtime.mjs`. This keeps the repository-wide test
 command from confusing missing Pi/wiki/TUI prerequisites with product
 failures.
+
+For Node 20/22 migration, unsupported-runtime diagnostics, and exact-head CI
+requirements, see [Node runtime policy](node-runtime.md). `--ignore-scripts`
+skips install hooks, not the engine-strict contract or the required build.
 
 ## 2) Create the per-user configuration
 

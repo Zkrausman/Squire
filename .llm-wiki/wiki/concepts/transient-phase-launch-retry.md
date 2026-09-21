@@ -53,7 +53,9 @@ Authority: `src/personal/launch-retry.ts`, `controller.ts`, `json-run-state.ts`,
 `pi-phase-runner.ts`; [personal operations](../../../docs/personal-mvp.md).
 Regressions: `test/personal-launch-retry.test.ts`, combined with launch-material,
 controller, telemetry and report-correction in the unchanged bounded Windows
-Node 20.17/22.9/24 matrix. Linux fixtures do not replace exact-head Windows gates.
+Node 24-only matrix. Linux fixtures do not replace exact-head Windows gates.
 
 Related: [Durable telemetry](durable-run-telemetry.md),
 [Windows launch capture](windows-launch-capture.md).
+
+Support-policy boundary: [Node 24 runtime and required checks](/concepts/node-24-runtime-and-gate-policy.md). Historical failures remain failures; older matrix evidence cannot satisfy current exact-head gates.

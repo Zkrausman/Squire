@@ -62,7 +62,7 @@ test("non-Squire command evidence stays tied to shipped build and native argv", 
   assert.ok(pkg.scripts["build"]);
   assert.ok(pkg.scripts["test"]);
   assert.equal(pkg.bin.squire, "./dist/src/personal/cli.js");
-  assert.ok((await read("docs/first-run.md")).includes("npm ci --ignore-scripts --no-audit --no-fund"));
+  assert.ok((await read("docs/first-run.md")).includes("npm ci --engine-strict --ignore-scripts --no-audit --no-fund"));
   const workspace = await read("src/personal/docker-sandbox.ts");
   assert.ok(workspace.includes('["create", "--name", input.sandbox]'));
   assert.ok(workspace.includes('createArgs.push("--template", this.#template)'));

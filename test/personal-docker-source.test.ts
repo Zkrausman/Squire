@@ -24,7 +24,7 @@ class SandboxShim implements CommandPort {
   readonly ownershipRequests: OwnershipRequest[] = [];
   readonly executedShellScripts: string[] = [];
   readonly runtimeRequests: string[] = [];
-  constructor(readonly sandboxRoot: string, readonly sandbox: string) {}
+  constructor(readonly sandboxRoot: string, readonly sandbox: string, readonly nodeVersion = process.versions.node) {}
 
   async run(request: CommandRequest, signal?: AbortSignal): Promise<CommandResult> {
     this.requests.push({ ...request, args: [...request.args] });
@@ -57,7 +57,9 @@ class SandboxShim implements CommandPort {
         // blindly. This proves repositories without the optional declaration
         // do not fail on Squire-specific CI fixtures.
         const executable = translate(script)
-          .replace(/npm ci --prefix (\S+) --ignore-scripts --no-audit --no-fund/u, "mkdir -p $1/node_modules")
+          .replace("node -e ", `"${process.execPath}" -e `)
+          .replaceAll("process.versions.node", JSON.stringify(this.nodeVersion))
+          .replace(/npm ci --prefix (\S+) --engine-strict --ignore-scripts --no-audit --no-fund/u, "mkdir -p $1/node_modules")
           .replace(/^\s*node \S+\/\.github\/validate-ticket-runtime\.mjs$/mu, "  true");
         return this.host.run({ command: "sh", args: ["-lc", executable] }, signal);
       }
@@ -134,10 +136,12 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   assert.match(setup?.args.at(-1) ?? "", /chown -R '1000:1000' \/ticket/u);
   const runtime = commands.requests.find(request => request.command === "sbx" && request.args[0] === "exec" && request.args.some(argument => argument.includes("npm ci --prefix /ticket/runtime")));
   assert.deepEqual(runtime?.args.slice(0, 5), ["exec", "-u", "1000:1000", "squire-aidev-1-0123456789", "sh"]);
-  assert.match(runtime?.args.at(-1) ?? "", /npm ci --prefix \/ticket\/runtime --ignore-scripts --no-audit --no-fund/u);
+  assert.match(runtime?.args.at(-1) ?? "", /npm ci --prefix \/ticket\/runtime --engine-strict --ignore-scripts --no-audit --no-fund/u);
   assert.match(runtime?.args.at(-1) ?? "", /node \/ticket\/workspace\/\.github\/validate-ticket-runtime\.mjs/u);
   assert.match(runtime?.args.at(-1) ?? "", /if \[ -e \/ticket\/workspace\/.github\/runtime\/package\.json \] \|\| \[ -L \/ticket\/workspace\/.github\/runtime\/package\.json \].*\[ -e \/ticket\/workspace\/.github\/runtime\/package-lock\.json \].*\[ -e \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \].*\[ -L \/ticket\/workspace\/.github\/validate-ticket-runtime\.mjs \]; then/u);
   assert.match(runtime?.args.at(-1) ?? "", /test -f \/ticket\/workspace\/.github\/runtime\/package-lock\.json && test ! -L \/ticket\/workspace\/.github\/runtime\/package-lock\.json/u);
+  const runtimeScript = runtime?.args.at(-1) ?? "";
+  assert.ok(runtimeScript.indexOf("node -e ") < runtimeScript.indexOf("if [ -e"), "preflight must precede optional repository runtime work");
   assert.equal(commands.runtimeRequests.length, 1);
   await assert.rejects(readFile(path.join(sandboxRoot, "ticket/runtime/package.json")), error => (error as NodeJS.ErrnoException).code === "ENOENT");
   assert.deepEqual(commands.ownershipRequests, [{ owner: "1000:1000", target: "/ticket", recursive: true }]);
@@ -346,3 +350,28 @@ test("temporary source refs are compare-deleted when bundling fails or is aborte
     assert.ok(commands.requests.some(request => request.command === "git" && request.args.includes("update-ref") && request.args.includes("-d")));
   });
 });
+
+for (const version of ["20.17.0", "22.9.0", "25.0.0", "26.0.0"]) {
+  test(`sandbox Node ${version} fails before runtime installation or model credential copy`, async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "squire-runtime-refusal-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const repository = path.join(root, "repository");
+    await exec("git", ["init", "-q", repository]);
+    await git(repository, ["config", "user.name", "Test"]);
+    await git(repository, ["config", "user.email", "test@example.invalid"]);
+    await mkdir(path.join(repository, ".github/runtime"), { recursive: true });
+    await writeFile(path.join(repository, ".github/runtime/package.json"), '{}');
+    await writeFile(path.join(repository, ".github/runtime/package-lock.json"), '{}');
+    await writeFile(path.join(repository, ".github/validate-ticket-runtime.mjs"), 'throw new Error("must not execute");');
+    await git(repository, ["add", "."]);
+    await git(repository, ["commit", "-qm", "runtime"]);
+    const sandboxRoot = path.join(root, "sandbox");
+    const commands = new SandboxShim(sandboxRoot, "squire-aidev-1-refusal", version);
+    const authFile = path.join(root, "must-not-read-auth.json");
+    const workspace = new DockerSandboxWorkspace({ commands, bridgeRoot: path.join(root, "bridges"), stagingRoot: path.join(root, "staging"), piAuthFile: authFile });
+    await assert.rejects(workspace.prepare({ runId: "aidev-1-refusal", ticketId: "AIDEV-1", sandbox: "squire-aidev-1-refusal", branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), repositoryPath: repository, sourceRef: "HEAD" }), /Unsupported Node.js.*Squire requires >=24 <25/u);
+    assert.equal(commands.requests.some(request => request.args.includes(authFile)), false);
+    await assert.rejects(access(path.join(sandboxRoot, "ticket/runtime/package.json")));
+    await assert.rejects(access(path.join(sandboxRoot, "ticket/runtime/node_modules")));
+  });
+}

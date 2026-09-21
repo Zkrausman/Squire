@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "policyId": "squire-node24-v1",
+  "nodeRange": ">=24 <25",
+  "requiredChecks": [
+    "clean-install-build-test",
+    "filesystem-event-integration (ubuntu-latest)",
+    "filesystem-event-integration (windows-latest)",
+    "windows-launch-capture (24)",
+    "CodeQL"
+  ]
+}
