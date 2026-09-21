@@ -1,6 +1,6 @@
 import { createPublicKey, verify } from "node:crypto";
 import { canonicalJson, parseBoundedJson } from "./canonical-json.js";
-import { bool, check, choice, COHORT_LIMITS, count, digestBytes, hash, head, list, nullable, shape, text, timestamp, unique, type CohortRun } from "./cohort-manifest.js";
+import { bool, check, checkName, requiredCheckSetDigest, choice, COHORT_LIMITS, count, digestBytes, hash, head, list, nullable, shape, text, timestamp, unique, type CohortRun } from "./cohort-manifest.js";
 
 const publicKey = (value: unknown): string => { check(typeof value === "string" && value.length <= 256 && value.startsWith("-----BEGIN PUBLIC KEY-----\n") && !value.includes("PRIVATE")); const key = createPublicKey(value); check(key.asymmetricKeyType === "ed25519"); return value; };
 export const trustRootSchema = shape({ schemaVersion: choice(1), keys: list(shape({ keyId: text, publicKey, signer: text, provenance: hash,
@@ -16,7 +16,7 @@ const signature = (value: unknown): string => { check(typeof value === "string" 
 export const signatureEnvelopeSchema = shape({ schemaVersion: choice(1), manifestDigest: hash, keyId: text, algorithm: choice("Ed25519"), signature, signer: text, provenance: hash });
 export type SignatureEnvelope = ReturnType<typeof signatureEnvelopeSchema>;
 export const dispositionManifestSchema = shape({ schemaVersion: choice(1), signedAt: timestamp, runId: text, repository: text, prNumber: count, candidate: head, requiredCheckSet: hash,
-  checks: list(shape({ name: text, conclusion: choice("success", "failure", "cancelled", "timed_out", "skipped", "neutral", "action_required", "unknown"), completedAt: timestamp }), 100),
+  checks: list(shape({ name: checkName, conclusion: choice("success", "failure", "cancelled", "timed_out", "skipped", "neutral", "action_required", "unknown"), completedAt: timestamp }), 100),
   prState: choice("open", "closed", "merged"), mergeSha: nullable(head), mergedAt: nullable(timestamp), unmergedReason: nullable(text),
   reopened: nullable(bool), signer: text, provenance: hash });
 export type DispositionManifest = ReturnType<typeof dispositionManifestSchema>;
@@ -44,7 +44,7 @@ export function verifyDisposition(bytes: Buffer | undefined, envelopeBytes: Buff
     if (manifest.prState === "merged") check(manifest.mergeSha !== null && manifest.mergedAt !== null && manifest.mergedAt <= manifest.signedAt && manifest.unmergedReason === null);
     else check(manifest.mergeSha === null && manifest.mergedAt === null && manifest.unmergedReason !== null);
     if (manifest.runId !== run.runId || manifest.repository !== run.strata.repository || manifest.candidate !== run.candidate || manifest.requiredCheckSet !== run.strata.requiredCheckSet) return unknownDisposition("unbound_evidence");
-    check(run.strata.requiredCheckSet === digestBytes(canonicalJson([...run.strata.requiredChecks].sort())));
+    check(run.strata.requiredCheckSet === requiredCheckSetDigest(run.strata.requiredChecks));
     const checks = run.strata.requiredChecks.map(name => manifest.checks.find(c => c.name === name));
     const ci = checks.some(c => c && ["failure", "cancelled", "timed_out", "action_required"].includes(c.conclusion)) ? "failed" : checks.length && checks.every(c => c?.conclusion === "success") ? "passed" : "unknown";
     return { authority: "authenticated-import-v1", manifestDigest: digest, ci, merge: manifest.prState === "merged" ? "merged" : "unmerged", mergedAt: manifest.mergedAt, mergeSha: manifest.mergeSha, reopened: manifest.reopened, diagnostics: [] };

@@ -59,7 +59,13 @@ Hashes identify immutable workflow/gate/policy/test-suite/provenance definitions
 ticket class, required check names and model profiles. **`requiredCheckSet` is
 SHA-256 of canonical JSON of the lexically sorted unique required check names.**
 This binds the expected check set, preventing a cohort input from silently
-selecting only a passing subset of authenticated checks.
+selecting only a passing subset of authenticated checks. `requiredCheckSetDigest`
+validates and hashes this set. Required names and signed `checks[].name` share
+one validator: nonempty Unicode strings of at most 256 UTF-8 bytes, excluding
+control characters and unpaired surrogates. Spaces and punctuation are preserved
+(e.g. `Analyze (javascript-typescript)` or `windows-launch-capture (22.9.0)`).
+Names are never trimmed, case-folded, normalized or renamed; matching and duplicate
+rejection use exact strings.
 
 Identifiers use bounded non-whitespace ASCII forms; timestamps are exact UTC
 `YYYY-MM-DDTHH:mm:ss.sssZ`. Decimal fields are canonical nonnegative decimal

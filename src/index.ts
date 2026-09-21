@@ -61,7 +61,7 @@ export { LAUNCH_CLASSIFIER, LAUNCH_BACKOFF_MS, validateLaunchRetryPolicy, classi
 export type { LaunchRetryPolicy, LaunchGeneration, LaunchRecord } from "./personal/launch-retry.js";
 
 export { scanJson, parseBoundedJson, canonicalJson, JsonScanError, type JsonLimits, type JsonScan } from "./personal/canonical-json.js";
-export { validateCohortManifest, parseCohortManifest, type CohortManifest, type CohortRun, type HistoricalSource, type ArtifactReference } from "./personal/cohort-manifest.js";
+export { validateCohortManifest, parseCohortManifest, checkName, requiredCheckSetDigest, type CohortManifest, type CohortRun, type HistoricalSource, type ArtifactReference } from "./personal/cohort-manifest.js";
 export { validateTrustRoots, parseTrustRoots, verifyDisposition, type TrustRoots, type SignatureEnvelope, type DispositionManifest, type VerifiedDisposition } from "./personal/evidence-verification.js";
 export { extractHistoricalSession, historicalTotals, type HistoricalSession, type HistoricalTotals } from "./personal/historical-telemetry.js";
 export { buildScorecards, type HistoricalRun, type TicketScore, type Scorecard } from "./personal/cohort-scorecard.js";

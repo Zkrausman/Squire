@@ -7,6 +7,12 @@ export const digestBytes = (bytes: string | Buffer): string => createHash("sha25
 export function check(value: unknown): asserts value { if (!value) throw new Error("invalid cohort schema or binding"); }
 export type Validator<T> = (value: unknown) => T;
 export const text: Validator<string> = value => { check(typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/u.test(value)); return value; };
+/** Exact external check identity: no trimming, case folding or Unicode normalization. */
+export const checkName: Validator<string> = value => {
+  check(typeof value === "string" && value.length > 0 && value.length <= 256
+    && Buffer.byteLength(value, "utf8") <= 256 && !/[\p{Cc}\p{Cs}]/u.test(value));
+  return value;
+};
 export const hash: Validator<string> = value => { check(typeof value === "string" && /^[a-f0-9]{64}$/u.test(value)); return value; };
 export const head: Validator<string> = value => { check(typeof value === "string" && /^[a-f0-9]{40}$/u.test(value)); return value; };
 export const count: Validator<number> = value => { check(typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000_000); return value; };
@@ -26,10 +32,15 @@ export function shape<S extends Record<string, Validator<unknown>>>(fields: S): 
   };
 }
 export function unique<T>(rows: readonly T[], key: (row: T) => string): void { check(new Set(rows.map(key)).size === rows.length); }
+/** Hash a bounded, unique set while preserving every character of each name. */
+export function requiredCheckSetDigest(value: unknown): string {
+  const names = list(checkName, 100, 1)(value); unique(names, name => name);
+  return digestBytes(canonicalJson(names.sort()));
+}
 export const reference = shape({ root: filePath, file: filePath, digest: hash, bytes: count });
 export type ArtifactReference = ReturnType<typeof reference>;
 export const profile = shape({ provider: text, model: text, thinking: text });
-export const strata = shape({ repository: text, requiredCheckSet: hash, requiredChecks: list(text, 100, 1), ticketClass: text,
+export const strata = shape({ repository: text, requiredCheckSet: hash, requiredChecks: list(checkName, 100, 1), ticketClass: text,
   reviewGate: hash, testGate: hash, publicationGate: hash, baselineSha: head, workflow: hash,
   profiles: list(profile, 32, 1), escalationPolicy: hash, correctionPolicy: hash, testSuite: hash });
 const refs = list(hash, 32, 1);
@@ -59,8 +70,7 @@ export function validateCohortManifest(value: unknown): CohortManifest {
   check(sources.reduce((sum, s) => sum + s.artifact.bytes, 0) <= 512 * 1024 * 1024);
   for (const r of result.runs) {
     check(/^[a-z0-9][a-z0-9-]{7,127}$/u.test(r.runId) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(r.strata.repository));
-    unique(r.strata.requiredChecks, x => x);
-    check(r.strata.requiredCheckSet === digestBytes(canonicalJson([...r.strata.requiredChecks].sort()))); unique(r.sources, s => s.sessionId);
+    check(r.strata.requiredCheckSet === requiredCheckSetDigest(r.strata.requiredChecks)); unique(r.sources, s => s.sessionId);
     unique(r.strata.profiles, canonicalJson);
     check(r.endedAt === null || r.reservedAt === null || r.endedAt >= r.reservedAt);
     if (r.implementEntered !== null || r.completion !== "unknown" || r.remediationAttempts !== null) check(r.lifecycleEvidence.length > 0);

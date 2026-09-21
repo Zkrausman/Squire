@@ -35,7 +35,12 @@ payload and configured exact key ID bind signer/provenance; validity/revocation
 is evaluated at signed-at. No alternate-key trial, network lookup or historical
 trust invention. Unsigned/unbound/malformed evidence means unknown. The required
 check-set identity hashes canonical sorted unique required names, preventing
-passing-subset selection. Missing/skipped/neutral checks cannot pass.
+passing-subset selection. Required and signed check names use the same bounded
+validator: nonempty Unicode, at most 256 UTF-8 bytes, no control characters or
+unpaired surrogates. Preserve spaces, parentheses and other punctuation in actual
+matrix/CodeQL names; never trim, case-fold, normalize or rename these exact
+identities. `requiredCheckSetDigest` validates names and uniqueness before hashing.
+Missing/skipped/neutral checks cannot pass.
 
 The shared bounded forward-only JSON scanner replaces regex tokenization for
 canonical evidence, report correction and current telemetry numeric validation.
