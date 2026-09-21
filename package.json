@@ -7,14 +7,15 @@
     "squire": "./dist/src/personal/cli.js"
   },
   "engines": {
-    "node": "^20.17.0 || >=22.9.0"
+    "node": ">=24 <25"
   },
   "scripts": {
     "build": "node scripts/build-windows-launch.mjs && tsc -p tsconfig.json",
     "install": "node scripts/build-windows-launch.mjs",
     "validate:contracts": "node scripts/validate-contracts.mjs",
     "squire": "node dist/src/personal/cli.js",
-    "test": "npm run build && node --test test/contracts.test.mjs dist/test/*.test.js"
+    "test": "npm run build && node --test test/contracts.test.mjs dist/test/*.test.js",
+    "preinstall": "node scripts/runtime-preflight.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

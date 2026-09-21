@@ -2,6 +2,8 @@
 
 ## Concepts
 
+- [Node 24 runtime and required-check policy](node-24-runtime-policy.md)
+
 - [background-run-state-and-status](background-run-state-and-status.md)
 - [five-session-pi-rpc-topology](five-session-pi-rpc-topology.md)
 - [immutable-handoff-validation](immutable-handoff-validation.md)

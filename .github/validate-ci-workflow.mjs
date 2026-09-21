@@ -189,6 +189,25 @@ const workflow = await readFile(WORKFLOW_PATH, "utf8");
 const runtimeManifest = JSON.parse(await readFile(RUNTIME_MANIFEST_PATH, "utf8"));
 const runtimeLock = JSON.parse(await readFile(RUNTIME_LOCK_PATH, "utf8"));
 const runtimeValidator = await readFile(RUNTIME_VALIDATOR_PATH, "utf8");
+const requiredCheckPolicy = JSON.parse(await readFile(".github/required-check-policy.json", "utf8"));
+assert.deepEqual(requiredCheckPolicy, {
+  "schemaVersion": 1,
+  "policyVersion": "node24-only-v1",
+  "applicationNodeRange": ">=24 <25",
+  "previousPolicy": "unversioned-node20.17-node22.9-node24",
+  "requiredChecks": [
+    { "job": "clean-install-build-test", "os": "ubuntu-latest" },
+    { "job": "filesystem-event-integration", "os": "ubuntu-latest" },
+    { "job": "filesystem-event-integration", "os": "windows-latest" },
+    { "job": "windows-launch-capture", "os": "windows-latest", "node": "24" },
+    { "check": "CodeQL", "source": "external-default-setup-or-branch-protection" }
+  ]
+}, "required-check policy boundary or required gate inventory changed");
+for (const file of ["package.json", "package-lock.json"]) {
+  const metadata = JSON.parse(await readFile(file, "utf8"));
+  assert.deepEqual((file.includes("lock") ? metadata.packages[""] : metadata).engines,
+    { node: ">=24 <25" }, `${file} must require Node 24 only`);
+}
 const document = parseWorkflow(workflow);
 const runtimeValidatorSha256 = createHash("sha256").update(runtimeValidator).digest("hex");
 assert.equal(runtimeValidatorSha256, EXPECTED_RUNTIME_VALIDATOR_SHA256, "ticket runtime validator source changed");
@@ -247,7 +266,7 @@ assert.equal(checkout.with["persist-credentials"], false);
 exactKeys(setupNode, ["name", "uses", "with"], "Set up Node.js step");
 assert.equal(setupNode.uses, "actions/setup-node@v4");
 exactKeys(setupNode.with, ["node-version", "cache", "cache-dependency-path"], "Set up Node.js.with");
-assert.equal(setupNode.with["node-version"], "22");
+assert.equal(setupNode.with["node-version"], "24");
 assert.equal(setupNode.with.cache, "npm");
 assert.deepEqual(setupNode.with["cache-dependency-path"].trim().split("\n"), ["package-lock.json", ".github/runtime/package-lock.json"]);
 exactKeys(workflowValidation, ["name", "run"], "workflow validation step");
@@ -281,7 +300,7 @@ assert.equal(filesystemCheckout.with["persist-credentials"], false);
 exactKeys(filesystemSetupNode, ["name", "uses", "with"], "filesystem Set up Node.js step");
 assert.equal(filesystemSetupNode.uses, "actions/setup-node@v4");
 exactKeys(filesystemSetupNode.with, ["node-version", "cache", "cache-dependency-path"], "filesystem Set up Node.js.with");
-assert.equal(filesystemSetupNode.with["node-version"], "22");
+assert.equal(filesystemSetupNode.with["node-version"], "24");
 assert.equal(filesystemSetupNode.with.cache, "npm");
 assert.equal(filesystemSetupNode.with["cache-dependency-path"], "package-lock.json");
 exactKeys(filesystemInstall, ["name", "run"], "filesystem install step");
@@ -294,7 +313,7 @@ assert.equal(filesystemTests.run, "node --test dist/test/personal-run-events.tes
 
 const windowsLaunchJob = document.jobs["windows-launch-capture"];
 assert.deepEqual(windowsLaunchJob, {
-  name: "windows-launch-capture", strategy: { "fail-fast": false, matrix: { node: ["20.17.0", "22.9.0", "24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
+  name: "windows-launch-capture", strategy: { "fail-fast": false, matrix: { node: ["24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
   steps: [
     { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
     { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "${{ matrix.node }}", cache: "npm", "cache-dependency-path": "package-lock.json" } },
@@ -320,6 +339,7 @@ for (const forbidden of [
 ]) assert.doesNotMatch(workflow, forbidden);
 
 assert.deepEqual(runtimeManifest, {
+  engines: { node: ">=24 <25" },
   private: true,
   type: "module",
   dependencies: {
@@ -329,6 +349,7 @@ assert.deepEqual(runtimeManifest, {
 });
 assert.equal(runtimeLock.lockfileVersion, 3);
 assert.deepEqual(runtimeLock.packages?.[""], {
+  engines: { node: ">=24 <25" },
   dependencies: {
     "@earendil-works/pi-coding-agent": "0.84.4",
     "@zosmaai/pi-llm-wiki": "0.11.8",

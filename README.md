@@ -35,6 +35,7 @@ See the authoritative [Personal MVP plan](docs/personal-mvp.md) and [scope audit
 For a complete first-run walkthrough, see [`docs/first-run.md`](docs/first-run.md).
 
 ```bash
+node scripts/runtime-preflight.mjs # requires Node.js 24
 npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 # Copy squire.config.example.json to your per-user Squire directory and edit
@@ -42,7 +43,7 @@ npm run build
 npm run squire -- run AIDEV-123
 ```
 
-Supported Node versions are `^20.17.0 || >=22.9.0`, matching the build dependency engines even on POSIX. On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture, protected phase-input staging, and read-only external custom prompt capture on local NTFS. Custom sources may allow other readers, but not untrusted authors; private captured material remains confidential. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
+Squire requires Node.js 24 only (`>=24 <25`) on every platform. See [runtime migration and required-check policy](docs/node-runtime-policy.md) for retiring Node 20/22, historical artifact readability, and the action-internal runtime distinction. On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture, protected phase-input staging, and read-only external custom prompt capture on local NTFS. Custom sources may allow other readers, but not untrusted authors; private captured material remains confidential. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
 
 Squire does not search the checkout for configuration. The implicit config is
 `%USERPROFILE%\.squire\config.json` on Windows and
@@ -61,7 +62,7 @@ path. Configuration objects are closed: unknown fields and legacy root aliases
 are rejected rather than silently ignored, and `repository.sourceRef` must be a
 non-whitespace, non-control Git revision.
 
-The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
+The configured Docker Sandbox template must provide Git, Node.js 24, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
 
 The canonical JSON policy key is `modelPolicy`; the approved personal policy is fixed in the example: Plan bucket A is
 `openai-codex/gpt-6-astra` at `medium`, bucket B is

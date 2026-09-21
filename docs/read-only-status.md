@@ -58,7 +58,7 @@ another active run.
 production operation handle and a reservation reader handle. Test-only barriers
 cover reserve, before/after claim-state publication, and completed abandon;
 independent CLI processes exercise both selectors and compare all state/lock/event
-bytes. It runs in the Windows Node 20.17.0, 22.9.0 and 24 launch matrix as well as
+bytes. It runs in the Windows Node 24-only launch gate as well as
 on Linux. Linux success does not prove Windows behavior: **every native Windows
 job must pass on the newly published exact PR head before merge**. Prior failed
 candidates are evidence only, not accepted implementations.

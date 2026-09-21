@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "node24-only-v1",
+  "applicationNodeRange": ">=24 <25",
+  "previousPolicy": "unversioned-node20.17-node22.9-node24",
+  "requiredChecks": [
+    { "job": "clean-install-build-test", "os": "ubuntu-latest" },
+    { "job": "filesystem-event-integration", "os": "ubuntu-latest" },
+    { "job": "filesystem-event-integration", "os": "windows-latest" },
+    { "job": "windows-launch-capture", "os": "windows-latest", "node": "24" },
+    { "check": "CodeQL", "source": "external-default-setup-or-branch-protection" }
+  ]
+}

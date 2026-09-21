@@ -16,7 +16,7 @@ reason to install/upgrade Pi globally.
 
 ## Prerequisites
 
-- Node.js (`npm`)
+- Node.js 24 only (`>=24 <25`) with npm; use the same major in the sandbox template. See [runtime migration and check policy](node-runtime-policy.md) before upgrading from Node 20/22.
 - Docker
 - `pi` CLI (`pi --version`)
 - GitHub App token helper available to your shell
@@ -27,6 +27,7 @@ reason to install/upgrade Pi globally.
 From the repository root:
 
 ```bash
+node scripts/runtime-preflight.mjs # requires Node.js 24
 npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 ```

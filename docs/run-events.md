@@ -1,5 +1,9 @@
 # Durable Squire run events
 
+Runtime: Node.js 24 only (`>=24 <25`). Both Linux and Windows filesystem
+event gates remain required; see [runtime/check policy](node-runtime-policy.md).
+
+
 Squire has two separate responsibilities:
 
 1. The **Run Controller** is the authoritative state writer. It validates and

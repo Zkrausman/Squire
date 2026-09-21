@@ -7,7 +7,8 @@ auth-file contents, environment dumps or whole secret-bearing configurations.
 
 - **Trust and routing.** Locate the approved Squire executable and its source/build
   identity, rather than trusting the first PATH hit. A source build uses the
-  trusted checkout's `npm ci --ignore-scripts --no-audit --no-fund` then
+  trusted checkout's `node scripts/runtime-preflight.mjs` (Node.js 24 only,
+  `>=24 <25` on host and sandbox), `npm ci --ignore-scripts --no-audit --no-fund` then
   `npm run build`; its entry is `dist/src/personal/cli.js`. Inspect that version's
   CLI/config schema before use. There is no public Squire version/health command.
   Read target repository instructions (including AGENTS.md), safety constraints,

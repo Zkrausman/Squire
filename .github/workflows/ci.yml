@@ -23,7 +23,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: |
             package-lock.json
@@ -81,7 +81,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -101,8 +101,6 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          - "20.17.0"
-          - "22.9.0"
           - "24"
     runs-on: windows-latest
     timeout-minutes: 15

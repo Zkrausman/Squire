@@ -106,6 +106,12 @@ try {
   await writeFile(join(temporary, ".github/runtime/package.json"), runtimeManifest);
   await writeFile(join(temporary, ".github/runtime/package-lock.json"), runtimeLock);
 
+  const metadataFiles = ["package.json", "package-lock.json", ".github/required-check-policy.json"];
+  for (const file of metadataFiles) await writeFile(join(temporary, file), await readFile(join(root, file)));
+  await writeFile(join(temporary, ".github/workflows/ci.yml"), workflow);
+  const valid = await runValidator(temporary);
+  assert.equal(valid.status, 0, `valid workflow fixture rejected: ${valid.stderr}`);
+
   const expectValidatorRejects = async (mutatedWorkflow, reason) => {
     await writeFile(join(temporary, ".github/workflows/ci.yml"), mutatedWorkflow);
     const result = await runValidator(temporary);
@@ -143,9 +149,23 @@ try {
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-launch.test.js ", ""), "missing native Windows security tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-state-replace.test.js ", ""), "missing native Windows state replacement tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js ", ""), "missing actual captured-material CLI regression");
-  await expectValidatorRejects(workflow.replace("      fail-fast: false\n", ""), "cancelling other Windows version evidence after one failure");
-  await expectValidatorRejects(workflow.replace('          - "20.17.0"', '          - "20"'), "missing exact minimum Node version");
-  await expectValidatorRejects(workflow.replace('          - "22.9.0"', '          - "22"'), "missing exact minimum Node 22 version");
+  await expectValidatorRejects(workflow.replace("      fail-fast: false\n", ""), "changing the Windows gate strategy contract");
+  for (const version of ["20.17.0", "22.9.0", "25", "26", "lts/*"]) {
+    await expectValidatorRejects(workflow.replace('          - "24"', `          - "${version}"`), `unsupported Windows Node ${version}`);
+    await expectValidatorRejects(workflow.replace('          - "24"', `          - "24"\n          - "${version}"`), `extra Windows Node ${version}`);
+    for (const index of [0, 1]) {
+      let seen = 0;
+      const changed = workflow.replaceAll('node-version: "24"', match => seen++ === index ? `node-version: "${version}"` : match);
+      await expectValidatorRejects(changed, `unsupported application Node ${version} in job ${index}`);
+    }
+  }
+  await expectValidatorRejects(workflow.replace("          - ubuntu-latest\n", ""), "missing Linux filesystem coverage");
+  const windowsCommand = workflow.split("run: node --test --test-timeout=120000 ")[1].trim();
+  for (const regression of windowsCommand.split(" ")) {
+    await expectValidatorRejects(workflow.replace(regression, ""), `missing Windows regression ${regression}`);
+  }
+  await expectValidatorRejects(workflow.replace("--test-timeout=120000", "--test-timeout=360000"), "weakened Windows test bound");
+  await expectValidatorRejects(workflow.replace(windowsCommand, `${windowsCommand} || true`), "status-masked Windows regression");
   await expectValidatorRejects(workflow.replace(" dist/test/personal-plan-supervisor.test.js", ""), "missing supervised Plan regression");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", ["echo runtime provisioning", "# npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund"]), "comment-substituted provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", [...provisionCommands.slice(0, 3), "set +e", provisionCommands[3], "echo runtime install completed"]), "status-masked provisioning");
@@ -153,6 +173,29 @@ try {
   await expectValidatorRejects(replaceStepRun(workflow, "Validate ticket runtime", ["exit 0", "node .github/validate-ticket-runtime.mjs"]), "early-exit runtime validation");
 
   await writeFile(join(temporary, ".github/workflows/ci.yml"), workflow);
+  for (const file of [...metadataFiles, ".github/runtime/package.json", ".github/runtime/package-lock.json"]) {
+    const original = await readFile(join(root, file), "utf8");
+    const mutations = [];
+    const metadata = JSON.parse(original);
+    if (file.endsWith("required-check-policy.json")) {
+      mutations.push({ ...metadata, policyVersion: "unversioned-node20.17-node22.9-node24" });
+      for (let i = 0; i < metadata.requiredChecks.length; i++) {
+        mutations.push({ ...metadata, requiredChecks: metadata.requiredChecks.filter((_, index) => index !== i) });
+      }
+    } else {
+      for (const range of ["^20.17.0 || >=22.9.0", ">=24", ">=22 <25"]) {
+        const changed = JSON.parse(original);
+        (file.includes("lock") ? changed.packages[""] : changed).engines.node = range;
+        mutations.push(changed);
+      }
+    }
+    for (const mutation of mutations) {
+      await writeFile(join(temporary, file), JSON.stringify(mutation));
+      const result = await runValidator(temporary);
+      assert.notEqual(result.status, 0, `validator accepted stale/incomplete policy metadata in ${file}`);
+    }
+    await writeFile(join(temporary, file), original);
+  }
   const incompleteLock = JSON.parse(runtimeLock);
   delete incompleteLock.packages[`${nestedRuntimeRoot}/pi-tui`].integrity;
   await writeFile(join(temporary, ".github/runtime/package-lock.json"), `${JSON.stringify(incompleteLock, null, 2)}\n`);
