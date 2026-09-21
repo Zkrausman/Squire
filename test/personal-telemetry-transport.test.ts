@@ -4,10 +4,10 @@ import { readdir, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { NodeCommandRunner, CommandExecutionError } from "../src/personal/command.js";
-import { terminalPiReport } from "../src/personal/pi-telemetry-parser.js";
+import { terminalPiReport, parsePiUsage } from "../src/personal/pi-telemetry-parser.js";
 import { TelemetryLedger, buildRunTelemetry } from "../src/personal/telemetry.js";
 import type { PhaseInput, PersonalRunState } from "../src/personal/types.js";
-import { piJsonStream } from "./helpers/pi-json.js";
+import { piJsonStream, piThresholdCompactionEvents } from "./helpers/pi-json.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 const profile = { provider: "openai-codex", model: "fixture", thinking: "medium" } as const;
 const commands = new NodeCommandRunner();
@@ -42,7 +42,7 @@ test("Pi transport execution failure preserves bytes but no raw stdout/stderr in
 test("incomplete trailing event cannot reuse a prior terminal event", async () => {
   const stream = piJsonStream("finished", profile);
   const output = await commands.run({ command: process.execPath, args: ["-e", `process.stdout.write(${JSON.stringify(stream + "truncated")});`], capture: "pi-json" });
-  assert.equal(output.terminalEventBytes, undefined);
+  assert.deepEqual(output.terminalEventBytes, Buffer.alloc(0));
 });
 test("Plan launch IPC preserves an interrupted child even without close IPC; duplicate closures rejected", async () => {
   const root = await launchTestRoot("squire-telemetry-ipc-");
@@ -66,4 +66,34 @@ test("Plan launch IPC preserves an interrupted child even without close IPC; dup
     assert.ok(persisted.length >= 3);
     assert.ok((await Promise.all(persisted.map(n => readFile(path.join(root, "child", n), "utf8")))).some(t => t.includes('"event":"launch"')));
   } finally { await child.release(); await controller.release(); await rm(root, { recursive: true, force: true }); }
+});
+
+for (const overflow of [false, true]) test(`post-agent_end compaction survives ${overflow ? "overflow" : "normal"} transport with exact report bytes`, async () => {
+  const stream = piJsonStream('{"status":"passed"}', profile);
+  const tail = piThresholdCompactionEvents().map(e => JSON.stringify(e)).join("\n") + "\n";
+  const raw = (overflow ? "x".repeat(5000) + "\n" : "") + stream + tail;
+  const output = await commands.run({ command: process.execPath, args: ["-e", `const b=Buffer.from(${JSON.stringify(raw)});for(let i=0;i<b.length;i+=13)process.stdout.write(b.subarray(i,i+13));`], capture: "pi-json", maxOutputBytes: 4096 });
+  assert.deepEqual(output.stdoutBytes, Buffer.from(raw).subarray(0, 4096));
+  assert.equal(output.stdoutTruncated, overflow);
+  assert.equal(output.terminalEventBytes!.toString(), stream.trimEnd().split("\n").at(-1) + "\n");
+  assert.equal(terminalPiReport(output.terminalEventBytes!).toString(), '{"status":"passed"}');
+  const usage = parsePiUsage(output.stdoutBytes, profile);
+  assert.equal(usage.tokens, null);
+  if (!overflow) assert.ok(usage.diagnostics.includes("unsupported_compaction"));
+  assert.ok(!JSON.stringify(usage).includes("PRIVATE"));
+});
+
+test("overflow cannot fall back to an obsolete terminal in the accounting prefix", async () => {
+  const stream = piJsonStream("obsolete", profile);
+  for (const tail of [
+    "truncated", '{"type":"unknown"}\n',
+    JSON.stringify(piThresholdCompactionEvents()[0]) + "\n",
+    "x".repeat(10000) + "\n",
+  ]) {
+    const output = await commands.run({ command: process.execPath, args: ["-e", `process.stdout.write(${JSON.stringify(stream + tail)});`], capture: "pi-json", maxOutputBytes: Buffer.byteLength(stream) });
+    assert.equal(output.stdoutTruncated, true);
+    assert.equal(terminalPiReport(output.stdoutBytes!).toString(), "obsolete");
+    assert.deepEqual(output.terminalEventBytes, Buffer.alloc(0));
+    assert.throws(() => terminalPiReport(output.terminalEventBytes ?? output.stdoutBytes!));
+  }
 });

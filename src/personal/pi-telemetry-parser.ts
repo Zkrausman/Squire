@@ -3,7 +3,7 @@ import type { PhaseProfile } from "./model-policy.js";
 
 /** Pi print JSON v3 header + pi-agent-core events. Never session JSONL. */
 export const MAX_STREAM_BYTES = 64 * 1024 * 1024;
-export const TELEMETRY_DIAGNOSTICS = ["missing_stream", "stream_limit", "invalid_stream", "invalid_order", "duplicate_message", "profile_mismatch", "unsupported_provider", "invalid_usage", "partial_stream", "missing_usage", "cost_not_provider_reported", "capture_failed", "missing_session", "ledger_mismatch", "invalid_duration"] as const;
+export const TELEMETRY_DIAGNOSTICS = ["missing_stream", "stream_limit", "invalid_stream", "invalid_order", "duplicate_message", "profile_mismatch", "unsupported_provider", "invalid_usage", "partial_stream", "missing_usage", "cost_not_provider_reported", "capture_failed", "missing_session", "ledger_mismatch", "invalid_duration", "unsupported_compaction"] as const;
 export type TelemetryDiagnostic = typeof TELEMETRY_DIAGNOSTICS[number];
 export interface Tokens { input: number; output: number; cacheRead: number; cacheWrite: number }
 export interface ParsedUsage {
@@ -52,16 +52,68 @@ function events(bytes: Buffer): Obj[] {
   if (lines.length > 200_000) throw new Error("stream_limit");
   return lines.map(line => { const v: unknown = JSON.parse(line); rejectDuplicateKeys(line); if (!object(v) || typeof v["type"] !== "string") throw new Error("invalid_stream"); return v; });
 }
+/** Pi 0.73.1 can compact after agent_end. This is lifecycle evidence, not
+ * assistant usage: the summary model's spend is not emitted as message_end. */
+function thresholdCompactionEnd(e: Obj): boolean {
+  return shape(e, ["type", "reason", "aborted", "willRetry"], ["result", "errorMessage"])
+    && e["reason"] === "threshold" && typeof e["aborted"] === "boolean" && e["willRetry"] === false
+    && (e["errorMessage"] === undefined || typeof e["errorMessage"] === "string")
+    && (e["result"] === undefined || (object(e["result"])
+      && shape(e["result"], ["summary", "firstKeptEntryId", "tokensBefore"], ["details"])
+      && typeof e["result"]["summary"] === "string" && typeof e["result"]["firstKeptEntryId"] === "string"
+      && integer(e["result"]["tokensBefore"])));
+}
+
+/** Shared bounded selector for full streams and draining/overflow transport.
+ * Only a complete threshold-compaction pair may trail a terminal report. New
+ * work, unknown/malformed/truncated events or retry intent invalidate the old
+ * candidate. Never reconstruct bytes or treat a compaction summary as a report. */
+export class PiTerminalEventCapture {
+  #terminal: Buffer | undefined;
+  #state: "terminal" | "compacting" | "compacted" | undefined;
+  accept(line: Buffer | undefined): void {
+    try {
+      if (!line || line.length > MAX_STREAM_BYTES || line.at(-1) !== 10) throw new Error();
+      const raw = new TextDecoder("utf-8", { fatal: true }).decode(line);
+      const event: unknown = JSON.parse(raw);
+      if (!object(event)) throw new Error();
+      if (event["type"] === "agent_end") {
+        rejectDuplicateKeys(raw, true);
+        terminalAssistantText(event);
+        this.#terminal = line; this.#state = "terminal";
+        return;
+      }
+      if (this.#terminal) {
+        rejectDuplicateKeys(raw, true);
+        if (this.#state === "terminal" && event["type"] === "compaction_start"
+          && shape(event, ["type", "reason"]) && event["reason"] === "threshold") {
+          this.#state = "compacting"; return;
+        }
+        if (this.#state === "compacting" && event["type"] === "compaction_end" && thresholdCompactionEnd(event)) {
+          this.#state = "compacted"; return;
+        }
+      }
+    } catch { /* Fixed failure state; raw content must never reach diagnostics. */ }
+    this.#terminal = undefined; this.#state = undefined;
+  }
+  get bytes(): Buffer | undefined { return this.#state === "compacting" ? undefined : this.#terminal; }
+}
+
 /** Report extraction deliberately independent of usage validation. */
 export function terminalPiReport(bytes: Buffer): Buffer {
   if (bytes.length > MAX_STREAM_BYTES) throw new Error("Pi stream exceeds bound");
   if (bytes.at(-1) !== 10) throw new Error("Pi terminal event truncated");
-  const endOffset = bytes.length - 1;
-  const startOffset = bytes.lastIndexOf(10, endOffset - 1) + 1;
-  const lastLine = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(startOffset, endOffset));
-  const end: unknown = JSON.parse(lastLine);
-  rejectDuplicateKeys(lastLine, true);
-  if (!object(end) || end["type"] !== "agent_end" || !shape(end, ["type", "messages"])) throw new Error("Pi terminal event missing");
+  const capture = new PiTerminalEventCapture();
+  let start = 0;
+  while (start < bytes.length) {
+    const end = bytes.indexOf(10, start) + 1;
+    capture.accept(bytes.subarray(start, end)); start = end;
+  }
+  if (!capture.bytes) throw new Error("Pi terminal event missing");
+  return terminalAssistantText(JSON.parse(capture.bytes.toString("utf8")));
+}
+function terminalAssistantText(end: Obj): Buffer {
+  if (end["type"] !== "agent_end" || !shape(end, ["type", "messages"])) throw new Error("Pi terminal event missing");
   const messages: unknown = end["messages"];
   if (!Array.isArray(messages)) throw new Error("Pi terminal messages invalid");
   const last: unknown = messages.at(-1);
@@ -85,6 +137,9 @@ export function parsePiUsage(bytes: Buffer | undefined, profile: PhaseProfile): 
     const assistants: string[] = [], seen = new Set<string>(), responseIds = new Set<string>(), timestamps = new Set<number>();
     for (const [index, e] of stream.entries()) {
       const type = e["type"];
+      // Compaction invokes a separate model without authoritative usage events.
+      // Keep accounting incomplete independently of terminal report extraction.
+      if (type === "compaction_start" || type === "compaction_end") { add("unsupported_compaction"); continue; }
       if (ended) add("invalid_order");
       if (index === 0) {
         if (type !== "session" || !shape(e, ["type", "version", "id", "timestamp", "cwd"]) || e["version"] !== 3 || typeof e["id"] !== "string" || !UUID.test(e["id"]) || typeof e["timestamp"] !== "string" || !Number.isFinite(Date.parse(e["timestamp"])) || typeof e["cwd"] !== "string") add("invalid_stream");

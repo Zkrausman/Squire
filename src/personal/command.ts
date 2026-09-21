@@ -1,5 +1,6 @@
 import { PhaseExecutionError, type ExecutionFailure } from "./execution-failure.js";
 import { execFile, spawn } from "node:child_process";
+import { PiTerminalEventCapture } from "./pi-telemetry-parser.js";
 
 export interface CommandRequest {
   readonly command: string;
@@ -19,6 +20,8 @@ export interface CommandResult {
   readonly stdoutBytes?: Buffer;
   readonly stderr: string;
   readonly stdoutTruncated?: boolean;
+  /** Exact selected agent_end; empty means capture found no valid terminal.
+   * Undefined is reserved for command ports without structured selection. */
   readonly terminalEventBytes?: Buffer;
 }
 
@@ -61,8 +64,9 @@ export class NodeCommandRunner implements CommandPort {
   }
 }
 
-/** Two independent bounds: exact accounting prefix and most recent complete JSON
- * event. Overflow drains (never kills) the child, and is explicit in the result.
+/** Independent bounds for the exact accounting prefix, current JSON line and
+ * selected terminal event. Supported trailing lifecycle events do not replace
+ * the report. Overflow drains (never kills) the child, and is explicit in the result.
  * Neither decoded events nor child stderr are ever put in an exception message. */
 async function capturePiStream(request: CommandRequest, signal?: AbortSignal): Promise<CommandResult> {
   if (request.sensitive) throw new Error("sensitive commands cannot use Pi stream capture");
@@ -73,7 +77,7 @@ async function capturePiStream(request: CommandRequest, signal?: AbortSignal): P
     const prefix: Buffer[] = [];
     let prefixLength = 0, truncated = false;
     let line: Buffer[] = [], lineLength = 0, lineOverflow = false;
-    let terminal: Buffer | undefined;
+    const terminal = new PiTerminalEventCapture();
     let timedOut = false, processError: unknown;
     const child = spawn(request.command, [...request.args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...(request.cwd ? { cwd: request.cwd } : {}), ...(request.env ? { env: request.env } : {}) });
     const interrupt = () => child.kill();
@@ -92,7 +96,7 @@ async function capturePiStream(request: CommandRequest, signal?: AbortSignal): P
         if (lineLength > maximum) { lineOverflow = true; line = []; }
         else if (!lineOverflow) line.push(Buffer.from(part));
         if (newline >= 0) {
-          terminal = lineOverflow ? undefined : Buffer.concat(line, lineLength);
+          terminal.accept(lineOverflow ? undefined : Buffer.concat(line, lineLength));
           line = []; lineLength = 0; lineOverflow = false;
         }
         start = end;
@@ -105,11 +109,14 @@ async function capturePiStream(request: CommandRequest, signal?: AbortSignal): P
     child.once("close", (code, exitSignal) => {
       clearTimeout(timeout); signal?.removeEventListener("abort", interrupt);
       const bytes = Buffer.concat(prefix, prefixLength);
-      if (lineLength || lineOverflow) terminal = undefined;
+      if (lineLength || lineOverflow) terminal.accept(undefined);
+      // Explicit empty selection prevents callers falling back to a truncated
+      // prefix that may end at an obsolete (but superficially valid) agent_end.
+      const terminalEventBytes = terminal.bytes ?? Buffer.alloc(0);
       if (processError || code !== 0 || exitSignal || signal?.aborted || timedOut) {
         const classification = signal?.aborted ? "cancelled" : timedOut ? "timeout" : processError ? "infrastructure" : "unknown";
-        reject(new CommandExecutionError(classification, "Pi structured child execution failed", "", undefined, bytes, terminal, truncated));
-      } else resolve({ stdout: "", stderr: "", stdoutBytes: bytes, stdoutTruncated: truncated, ...(terminal ? { terminalEventBytes: terminal } : {}) });
+        reject(new CommandExecutionError(classification, "Pi structured child execution failed", "", undefined, bytes, terminalEventBytes, truncated));
+      } else resolve({ stdout: "", stderr: "", stdoutBytes: bytes, stdoutTruncated: truncated, terminalEventBytes });
     });
     if (signal?.aborted) interrupt();
   });

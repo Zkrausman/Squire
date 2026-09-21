@@ -19,12 +19,12 @@ import { deriveRunEvents } from "../src/personal/run-events.js";
 import { TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { createPlanSbx } from "./helpers/plan-sbx.js";
 import { assertProtectedAcl, launchTestRoot } from "./helpers/windows-launch.js";
-import { piJsonEvents, piJsonStream } from "./helpers/pi-json.js";
+import { piJsonEvents, piJsonStream, piThresholdCompactionEvents } from "./helpers/pi-json.js";
 const BASE = "a".repeat(40);
 const request = { ticketId: "AIDEV-299", repository: "example/repo", repositoryPath: "/fixture", sourceRef: "main", baseBranch: "main" };
 const SECRET = "PROMPT RESPONSE TICKET SOURCE ENV=CREDENTIAL /credential/auth.json token-command";
 type Fault = "malformed" | "duplicate" | "overflow" | "unsupported" | "interrupted" | "partial" | "publication" | "capture";
-async function harness(options: { fault?: Fault; remediation?: boolean; staged?: boolean } = {}) {
+async function harness(options: { fault?: Fault; remediation?: boolean; staged?: boolean; compaction?: boolean } = {}) {
   const root = await launchTestRoot("squire-telemetry-");
   const stateDirectory = path.join(root, "state");
   const states = new JsonRunStateStore(stateDirectory);
@@ -32,7 +32,7 @@ async function harness(options: { fault?: Fault; remediation?: boolean; staged?:
   const config = { ...TEST_MATERIAL.config, repository: { slug: "example/repo", path: "/fixture", sourceRef: "main", baseBranch: "main" }, dataDirectory: root, paths: { state: stateDirectory, staging: root, bridges: path.join(root, "bridges") }, promptPolicy: { version: 1 as const, id: "default", plan: ["requirements", "implementation-design"] as ("requirements" | "implementation-design")[] }, ...(escalationPolicy ? { escalationPolicy } : {}) };
   const raw = Buffer.from(JSON.stringify(config));
   const material = await captureLaunchMaterial({ config, digest: createHash("sha256").update(raw).digest("hex"), rawConfig: raw.toString("base64") });
-  const sbx = await createPlanSbx(root, path.join(root, "plan-launches.jsonl"));
+  const sbx = await createPlanSbx(root, path.join(root, "plan-launches.jsonl"), options.compaction ? piThresholdCompactionEvents().map(e => JSON.stringify(e)).join("\n") + "\n" : "");
   const launches: PhaseInput[] = [];
   let input: PhaseInput;
   const abort = new AbortController();
@@ -52,6 +52,7 @@ async function harness(options: { fault?: Fault; remediation?: boolean; staged?:
       if (options.fault === "unsupported") { events[4].message.api = "unsupported"; }
       if (options.fault === "partial" || options.fault === "interrupted") events.pop();
     }
+    if (options.compaction) events.push(...piThresholdCompactionEvents());
     const bytes = Buffer.from(events.map(e => JSON.stringify(e)).join("\n") + "\n");
     if (phase === "implement" && options.fault === "interrupted") { abort.abort(); throw new CommandExecutionError("cancelled", "fixture interruption", "", undefined, bytes); }
     if (phase === "implement" && options.fault === "overflow") return { stdout: "", stdoutBytes: bytes.subarray(0, 40), terminalEventBytes: Buffer.from(JSON.stringify(events.at(-1)) + "\n"), stdoutTruncated: true, stderr: "" };
@@ -239,5 +240,20 @@ test("single-run CLI parsing and read-only JSON/human reporting require no crede
     assert.ok(!json.stdout.includes(SECRET)); assert.ok(!json.stdout.includes("credential"));
     const human = await execute(process.execPath, args, { env: { ...process.env, PATH: "" } });
     assert.match(human.stdout, /requirements/); assert.match(human.stdout, /implementation-design/); assert.match(human.stdout, /accounting incomplete/); assert.match(human.stdout, /provider cost=unknown/);
+  } finally { await h.cleanup(); }
+});
+
+test("threshold compaction leaves both supervised Plan children and ordinary phase outcomes passed", async () => {
+  const h = await harness({ compaction: true });
+  try {
+    assert.equal(h.state.status, "completed", h.state.lastError ?? "");
+    const s = await summary(h);
+    assert.equal(s.sessions.length, 6);
+    assert.ok(s.sessions.every(row => row.outcome === "passed" && row.tokens === null && row.diagnostics.includes("unsupported_compaction")));
+    assert.ok(PERSONAL_PHASES.every(phase => h.state.results[phase]?.status === "passed"));
+    assert.equal(s.totals.tokensComplete, false);
+    assert.equal(s.completeness, "incomplete");
+    assert.ok(!JSON.stringify(s).includes("PRIVATE"));
+    assert.ok(!formatRunTelemetry({ status: "available", summary: s }).includes("PRIVATE"));
   } finally { await h.cleanup(); }
 });

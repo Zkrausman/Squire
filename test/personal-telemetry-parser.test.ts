@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parsePiUsage, terminalPiReport, MAX_STREAM_BYTES } from "../src/personal/pi-telemetry-parser.js";
-import { piJsonEvents, piJsonStream } from "./helpers/pi-json.js";
+import { piJsonEvents, piJsonStream, piThresholdCompactionEvents } from "./helpers/pi-json.js";
 const profile = { provider: "openai-codex", model: "fixture", thinking: "medium" } as const;
 const encode = (events: any[]) => Buffer.from(events.map(e => JSON.stringify(e)).join("\n") + "\n");
 const make = () => piJsonEvents('{"result":"fixture"}', profile);
@@ -111,4 +111,36 @@ test("a contradictory completion cannot reuse a prior message timestamp or respo
     const result = parsePiUsage(encode(first), profile);
     assert.equal(result.tokens, null); assert.ok(result.diagnostics.includes("duplicate_message"));
   }
+});
+
+test("post-agent_end threshold compaction preserves the report, never claims complete accounting", () => {
+  for (const end of [
+    piThresholdCompactionEvents()[1],
+    { type: "compaction_end", reason: "threshold", aborted: true, willRetry: false },
+    { type: "compaction_end", reason: "threshold", aborted: false, willRetry: false, errorMessage: "PRIVATE failure" },
+  ]) {
+    const raw = encode([...make(), piThresholdCompactionEvents()[0], end]);
+    assert.equal(terminalPiReport(raw).toString(), '{"result":"fixture"}');
+    const usage = parsePiUsage(raw, profile);
+    assert.equal(usage.tokens, null);
+    assert.deepEqual(usage.diagnostics, ["unsupported_compaction", "cost_not_provider_reported"]);
+    assert.ok(!JSON.stringify(usage).includes("PRIVATE"));
+  }
+});
+
+test("trailing lifecycle selection rejects ambiguity, retry intent, malformed and incomplete compaction", () => {
+  const [start, end] = piThresholdCompactionEvents();
+  for (const suffix of [
+    [start], [end], [end, start], [start, start, end], [start, end, end],
+    [start, { ...end, willRetry: true }], [start, { ...end, reason: "overflow" }],
+    [start, { ...end, aborted: "false" }], [start, { ...end, extra: "PRIVATE" }],
+    [start, end, { type: "agent_start" }], [start, end, { type: "unknown" }],
+  ]) assert.throws(() => terminalPiReport(encode([...make(), ...suffix])));
+  const raw = encode([...make(), start, end]);
+  for (const bytes of [
+    raw.subarray(0, raw.length - 1), Buffer.concat([raw, Buffer.from([255, 10])]),
+    Buffer.from(raw.toString().replace('"willRetry":false', '"willRetry":true,"willRetry":false')),
+  ]) assert.throws(() => terminalPiReport(bytes));
+  const invalidReport = make(); invalidReport[4].message.stopReason = "error";
+  assert.throws(() => terminalPiReport(encode([...invalidReport, start, end])));
 });
