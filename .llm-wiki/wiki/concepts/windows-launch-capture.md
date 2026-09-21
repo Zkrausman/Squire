@@ -56,3 +56,18 @@ explicitly exercised without suppressing its warning. Config/manifest deletion,
 captured prompt/digest parity, reservation cleanup and actual detached child exit
 remain required before fixture completion/cleanup. No extra controller retry or
 external ticket request is authorized by telemetry/state publication diagnostics.
+
+## Historical private artifacts and ACL fixtures
+
+Historical imports reuse the native report evidence lease's current-owner,
+protected-DACL, local-NTFS, no-reparse/link and retained-handle identity checks.
+`openHistorical` is read-only with a separate 64 MiB source bound; it does not
+raise the 2 MiB report creation bound or weaken permission rejection.
+
+PowerShell `FileSystemRights` string casts accept abbreviations and can resolve
+ambiguous names differently across runtimes. The shared test `grant` helper now
+requires an exact full enum name (case-sensitive) or numeric value before
+`Enum.Parse`. Use `Read`, `ReadData`, `ReadAndExecute`, etc., never `R`. The
+cross-platform public-permission regression verifies the actual public read ACE
+before asserting rejection and runs unconditionally in Windows Node 20/22/24.
+Keep workflow commands and their executable validator contract synchronized.

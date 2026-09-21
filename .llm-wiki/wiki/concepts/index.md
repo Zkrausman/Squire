@@ -16,3 +16,4 @@
 - [Report-only format correction](report-only-format-correction.md)
 - [Durable current-run telemetry](durable-run-telemetry.md)
 - [Transient phase-launch retry](transient-phase-launch-retry.md)
+- [Historical telemetry and cohort scorecards](historical-telemetry-cohorts.md)
