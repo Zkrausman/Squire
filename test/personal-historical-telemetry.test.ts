@@ -48,3 +48,23 @@ test("long escaped strings use bounded scanner without content extraction", { ti
   const bytes = historyBytes(sessionId, { content: [{ type: "text", text: '\\"'.repeat(200000) }] });
   assert.equal(parse(bytes).accounting.input.known, 10);
 });
+
+test("usage on every non-assistant role preserves subtotals but makes accounting incomplete", () => {
+  const bytes = historyBytes(sessionId), baseline = parse(bytes);
+  for (const role of ["user", "toolResult", "bashExecution", "custom", "branchSummary", "compactionSummary", "futureRole"]) {
+    for (const usage of [undefined, { input: 999, cost: { total: 99 } }, null, "PRIVATE-UNSUPPORTED-USAGE"]) {
+      const entry = { type: "message", id: "entry-2", parentId: "entry-1", timestamp: "2026-01-01T00:00:00.000Z", message: { role, usage, content: "PRIVATE-CONTENT" } };
+      const result = parse(Buffer.concat([bytes, Buffer.from(JSON.stringify(entry) + "\n")]));
+      const supported = usage === undefined && role !== "futureRole";
+      assert.equal(result.diagnostic, supported ? null : "unsupported_or_partial");
+      assert.equal(result.excludedRecords, 1);
+      assert.deepEqual(result.recordIdentities, baseline.recordIdentities);
+      for (const field of ["input", "output", "cacheRead", "cacheWrite", "recordedCost", "messages"] as const) {
+        assert.equal(result.accounting[field].known, baseline.accounting[field].known);
+        assert.equal(result.accounting[field].complete, supported);
+        assert.equal(result.accounting[field].unknown, supported ? 0 : 1);
+      }
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE|content|999/);
+    }
+  }
+});

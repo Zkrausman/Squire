@@ -22,14 +22,20 @@ from `src/index.ts`; detailed operator rules are in
   entry/response identities bind provenance. Input/output/cache-read/cache-write
   remain separate, and recorded `usage.cost.total` is summed as exact decimals,
   never reconstructed from prices. Content is opaque. Historical message times
-  do not establish active phase duration.
+  do not establish active phase duration. Usage on any non-assistant message,
+  including recognized compaction/branch summaries, is unsupported: retain known
+  assistant subtotals but mark accounting incomplete rather than silently skipping
+  that usage or inferring its meaning from content.
 - Squire completion, exact-head CI, and merge are independent. CI/merge evidence
   is import-only, from independently produced canonical manifests with detached
   Ed25519 envelopes. SHA-256 identifies bytes; it does not authenticate them.
   Only the exact externally configured public-key ID, signer, provenance and
   signed-time validity window can authenticate a claim. Revoked, malformed,
   unsigned, noncanonical or unbound evidence stays unknown. Private signing keys
-  and signing operations are never accepted.
+  and signing operations are never accepted. Required-check names and imported
+  check names share a bounded, nonempty, control-free Unicode string schema (256
+  characters maximum), not the restricted identity syntax. Spaces and matrix
+  punctuation are preserved; matching is exact, with no trimming or case folding.
 - Separate signed Squire attestations bind reservation/endpoints, ticket run and
   session-source inventory, first candidate/Review/Test, remediation, and waste
   classifications. Unsupported or ambiguous classifications remain unknown.

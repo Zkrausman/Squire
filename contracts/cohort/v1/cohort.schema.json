@@ -38,7 +38,7 @@
         "names": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/identity"
+            "$ref": "#/$defs/checkName"
           },
           "maxItems": 100,
           "minItems": 1,
@@ -473,7 +473,7 @@
             ],
             "properties": {
               "name": {
-                "$ref": "#/$defs/identity"
+                "$ref": "#/$defs/checkName"
               },
               "headSha": {
                 "$ref": "#/$defs/sha"
@@ -2575,6 +2575,12 @@
           "$ref": "#/$defs/scorecard"
         }
       }
+    },
+    "checkName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
     },
     "identity": {
       "type": "string",

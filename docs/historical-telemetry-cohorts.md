@@ -159,6 +159,11 @@ signature never fixes a wrong candidate or check set.
 
 A disposition lists per-check name, head SHA, conclusion and completion time;
 checks must be unique, exact-head bound and completed no later than signed-at.
+Required-check names and imported check names use the same nonempty Unicode
+string schema, bounded to 256 characters and excluding C0/C1 controls. Spaces,
+parentheses and other matrix punctuation are preserved (for example,
+`windows-launch-capture (20.17.0)`). Names match exactly: no trimming, case folding
+or normalization. Check-set identities retain the separate restricted identity syntax.
 Every required check must explicitly succeed for `ci:passed`. Known failures are
 failed; missing/skipped/neutral/unknown checks are not successes. Merge requires
 `prState:merged` and explicit merge SHA/time. Open/closed states require an explicit

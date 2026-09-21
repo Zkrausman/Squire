@@ -51,7 +51,13 @@ export function backfillSession(bytes: Buffer, source: HistoricalSource): Histor
       }
       if (!keys(entry, ["type", "id", "parentId", "timestamp", "message"]) || !object(entry["message"])) return unavailable();
       const m = entry["message"];
-      if (m["role"] !== "assistant") { excludedRecords++; if (!["user", "toolResult", "bashExecution", "custom", "branchSummary", "compactionSummary"].includes(String(m["role"]))) unsupported++; continue; }
+      if (m["role"] !== "assistant") {
+        excludedRecords++;
+        // Known non-assistant roles are safe to skip only when they carry no
+        // usage. Unsupported accounting must not make assistant subtotals look complete.
+        if (!["user", "toolResult", "bashExecution", "custom", "branchSummary", "compactionSummary"].includes(String(m["role"])) || m["usage"] !== undefined) unsupported++;
+        continue;
+      }
       const responseId = m["responseId"];
       if (responseId !== undefined && (typeof responseId !== "string" || !responseId.length || responseId.length > 256)) return unavailable();
       const identity = sha256(JSON.stringify([source.profile.provider, responseId ?? `${source.sessionId}/${entry["id"]}`]));

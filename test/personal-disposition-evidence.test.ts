@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { verifyEvidence, disposition, validateTrustRoots } from "../src/personal/disposition-evidence.js";
 import { canonicalJson } from "../src/personal/bounded-json.js";
+import { validateCohortDocument } from "../src/personal/cohort-schema.js";
 import { binding, dispositionFixture, keys, squireFixture } from "./helpers/cohort.js";
 
 test("Ed25519 canonical detached import authenticates exact head, check set and independent merge", () => {
@@ -56,4 +57,36 @@ test("authentic signatures do not override run/repository/PR/head/check-set bind
   m.checks[0]!.conclusion = "failure"; signed = k.signed(m);
   const result = disposition(verifyEvidence("disposition", signed.bytes, signed.envelope, k.roots, binding()));
   assert.equal(result.ci, "failed"); assert.equal(result.merge, "merged");
+});
+
+
+test("check names preserve matrix punctuation, spaces and Unicode with exact matching", () => {
+  const k = keys(), b = binding();
+  b.requiredCheckSet.names = ["windows-launch-capture (20.17.0)", "CI / build [linux, node=22]", "Vérification ✅", "x".repeat(256)];
+  validateCohortDocument("checkSet", b.requiredCheckSet);
+  const m = dispositionFixture(b), signed = k.signed(m);
+  const result = verifyEvidence("disposition", signed.bytes, signed.envelope, k.roots, b);
+  assert.equal(result.status, "verified");
+  if (result.status === "verified") assert.deepEqual(result.manifest.checks.map(c => c.name), b.requiredCheckSet.names);
+  assert.equal(disposition(result).ci, "passed");
+  // No trimming, punctuation removal or case folding may bind a different check.
+  for (const name of ["windows-launch-capture (20.17.0) ", "windows-launch-capture 20.17.0", "Windows-launch-capture (20.17.0)"]) {
+    const changed = structuredClone(m); changed.checks[0]!.name = name;
+    const s = k.signed(changed);
+    assert.equal(disposition(verifyEvidence("disposition", s.bytes, s.envelope, k.roots, b)).ci, "unknown");
+    const changedBinding = structuredClone(b); changedBinding.requiredCheckSet.names[0] = name;
+    assert.equal(verifyEvidence("disposition", signed.bytes, signed.envelope, k.roots, changedBinding).status, "unknown");
+  }
+});
+
+test("check names remain nonempty, bounded and control-free in requests and signed checks", () => {
+  const k = keys();
+  for (const name of ["", "x".repeat(257), "ci\n", "ci\r", "ci\t", "ci\u0000", "ci\u007f", "ci\u0085"]) {
+    assert.throws(() => validateCohortDocument("checkSet", { identity: "checks-v1", names: [name] }));
+    const m = dispositionFixture(); m.checks[0]!.name = name;
+    const s = k.signed(m);
+    assert.deepEqual(verifyEvidence("disposition", s.bytes, s.envelope, k.roots, binding()), { status: "unknown", diagnostic: "malformed_evidence" });
+  }
+  assert.throws(() => validateCohortDocument("checkSet", { identity: "checks-v1", names: ["matrix (22)", "matrix (22)"] }));
+  assert.throws(() => validateCohortDocument("checkSet", { identity: "not an identity", names: ["matrix (22)"] }));
 });
