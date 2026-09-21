@@ -1,3 +1,4 @@
+import "./check-runtime.mjs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 // Linux builds only the test exit observer, never the Windows trust boundary.

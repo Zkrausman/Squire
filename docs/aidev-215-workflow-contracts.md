@@ -144,7 +144,7 @@ Examples are under [`fixtures/contracts/`](../fixtures/contracts/):
 Run:
 
 ```sh
-npm install
+npm install --engine-strict
 npm run validate:contracts
 npm test
 ```

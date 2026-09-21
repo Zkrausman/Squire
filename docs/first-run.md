@@ -16,7 +16,7 @@ reason to install/upgrade Pi globally.
 
 ## Prerequisites
 
-- Node.js (`npm`)
+- Node.js 24 (`>=24 <25`) and its `npm`; Node 20/22 and 25+ are unsupported
 - Docker
 - `pi` CLI (`pi --version`)
 - GitHub App token helper available to your shell
@@ -24,10 +24,14 @@ reason to install/upgrade Pi globally.
 
 ## 1) Install and verify the checkout
 
+Verify `node --version` reports `v24.x.y`. For an existing installation, follow
+[Node runtime migration](node-runtime-support.md) before restarting controllers.
+Historical artifacts remain readable, but are not current runtime-support evidence.
+
 From the repository root:
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
+npm ci --engine-strict --ignore-scripts --no-audit --no-fund
 npm run build
 ```
 

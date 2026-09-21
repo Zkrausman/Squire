@@ -185,6 +185,59 @@ function exactRun(step, expected, label) {
   assert.equal(step.run, expected, `${label} run changed`);
 }
 
+// This is an evidence cohort declaration, not branch-protection authority.
+// Deliberate policy changes must update this exact contract and its probes.
+const requiredCheckPolicy = JSON.parse(await readFile(".github/required-check-policy.json", "utf8"));
+assert.deepEqual(requiredCheckPolicy, {
+  "schemaVersion": 1,
+  "policyVersion": 2,
+  "cohortId": "squire-node24-v2",
+  "previousCohortId": "squire-node20-node22-node24-v1",
+  "applicationNodeRange": ">=24 <25",
+  "boundary": {
+    "ticket": "AIDEV-312",
+    "originalBaseSha": "86a2e672049bd918bc9684caeaa0f25df938fd86",
+    "activation": "descendants-of-merged-policy-only",
+    "policyChangeAcceptance": "pre-existing-exact-head-review-test-ci",
+    "retroactiveReclassification": false
+  },
+  "requiredChecks": [
+    {
+      "id": "clean-install-build-test",
+      "source": "ci.yml",
+      "job": "clean-install-build-test",
+      "os": "ubuntu-latest",
+      "node": "24"
+    },
+    {
+      "id": "filesystem-linux",
+      "source": "ci.yml",
+      "job": "filesystem-event-integration",
+      "os": "ubuntu-latest",
+      "node": "24"
+    },
+    {
+      "id": "filesystem-windows",
+      "source": "ci.yml",
+      "job": "filesystem-event-integration",
+      "os": "windows-latest",
+      "node": "24"
+    },
+    {
+      "id": "windows-launch-native",
+      "source": "ci.yml",
+      "job": "windows-launch-capture",
+      "os": "windows-latest",
+      "node": "24"
+    },
+    {
+      "id": "CodeQL",
+      "source": "github-external-required-check",
+      "required": true
+    }
+  ]
+}, "required-check policy/cohort boundary changed");
+
 const workflow = await readFile(WORKFLOW_PATH, "utf8");
 const runtimeManifest = JSON.parse(await readFile(RUNTIME_MANIFEST_PATH, "utf8"));
 const runtimeLock = JSON.parse(await readFile(RUNTIME_LOCK_PATH, "utf8"));
@@ -247,7 +300,7 @@ assert.equal(checkout.with["persist-credentials"], false);
 exactKeys(setupNode, ["name", "uses", "with"], "Set up Node.js step");
 assert.equal(setupNode.uses, "actions/setup-node@v4");
 exactKeys(setupNode.with, ["node-version", "cache", "cache-dependency-path"], "Set up Node.js.with");
-assert.equal(setupNode.with["node-version"], "22");
+assert.equal(setupNode.with["node-version"], "24");
 assert.equal(setupNode.with.cache, "npm");
 assert.deepEqual(setupNode.with["cache-dependency-path"].trim().split("\n"), ["package-lock.json", ".github/runtime/package-lock.json"]);
 exactKeys(workflowValidation, ["name", "run"], "workflow validation step");
@@ -255,7 +308,7 @@ exactRun(workflowValidation, "node .github/validate-ci-workflow.mjs", "workflow 
 exactKeys(negativeProbes, ["name", "run"], "negative probes step");
 exactRun(negativeProbes, "node .github/test-ci-workflow-validator.mjs", "negative probes");
 exactKeys(install, ["name", "run"], "root install step");
-exactRun(install, "npm ci", "root install");
+exactRun(install, "npm ci --engine-strict", "root install");
 exactKeys(provision, ["name", "run"], "runtime provisioning step");
 exactRun(provision, EXPECTED_PROVISION_RUN, "runtime provisioning");
 exactKeys(runtimeValidation, ["name", "run"], "runtime validation step");
@@ -281,11 +334,11 @@ assert.equal(filesystemCheckout.with["persist-credentials"], false);
 exactKeys(filesystemSetupNode, ["name", "uses", "with"], "filesystem Set up Node.js step");
 assert.equal(filesystemSetupNode.uses, "actions/setup-node@v4");
 exactKeys(filesystemSetupNode.with, ["node-version", "cache", "cache-dependency-path"], "filesystem Set up Node.js.with");
-assert.equal(filesystemSetupNode.with["node-version"], "22");
+assert.equal(filesystemSetupNode.with["node-version"], "24");
 assert.equal(filesystemSetupNode.with.cache, "npm");
 assert.equal(filesystemSetupNode.with["cache-dependency-path"], "package-lock.json");
 exactKeys(filesystemInstall, ["name", "run"], "filesystem install step");
-assert.equal(filesystemInstall.run, "npm ci");
+assert.equal(filesystemInstall.run, "npm ci --engine-strict");
 exactKeys(filesystemBuild, ["name", "run"], "filesystem build step");
 assert.equal(filesystemBuild.run, "npm run build");
 exactKeys(filesystemTests, ["name", "timeout-minutes", "run"], "filesystem event integration step");
@@ -294,7 +347,7 @@ assert.equal(filesystemTests.run, "node --test dist/test/personal-run-events.tes
 
 const windowsLaunchJob = document.jobs["windows-launch-capture"];
 assert.deepEqual(windowsLaunchJob, {
-  name: "windows-launch-capture", strategy: { "fail-fast": false, matrix: { node: ["20.17.0", "22.9.0", "24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
+  name: "windows-launch-capture", strategy: { "fail-fast": false, matrix: { node: ["24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
   steps: [
     { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
     { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "${{ matrix.node }}", cache: "npm", "cache-dependency-path": "package-lock.json" } },
@@ -354,4 +407,4 @@ const requiredRuntimePackages = {
 };
 for (const [packagePath, version] of Object.entries(requiredRuntimePackages)) assert.equal(runtimeLock.packages[packagePath]?.version, version, `${packagePath} version is not pinned`);
 
-console.log(`CI workflow, unconditional gate order, ${runtimePackages.length} integrity-bound runtime packages, and pinned ticket-runtime manifest: valid`);
+console.log(`CI cohort ${requiredCheckPolicy.cohortId} (policy ${requiredCheckPolicy.policyVersion}, activation: ${requiredCheckPolicy.boundary.activation}), workflow, unconditional gate order, ${runtimePackages.length} integrity-bound runtime packages, and pinned ticket-runtime manifest: valid`);

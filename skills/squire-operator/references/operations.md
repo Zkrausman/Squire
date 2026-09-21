@@ -5,9 +5,15 @@
 Record sanitized evidence privately; record identities and paths, never tokens,
 auth-file contents, environment dumps or whole secret-bearing configurations.
 
+- **Runtime.** Squire requires Node.js 24 only (`>=24 <25`). Verify `node --version`
+  and that npm uses that installation before install/build/startup; Node 20/22 and
+  25+ are refused before paid model work. After an owner-approved migration,
+  reinstall dependencies and rebuild native artifacts before restarting. Earlier
+  run artifacts remain readable under existing integrity rules, but do not prove
+  current runtime support. Third-party Actions runtimes are separate from Squire.
 - **Trust and routing.** Locate the approved Squire executable and its source/build
   identity, rather than trusting the first PATH hit. A source build uses the
-  trusted checkout's `npm ci --ignore-scripts --no-audit --no-fund` then
+  trusted checkout's `npm ci --engine-strict --ignore-scripts --no-audit --no-fund` then
   `npm run build`; its entry is `dist/src/personal/cli.js`. Inspect that version's
   CLI/config schema before use. There is no public Squire version/health command.
   Read target repository instructions (including AGENTS.md), safety constraints,

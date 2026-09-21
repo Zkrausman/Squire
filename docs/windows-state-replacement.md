@@ -27,7 +27,7 @@ This promises atomic visibility, not new power-loss durability guarantees beyond
 - A test-only PowerShell FileStream denies delete sharing, signals readiness before publication and waits for explicit release. Both terminal transitions fail with EBUSY/Win32 32, retaining exact state bytes and reservation. PowerShell is not used in the production replacement path.
 - Boundary tests retain source/destination on rejection. Existing cross-process CAS, old-owner replacement, child claim and immutable-state tests remain mandatory.
 
-The Windows CI matrix includes the new tests on Node 20.17.0, 22.9.0 and 24. Local isolated Node distributions do not change global runtimes. A focused matrix is not a claim that every Windows test or filesystem has been exercised; unsupported-API/other-filesystem availability must be reported explicitly.
+The Windows CI matrix includes these tests on Node 24 only (`>=24 <25`); see [migration and prospective gate-policy boundary](node-runtime-support.md). Historical multi-version observations remain evidence, not current runtime support. Local isolated Node distributions do not change global runtimes. A focused matrix is not a claim that every Windows test or filesystem has been exercised; unsupported-API/other-filesystem availability must be reported explicitly.
 
 ## Separate dispositions
 

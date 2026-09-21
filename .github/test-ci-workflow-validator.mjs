@@ -10,6 +10,7 @@ const validator = await readFile(join(root, ".github/validate-ci-workflow.mjs"),
 const runtimeValidator = await readFile(join(root, ".github/validate-ticket-runtime.mjs"), "utf8");
 const runtimeManifest = await readFile(join(root, ".github/runtime/package.json"), "utf8");
 const runtimeLock = await readFile(join(root, ".github/runtime/package-lock.json"), "utf8");
+const checkPolicy = await readFile(join(root, ".github/required-check-policy.json"), "utf8");
 const nestedRuntimeRoot = "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works";
 const provisionCommands = [
   'sudo install -d -m 700 -o "$(id -u)" -g "$(id -g)" /ticket /ticket/runtime /ticket/workspace',
@@ -106,7 +107,13 @@ try {
   await writeFile(join(temporary, ".github/runtime/package.json"), runtimeManifest);
   await writeFile(join(temporary, ".github/runtime/package-lock.json"), runtimeLock);
 
+  await writeFile(join(temporary, ".github/required-check-policy.json"), checkPolicy);
+  await writeFile(join(temporary, ".github/workflows/ci.yml"), workflow);
+  const valid = await runValidator(temporary);
+  assert.equal(valid.status, 0, `valid CI fixture rejected: ${valid.stderr}`);
+
   const expectValidatorRejects = async (mutatedWorkflow, reason) => {
+    assert.notEqual(mutatedWorkflow, workflow, `negative probe did not mutate ${reason}`);
     await writeFile(join(temporary, ".github/workflows/ci.yml"), mutatedWorkflow);
     const result = await runValidator(temporary);
     assert.notEqual(result.status, 0, `validator accepted ${reason}`);
@@ -144,8 +151,27 @@ try {
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-state-replace.test.js ", ""), "missing native Windows state replacement tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js ", ""), "missing actual captured-material CLI regression");
   await expectValidatorRejects(workflow.replace("      fail-fast: false\n", ""), "cancelling other Windows version evidence after one failure");
-  await expectValidatorRejects(workflow.replace('          - "20.17.0"', '          - "20"'), "missing exact minimum Node version");
-  await expectValidatorRejects(workflow.replace('          - "22.9.0"', '          - "22"'), "missing exact minimum Node 22 version");
+  for (const version of ["20", "20.17.0", "22", "22.9.0", "25", "26"]) {
+    // Mutate each setup independently, not just the first matching selection.
+    for (const jobName of ["clean-install-build-test", "filesystem-event-integration", "windows-launch-capture"]) {
+      const start = workflow.indexOf(`  ${jobName}:`);
+      const before = workflow.slice(0, start);
+      const tail = workflow.slice(start);
+      const marker = jobName === "windows-launch-capture" ? '          - "24"' : 'node-version: "24"';
+      assert.equal(tail.includes(marker), true);
+      await expectValidatorRejects(before + tail.replace(marker, marker.replace("24", version)), `${jobName} on Node ${version}`);
+    }
+    await expectValidatorRejects(workflow.replace('          - "24"', `          - "24"\n          - "${version}"`), `extra Windows Node ${version}`);
+    await expectValidatorRejects(workflow.replace("node-version: ${{ matrix.node }}", `node-version: "${version}"`), `Windows setup bypasses matrix with Node ${version}`);
+  }
+  await expectValidatorRejects(workflow.replace('          - "24"', '          - "24"\n          - "24"'), "duplicate Windows runtime");
+  await expectValidatorRejects(workflow.replace("          - ubuntu-latest", "          - macos-latest"), "missing Linux filesystem gate");
+  await expectValidatorRejects(insertFalseCondition(workflow, "Run filesystem event integration"), "disabled filesystem gate");
+  await expectValidatorRejects(workflow.replaceAll("npm ci --engine-strict", "npm ci"), "non-strict installation");
+  for (const regression of ["launch-retry", "report-correction", "report-bytes", "windows-report-evidence", "windows-report-correction"]) {
+    await expectValidatorRejects(workflow.replace(` dist/test/personal-${regression}.test.js`, ""), `missing Windows ${regression} coverage`);
+  }
+  await expectValidatorRejects(workflow.replace("run: node --test --test-timeout=120000", "continue-on-error: true\n        run: node --test --test-timeout=120000"), "masked Windows failure");
   await expectValidatorRejects(workflow.replace(" dist/test/personal-plan-supervisor.test.js", ""), "missing supervised Plan regression");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", ["echo runtime provisioning", "# npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund"]), "comment-substituted provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", [...provisionCommands.slice(0, 3), "set +e", provisionCommands[3], "echo runtime install completed"]), "status-masked provisioning");
@@ -153,6 +179,30 @@ try {
   await expectValidatorRejects(replaceStepRun(workflow, "Validate ticket runtime", ["exit 0", "node .github/validate-ticket-runtime.mjs"]), "early-exit runtime validation");
 
   await writeFile(join(temporary, ".github/workflows/ci.yml"), workflow);
+  const policyMutations = [
+    policy => { policy.schemaVersion += 1; },
+    policy => { policy.policyVersion += 1; },
+    policy => { policy.cohortId = "old-cohort"; },
+    policy => { policy.previousCohortId = "same-cohort"; },
+    policy => { policy.applicationNodeRange = ">=24"; },
+    policy => { policy.boundary.activation = "immediate"; },
+    policy => { policy.boundary.policyChangeAcceptance = "new-cohort"; },
+    policy => { policy.boundary.retroactiveReclassification = true; },
+    policy => { policy.boundary.originalBaseSha = "0".repeat(40); },
+    policy => { policy.requiredChecks.push({ id: "substitute" }); },
+    ...JSON.parse(checkPolicy).requiredChecks.map((_, index) => policy => { policy.requiredChecks.splice(index, 1); }),
+  ];
+  for (const mutate of policyMutations) {
+    const policy = JSON.parse(checkPolicy);
+    mutate(policy);
+    await writeFile(join(temporary, ".github/required-check-policy.json"), JSON.stringify(policy));
+    const result = await runValidator(temporary);
+    assert.notEqual(result.status, 0, "validator accepted required-check policy drift");
+  }
+  await rm(join(temporary, ".github/required-check-policy.json"));
+  assert.notEqual((await runValidator(temporary)).status, 0, "validator accepted missing required-check policy");
+  await writeFile(join(temporary, ".github/required-check-policy.json"), checkPolicy);
+
   const incompleteLock = JSON.parse(runtimeLock);
   delete incompleteLock.packages[`${nestedRuntimeRoot}/pi-tui`].integrity;
   await writeFile(join(temporary, ".github/runtime/package-lock.json"), `${JSON.stringify(incompleteLock, null, 2)}\n`);

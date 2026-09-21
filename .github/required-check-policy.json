@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": 2,
+  "cohortId": "squire-node24-v2",
+  "previousCohortId": "squire-node20-node22-node24-v1",
+  "applicationNodeRange": ">=24 <25",
+  "boundary": {
+    "ticket": "AIDEV-312",
+    "originalBaseSha": "86a2e672049bd918bc9684caeaa0f25df938fd86",
+    "activation": "descendants-of-merged-policy-only",
+    "policyChangeAcceptance": "pre-existing-exact-head-review-test-ci",
+    "retroactiveReclassification": false
+  },
+  "requiredChecks": [
+    {
+      "id": "clean-install-build-test",
+      "source": "ci.yml",
+      "job": "clean-install-build-test",
+      "os": "ubuntu-latest",
+      "node": "24"
+    },
+    {
+      "id": "filesystem-linux",
+      "source": "ci.yml",
+      "job": "filesystem-event-integration",
+      "os": "ubuntu-latest",
+      "node": "24"
+    },
+    {
+      "id": "filesystem-windows",
+      "source": "ci.yml",
+      "job": "filesystem-event-integration",
+      "os": "windows-latest",
+      "node": "24"
+    },
+    {
+      "id": "windows-launch-native",
+      "source": "ci.yml",
+      "job": "windows-launch-capture",
+      "os": "windows-latest",
+      "node": "24"
+    },
+    {
+      "id": "CodeQL",
+      "source": "github-external-required-check",
+      "required": true
+    }
+  ]
+}

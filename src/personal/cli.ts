@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertSupportedNode } from "../runtime-policy.mjs";
 import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
 import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
@@ -46,7 +47,13 @@ interface ParsedReservedArguments extends ParsedRunArguments {
   readonly reservedConfigDigest: string;
 }
 
-export async function main(argv = process.argv.slice(2)): Promise<number> {
+export async function main(argv = process.argv.slice(2), nodeVersion = process.versions.node): Promise<number> {
+  try {
+    assertSupportedNode(nodeVersion);
+  } catch (error) {
+    writeError(error);
+    return 1;
+  }
   const reserved = parseReservedArguments(argv);
   if (reserved) return runReservedCommand(reserved);
 
