@@ -78,6 +78,7 @@ test("root package/lock and lifecycle entry points agree on the bounded runtime 
   const read = (name: string): string => readFileSync(new URL(`../../${name}`, import.meta.url), "utf8");
   const manifest = JSON.parse(read("package.json"));
   const lock = JSON.parse(read("package-lock.json"));
+  assert.equal(read(".nvmrc").trim(), "24");
   assert.equal(manifest.engines.node, SUPPORTED_NODE_RANGE);
   assert.equal(lock.packages[""].engines.node, SUPPORTED_NODE_RANGE);
   assert.equal(manifest.scripts.preinstall, "node scripts/check-runtime.mjs");

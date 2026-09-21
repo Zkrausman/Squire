@@ -42,6 +42,31 @@ Historical runs/artifacts created under earlier Node versions remain readable
 on Node 24 under the existing schema/integrity rules. They are not rewritten,
 recovered or promoted, and do not establish current runtime support.
 
+## Selecting the test runtime
+
+The committed `.nvmrc` selects major 24 for nvm users: run `nvm install` and
+`nvm use` in the checkout before installation or tests. It does not automatically
+change a noninteractive shell, a sandbox image, or an already-running process.
+Sandbox owners must provision Node 24 in the environment that actually runs
+`npm test`; selecting it in a different shell is insufficient.
+
+On a POSIX development shell with npm available, an explicit temporary selection
+can also run the local checks without replacing the global Node installation:
+
+```sh
+npm exec --yes --package=node@24 -- sh -c 'node --version && npm ci --engine-strict && npm test'
+```
+
+This downloads/runs the Node 24 npm distribution; use it only where dependency
+installation is permitted. The selected PATH applies to npm lifecycle commands
+and their children, not subsequent unrelated shells. Verify the printed version
+is `v24.x.y`. Windows operators should select their approved Node 24 installation
+and run the same install/test commands there.
+
+A test invocation rejected on Node 22 is a failed invocation, not a passing test
+suite or a reason to relax the preflight. Rerun on Node 24 and retain both results;
+local reruns do not waive hosted Windows, CodeQL, or exact-head acceptance gates.
+
 ## Prospective evidence cohort boundary
 
 `.github/required-check-policy.json` records schema version 1, policy version 2,

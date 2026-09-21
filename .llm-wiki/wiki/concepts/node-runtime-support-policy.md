@@ -19,6 +19,13 @@ injectable for offline tests; no environment or command-line bypass exists.
 native or TypeScript compilation. Engine-strict installation is the earlier
 package-manager boundary; ignore-scripts skips hooks and still requires build.
 
+`.nvmrc` selects major 24 for nvm users but does not provision noninteractive
+sandboxes. Test environments must select Node 24 in the shell actually executing
+npm and its lifecycle children; selection in another shell is not persistent.
+The runtime guide documents an explicit temporary npm-exec selection for POSIX
+local checks. An unsupported-runtime test refusal remains a failed invocation;
+rerun under Node 24 without weakening the preflight or waiving exact-head gates.
+
 Migration requires an approved Node 24 installation, verifying both node/npm,
 reinstalling dependencies and rebuilding native artifacts, and explicitly
 restarting controllers after active work is handled. Runtime migration does not
