@@ -23,7 +23,8 @@ const runner = new SandboxPiPhaseRunner({ stagingRoot: root, testCommands: [], c
     const stdout = JSON.stringify({ outputHead: current, status: 'passed', summary: 'fixture', details: implement ? {
       changes: ['fixture'], projectWiki: { status: 'not_required', reason: 'fixture changes no durable knowledge' }, verification: ['untrusted'],
     } : { steps: ['implement'] } });
-    return { stdout, stdoutBytes: Buffer.from(stdout), stderr: '' };
+    const stream = JSON.stringify({type:'message_end', message:{role:'assistant', stopReason:'stop', content:[{type:'text', text:stdout}]}}) + '\n';
+    return { stdout: stream, stdoutBytes: Buffer.from(stream), stderr: '' };
   },
 } });
 const controller = new PersonalMvpController({ states, phases: runner, newId: () => 'crash0123',

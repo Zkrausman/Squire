@@ -95,6 +95,8 @@ export interface RetroPhaseResult extends PhaseResultBase {
 export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult | RetroPhaseResult;
 
 export interface PhaseInput {
+  /** Controller-owned accounting attribution; never selected by the model. */
+  readonly telemetryAttribution?: { readonly trigger: "initial" | "retry" | "stage_advanced" | "remediation"; readonly stageIndex: number | null; readonly stageAttempt: number | null };
   /** Controller monotonic deadline, never reset for correction. */
   readonly deadline?: number;
   readonly reportSession?: { readonly sessionId: string; readonly sessionFile: string };
@@ -247,6 +249,8 @@ export interface WorkspacePort {
 }
 
 export interface PhasePort {
+  telemetryTerminal?(state: PersonalRunState): Promise<void | { readonly complete: boolean }>;
+  telemetrySettled?(result: PhaseResult): Promise<void>;
   readonly reportEvidence?: ReportEvidencePort;
   /** Internal transport envelope, never a model-authored result field.
    * Supervised Plan has its own artifact protocol instead. */

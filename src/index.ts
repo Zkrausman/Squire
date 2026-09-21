@@ -52,3 +52,7 @@ export * from "./personal/github-publisher.js";
 export * from "./personal/run-events.js";
 export * from "./personal/run-watcher.js";
 export * from "./personal/notification-worker.js";
+
+export { TelemetryStore, validateRunTelemetry, formatTelemetry, telemetryTotals } from "./personal/telemetry-store.js";
+export type { RunTelemetry, TelemetrySession, TelemetryTotals, TelemetryInvocation } from "./personal/telemetry-store.js";
+export type { UsageAccounting, TokenField, Diagnostic as TelemetryDiagnostic } from "./personal/telemetry-stream.js";

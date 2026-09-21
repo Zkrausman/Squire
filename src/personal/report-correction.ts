@@ -115,7 +115,7 @@ export function analyzeImplementReport(capture: ReportCapture, input: PhaseInput
 }
 /** JSON.parse discards duplicate members; those are ambiguous provenance, not
  * harmless shape errors. Syntax has already been checked by JSON.parse. */
-function rejectAmbiguousJson(raw: string): void {
+export function rejectAmbiguousJson(raw: string): void {
   const stack: ({ keys: Set<string>; expectingKey: boolean } | null)[] = [];
   for (const token of raw.match(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\],:]|[^\s{}\[\],:]+/gu) ?? []) {
     if (token === "{") stack.push({ keys: new Set(), expectingKey: true });
