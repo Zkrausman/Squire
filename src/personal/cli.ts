@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runCohort } from "./cohort-scorecard.js";
 import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
 import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
@@ -39,7 +40,8 @@ export interface ParsedWatchArguments {
 }
 
 export interface ParsedTelemetryArguments { readonly command: "telemetry"; readonly selector: string; readonly config: string; readonly json: boolean; }
-export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments | ParsedTelemetryArguments;
+export interface ParsedCohortArguments { readonly command: "cohort"; readonly request: string; readonly trustRoots: string; readonly config: string; }
+export type ParsedArguments = ParsedCohortArguments | ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments | ParsedTelemetryArguments;
 
 interface ParsedReservedArguments extends ParsedRunArguments {
   readonly reservedRunId: string;
@@ -52,10 +54,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   const parsed = parseArguments(argv);
   if (!parsed) {
-    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire telemetry <RUN-ID> [--json] [--config <file>]\n");
+    process.stderr.write("Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire telemetry <RUN-ID> [--json] [--config <file>]\n       squire cohort <request.json> --trust-roots <public-keys.json> [--config <file>]\n");
     return 2;
   }
 
+  if (parsed.command === "cohort") return cohortCommand(parsed);
   if (parsed.command === "telemetry") return telemetryCommand(parsed);
   if (parsed.command === "status") return statusCommand(parsed);
   if (parsed.command === "watch") return watchCommand(parsed);
@@ -64,6 +67,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
 export function parseArguments(argv: readonly string[]): ParsedArguments | undefined {
   const command = argv[0];
+  if (command === "cohort") {
+    const request = argv[1]; if (!request || request.startsWith("-") || argv.length > 6) return undefined;
+    let trustRoots: string | undefined, config: string | undefined;
+    for (let i = 2; i < argv.length; i += 2) {
+      const value = argv[i + 1]; if (!value || value.startsWith("-")) return undefined;
+      if (argv[i] === "--trust-roots" && trustRoots === undefined) trustRoots = value;
+      else if (argv[i] === "--config" && config === undefined) config = value;
+      else return undefined;
+    }
+    return trustRoots ? { command, request, trustRoots, config: resolveConfigPath(config) } : undefined;
+  }
   if (command !== "run" && command !== "status" && command !== "watch" && command !== "telemetry") return undefined;
   let positional: string | undefined;
   let explicit: string | undefined;
@@ -98,6 +112,14 @@ export function parseArguments(argv: readonly string[]): ParsedArguments | undef
   }
   if (!TICKET_PATTERN.test(positional) && !RUN_PATTERN.test(positional)) return undefined;
   return { command, selector: positional, config: resolveConfigPath(explicit) };
+}
+
+export async function cohortCommand(parsed: ParsedCohortArguments): Promise<number> {
+  try {
+    const config = await loadPersonalMvpConfig(parsed.config);
+    const receipt = await runCohort(parsed.request, parsed.trustRoots, { dataDirectory: config.dataDirectory, repository: config.repository.path, controllerTelemetryRoot: path.join(config.paths.staging, "telemetry") });
+    process.stdout.write(JSON.stringify(receipt) + "\n"); return 0;
+  } catch { process.stderr.write("Cohort unavailable: check bounded request, private evidence and public trust roots.\n"); return 1; }
 }
 
 export async function telemetryCommand(parsed: ParsedTelemetryArguments): Promise<number> {

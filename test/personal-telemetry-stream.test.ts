@@ -82,3 +82,12 @@ test("noncanonical numbers cannot hide fractional/negative/rounded accounting or
   assert.equal(parseUsageStream(duplicate, id, profile, true).tokens.input, null);
   assert.deepEqual(parseUsageStream(piJson("PRIVATE"), id, { ...profile, provider: "constructor" }, true).diagnostics, ["unsupported_provider"]);
 });
+
+test("current stream canonical-number validation is linear over escaped-quote adversaries", { timeout: 10000 }, () => {
+  const bytes = piJson('\\"'.repeat(100000));
+  assert.equal(parseUsageStream(bytes, id, profile, true).recordedCost, "0.1");
+  const rounded = Buffer.from(bytes.toString().replace('"input":10', '"input":10.00000000000000001'));
+  assert.deepEqual(parseUsageStream(rounded, id, profile, true).diagnostics, ["invalid_stream"]);
+  const duplicate = Buffer.from(bytes.toString().replace('"input":10', '"input":10,"\\u0069nput":10'));
+  assert.deepEqual(parseUsageStream(duplicate, id, profile, true).diagnostics, ["invalid_stream"]);
+});

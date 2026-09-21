@@ -86,6 +86,14 @@ async function main() {
   if (!validateRunEvent(await json(runEventValidPath))) throw new Error(`Valid run event rejected: ${runEventValidPath}`);
   if (validateRunEvent(await json(runEventInvalidPath))) throw new Error(`Invalid run event accepted: ${runEventInvalidPath}`);
 
+  // Host cohort contracts are independent of the published workflow baseline.
+  const cohort = await json(path.join(root, "contracts/cohort/v1/cohort.schema.json"));
+  ajv.addSchema(cohort);
+  for (const name of Object.keys(cohort.$defs)) {
+    const validate = ajv.compile({ $ref: `${cohort.$id}#/$defs/${name}` });
+    if (validate({ unexpected: true })) throw new Error(`Open cohort schema: ${name}`);
+  }
+
   const validRoot = path.join(fixturesDir, "valid");
   const validFiles = await filesBelow(validRoot);
   for (const file of validFiles) {

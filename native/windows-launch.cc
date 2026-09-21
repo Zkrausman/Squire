@@ -436,6 +436,7 @@ napi_value init(napi_env env, napi_value exports) {
   napi_property_descriptor methods[] = {
     {"observeOwnerFile", nullptr, observeOwnerFile, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"ownerProcessIdentity", nullptr, ownerProcessIdentity, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"openArtifact", nullptr, openArtifact, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"openReport", nullptr, openReport, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"readReport", nullptr, readReport, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeReport", nullptr, closeReport, nullptr, nullptr, nullptr, napi_default, nullptr},

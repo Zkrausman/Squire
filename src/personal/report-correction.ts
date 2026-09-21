@@ -1,3 +1,4 @@
+import { scanJson, parseBoundedJson } from "./bounded-json.js";
 import { isDeepStrictEqual } from "node:util";
 import { PhaseExecutionError, classifyExecutionFailure } from "./execution-failure.js";
 import { parsePhaseResult } from "./phase-payload.js";
@@ -102,8 +103,7 @@ export function correctionSchema(input: PhaseInput, original: ReportCapture): un
  * can enter parsePhaseResult at the acceptance boundary. */
 export function analyzeImplementReport(capture: ReportCapture, input: PhaseInput): { facts: PhaseResult; unexpected: readonly string[] } {
   if (input.phase !== "implement" || Buffer.byteLength(capture.raw) > 32 * 1024) throw new Error("unsupported report correction phase or size");
-  const value: unknown = JSON.parse(capture.raw); // malformed originals lack trusted structured facts
-  rejectAmbiguousJson(capture.raw);
+  const value: unknown = parseBoundedJson(capture.raw); // reject ambiguity before decoding
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("report lacks structured facts");
   const payload = value as Record<string, unknown>;
   const details = payload["details"];
@@ -113,26 +113,8 @@ export function analyzeImplementReport(capture: ReportCapture, input: PhaseInput
   const facts = parsePhaseResult(JSON.stringify({ ...payload, details: { changes: d["changes"], projectWiki: d["projectWiki"] } }), input, capture.sessionId, capture.sessionFile, input.profile);
   return { facts, unexpected };
 }
-/** JSON.parse discards duplicate members; those are ambiguous provenance, not
- * harmless shape errors. Syntax has already been checked by JSON.parse. */
-export function rejectAmbiguousJson(raw: string): void {
-  const stack: ({ keys: Set<string>; expectingKey: boolean } | null)[] = [];
-  for (const token of raw.match(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\],:]|[^\s{}\[\],:]+/gu) ?? []) {
-    if (token === "{") stack.push({ keys: new Set(), expectingKey: true });
-    else if (token === "[") stack.push(null);
-    else if (token === "}" || token === "]") stack.pop();
-    else {
-      const top = stack.at(-1);
-      if (top && token === ",") top.expectingKey = true;
-      else if (top?.expectingKey && token.startsWith('"')) {
-        const key = JSON.parse(token) as string;
-        if (top.keys.has(key)) throw new Error("duplicate JSON member makes report provenance ambiguous");
-        top.keys.add(key); top.expectingKey = false;
-      }
-    }
-    if (stack.length > 100) throw new Error("report nesting exceeds correction bound");
-  }
-}
+/** Reject duplicate decoded keys before trusting report provenance. */
+export function rejectAmbiguousJson(raw: string): void { scanJson(raw); }
 export function sameReportFacts(a: PhaseResult, b: PhaseResult): boolean { return isDeepStrictEqual(a, b); }
 export function parseCorrectedReport(capture: ReportCapture, original: ReportCapture, input: PhaseInput): PhaseResult {
   // The accepted phase envelope retains the original execution producer. Each

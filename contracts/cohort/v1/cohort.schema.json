@@ -1,0 +1,2750 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:squire:cohort:v1",
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "checkSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "names"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "thinking"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/identity"
+        },
+        "model": {
+          "$ref": "#/$defs/identity"
+        },
+        "thinking": {
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        }
+      }
+    },
+    "strata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ticketClass",
+        "reviewGate",
+        "testGate",
+        "publicationGate",
+        "baselineSha",
+        "workflow",
+        "profiles",
+        "escalationPolicy",
+        "correctionPolicy",
+        "testSuite"
+      ],
+      "properties": {
+        "ticketClass": {
+          "$ref": "#/$defs/identity"
+        },
+        "reviewGate": {
+          "$ref": "#/$defs/identity"
+        },
+        "testGate": {
+          "$ref": "#/$defs/identity"
+        },
+        "publicationGate": {
+          "$ref": "#/$defs/identity"
+        },
+        "baselineSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "workflow": {
+          "$ref": "#/$defs/identity"
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "escalationPolicy": {
+          "$ref": "#/$defs/identity"
+        },
+        "correctionPolicy": {
+          "$ref": "#/$defs/identity"
+        },
+        "testSuite": {
+          "$ref": "#/$defs/identity"
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "sessionId",
+        "format",
+        "phase",
+        "profile"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+        },
+        "format": {
+          "enum": [
+            "pi-0.84.4-session-v3"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "plan",
+            "implement",
+            "review",
+            "test",
+            "retro",
+            "unknown"
+          ]
+        },
+        "profile": {
+          "$ref": "#/$defs/profile"
+        }
+      }
+    },
+    "import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest",
+        "envelope"
+      ],
+      "properties": {
+        "manifest": {
+          "$ref": "#/$defs/source"
+        },
+        "envelope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/source"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "ticket",
+        "repository",
+        "candidateSha",
+        "pr",
+        "requiredCheckSet",
+        "period",
+        "strata",
+        "sessions",
+        "telemetry",
+        "disposition",
+        "squire"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "ticket": {
+          "$ref": "#/$defs/identity"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 257,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "candidateSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "requiredCheckSet": {
+          "$ref": "#/$defs/checkSet"
+        },
+        "period": {
+          "enum": [
+            "pre",
+            "post"
+          ]
+        },
+        "strata": {
+          "$ref": "#/$defs/strata"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/session"
+          },
+          "maxItems": 256
+        },
+        "telemetry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/source"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disposition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/import"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "squire": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/import"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "runIds",
+        "fields"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "runIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "output",
+            "cacheRead",
+            "messages",
+            "recordedCost"
+          ],
+          "properties": {
+            "input": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^/"
+            },
+            "output": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^/"
+            },
+            "cacheRead": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^/"
+            },
+            "messages": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^/"
+            },
+            "recordedCost": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^/"
+            }
+          }
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "cohortId",
+        "optimizationMergeSha",
+        "runs",
+        "baseline"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "cohortId": {
+          "$ref": "#/$defs/identity"
+        },
+        "optimizationMergeSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/run"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/baseline"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "runId",
+        "ticket",
+        "repository",
+        "candidateSha",
+        "pr",
+        "requiredCheckSet",
+        "signedAt",
+        "signer",
+        "provenance",
+        "kind",
+        "checks",
+        "prState",
+        "merge",
+        "unmergedReason",
+        "reopened"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "ticket": {
+          "$ref": "#/$defs/identity"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 257,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "candidateSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "requiredCheckSet": {
+          "$ref": "#/$defs/checkSet"
+        },
+        "signedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "signer": {
+          "$ref": "#/$defs/identity"
+        },
+        "provenance": {
+          "$ref": "#/$defs/identity"
+        },
+        "kind": {
+          "enum": [
+            "disposition"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "headSha",
+              "conclusion",
+              "completedAt"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/identity"
+              },
+              "headSha": {
+                "$ref": "#/$defs/sha"
+              },
+              "conclusion": {
+                "enum": [
+                  "success",
+                  "failure",
+                  "cancelled",
+                  "skipped",
+                  "neutral",
+                  "timed_out",
+                  "action_required",
+                  "unknown"
+                ]
+              },
+              "completedAt": {
+                "$ref": "#/$defs/timestamp"
+              }
+            }
+          },
+          "maxItems": 100
+        },
+        "prState": {
+          "enum": [
+            "open",
+            "closed",
+            "merged"
+          ]
+        },
+        "merge": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sha",
+                "at"
+              ],
+              "properties": {
+                "sha": {
+                  "$ref": "#/$defs/sha"
+                },
+                "at": {
+                  "$ref": "#/$defs/timestamp"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unmergedReason": {
+          "anyOf": [
+            {
+              "enum": [
+                "open",
+                "closed_unmerged",
+                "not_verified"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reopened": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "squire": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "runId",
+        "ticket",
+        "repository",
+        "candidateSha",
+        "pr",
+        "requiredCheckSet",
+        "signedAt",
+        "signer",
+        "provenance",
+        "kind",
+        "ruleVersion",
+        "inventoryComplete",
+        "reservedRunIds",
+        "reservedAt",
+        "endedAt",
+        "accountedSessions",
+        "completion",
+        "enteredImplement",
+        "firstCandidate",
+        "remediationAttempts",
+        "classifications"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "ticket": {
+          "$ref": "#/$defs/identity"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 257,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "candidateSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "requiredCheckSet": {
+          "$ref": "#/$defs/checkSet"
+        },
+        "signedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "signer": {
+          "$ref": "#/$defs/identity"
+        },
+        "provenance": {
+          "$ref": "#/$defs/identity"
+        },
+        "kind": {
+          "enum": [
+            "squire"
+          ]
+        },
+        "ruleVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "inventoryComplete": {
+          "type": "boolean"
+        },
+        "reservedRunIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reservedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accountedSessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sessionId",
+              "sourceDigest"
+            ],
+            "properties": {
+              "sessionId": {
+                "$ref": "#/$defs/identity"
+              },
+              "sourceDigest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          },
+          "maxItems": 1000
+        },
+        "completion": {
+          "enum": [
+            "completed",
+            "failed",
+            "interrupted",
+            "unknown"
+          ]
+        },
+        "enteredImplement": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "firstCandidate": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sha",
+                "implementOrdinal",
+                "reviewAttempt",
+                "testAttempt",
+                "review",
+                "test"
+              ],
+              "properties": {
+                "sha": {
+                  "$ref": "#/$defs/sha"
+                },
+                "implementOrdinal": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "reviewAttempt": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "testAttempt": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "review": {
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "unknown"
+                  ]
+                },
+                "test": {
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "unknown"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remediationAttempts": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "classifications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ruleVersion",
+              "sessionId",
+              "kind",
+              "evidenceRefs"
+            ],
+            "properties": {
+              "ruleVersion": {
+                "enum": [
+                  1
+                ]
+              },
+              "sessionId": {
+                "$ref": "#/$defs/identity"
+              },
+              "kind": {
+                "enum": [
+                  "report",
+                  "infrastructure",
+                  "code",
+                  "none",
+                  "unknown"
+                ]
+              },
+              "evidenceRefs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/digest"
+                },
+                "maxItems": 32,
+                "minItems": 1
+              }
+            }
+          },
+          "maxItems": 256
+        }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "manifestDigest",
+        "keyId",
+        "algorithm",
+        "signature",
+        "signer",
+        "provenance",
+        "signedAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "manifestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "keyId": {
+          "$ref": "#/$defs/identity"
+        },
+        "algorithm": {
+          "enum": [
+            "Ed25519"
+          ]
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 88,
+          "pattern": "^[A-Za-z0-9+/]{86}==$"
+        },
+        "signer": {
+          "$ref": "#/$defs/identity"
+        },
+        "provenance": {
+          "$ref": "#/$defs/identity"
+        },
+        "signedAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyId",
+        "publicKey",
+        "notBefore",
+        "notAfter",
+        "revoked",
+        "signer",
+        "provenance"
+      ],
+      "properties": {
+        "keyId": {
+          "$ref": "#/$defs/identity"
+        },
+        "publicKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "notBefore": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notAfter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revoked": {
+          "type": "boolean"
+        },
+        "signer": {
+          "$ref": "#/$defs/identity"
+        },
+        "provenance": {
+          "$ref": "#/$defs/identity"
+        }
+      }
+    },
+    "trustRoots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "keys"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/key"
+          },
+          "maxItems": 32
+        }
+      }
+    },
+    "accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "recordedCost",
+        "messages",
+        "durationMs"
+      ],
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/measureNumber"
+        },
+        "output": {
+          "$ref": "#/$defs/measureNumber"
+        },
+        "cacheRead": {
+          "$ref": "#/$defs/measureNumber"
+        },
+        "cacheWrite": {
+          "$ref": "#/$defs/measureNumber"
+        },
+        "recordedCost": {
+          "$ref": "#/$defs/measureDecimal"
+        },
+        "messages": {
+          "$ref": "#/$defs/measureNumber"
+        },
+        "durationMs": {
+          "$ref": "#/$defs/measureNumber"
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "sha256",
+        "observed",
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "observed": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "unknown"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "available",
+            "unavailable_or_invalid"
+          ]
+        }
+      }
+    },
+    "normalizedSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "phase",
+        "profile",
+        "outcome",
+        "authority",
+        "sourceDigest",
+        "accounting",
+        "endedAt",
+        "classification",
+        "classificationEvidence"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/identity"
+        },
+        "phase": {
+          "enum": [
+            "plan",
+            "implement",
+            "review",
+            "test",
+            "retro",
+            "unknown"
+          ]
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "failed",
+            "remediation_required",
+            "report-rejected",
+            "execution-failed",
+            "interrupted",
+            "unknown"
+          ]
+        },
+        "authority": {
+          "enum": [
+            "pi-0.84.4-controller-json-v1",
+            "provisional-pi-0.84.4-session-v3",
+            "unknown"
+          ]
+        },
+        "sourceDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "accounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "classification": {
+          "enum": [
+            "report",
+            "infrastructure",
+            "code",
+            "none",
+            "unknown"
+          ]
+        },
+        "classificationEvidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "maxItems": 33
+        }
+      }
+    },
+    "normalizedDisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ci",
+        "merge",
+        "mergeSha",
+        "mergedAt",
+        "reopened",
+        "evidenceDigest",
+        "diagnostic"
+      ],
+      "properties": {
+        "ci": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "merge": {
+          "enum": [
+            "merged",
+            "unmerged",
+            "unknown"
+          ]
+        },
+        "mergeSha": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mergedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reopened": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidenceDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "enum": [
+                "missing_evidence",
+                "malformed_evidence",
+                "noncanonical_evidence",
+                "digest_mismatch",
+                "untrusted_key",
+                "invalid_signature",
+                "binding_mismatch",
+                "invalid_semantics"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "normalizedRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptor",
+        "accounting",
+        "sessions",
+        "inventoryComplete",
+        "completion",
+        "reservedAt",
+        "endedAt",
+        "disposition",
+        "squire",
+        "squireDigest",
+        "sources",
+        "diagnostics"
+      ],
+      "properties": {
+        "descriptor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runId",
+            "ticket",
+            "repository",
+            "candidateSha",
+            "pr",
+            "requiredCheckSet",
+            "period",
+            "strata"
+          ],
+          "properties": {
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+            },
+            "ticket": {
+              "$ref": "#/$defs/identity"
+            },
+            "repository": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 257,
+              "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+            },
+            "candidateSha": {
+              "$ref": "#/$defs/sha"
+            },
+            "pr": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "requiredCheckSet": {
+              "$ref": "#/$defs/checkSet"
+            },
+            "period": {
+              "enum": [
+                "pre",
+                "post"
+              ]
+            },
+            "strata": {
+              "$ref": "#/$defs/strata"
+            }
+          }
+        },
+        "accounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/normalizedSession"
+          },
+          "maxItems": 1000
+        },
+        "inventoryComplete": {
+          "type": "boolean"
+        },
+        "completion": {
+          "enum": [
+            "completed",
+            "failed",
+            "interrupted",
+            "unknown"
+          ]
+        },
+        "reservedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disposition": {
+          "$ref": "#/$defs/normalizedDisposition"
+        },
+        "squire": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/squire"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "squireDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/receipt"
+          },
+          "maxItems": 520
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "maxItems": 32
+        }
+      }
+    },
+    "ticketScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ticket",
+        "repository",
+        "period",
+        "gateClass",
+        "strata",
+        "runIds",
+        "evidenceRefs",
+        "inventoryComplete",
+        "merge",
+        "mergedAt",
+        "reopened",
+        "completion",
+        "enteredImplement",
+        "firstPass",
+        "exactHeadCi",
+        "freshRuns",
+        "remediationAttempts",
+        "wallMs",
+        "accounting",
+        "afterMergeAccounting",
+        "reportWaste",
+        "infrastructureWaste",
+        "unknownWaste",
+        "unmergedAttempts",
+        "unknownDispositionAttempts"
+      ],
+      "properties": {
+        "ticket": {
+          "$ref": "#/$defs/identity"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 257,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "period": {
+          "enum": [
+            "pre",
+            "post"
+          ]
+        },
+        "gateClass": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "strata": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/strata"
+          },
+          "maxItems": 256
+        },
+        "runIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+          },
+          "maxItems": 256
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "maxItems": 2048
+        },
+        "inventoryComplete": {
+          "type": "boolean"
+        },
+        "merge": {
+          "enum": [
+            "merged",
+            "unmerged",
+            "unknown"
+          ]
+        },
+        "mergedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reopened": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completion": {
+          "enum": [
+            "completed",
+            "failed",
+            "interrupted",
+            "unknown"
+          ]
+        },
+        "enteredImplement": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "firstPass": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exactHeadCi": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "freshRuns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "remediationAttempts": {
+          "$ref": "#/$defs/measureNumber"
+        },
+        "wallMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "afterMergeAccounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "reportWaste": {
+          "$ref": "#/$defs/accounting"
+        },
+        "infrastructureWaste": {
+          "$ref": "#/$defs/accounting"
+        },
+        "unknownWaste": {
+          "$ref": "#/$defs/accounting"
+        },
+        "unmergedAttempts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runs",
+            "accounting"
+          ],
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "accounting": {
+              "$ref": "#/$defs/accounting"
+            }
+          }
+        },
+        "unknownDispositionAttempts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runs",
+            "accounting"
+          ],
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "accounting": {
+              "$ref": "#/$defs/accounting"
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tickets",
+        "mergedTickets",
+        "unmergedTickets",
+        "unknownMergeTickets",
+        "firstPassAcceptance",
+        "exactHeadCi",
+        "completion",
+        "reopened",
+        "freshRuns",
+        "remediationAttempts",
+        "costPerMergedTicket",
+        "wallMsPerMergedTicket",
+        "activeMsPerMergedTicket",
+        "unmergedAccounting",
+        "unknownMergeAccounting",
+        "reportWaste",
+        "infrastructureWaste",
+        "unknownWaste",
+        "unmergedAttempts",
+        "unknownDispositionAttempts"
+      ],
+      "properties": {
+        "tickets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "mergedTickets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "unmergedTickets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "unknownMergeTickets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "firstPassAcceptance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "numerator",
+            "denominator",
+            "unknownDenominator",
+            "unknownNumerator",
+            "complete"
+          ],
+          "properties": {
+            "numerator": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "denominator": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unknownDenominator": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unknownNumerator": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "complete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "exactHeadCi": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "passed",
+            "failed",
+            "unknown"
+          ],
+          "properties": {
+            "passed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "completion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "completed",
+            "other",
+            "unknown"
+          ],
+          "properties": {
+            "completed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "other": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "reopened": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "yes",
+            "no",
+            "unknown"
+          ],
+          "properties": {
+            "yes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "no": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "freshRuns": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "merged",
+            "unmerged",
+            "unknown",
+            "perMergedTicket"
+          ],
+          "properties": {
+            "merged": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unmerged": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "perMergedTicket": {
+              "$ref": "#/$defs/ratioNumber"
+            }
+          }
+        },
+        "remediationAttempts": {
+          "$ref": "#/$defs/measureNumber"
+        },
+        "costPerMergedTicket": {
+          "$ref": "#/$defs/ratioDecimal"
+        },
+        "wallMsPerMergedTicket": {
+          "$ref": "#/$defs/ratioNumber"
+        },
+        "activeMsPerMergedTicket": {
+          "$ref": "#/$defs/ratioNumber"
+        },
+        "unmergedAccounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "unknownMergeAccounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "reportWaste": {
+          "$ref": "#/$defs/accounting"
+        },
+        "infrastructureWaste": {
+          "$ref": "#/$defs/accounting"
+        },
+        "unknownWaste": {
+          "$ref": "#/$defs/accounting"
+        },
+        "unmergedAttempts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runs",
+            "accounting"
+          ],
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "accounting": {
+              "$ref": "#/$defs/accounting"
+            }
+          }
+        },
+        "unknownDispositionAttempts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runs",
+            "accounting"
+          ],
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "accounting": {
+              "$ref": "#/$defs/accounting"
+            }
+          }
+        }
+      }
+    },
+    "scorecard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "ruleVersion",
+        "cohortId",
+        "requestDigest",
+        "trustRootsDigest",
+        "optimizationMergeSha",
+        "interpretation",
+        "caveats",
+        "runs",
+        "tickets",
+        "accounting",
+        "sources",
+        "reconciliation",
+        "groups",
+        "phaseProfileOutcome",
+        "baseline",
+        "comparisons"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "ruleVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "cohortId": {
+          "$ref": "#/$defs/identity"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "trustRootsDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "optimizationMergeSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "interpretation": {
+          "enum": [
+            "descriptive_only_no_causal_claims"
+          ]
+        },
+        "caveats": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 16
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/normalizedRun"
+          },
+          "maxItems": 256
+        },
+        "tickets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ticketScore"
+          },
+          "maxItems": 256
+        },
+        "accounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/receipt"
+          },
+          "maxItems": 2048
+        },
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runs",
+            "tickets",
+            "sources"
+          ],
+          "properties": {
+            "runs": {
+              "$ref": "#/$defs/measureNumber"
+            },
+            "tickets": {
+              "$ref": "#/$defs/measureNumber"
+            },
+            "sources": {
+              "$ref": "#/$defs/measureNumber"
+            }
+          }
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "gateClass",
+              "strata",
+              "period",
+              "metrics",
+              "accounting"
+            ],
+            "properties": {
+              "gateClass": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "strata": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/strata"
+                },
+                "maxItems": 256
+              },
+              "period": {
+                "enum": [
+                  "pre",
+                  "post"
+                ]
+              },
+              "metrics": {
+                "$ref": "#/$defs/metrics"
+              },
+              "accounting": {
+                "$ref": "#/$defs/accounting"
+              }
+            }
+          },
+          "maxItems": 256
+        },
+        "phaseProfileOutcome": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "phase",
+              "profile",
+              "outcome",
+              "authority",
+              "accounting"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "profile": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "outcome": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "authority": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "accounting": {
+                "$ref": "#/$defs/accounting"
+              }
+            }
+          },
+          "maxItems": 2048
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sourceDigest",
+                "authority",
+                "fields"
+              ],
+              "properties": {
+                "sourceDigest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "authority": {
+                  "enum": [
+                    "provisional_operator_extraction"
+                  ]
+                },
+                "fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "field",
+                      "expected",
+                      "observed",
+                      "variance",
+                      "complete",
+                      "reason"
+                    ],
+                    "properties": {
+                      "field": {
+                        "enum": [
+                          "input",
+                          "output",
+                          "cacheRead",
+                          "messages",
+                          "recordedCost"
+                        ]
+                      },
+                      "expected": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/decimal"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "observed": {
+                        "$ref": "#/$defs/decimal"
+                      },
+                      "variance": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "complete": {
+                        "type": "boolean"
+                      },
+                      "reason": {
+                        "enum": [
+                          "baseline_field_unavailable",
+                          "incomplete_or_unsupported_sources",
+                          "matched",
+                          "structured_usage_differs_from_operator_extraction"
+                        ]
+                      }
+                    }
+                  },
+                  "maxItems": 5
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "comparisons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "preGroup",
+              "postGroup",
+              "strataDiffer",
+              "deltas"
+            ],
+            "properties": {
+              "preGroup": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "postGroup": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "strataDiffer": {
+                "type": "boolean"
+              },
+              "deltas": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "firstPassAcceptance",
+                  "exactHeadCi",
+                  "merge",
+                  "reopen",
+                  "costPerMergedTicket",
+                  "wallMsPerMergedTicket",
+                  "activeMsPerMergedTicket",
+                  "freshRunsPerMergedTicket",
+                  "remediationAttemptsPerTicket",
+                  "reportWasteCostPerTicket",
+                  "reportWasteMsPerTicket",
+                  "infrastructureWasteCostPerTicket",
+                  "infrastructureWasteMsPerTicket",
+                  "costAccountingCompleteness"
+                ],
+                "properties": {
+                  "firstPassAcceptance": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "exactHeadCi": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "merge": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reopen": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "costPerMergedTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "wallMsPerMergedTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "activeMsPerMergedTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "freshRunsPerMergedTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "remediationAttemptsPerTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reportWasteCostPerTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reportWasteMsPerTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "infrastructureWasteCostPerTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "infrastructureWasteMsPerTicket": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "costAccountingCompleteness": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65,
+                            "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "maxItems": 1024
+        }
+      }
+    },
+    "publicationManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "artifactDigest",
+        "requestDigest",
+        "trustRootsDigest",
+        "requestBytesDigest",
+        "trustRootsBytesDigest",
+        "sources"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "artifactDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "trustRootsDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestBytesDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "trustRootsBytesDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/receipt"
+          },
+          "maxItems": 2048
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "manifest",
+        "manifestDigest",
+        "artifact"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1
+          ]
+        },
+        "manifest": {
+          "$ref": "#/$defs/publicationManifest"
+        },
+        "manifestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "artifact": {
+          "$ref": "#/$defs/scorecard"
+        }
+      }
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "sha": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$",
+      "maxLength": 24
+    },
+    "decimal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+    },
+    "measureNumber": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "known",
+        "expected",
+        "observed",
+        "supported",
+        "unknown",
+        "excluded",
+        "complete"
+      ],
+      "properties": {
+        "known": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expected": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "observed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "supported": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "excluded": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "measureDecimal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "known",
+        "expected",
+        "observed",
+        "supported",
+        "unknown",
+        "excluded",
+        "complete"
+      ],
+      "properties": {
+        "known": {
+          "$ref": "#/$defs/decimal"
+        },
+        "expected": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "observed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "supported": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "excluded": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ratioNumber": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator",
+        "complete"
+      ],
+      "properties": {
+        "numerator": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "denominator": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ratioDecimal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator",
+        "complete"
+      ],
+      "properties": {
+        "numerator": {
+          "$ref": "#/$defs/decimal"
+        },
+        "denominator": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

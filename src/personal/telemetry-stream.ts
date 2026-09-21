@@ -1,4 +1,4 @@
-import { rejectAmbiguousJson } from "./report-correction.js";
+import { parseBoundedJson } from "./bounded-json.js";
 import { createHash } from "node:crypto";
 import type { PhaseProfile } from "./model-policy.js";
 
@@ -26,7 +26,7 @@ export function decimalText(value: bigint): string {
   const fraction = (value % SCALE).toString().padStart(24, "0").replace(/0+$/u, "");
   return `${value / SCALE}${fraction ? `.${fraction}` : ""}`;
 }
-function cost(value: unknown): bigint {
+export function recordedCostUnits(value: unknown): bigint {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1_000_000) throw new Error();
   // Expand scientific notation without rounding or consulting a price table.
   let text = String(value);
@@ -43,14 +43,6 @@ type Obj = Record<string, any>; // All child data is checked before accounting; 
 function object(v: unknown): v is Obj { return !!v && typeof v === "object" && !Array.isArray(v); }
 function keys(v: Obj, allowed: readonly string[]) { return Object.keys(v).every(k => allowed.includes(k)); }
 function integer(v: unknown): v is number { return typeof v === "number" && Number.isSafeInteger(v) && v >= 0; }
-/** Pi emits JSON.stringify numbers. Reject lexemes that JSON.parse would
- * silently round (including fractional token values rounded to integers). */
-function canonicalNumbers(line: string): void {
-  for (const match of line.matchAll(/"(?:\\[\s\S]|[^"\\])*"|(-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/gu)) {
-    const numeric = match[1];
-    if (numeric !== undefined && JSON.stringify(Number(numeric)) !== numeric) throw new Error("noncanonical Pi number");
-  }
-}
 function digest(v: unknown) { return createHash("sha256").update(JSON.stringify(v)).digest("hex"); }
 const APIS: Record<string, readonly string[]> = { "openai-codex": ["openai-codex-responses"], openai: ["openai-responses", "openai-completions"], anthropic: ["anthropic-messages"] };
 
@@ -80,7 +72,7 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
     if (!text.endsWith("\n")) return emptyUsage("partial_stream");
     const lines = text.split("\n").filter(l => l.trim());
     if (lines.length > 200_000 || lines.some(l => Buffer.byteLength(l) > 8 * 1024 * 1024)) return emptyUsage("invalid_stream");
-    events = lines.map(l => { const event = JSON.parse(l) as Obj; rejectAmbiguousJson(l); canonicalNumbers(l); return event; });
+    events = lines.map(l => { return parseBoundedJson(l, { canonicalNumbers: true }) as Obj; });
     if (events.some(e => !object(e) || typeof e["type"] !== "string")) throw new Error();
   } catch { return emptyUsage("invalid_stream"); }
   const header = events.shift();
@@ -133,8 +125,8 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
           try {
             const c: unknown = u["cost"];
             if (!object(c) || !keys(c, [...TOKEN_FIELDS, "total"]) || Object.keys(c).length !== 5) throw new Error();
-            for (const f of TOKEN_FIELDS) cost(c[f]);
-            const amount = cost(c["total"]);
+            for (const f of TOKEN_FIELDS) recordedCostUnits(c[f]);
+            const amount = recordedCostUnits(c["total"]);
             // Pi uses floating-point arithmetic; total is the recorded authority.
             if (Math.abs(c["total"] - TOKEN_FIELDS.reduce((s, f) => s + c[f], 0)) > Math.max(1e-12, c["total"] * 1e-12)) throw new Error();
             if (recordedCost !== null) recordedCost += amount;
