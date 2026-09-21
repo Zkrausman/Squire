@@ -81,7 +81,7 @@ export function validatePlanProgress(value: unknown): asserts value is PlanProgr
   text(v["runId"]);
   if (!Number.isInteger(v["attempt"]) || (v["attempt"] as number) < 1 || !["requirements", "implementation-design"].includes(v["subphase"] as string)) throw new Error("invalid Plan progress");
 }
-export function validatePlanEvidence(value: unknown, envelope: { sessionId: unknown; inputHead: unknown; profile?: unknown; status: unknown; attempt: unknown }, steps: unknown): asserts value is PlanEvidence {
+export function validatePlanEvidence(value: unknown, envelope: { sessionFile: unknown; sessionId: unknown; inputHead: unknown; profile?: unknown; status: unknown; attempt: unknown }, steps: unknown): asserts value is PlanEvidence {
   const v = closed(value, ["version", "supervisorId", "outcome", "launchDigest", "children"], "Plan evidence");
   if (v["version"] !== 1 || v["supervisorId"] !== envelope.sessionId || !["ready", "needs_clarification", "failed"].includes(v["outcome"] as string)) throw new Error("invalid supervisor identity/outcome");
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
@@ -96,7 +96,7 @@ export function validatePlanEvidence(value: unknown, envelope: { sessionId: unkn
     const c = closed(child, ["subphase", "sessionId", "sessionFile", "profile", "inputHead", "launchDigest", "promptDigest", "outcome", "diagnostic", "artifact"], "Plan child");
     const subphase = index === 0 ? "requirements" : "implementation-design";
     text(c["sessionId"]); hash(c["promptDigest"]); validatePhaseProfile(c["profile"]);
-    if (!uuid.test(c["sessionId"]) || sessions.has(c["sessionId"]) || c["sessionId"] === envelope.sessionId || c["subphase"] !== subphase || c["sessionFile"] !== `/ticket/sessions/plan/${envelope.attempt}/${subphase}.jsonl` || c["inputHead"] !== envelope.inputHead || c["launchDigest"] !== v["launchDigest"] || canonical(c["profile"]) !== canonical(envelope.profile)) throw new Error("Plan child identity mismatch");
+    if (!uuid.test(c["sessionId"]) || sessions.has(c["sessionId"]) || c["sessionId"] === envelope.sessionId || c["subphase"] !== subphase || c["sessionFile"] !== `/ticket/sessions/plan/${envelope.attempt}${typeof envelope.sessionFile === "string" && envelope.sessionFile.endsWith("-launch-1.jsonl") ? "/launch-1" : ""}/${subphase}.jsonl` || c["inputHead"] !== envelope.inputHead || c["launchDigest"] !== v["launchDigest"] || canonical(c["profile"]) !== canonical(envelope.profile)) throw new Error("Plan child identity mismatch");
     sessions.add(c["sessionId"]);
     if (index === 1 && requirements?.readiness !== "ready") throw new Error("Design requires ready Requirements");
     if (c["outcome"] === "failed") { text(c["diagnostic"]); if (c["artifact"] !== null || index !== children.length - 1 || v["outcome"] !== "failed") throw new Error("invalid failed child"); continue; }

@@ -1,3 +1,4 @@
+import { TransientLaunchError } from "./launch-retry.js";
 import type { CommandPort, CommandRequest, CommandResult } from "./command.js";
 import { CommandExecutionError } from "./command.js";
 import { TelemetryStore, type TelemetryInvocation } from "./telemetry-store.js";
@@ -12,7 +13,10 @@ export async function captureInvocation(store: TelemetryStore, identity: Telemet
     if (started) await store.end(identity, output.stdoutBytes, true).catch(() => undefined);
     return output;
   } catch (error) {
-    if (started) await store.end(identity, error instanceof CommandExecutionError ? error.stdoutBytes : undefined, false).catch(() => undefined);
+    if (started) {
+      await store.end(identity, error instanceof TransientLaunchError ? Buffer.alloc(0) : error instanceof CommandExecutionError ? error.stdoutBytes : undefined, error instanceof TransientLaunchError).catch(() => undefined);
+      if (error instanceof TransientLaunchError) await store.settle(identity.runId, identity.sessionId, "execution-failed").catch(() => undefined);
+    }
     throw error;
   }
 }

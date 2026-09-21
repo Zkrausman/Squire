@@ -17,3 +17,13 @@ Durations derive only from persisted host dispatch/observed successful-command b
 `squire telemetry RUN-ID [--json] [--config FILE]` is a single-run host-only artifact reader without external adapters or mutable-session inspection. Legacy/missing artifacts explicitly report unavailable/incomplete; unsafe artifacts fail with sanitized errors. Terminal accounting warnings do not relabel accepted workflow evidence. The typed reader/validator and versioned artifact are exported for AIDEV-309, which owns backfill, cohorts, baseline reproduction and merge/CI scorecards. Squire completion is not a merge or exact-head CI claim.
 
 Implementation and authority details: `src/personal/telemetry-{capture,stream,store}.ts`, `pi-phase-runner.ts`, `plan-supervisor.ts`, `controller.ts`, and [docs/telemetry.md](../../../docs/telemetry.md). The three telemetry suites run in the ordinary tests and the bounded unconditional Windows gate. Keep workflow test commands, executable validator expectations and negative validator probes in lockstep.
+
+Launch-generation accounting adds optional `launchGeneration` and the
+`launch-retry` trigger without incrementing the logical phase attempt. Inventory
+reconciles every dispatched generation (Plan's failed first child separately
+from replacement Requirements/Design). Both failed launch and replacement retain
+UUID/start/end evidence; certified normal pre-session failures have a known exit
+but unknown tokens/cost. Unknown remote effects retain null endpoints. The
+production retry fixture compares recovery with replay using measured accepted
+Plan/Implement rows, never incident estimates or assumed free failed sessions.
+See [Transient phase launch generations](transient-phase-launch-generations.md).

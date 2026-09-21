@@ -1,7 +1,10 @@
+import { providerLaunchFailure } from "./launch-retry.js";
 import { PhaseExecutionError, type ExecutionFailure } from "./execution-failure.js";
 import { execFile } from "node:child_process";
 
 export interface CommandRequest {
+  /** Trusted runner only: exact pre-session provider diagnostics. */
+  readonly launchProvider?: string;
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd?: string;
@@ -48,6 +51,8 @@ export class NodeCommandRunner implements CommandPort {
           return;
         }
         const failure = error as Error & { code?: string | number };
+        const transient = providerLaunchFailure(request.launchProvider, stdout, stderr, failure.code, Boolean((failure as Error & { killed?: boolean }).killed), Boolean(signal?.aborted));
+        if (transient) { reject(transient); return; }
         const detail = request.sensitive || request.redactDiagnostics ? "sensitive command failed" : stderr.toString("utf8").trim() || stdout.toString("utf8").trim() || failure.message;
         reject(new CommandExecutionError(signal?.aborted ? "cancelled" : (failure as Error & { killed?: boolean }).killed ? "timeout" : typeof failure.code === "string" && ["ENOENT", "EACCES", "ENOBUFS"].includes(failure.code) ? "infrastructure" : "unknown", `${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, request.sensitive ? "" : stdout.toString("utf8"), { cause: error }, request.sensitive ? Buffer.alloc(0) : stdout));
       });

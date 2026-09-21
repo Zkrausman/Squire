@@ -15,9 +15,10 @@ const HASH = /^[a-f0-9]{64}$/u;
 export function validateTelemetryRunId(v: string): void { if (!/^[a-z0-9][a-z0-9-]{7,127}$/u.test(v)) throw new Error("invalid telemetry run identity"); }
 export interface TelemetryInvocation {
   runId: string; phase: PersonalPhase; subphase: "requirements" | "implementation-design" | null;
+  launchGeneration?: 0 | 1;
   attempt: number; correction: number; sessionId: string; sessionArtifactDigest: string;
   inputHead: string; profile: PhaseProfile; escalationDigest: string | null;
-  trigger: "initial" | "retry" | "stage_advanced" | "remediation" | "report-correction";
+  trigger: "initial" | "retry" | "stage_advanced" | "remediation" | "report-correction" | "launch-retry";
   stageIndex: number | null; stageAttempt: number | null;
   startedAt: string;
 }
@@ -49,6 +50,7 @@ function duration(start: string | null, end: string | null): number | null { ret
 function assert(v: unknown): asserts v { if (!v) throw new Error("invalid telemetry artifact"); }
 function exact(v: object, names: string[]) { assert(v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).sort().join() === names.sort().join()); }
 function validateInvocation(v: TelemetryInvocation) {
+  assert(v.launchGeneration === undefined || v.launchGeneration === 0 || v.launchGeneration === 1);
   validateTelemetryRunId(v.runId);
   assert(PERSONAL_PHASES.includes(v.phase) && (v.subphase === null || (v.phase === "plan" && ["requirements", "implementation-design"].includes(v.subphase))));
   assert(Number.isSafeInteger(v.attempt) && v.attempt > 0 && v.attempt <= 1_000_000 && Number.isSafeInteger(v.correction) && v.correction >= 0 && v.correction <= 10);
@@ -56,14 +58,14 @@ function validateInvocation(v: TelemetryInvocation) {
   validatePhaseProfile(v.profile);
   assert(/^[a-z0-9][a-z0-9-]{0,63}$/u.test(v.profile.provider) && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u.test(v.profile.model));
   assert(v.escalationDigest === null || HASH.test(v.escalationDigest));
-  assert(["initial", "retry", "stage_advanced", "remediation", "report-correction"].includes(v.trigger) && timestamp(v.startedAt));
+  assert(["initial", "retry", "stage_advanced", "remediation", "report-correction", "launch-retry"].includes(v.trigger) && timestamp(v.startedAt));
   assert((v.stageIndex === null && v.stageAttempt === null) || (Number.isSafeInteger(v.stageIndex) && v.stageIndex! >= 0 && v.stageIndex! < 100 && Number.isSafeInteger(v.stageAttempt) && v.stageAttempt! > 0 && v.stageAttempt! <= 1_000_000));
 }
 const INVOCATION_KEYS = ["runId", "phase", "subphase", "attempt", "correction", "sessionId", "sessionArtifactDigest", "inputHead", "profile", "escalationDigest", "trigger", "stageIndex", "stageAttempt", "startedAt"];
 export function invocation(input: PhaseInput, sessionId: string, sessionFile: string, subphase: TelemetryInvocation["subphase"] = null, correction = 0): TelemetryInvocation {
-  const value: TelemetryInvocation = { runId: input.runId, phase: input.phase, subphase, attempt: input.attempt, correction, sessionId,
+  const value: TelemetryInvocation = { ...(input.launchGeneration === undefined ? {} : { launchGeneration: input.launchGeneration }), runId: input.runId, phase: input.phase, subphase, attempt: input.attempt, correction, sessionId,
     sessionArtifactDigest: hash(sessionFile), inputHead: input.expectedHead, profile: validatePhaseProfile(input.profile), escalationDigest: input.escalationDigest ?? null,
-    trigger: correction ? "report-correction" : input.telemetryAttribution?.trigger ?? (input.attempt > 1 ? "retry" : "initial"), stageIndex: input.telemetryAttribution?.stageIndex ?? null, stageAttempt: input.telemetryAttribution?.stageAttempt ?? null, startedAt: new Date().toISOString() };
+    trigger: correction ? "report-correction" : input.launchGeneration === 1 ? "launch-retry" : input.telemetryAttribution?.trigger ?? (input.attempt > 1 ? "retry" : "initial"), stageIndex: input.telemetryAttribution?.stageIndex ?? null, stageAttempt: input.telemetryAttribution?.stageAttempt ?? null, startedAt: new Date().toISOString() };
   return value;
 }
 
@@ -190,7 +192,7 @@ export class TelemetryStore {
     const starts = names.filter(n => /^[a-f0-9-]{36}\.start\.json$/u.test(n)).sort(); assert(starts.length <= 1000);
     const sessions: TelemetrySession[] = [];
     for (const name of starts) {
-      const start = await readPrivate(path.join(directory, name)) as TelemetryInvocation; exact(start, INVOCATION_KEYS); validateInvocation(start); assert(start.runId === state.runId && name === `${start.sessionId}.start.json`);
+      const start = await readPrivate(path.join(directory, name)) as TelemetryInvocation; exact(start, [...INVOCATION_KEYS, ...(start.launchGeneration === undefined ? [] : ["launchGeneration"])]); validateInvocation(start); assert(start.runId === state.runId && name === `${start.sessionId}.start.json`);
       let end: End | undefined; let bytes: Buffer | undefined; let usage: UsageAccounting;
       const evidence = createReportEvidence(path.join(directory, "streams"));
       try {
@@ -220,8 +222,19 @@ export class TelemetryStore {
       for (let attempt = 1; attempt <= state.attempts[phase]; attempt++) {
         const rows = sessions.filter(s => s.phase === phase && s.attempt === attempt && !s.correction);
         if (phase === "plan" && state.planExecution === "supervised-v1") {
-          if (rows.length !== 2 || !rows.some(s => s.subphase === "requirements") || !rows.some(s => s.subphase === "implementation-design")) return false;
-        } else if (rows.length !== 1) return false;
+          const generations = state.launchJournal?.filter(t => t.phase === phase && t.attempt === attempt && t.kind === "dispatched");
+          if (generations?.length) {
+            for (const g of generations) {
+              const children = rows.filter(s => s.launchGeneration === g.generation);
+              const failedLaunch = state.launchJournal?.some(t => t.phase === phase && t.attempt === attempt && t.generation === g.generation && t.kind === "failed" && t.failure);
+              if (failedLaunch ? children.length !== 1 || children[0]?.subphase !== "requirements" : children.length !== 2 || !children.some(s => s.subphase === "requirements") || !children.some(s => s.subphase === "implementation-design")) return false;
+            }
+            if (rows.some(s => !generations.some(g => g.generation === s.launchGeneration))) return false;
+          } else if (rows.length !== 2 || !rows.some(s => s.subphase === "requirements") || !rows.some(s => s.subphase === "implementation-design")) return false;
+        } else {
+          const generations = state.launchJournal?.filter(t => t.phase === phase && t.attempt === attempt && t.kind === "dispatched");
+          if (generations?.length ? rows.length !== generations.length || generations.some(t => !rows.some(s => s.sessionId === t.sessionId && s.launchGeneration === t.generation)) : rows.length !== 1) return false;
+        }
       }
       return true;
     }) && sessions.every(s => s.attempt <= state.attempts[s.phase]) && (state.reportCorrections ?? []).filter(c => c.kind === "launched").every(c => sessions.some(s => s.sessionId === c.producer));
@@ -283,7 +296,7 @@ export function validateRunTelemetry(value: unknown, runId: string): asserts val
   assert(PERSONAL_PHASES.every(p => ["passed", "failed", "remediation_required", "unknown", "not_run"].includes(v.phaseOutcomes[p])));
   const seen = new Set<string>();
   for (const s of v.sessions) {
-    exact(s, [...INVOCATION_KEYS, "endedAt", "durationMs", "outcome", "phaseOutcome", "streamDigest", "usage"]); validateInvocation(s);
+    exact(s, [...INVOCATION_KEYS, ...(s.launchGeneration === undefined ? [] : ["launchGeneration"]), "endedAt", "durationMs", "outcome", "phaseOutcome", "streamDigest", "usage"]); validateInvocation(s);
     assert(s.runId === runId && !seen.has(s.sessionId)); seen.add(s.sessionId);
     assert((s.endedAt === null || timestamp(s.endedAt)) && s.durationMs === duration(s.startedAt, s.endedAt) && (s.streamDigest === null || HASH.test(s.streamDigest)));
     assert(s.phaseOutcome === null || ["passed", "failed", "remediation_required"].includes(s.phaseOutcome));
@@ -303,6 +316,6 @@ export function formatTelemetry(v: RunTelemetry | undefined, runId: string): str
   if (!v) return `${runId}: telemetry unavailable/incomplete (no terminal artifact)`;
   const amounts = (t: TelemetryTotals) => `sessions=${t.sessions} ms=${t.durationMs.known}${t.durationMs.complete ? "" : "+unknown"} ${TOKEN_FIELDS.map(f => `${f}=${t.tokens[f].known}${t.tokens[f].complete ? "" : "+unknown"}`).join(" ")} Pi-recorded USD=${t.recordedCost.known}${t.recordedCost.complete ? "" : "+unknown"}`;
   return [`${v.runId}: ${v.outcome}; accounting ${v.complete ? "complete" : "incomplete"}; wall-ms=${v.wallDurationMs ?? "unknown"}`,
-    ...v.sessions.map(s => `${s.phase}/${s.subphase ?? "main"} #${s.attempt}${s.correction ? ` correction-${s.correction}` : ""} ${s.sessionId} ${s.profile.provider}/${s.profile.model}/${s.profile.thinking} ${s.trigger} ${s.outcome} phase-outcome=${s.phaseOutcome ?? "unknown"} ${amounts(telemetryTotals([s]))}`),
+    ...v.sessions.map(s => `${s.phase}/${s.subphase ?? "main"} #${s.attempt}${s.correction ? ` correction-${s.correction}` : ""}${s.launchGeneration === undefined ? "" : ` launch-${s.launchGeneration}`} ${s.sessionId} ${s.profile.provider}/${s.profile.model}/${s.profile.thinking} ${s.trigger} ${s.outcome} phase-outcome=${s.phaseOutcome ?? "unknown"} ${amounts(telemetryTotals([s]))}`),
     ...v.phases.flatMap(p => [`${p.phase} ${v.phaseOutcomes[p.phase]}: ${amounts(p.totals)}`, ...p.subphases.map(s => `  ${s.subphase}: ${amounts(s.totals)}`)]), `Run: ${amounts(v.totals)}`].join("\n");
 }

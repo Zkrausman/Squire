@@ -1,3 +1,4 @@
+import { LAUNCH_RULES, TransientLaunchError, type LaunchRule } from "./launch-retry.js";
 import { EXECUTION_FAILURES, PhaseExecutionError, type ExecutionFailure } from "./execution-failure.js";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -61,7 +62,7 @@ export class PlanSupervisorRunner implements PhasePort {
       };
       const interrupt = () => cancel(new PhaseExecutionError("cancelled", "Plan interrupted"));
       signal?.addEventListener("abort", interrupt, { once: true });
-      const deadline = setTimeout(() => cancel(new PhaseExecutionError("timeout", "Plan deadline exceeded")), this.#options.timeoutMs ?? 3600000);
+      const deadline = setTimeout(() => cancel(new PhaseExecutionError("timeout", "Plan deadline exceeded")), input.launchExpiresAt ? Math.max(1, Date.parse(input.launchExpiresAt) - Date.now()) : this.#options.timeoutMs ?? 3600000);
       child.on("message", (message: unknown) => {
         events = events.then(async () => {
           if (Buffer.byteLength(JSON.stringify(message)) > 2 * 1024 * 1024) throw new Error("oversized supervisor message");
@@ -85,6 +86,10 @@ export class PlanSupervisorRunner implements PhasePort {
             }
             if (r.details.supervision.children.length > received) throw new Error("missing supervisor progress");
             result = r;
+          } else if (type === "launch-failure") {
+            const v = closed(message, ["type", "version", "rule"], "supervisor launch failure");
+            if (v["version"] !== 1 || !LAUNCH_RULES.includes(v["rule"] as LaunchRule) || result || received > 1 || cancelled) throw new PhaseExecutionError("protocol", "invalid supervisor launch failure");
+            throw new TransientLaunchError(v["rule"] as LaunchRule);
           } else {
             const v = closed(message, ["type", "message", "classification"], "supervisor error");
             if (type !== "error" || typeof v["message"] !== "string" || v["message"].length > 8000) throw new Error("invalid supervisor message");
@@ -95,6 +100,7 @@ export class PlanSupervisorRunner implements PhasePort {
       });
       child.once("error", error => cancel(new PhaseExecutionError("infrastructure", error.message, { cause: error })));
       child.once("exit", (code, exitSignal) => {
+        if ((code !== 0 || exitSignal) && failure instanceof TransientLaunchError) failure = new PhaseExecutionError("infrastructure", "Plan supervisor termination ambiguous");
         if (code !== 0 || exitSignal) failure ??= new PhaseExecutionError("infrastructure", "Plan supervisor exited unsuccessfully");
         void events.finally(() => {
           clearTimeout(deadline); clearTimeout(reap); signal?.removeEventListener("abort", interrupt);

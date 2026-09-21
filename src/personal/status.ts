@@ -168,6 +168,8 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
     `Stdout log: ${display(state.stdoutPath ?? "unavailable")}`,
     `Stderr log: ${display(state.stderrPath ?? "unavailable")}`,
   ];
+  const launch = state.launchJournal?.filter(t => t.phase === phase && t.attempt === attempt).at(-1);
+  if (launch) lines.push(`Launch: generation=${launch.generation} status=${launch.kind === "reserved" ? launch.generation ? "retrying-backoff" : "reserved" : launch.kind === "dispatched" ? "model-work" : launch.kind} delay-ms=${launch.delayMs}${launch.failure ? ` rule=${launch.failure.rule}` : ""}`);
   const staged = [...(state.stagedTransitions ?? [])].reverse().find(t => !phase || t.phase === phase);
   const selectionReason = [...(state.stagedTransitions ?? [])].reverse().find(t => t.kind === "reserved" && t.phase === staged?.phase && t.attempt === staged.attempt)?.reason;
   const correction = state.reportCorrections?.at(-1);
@@ -194,6 +196,7 @@ export function formatRunEvent(event: RunEvent): string {
   if (event.phase !== undefined) fields.push(`phase=${display(event.phase)}`);
   if (event.attempt !== undefined) fields.push(`attempt=${event.attempt}`);
   if (event.outcome !== undefined) fields.push(`outcome=${display(event.outcome)}`);
+  if (event.launch) fields.push(`generation=${event.launch.generation}`, `activity=${event.type === "launch_reserved" ? event.launch.generation ? "retrying-backoff" : "reserved" : event.type === "launch_dispatched" ? "model-work" : event.type.slice(7)}`, `delay-ms=${event.launch.delayMs}`, ...(event.launch.rule ? [`rule=${event.launch.rule}`] : []));
   if (event.staged) {
     const t = event.staged;
     fields.push(`stage=${t.stageIndex + 1}`, `stage-consumed=${t.stageAttempt}/${t.stageMaximum}`, `consumed=${t.consumed}`, `remaining=${t.remaining}`, `profile=${display(`${t.profile.provider}/${t.profile.model}@${t.profile.thinking}`)}`, `reason=${t.reason}`, `classification=${t.classification ?? "reserved"}`, `policy=${t.policyDigest}`);

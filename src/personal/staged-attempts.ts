@@ -77,7 +77,7 @@ export function validateStagedState(state: PersonalRunState): void {
       if (reason !== (result ? "result" : "execution_failure")) throw new Error("invalid staged closure reason");
       if (result) {
         validatePhaseResultShape(result, selection.phase);
-        if (result.runId !== state.runId || result.sessionFile !== `/ticket/sessions/${selection.phase}/${selection.attempt}.jsonl` || result.attempt !== selection.attempt || !isDeepStrictEqual(result.profile, selection.profile) || sessions.has(result.sessionId)) throw new Error("staged result provenance mismatch");
+        if (result.runId !== state.runId || result.sessionFile !== (state.launchJournal?.find(t => t.sessionId === result.sessionId)?.sessionFile ?? `/ticket/sessions/${selection.phase}/${selection.attempt}.jsonl`) || result.attempt !== selection.attempt || !isDeepStrictEqual(result.profile, selection.profile) || sessions.has(result.sessionId)) throw new Error("staged result provenance mismatch");
         const expected = result.status === "failed" ? (result.phase === "plan" && result.details.supervision?.outcome === "needs_clarification" ? "needs_clarification" : "eligible_failure") : result.status;
         if (classification !== expected || (result.phase !== "implement" && result.inputHead !== result.outputHead)) throw new Error("staged result classification/HEAD mismatch");
         sessions.add(result.sessionId);

@@ -1,3 +1,4 @@
+import { TransientLaunchError } from "./launch-retry.js";
 import { classifyExecutionFailure } from "./execution-failure.js";
 import { NodeCommandRunner } from "./command.js";
 import { closed } from "./plan-artifacts.js";
@@ -15,6 +16,7 @@ process.on("SIGINT", cancel);
 process.on("disconnect", cancel);
 process.on("message", (message: unknown) => {
   void receive(message).catch(error => {
+    if (error instanceof TransientLaunchError && !abort.signal.aborted) { final({ type: "launch-failure", version: 1, rule: error.evidence.rule }); return; }
     final({ type: "error", classification: classifyExecutionFailure(error, abort.signal), message: String(error).slice(0, 8000) });
   });
 });

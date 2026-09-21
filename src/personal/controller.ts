@@ -1,3 +1,4 @@
+import { executeLaunch, validateLaunchRetries } from "./launch-retry.js";
 import { parsePhaseResult } from "./phase-payload.js";
 import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
@@ -75,6 +76,7 @@ export interface PersonalMvpControllerOptions {
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
   readonly escalationPolicy?: EscalationPolicy;
+  readonly launchRetries?: 0 | 1;
   readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly phaseTimeoutMs?: number;
   /** Optional process identity for persisted foreground/background evidence. */
@@ -136,6 +138,7 @@ export class PersonalMvpController {
   readonly #newId: () => string;
   readonly #modelPolicy: PersonalModelPolicy;
   readonly #escalationPolicy: EscalationPolicy | undefined;
+  readonly #launchRetries: 0 | 1;
   readonly #correctionPolicy: ReportCorrectionPolicy;
   readonly #phaseTimeoutMs: number;
   readonly #controllerPid: number | undefined;
@@ -148,6 +151,7 @@ export class PersonalMvpController {
     if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
     const staged = this.#material?.config.escalationPolicy ?? options.escalationPolicy;
     this.#escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
+    this.#launchRetries = validateLaunchRetries(this.#material ? this.#material.config.launchRetries : options.launchRetries);
     this.#correctionPolicy = validateReportCorrectionPolicy(this.#material ? this.#material.config.reportCorrectionPolicy : options.reportCorrectionPolicy);
     this.#phaseTimeoutMs = this.#material?.config.phaseTimeoutMs ?? options.phaseTimeoutMs ?? 3600000;
     if (!Number.isSafeInteger(this.#phaseTimeoutMs) || this.#phaseTimeoutMs <= 0 || this.#phaseTimeoutMs > 14400000) throw new Error("invalid controller phase timeout");
@@ -192,7 +196,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
-    const state: PersonalRunState = { ...baseline, reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
+    const state: PersonalRunState = { ...baseline, launchRetries: this.#launchRetries, launchJournal: [], reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
       if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
@@ -532,10 +536,9 @@ export class PersonalMvpController {
     if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
     const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
     const stagedAccounting = context.state.stagedTransitions?.find(t => t.phase === phase && t.attempt === attempt && t.kind === "reserved");
-    const input: PhaseInput = Object.freeze({
+    let input: PhaseInput = Object.freeze({
       telemetryAttribution: { trigger: stagedAccounting ? stagedAccounting.reason as "initial" | "retry" | "stage_advanced" | "remediation" : attempt > 1 ? "remediation" : "initial", stageIndex: stagedAccounting?.stageIndex ?? null, stageAttempt: stagedAccounting?.stageAttempt ?? null },
       deadline,
-      ...(phase === "implement" ? { reportSession: Object.freeze({ sessionId: randomUUID(), sessionFile: `/ticket/sessions/${phase}/${attempt}.jsonl` }) } : {}),
       runId: context.state.runId,
       ticket: Object.freeze({ ...ticket }),
       repository: request.repository,
@@ -569,17 +572,32 @@ export class PersonalMvpController {
     let progressWrites = Promise.resolve();
     let progressCount = 0;
     try {
-      result = await this.#phases.run(input, signal, progress => {
-        validatePlanProgress(progress);
-        const snapshot = structuredClone(progress);
-        if (!acceptingProgress || phase !== "plan" || context.state.planExecution !== "supervised-v1" || snapshot.runId !== input.runId || snapshot.attempt !== attempt || snapshot.subphase !== ["requirements", "implementation-design"][progressCount]) return Promise.reject(new Error("stale or unordered Plan progress"));
-        progressCount++;
-        progressWrites = progressWrites.then(async () => {
-          if (context.state.status !== "running" || context.state.step !== "plan" || context.state.attempts.plan !== attempt) throw new Error("late Plan progress");
-          await context.persist({ planProgress: snapshot });
+      const run = (generationInput: PhaseInput) => {
+        if (phase === "plan" && generationInput.launchGeneration === 1) progressCount = 0;
+        input = Object.freeze(generationInput);
+        return this.#phases.run(input, signal, progress => {
+          if (input.reportSession?.sessionId !== generationInput.reportSession?.sessionId) return Promise.reject(new Error("stale launch progress"));
+          validatePlanProgress(progress);
+          const snapshot = structuredClone(progress);
+          if (!acceptingProgress || phase !== "plan" || context.state.planExecution !== "supervised-v1" || snapshot.runId !== input.runId || snapshot.attempt !== attempt || snapshot.subphase !== ["requirements", "implementation-design"][progressCount]) return Promise.reject(new Error("stale or unordered Plan progress"));
+          progressCount++;
+          progressWrites = progressWrites.then(async () => {
+            if (context.state.status !== "running" || context.state.step !== "plan" || context.state.attempts.plan !== attempt) throw new Error("late Plan progress");
+            await context.persist({ planProgress: snapshot });
+          });
+          return progressWrites;
         });
-        return progressWrites;
-      });
+      };
+      result = await executeLaunch(input, {
+        state: () => context.state,
+        append: t => context.persist({ launchJournal: [...context.state.launchJournal ?? [], t] }),
+        now: () => this.#now().getTime(),
+        remaining: () => deadline - this.#monotonicNow(),
+        inspect: async () => {
+          await this.#workspaces.assertClean(context.state.sandbox);
+          if (await this.#workspaces.currentHead(context.state.sandbox) !== expectedHead || progressCount > 1) throw new Error("launch effects ambiguous; human authorization required");
+        },
+      }, run, signal);
       successfulCapture = this.#phases.reportCapture?.(result);
       if (this.#phases.reportCapture && !successfulCapture && !(result.phase === "plan" && result.details.supervision)) throw new Error("phase adapter omitted report evidence");
       if (successfulCapture) {
@@ -711,7 +729,7 @@ export class PersonalMvpController {
       if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
       active();
       if (original.sessionId !== input.reportSession?.sessionId) throw new Error("original report producer mismatch");
-      if (original.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("original report session identity mismatch");
+      if (original.sessionFile !== input.reportSession?.sessionFile) throw new Error("original report session identity mismatch");
       decodeReport(originalBytes); // invalid UTF-8 stays preserved, never trusted facts
       const analysis = analyzeImplementReport(original, input);
       if (!analysis.unexpected.length) throw new Error("unsupported handoff error class");
@@ -1076,7 +1094,7 @@ function validateRequest(request: RunRequest): void {
 function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHead: string): void {
   validatePhaseResultShape(result, input.phase);
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt) throw new Error("phase result identity mismatch");
-  if (result.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("phase result session file mismatch");
+  if (result.sessionFile !== (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("phase result session file mismatch");
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
   if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");

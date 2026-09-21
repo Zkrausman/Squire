@@ -1,3 +1,4 @@
+import { TransientLaunchError } from "./launch-retry.js";
 import { captureInvocation, sessionSeed } from "./telemetry-capture.js";
 import { invocation, TelemetryStore } from "./telemetry-store.js";
 import { MAX_STREAM_BYTES, terminalReport } from "./telemetry-stream.js";
@@ -32,7 +33,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   validateExecutablePlan(material.config.promptPolicy!.plan);
   if (input.phase !== "plan" || material.config.promptPolicy!.plan.length !== 2) throw new Error("supervisor requires selected Plan children");
   const profile = validatePhaseProfile(input.profile);
-  const supervisorId = randomUUID();
+  const supervisorId = input.reportSession?.sessionId ?? randomUUID();
   const root = `/run/squire-plan-${supervisorId}`;
   const local = path.join(options.stagingRoot, input.runId, "plan", String(input.attempt), supervisorId);
   if (process.platform !== "win32") await mkdir(local, { recursive: true, mode: 0o700 });
@@ -43,7 +44,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
     created.add(file);
   };
   const sbx = options.sbxExecutable ?? "sbx";
-  const deadline = Date.now() + (options.timeoutMs ?? 3600000);
+  const deadline = input.launchExpiresAt ? Date.parse(input.launchExpiresAt) : Date.now() + (options.timeoutMs ?? 3600000);
   const exec = (script: string, cancellation?: AbortSignal) => commands.run({ command: sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", script], timeoutMs: 30000, maxOutputBytes: 2 * 1024 * 1024 }, cancellation);
   const check = async () => {
     const result = await exec("git -c safe.directory=/ticket/workspace -C /ticket/workspace rev-parse HEAD; git -c safe.directory=/ticket/workspace -C /ticket/workspace status --porcelain --untracked-files=all");
@@ -63,7 +64,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
       await progress({ runId: input.runId, attempt: input.attempt, subphase });
       signal.throwIfAborted();
       const sessionId = randomUUID();
-      const sessionFile = `/ticket/sessions/plan/${input.attempt}/${subphase}.jsonl`;
+      const sessionFile = `/ticket/sessions/plan/${input.attempt}${input.launchGeneration ? `/launch-${input.launchGeneration}` : ""}/${subphase}.jsonl`;
       const prompt = composeSystemPrompt(material, "plan", subphase);
       const base = { subphase, sessionId, sessionFile, profile, inputHead: input.expectedHead, launchDigest: material.digest, promptDigest: createHash("sha256").update(prompt).digest("hex") };
       try {
@@ -85,7 +86,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
         await copy(`${subphase}-guard.json`, config, `${control}/config.json`);
         let raw: string;
         try {
-          const output = await captureInvocation(telemetry, invocation(input, sessionId, sessionFile, subphase), commands, { command: sbx, args: ["exec", "-u", "root", input.sandbox, "node", "-e", REMOTE_GUARD, `${control}/config.json`], timeoutMs: Math.max(1, deadline - Date.now()) + 10000, maxOutputBytes: MAX_STREAM_BYTES }, signal);
+          const output = await captureInvocation(telemetry, invocation(input, sessionId, sessionFile, subphase), commands, { command: sbx, args: ["exec", "-u", "root", input.sandbox, "node", "-e", REMOTE_GUARD, `${control}/config.json`], timeoutMs: Math.max(1, deadline - Date.now()) + 10000, maxOutputBytes: MAX_STREAM_BYTES, ...(subphase === "requirements" ? { launchProvider: profile.provider } : {}) }, signal);
           if (!output.stdoutBytes) throw new Error("Plan requires exact structured stdout bytes");
           raw = terminalReport(output.stdoutBytes);
         } finally {
@@ -108,7 +109,9 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
         // Independent post-exit Git inspection applies even to malformed JSON,
         // failed launches and cancelled transport, without an aborted signal.
         let message = error instanceof Error ? error.message : String(error);
-        try { await check(); } catch (gitError) { message += `; ${String(gitError)}`; }
+        let unchanged = true;
+        try { await check(); } catch (gitError) { unchanged = false; message += `; ${String(gitError)}`; }
+        if (error instanceof TransientLaunchError && unchanged && !requirements && children.length === 0 && !signal.aborted) throw error;
         await telemetry.settle(input.runId, sessionId, "failed").catch(() => undefined);
         children.push({ ...base, outcome: "failed", diagnostic: message.slice(0, 8000), artifact: null });
         throw new PhaseExecutionError(classifyExecutionFailure(error, signal), message, { cause: error });
@@ -120,16 +123,17 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   for (const subphase of ["requirements", "implementation-design"]) {
     for (const suffix of ["input", "guard"]) {
       const file = path.join(local, `${subphase}-${suffix}.json`);
-      if (process.platform !== "win32" || created.has(file)) await rm(file, { force: true });
+      if (input.launchGeneration === undefined && created.has(file)) await rm(file, { force: true });
     }
   }
+  if (executionError instanceof TransientLaunchError && !signal.aborted && Date.now() < deadline) throw executionError;
   if (signal.aborted || Date.now() >= deadline) diagnostic ??= "Plan interrupted or deadline exceeded";
   if (input.escalationDigest && diagnostic) throw executionError ?? new PhaseExecutionError(signal.aborted ? "cancelled" : "timeout", diagnostic);
   const outcome = diagnostic ? "failed" : requirements?.readiness === "needs_clarification" ? "needs_clarification" : design ? "ready" : "failed";
   const result: PlanPhaseResult = {
     runId: input.runId, phase: "plan", attempt: input.attempt, sessionId: supervisorId,
     // Compatibility slot identifies the deterministic lifecycle, NOT a model session.
-    sessionFile: `/ticket/sessions/plan/${input.attempt}.jsonl`, inputHead: input.expectedHead, outputHead: input.expectedHead, profile,
+    sessionFile: input.reportSession?.sessionFile ?? `/ticket/sessions/plan/${input.attempt}.jsonl`, inputHead: input.expectedHead, outputHead: input.expectedHead, profile,
     status: outcome === "ready" ? "passed" : "failed",
     summary: diagnostic ?? (outcome === "needs_clarification" ? `Plan needs clarification: ${requirements!.openQuestions.join("; ")}`.slice(0, 8000) : "Requirements and Implementation Design validated"),
     details: { steps: design?.steps ?? ["Resolve Plan blockers before Implement."], supervision: { version: 1, supervisorId, outcome, launchDigest: material.digest, children } },

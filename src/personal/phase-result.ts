@@ -67,7 +67,7 @@ function validateUntrustedResultFields(result: Record<string, unknown>, phase: P
     );
   if (phase === "plan") {
     stringList(details["steps"], "Plan steps", true);
-    if (details["supervision"] !== undefined) validatePlanEvidence(details["supervision"], { sessionId: result["sessionId"], inputHead: result["inputHead"], profile: result["profile"], status: result["status"], attempt: result["attempt"] }, details["steps"]);
+    if (details["supervision"] !== undefined) validatePlanEvidence(details["supervision"], { sessionFile: result["sessionFile"], sessionId: result["sessionId"], inputHead: result["inputHead"], profile: result["profile"], status: result["status"], attempt: result["attempt"] }, details["steps"]);
     if (result["status"] === "remediation_required") throw new Error("Plan cannot request remediation");
   } else if (phase === "implement") {
     stringList(details["changes"], "Implement changes", true);

@@ -10,8 +10,8 @@ import { validateExecutablePlan } from "./prompt-policy.js";
 import type { PlanProgress } from "./plan-artifacts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { composeSystemPrompt, validateLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
-import { persistWindowsPhaseInput } from "./windows-launch.js";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { persistPhaseInput } from "./phase-input.js";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { CommandExecutionError, type CommandPort } from "./command.js";
 import { parsePhaseResult } from "./phase-payload.js";
@@ -74,17 +74,17 @@ export class SandboxPiPhaseRunner implements PhasePort {
     const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
     const sessionId = input.reportSession?.sessionId ?? randomUUID();
     const phaseDirectory = `/ticket/sessions/${input.phase}`;
-    const sessionFile = `${phaseDirectory}/${input.attempt}.jsonl`;
-    const inputPath = `/ticket/artifacts/inputs/${input.phase}-${input.attempt}.json`;
+    const sessionFile = input.reportSession?.sessionFile ?? `${phaseDirectory}/${input.attempt}.jsonl`;
+    const inputName = `${input.phase}-${input.attempt}${input.launchGeneration === undefined ? "" : `-launch-${input.launchGeneration}`}.json`;
+    const inputPath = `/ticket/artifacts/inputs/${inputName}`;
     const localDirectory = path.join(this.#stagingRoot, input.runId, "phase-inputs");
-    const localInput = path.join(localDirectory, `${input.phase}-${input.attempt}.json`);
+    const localInput = path.join(localDirectory, inputName);
     if (process.platform !== "win32") await mkdir(localDirectory, { recursive: true, mode: 0o700 });
     let localInputCreated = false;
     try {
       const prompt = composeSystemPrompt(this.#material, input.phase);
       const bytes = `${JSON.stringify({ ...input, sessionId, sessionFile, testCommands: this.#testCommands, launchDigest: this.#material?.digest, systemPromptDigest: createHash("sha256").update(prompt).digest("hex") }, null, 2)}\n`;
-      if (process.platform === "win32") persistWindowsPhaseInput(localInput, bytes);
-      else await writeFile(localInput, bytes, { mode: 0o600 });
+      await persistPhaseInput(localInput, bytes);
       localInputCreated = true;
 
       await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
@@ -126,6 +126,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
       const output = await captureInvocation(this.telemetry, invocation(input, sessionId, sessionFile), this.#commands, {
         command: this.#sbx,
         args: ["exec", "-u", this.#roleUser, "-w", "/ticket/workspace", input.sandbox, ...environment],
+        launchProvider: profile.provider,
         timeoutMs: remaining(deadline),
         maxOutputBytes: MAX_STREAM_BYTES,
       }, signal).catch(async error => {
@@ -143,10 +144,10 @@ export class SandboxPiPhaseRunner implements PhasePort {
         throw new InvalidPhaseHandoff(capture, String(error));
       }
     } finally {
-      // Phase inputs can contain ticket text and feedback. Remove the host
-      // staging copy on every exit path, including failed or cancelled Pi
-      // launches, rather than retaining sensitive run material indefinitely.
-      if (process.platform !== "win32" || localInputCreated) await rm(localInput, { force: true });
+      // Legacy inputs are ephemeral. Generation inputs are private immutable
+      // launch evidence; retain both failed and replacement bytes. Never
+      // remove another generation's input after a creation collision.
+      if (localInputCreated && input.launchGeneration === undefined) await rm(localInput, { force: true });
     }
   }
   async telemetryTerminal(state: PersonalRunState): Promise<{ complete: boolean }> { return { complete: (await this.telemetry.finalize(state)).complete }; }

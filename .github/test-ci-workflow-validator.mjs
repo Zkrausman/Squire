@@ -140,6 +140,7 @@ try {
   await expectValidatorRejects(insertFalseCondition(workflow, "Run tests"), "an if: false test step");
   await expectValidatorRejects(insertFalseCondition(workflow, "Run Windows launch capture regression"), "disabled Windows launch regression");
   await expectValidatorRejects(workflow.replace(" dist/test/personal-owner-observation.test.js", ""), "missing native owner status regression");
+  await expectValidatorRejects(workflow.replace(" dist/test/personal-launch-retry.test.js", ""), "missing cross-platform launch retry coverage");
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-launch.test.js ", ""), "missing native Windows security tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-state-replace.test.js ", ""), "missing native Windows state replacement tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js ", ""), "missing actual captured-material CLI regression");

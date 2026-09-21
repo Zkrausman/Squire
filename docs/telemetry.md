@@ -64,3 +64,23 @@ AIDEV-309 owns historical backfill, cohort comparison, baseline reproduction, ex
 ## Checks
 
 Parser, private-store and production-controller fixtures cover the six-session run, remediation, staged profiles, report correction, interruption, unknown endpoints/cost, malformed/duplicate/unsupported streams, privacy and session-file tampering. They run in the normal suite and the existing bounded unconditional Windows launch matrix. Workflow commands, executable validator expectations and negative probes must change together; Linux tests do not replace the exact-head Windows gate.
+
+## Launch retries and avoided replay
+
+New invocation rows optionally include `launchGeneration` (0 or 1); generation 1
+uses `trigger: "launch-retry"` while retaining the logical attempt and staged
+attribution. Failed launch and replacement are separate UUIDs and rows. A
+classified pre-session normal exit has an observed endpoint, but **unknown usage
+and cost**, not a fabricated free invocation. Ambiguous failures retain unknown
+endpoints. Inventory completeness reconciles dispatched generations, including a
+failed initial Requirements launch and the two replacement Plan children when
+applicable. Legacy rows without a generation remain readable.
+
+The `personal-launch-retry` production fixture demonstrates one Plan and one
+Implement session, two Review sessions, unchanged Implement SHA and independent
+Test/Retro. Its recorded fixture usage avoids replaying 20 input tokens and
+USD 0.2 of Pi-recorded Plan/Implement cost, plus their measured invocation time;
+these are synthetic comparison evidence, **not incident billing or an estimate**.
+Only Review recovery and the fixed backoff are added. AIDEV-309 consumers can join
+the logical attempt and physical generation without counting earlier accepted
+work twice. Raw errors/credentials never enter these normalized rows or events.

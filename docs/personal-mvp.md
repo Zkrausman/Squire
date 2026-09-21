@@ -338,3 +338,59 @@ The production runner/controller fixture in `test/personal-windows-report-correc
 ### Current-run efficiency reporting
 
 Use `squire telemetry RUN-ID [--json] [--config FILE]` for private per-session, Plan-subphase, phase and run token/time/Pi-recorded-cost accounting. Missing or incomplete usage never changes phase outcomes. See [telemetry authority, completeness and retention](telemetry.md); legacy backfill and multi-run comparisons are deferred.
+
+### Transient launch generations
+
+`"launchRetries": 1` (the default) permits **one** infrastructure relaunch of a
+logical phase attempt; `0` disables it. Other values are rejected. The policy is
+captured with launch material and immutable in run state. This is not staged
+model escalation, remediation, report correction, or permission to resume a
+terminal run.
+
+The trusted process adapter, not the model, applies versioned exact rules to the
+selected provider's launch diagnostics. For OpenAI Codex the allowlist includes
+`Unable to verify Daybreak Blue access. Please try again.` A normal nonzero exit,
+**zero stdout bytes**, and an isolated exact diagnostic are required. Any session
+event/partial output, cancellation, timeout, unknown error, hard authentication,
+moderation, malformed report, tool or implementation failure is ineligible.
+This relies on the pinned Pi JSON transport emitting activity before model/tool
+work; arbitrary report text is never classifier authority. Supervised Plan may
+retry only its first child before any validated Requirements result, after
+independently observed guard cleanup and unchanged Git evidence. A failed Design
+launch cannot replay accepted Requirements.
+
+Each attempt has generation 0 and, at most, generation 1. The append-only
+`launchJournal` records immutable session identity, input/material binding,
+expected candidate and original baseline, original expiry, reservation,
+dispatch, return/failure, classifier version/rule/digest and elapsed delay.
+`JsonRunStateStore.save` is the versioned CAS authorization: it checks the existing
+reservation owner and refuses changed history, stale revisions or multiple
+successors. Dispatch is persisted **before** calling the runner. A crash in that
+gap deliberately fails closed rather than risking duplicate work. A returned
+launch is transport evidence, not an accepted phase result.
+
+A safely failed generation can reserve its sole successor; an undispatched
+reservation can dispatch once while its **same reservation owner** remains
+provable. Unresolved dispatched/returned generations, ownership loss, existing
+input collisions, terminal runs and ambiguous effects require human authorization.
+This is not a CLI resume/adopt/repair command: another process cannot take over a
+dead controller's reservation. No accepted Plan/Implement sessions are replayed
+to recover Review/Test/Retro availability.
+
+Before reserving and dispatching the replacement, independent checks require a
+clean worktree and the exact original candidate HEAD. Retry waits a deterministic
+1,000 ms from reservation; elapsed delay is recorded. Backoff, setup and relaunch
+consume the original phase timeout, never a fresh allowance. The one-generation
+cap is the additional launch allowance; there is no price-estimate-based budget
+or increase to existing escalation/remediation limits. Review/Test/wiki/exact-head
+publication gates are unchanged.
+
+Generation inputs are exclusively created and retained under the private
+`<paths.staging>/<run-id>/phase-inputs/` directory, with distinct sandbox input
+and session paths. Never overwrite failed evidence. Treat these files as private
+run evidence under the same retention policy as captured telemetry; they contain
+ticket/prompt data. Linux uses private fd-relative exclusive writes; Windows uses
+the native protected ACL/no-reparse boundary, not POSIX mode bits or a temporary
+path fallback. Cleanup never deletes a colliding input owned by another launch.
+Status/watch distinguish reserved/retrying-backoff from dispatched model work,
+without exposing provider responses or sensitive artifact paths.

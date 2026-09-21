@@ -30,7 +30,12 @@ struct ReportLease {
     protectedEvidence(chain->policy, chain->parent(), true);
     protectedEvidence(chain->policy, file->value, false);
     if (!snapshot->same(Snapshot(file->value))) fail("report evidence identity changed");
-    auto expected = L"\\\\?\\" + path, actual = finalName(file->value);
+    // Compare against the pinned parent, not its caller spelling (which may
+    // contain a legitimate Windows short-name ancestor). Chain already rejects
+    // reparse points and drive aliases and validates every retained handle.
+    auto parentName = finalName(chain->parent());
+    if (parentName.back() != L'\\') parentName += L'\\';
+    auto expected = parentName + chain->leaf, actual = finalName(file->value);
     if (CompareStringOrdinal(expected.c_str(), -1, actual.c_str(), -1, TRUE) != CSTR_EQUAL)
       fail("report evidence canonical containment mismatch");
   }

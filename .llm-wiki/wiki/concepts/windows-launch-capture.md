@@ -38,3 +38,23 @@ Every independent read opens relative to retained ancestors, checks the creation
 `native/windows-owner-observation.h` is distinct from immutable launch/report leases: it opens separate read-only, share-read/write/delete handles on local fixed NTFS, rejects reparse/nonregular/multilink or oversized records, reads through the opened handle, and revalidates file identity. Descendant opens are relative to retained ancestor handles. Exact process evidence uses `OpenProcess` query/synchronize access, native creation time and a zero-time exit check; it never closes an owner's handle or grants mutation/recovery authority. Operation and reservation proof bytes are published by writers, not observers. This boundary intentionally coexists with a legitimate operation handle; it does not relax the exclusive-create mutation mutex or exact-content release rules.
 
 The real-process `personal-owner-observation.test.ts` belongs in every existing Windows launch matrix version. Reserve, claimant-proof-before-state, claim and abandon barriers exercise both independent CLI selectors, including the historical-terminal/replacement regression in the background suite. All configured Windows jobs on the new published exact head remain required before merge; Linux fixture success is not native Windows evidence.
+
+## Launch-generation evidence paths
+
+Retry contracts use `launchTestRoot` to create real protected native roots under
+a validated home chain on Windows, and thread that root through staging,
+report-evidence, telemetry and production JSON CAS. Never substitute Linux-shaped
+`/tmp` paths or permissive Windows TEMP assumptions. All generations use exclusive
+input creation; collision failure retains the existing bytes and cannot trigger
+another generation's cleanup. Tests explicitly release report leases before
+fixture-tree removal.
+
+Report canonical containment compares the file's normalized handle path with
+the **pinned parent's canonical handle path plus exact leaf**, not the caller's
+possibly short-name ancestor spelling. Chain still validates the volume, every
+ancestor's security/reparse properties, owner, ACL, link count and immutable
+snapshot. This is not permission for drive aliases, reparses or path-only checks.
+The unconditional `personal-launch-retry` Windows Node 20.17/22.9/24 matrix covers
+production dispatch CAS, failed/reserved/dispatched/returned crash boundaries,
+immutable collisions, cleanup ownership and actual report-evidence use; exact-head
+Windows results remain required before merge.
