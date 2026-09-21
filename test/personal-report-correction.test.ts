@@ -1,3 +1,4 @@
+import { piJsonStream } from "./helpers/pi-json.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, readFile, writeFile, chmod, unlink, symlink, rename, mkdir } from "node:fs/promises";
@@ -312,7 +313,7 @@ test("restricted runner uses no tools/inherited session and remaining deadline; 
     const request = h.corrections[0]!;
     const commands: CommandRequest[] = [];
     const raw = JSON.stringify(payload(request.input));
-    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteOutput: true, async run(spec) { commands.push(spec); return { stdout: raw, stdoutBytes: Buffer.from(raw), stderr: "", exitCode: 0 }; } } });
+    const runner = new SandboxPiPhaseRunner({ stagingRoot: h.root, testCommands: [], commands: { byteOutput: true, async run(spec) { commands.push(spec); return { stdout: piJsonStream(raw, request.input.profile), stdoutBytes: Buffer.from(piJsonStream(raw, request.input.profile)), stderr: "", exitCode: 0 }; } } });
     const capture = await runner.correctReport(request);
     const launch = commands.at(-1)!;
     for (const flag of ["--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-approve"]) assert.ok(launch.args.includes(flag));
@@ -414,7 +415,7 @@ test("staged attempt accounting is independent from correction charges", async (
 test("ambiguous duplicate JSON facts are never corrected", async () => {
   await failure({ original: v => JSON.stringify(v).replace('"status":"passed"', '"status":"failed","status":"passed"') }, /duplicate JSON member/);
 });
-test("restricted runner preserves partial stdout from a failed correction but cannot accept it", { skip: process.platform !== "linux" }, async () => {
+test("restricted runner preserves partial stream as telemetry, not an accepted report", { skip: process.platform !== "linux" }, async () => {
   const h = await harness();
   try {
     await h.controller.run(REQUEST);
@@ -427,6 +428,6 @@ test("restricted runner preserves partial stdout from a failed correction but ca
     try { await runner.correctReport(request); } catch (error) { failure = error; }
     assert.ok(failure instanceof CorrectionExecutionFailure);
     assert.equal(failure.classification, "timeout");
-    await verifyReportEvidence(runner.reportEvidence, failure.capture.evidence, '{"outputHead":');
+    await verifyReportEvidence(runner.reportEvidence, failure.capture.evidence, "");
   } finally { await h.cleanup(); }
 });

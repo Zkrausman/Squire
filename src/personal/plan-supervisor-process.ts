@@ -32,6 +32,8 @@ async function receive(message: unknown): Promise<void> {
       process.send!({ type: "progress", progress });
     });
     abort.signal.throwIfAborted();
+  }, async row => {
+    if (process.connected) process.send!({ type: "telemetry", row });
   });
   final({ type: "result", result });
 }

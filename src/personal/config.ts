@@ -148,6 +148,21 @@ export async function loadPersonalMvpConfig(file?: string, options: ConfigPathOp
   return (await loadBoundPersonalMvpConfig(file, options)).config;
 }
 
+/** Read-only telemetry locator: config bytes only, never stat/resolve a repository or runtime. */
+export async function loadPersonalStateDirectory(file?: string, options: ConfigPathOptions = {}): Promise<string> {
+  const bound: ConfigPathOptions = { ...options, env: { ...(options.env ?? process.env) } };
+  const absolute = resolveConfigPath(file, bound);
+  const raw: unknown = JSON.parse((await readConfigBytes(absolute, bound.env!)).toString("utf8"));
+  validateCapturedRawConfig(raw);
+  const value = raw as Record<string, unknown>;
+  const platform = bound.platform ?? process.platform;
+  const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
+  const configured = value["dataDirectory"];
+  const dataDirectory = nonempty(bound.env!["SQUIRE_DATA_DIR"]) !== undefined ? resolveSquireDataDirectory(bound) : configured === undefined ? defaultSquireDataDirectory(bound) : resolveHostPath(base, text(configured, "dataDirectory"), platform);
+  const paths = value["paths"] as Record<string, unknown> | undefined;
+  return resolveConfiguredRuntimePath(paths?.["state"], "paths.state", base, dataDirectory, "state", platform);
+}
+
 /** Read the selected file once; parsing and launch binding use these exact bytes. */
 export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigPathOptions = {}): Promise<LoadedPersonalMvpConfig> {
   // Resolve all environment-dependent paths from one launch-time snapshot as

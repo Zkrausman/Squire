@@ -327,10 +327,32 @@ Correction uses a fresh no-tools, no-session Pi context, with extensions, skills
 
 Evidence is stored under the host staging root's `report-evidence/`, not model-writable workspace artifacts. Original response, each correction response and controller observations have distinct exclusive-create references. The append-only state ledger binds timestamps, original/correction producer, attempt, candidate, validation diagnostics, byte length, SHA-256 and filesystem identity. The controller independently exact-reads **every** artifact, checks content against the actual captured response or its own observation, and repeats verification before continuation/acceptance. Metadata-only evidence is rejected. Linux uses `/proc/self/fd` pinned directories, no-follow bounded regular-file reads and before/after identity checks. Windows uses the same byte-length/SHA-256/reference protocol through the native local-NTFS backend: exclusive creation, handle-relative no-reparse traversal, canonical containment, current-user ownership, protected DACLs, regular one-link identity and retained read/ancestor leases. Independent rereads revalidate security and identity; file leases deny write/delete sharing until the controller finishes acceptance or failure. Explicit release and native finalizers close leases without deleting evidence. Do not substitute POSIX modes for Windows ACL/reparse guarantees. Hostile privileged/same-UID controller processes are outside the personal-host trust model.
 
-Command output is captured as exact Buffers (including available partial output on execution failure), never reconstructed from decoded strings. Bytes are preserved before strict UTF-8 decoding or parsing; invalid encoding and genuinely unparsable original JSON remain non-correctable. Successful ordinary reports also pass independent controller artifact verification before persistence. Native/filesystem and byte-transport capability checks precede the irrevocable correction charge and model dispatch. Unsupported hosts, filesystems or stale/missing native addons fail with actionable diagnostics and no weaker fallback.
+Pi JSON stdout is captured as exact Buffers (including available partial output on execution failure) in private telemetry evidence, never reconstructed from decoded presentation. Report evidence separately contains UTF-8 terminal assistant text extracted from the structured event. An absent terminal report yields an empty, ineligible report capture; invalid encoding or genuinely unparsable original report JSON remains non-correctable. Usage/accounting faults are independent of report validation and cannot authorize correction. Successful ordinary reports still pass independent controller artifact verification before persistence. Native/filesystem and byte-transport capability checks precede the irrevocable correction charge and model dispatch. Unsupported hosts, filesystems or stale/missing native addons fail with actionable diagnostics and no weaker fallback.
 
 `squire status` shows correction maximum/used/remaining and lifecycle independently of remediation/escalation. The ledger remains authoritative if bounded events are pruned. Exhaustion, unavailable safe evidence, mismatches or cancellation produce one terminal human escalation with primary schema failure and evidence references. Inspect the preserved artifacts and candidate independently; do not promote the candidate or reset the run. Secondary Git inspection failures retain sanitized operation/source diagnostics separately; this feature does not establish a root cause for the owner-reported `invalid Git SHA`. Exact-owner cleanup remains unchanged, including a separate cleanup-failure field and no retained-lock takeover. Historical failed runs are immutable.
 
 `test/personal-report-correction.test.ts` uses synthetic reports and offline fake ports; it does not recover or authenticate the owner-reported incident artifacts. No original incident run ID/candidate SHA was supplied. The separately described failed delivery finding motivates independent content reads, not adoption or repair of its candidate. Live model acceptance requires separate scoped approval.
 
 The production runner/controller fixture in `test/personal-windows-report-correction.test.ts` uses deterministic model transport with real native evidence on Windows; `personal-windows-report-evidence.test.ts` covers native security and lifecycle boundaries. Linux runs all available validation, but cannot substitute for Windows execution. The PR’s exact-head `windows-launch-capture` matrix (Node 20.17.0, 22.9.0 and 24) is a mandatory real-Windows merge gate. Prior failed runs/candidates must not be repaired or promoted.
+
+
+## Current-run efficiency telemetry
+
+Use `squire telemetry RUN-ID [--json] [--config FILE]` for a retained run's private,
+controller-captured accounting summary. Requirements and Implementation Design
+remain separate rows, and remediation/staged/correction sessions are not dropped.
+Token categories and known durations reconcile to phase/run subtotals with explicit
+completeness. Provider cost is currently **unknown**, not zero: Pi's normalized cost
+is rate-table calculated and is not promoted to provider-reported billing.
+
+Every personal Pi invocation now uses structured JSON mode. Exact child-stream
+bytes are captured outside model-writable storage; only terminal assistant text
+enters existing report validation/correction evidence. Raw session JSONL and terminal
+presentation are not accounting authority. Capture overflow drains rather than kills
+paid work, and accounting/publication faults do not relabel valid phase outcomes.
+Legacy/active runs without a terminal artifact report unavailable; no backfill or
+cohort scan is performed. The bounded notification outbox is unchanged.
+
+See [telemetry authority, supported fields, privacy, retention and reader API](telemetry.md).
+Historical backfill/cohort scorecards and CI/merge disposition binding belong to
+AIDEV-309. Existing Review/Test, exact-head publication and merge gates are unchanged.

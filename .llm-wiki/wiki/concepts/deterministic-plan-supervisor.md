@@ -23,6 +23,8 @@ Design consumes only validated Requirements content and its canonical SHA-256 di
 
 The aggregate preserves `details.steps` and adds versioned `details.supervision` containing supervisor identity/outcome/launch digest and ordered child identities, sessions, profiles, prompt digests, artifact paths/content/digests and outcomes. Failed children retain diagnostics with no fabricated successful artifact. Artifacts live at `/run/squire-plan-<id>/artifacts` with host staging copies under `<runId>/plan/<attempt>/<id>`. The top-level session slot identifies the deterministic lifecycle, not a model session; the successful compatibility session file contains its aggregate journal.
 
+Plan child launches use structured Pi JSON stdout captured into host-private evidence, not the child-writable session file. The supervisor sends bounded launch/close telemetry metadata over its trusted IPC channel; open children survive interrupted supervision as incomplete rows. Accounting metadata failures do not relabel valid Plan results. See [controller-owned telemetry](controller-owned-run-telemetry.md) for token/cost authority, lifecycle, privacy and reporting.
+
 Only the controller persists acknowledged `planProgress` with `step: plan`. Status renders `Plan / Requirements`, `Plan / Implementation Design`, and clarification blockers. Stale attempt/identity events and late progress are rejected. Immutable `planExecution: supervised-v1` distinguishes new supervised state from readable historical flat Plan records. A new supervised run cannot bypass nested validation with a legacy result.
 
 ## Live acceptance evidence

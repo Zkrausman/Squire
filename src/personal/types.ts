@@ -1,3 +1,4 @@
+import type { TelemetryDisposition } from "./telemetry.js";
 import type { ReportCorrectionPolicy, CorrectionRecord, ReportCapture, ReportCorrectionInput } from "./report-correction.js";
 import type { ReportEvidencePort } from "./report-evidence.js";
 import type { EscalationPolicy } from "./model-policy.js";
@@ -151,6 +152,7 @@ export interface PublicationResult {
 }
 
 export interface PersonalRunState {
+  readonly telemetry?: TelemetryDisposition;
   readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly reportCorrections?: readonly CorrectionRecord[];
   readonly schemaVersion: 1;
@@ -247,6 +249,7 @@ export interface WorkspacePort {
 }
 
 export interface PhasePort {
+  finalizeTelemetry?(state: PersonalRunState): Promise<TelemetryDisposition>;
   readonly reportEvidence?: ReportEvidencePort;
   /** Internal transport envelope, never a model-authored result field.
    * Supervised Plan has its own artifact protocol instead. */

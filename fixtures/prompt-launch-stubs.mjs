@@ -1,3 +1,4 @@
+import { piJsonStream } from "./pi-json-stream.mjs";
 // Test-only Node preloader: real CLI + detached bootstrap, external services
 // stubbed below the controller. No production environment injection surface.
 import { appendFile, readFile, rm } from 'node:fs/promises';
@@ -50,6 +51,6 @@ NodeCommandRunner.prototype.run = async function(request) {
     review: { findings: [] }, test: { commands: [{ command: 'npm test', exitCode: 0, summary: 'fixture passed' }] },
     retro: { lessons: ['fixture'], followUps: [] },
   }[input.phase];
-  const stdout = JSON.stringify({ outputHead: head, status: 'passed', summary: 'fixture passed', details });
+  const stdout = piJsonStream(JSON.stringify({ outputHead: head, status: 'passed', summary: 'fixture passed', details }), input.profile);
   return { stdout, stdoutBytes: Buffer.from(stdout), stderr: '' };
 };

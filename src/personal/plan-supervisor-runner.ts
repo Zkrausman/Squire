@@ -1,3 +1,4 @@
+import { validateTelemetrySession, type TelemetrySession } from "./telemetry.js";
 import { EXECUTION_FAILURES, PhaseExecutionError, type ExecutionFailure } from "./execution-failure.js";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -31,7 +32,7 @@ export function supervisorEnvironment(source: NodeJS.ProcessEnv = process.env, p
 export class PlanSupervisorRunner implements PhasePort {
   readonly #options: PlanSupervisorOptions;
   readonly #legacy: PhasePort;
-  constructor(options: PlanSupervisorOptions, legacy: PhasePort) {
+  constructor(options: PlanSupervisorOptions, legacy: PhasePort, readonly onTelemetry?: (row: TelemetrySession, input: PhaseInput) => void, readonly onTelemetryFailure?: (input: PhaseInput) => void) {
     const material = validateLaunchMaterial(options.launchMaterial);
     validateExecutablePlan(material.config.promptPolicy!.plan);
     this.#options = { ...options, launchMaterial: material };
@@ -64,8 +65,11 @@ export class PlanSupervisorRunner implements PhasePort {
       const deadline = setTimeout(() => cancel(new PhaseExecutionError("timeout", "Plan deadline exceeded")), this.#options.timeoutMs ?? 3600000);
       child.on("message", (message: unknown) => {
         events = events.then(async () => {
-          if (Buffer.byteLength(JSON.stringify(message)) > 2 * 1024 * 1024) throw new Error("oversized supervisor message");
           const type = (message as { type?: unknown })?.type;
+          if (Buffer.byteLength(JSON.stringify(message)) > 2 * 1024 * 1024) {
+            if (type === "telemetry") { this.onTelemetryFailure?.(input); return; }
+            throw new Error("oversized supervisor message");
+          }
           if (type === "progress") {
             const v = closed(message, ["type", "progress"], "supervisor progress");
             validatePlanProgress(v["progress"]);
@@ -73,6 +77,14 @@ export class PlanSupervisorRunner implements PhasePort {
             if (result || cancelled || p.runId !== input.runId || p.attempt !== input.attempt || p.subphase !== ["requirements", "implementation-design"][received++]) throw new Error("stale or unordered Plan progress");
             await onProgress?.(p);
             if (child.connected && !cancelled) child.send({ type: "ack" });
+          } else if (type === "telemetry") {
+            try {
+            const v = closed(message, ["type", "row"], "supervisor telemetry");
+            validateTelemetrySession(v["row"]);
+            const row = v["row"];
+            if (result || row.subphase !== ["requirements", "implementation-design"][received - 1]) throw new Error("unordered supervisor telemetry");
+            this.onTelemetry?.(row, input);
+            } catch { this.onTelemetryFailure?.(input); }
           } else if (type === "result") {
             const v = closed(message, ["type", "result"], "supervisor result");
             if (result) throw new Error("duplicate supervisor result");

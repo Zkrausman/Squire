@@ -1,3 +1,4 @@
+import { piJsonStream } from "./helpers/pi-json.js";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { validateState } from "../src/personal/json-run-state.js";
 import type { PersonalRunState } from "../src/personal/types.js";
@@ -35,7 +36,7 @@ class Commands implements CommandPort {
   fail: ((request: CommandRequest) => boolean) | undefined;
   gitDriftAt = Infinity;
   guard: (() => Promise<void>) | undefined;
-  async run(request: CommandRequest): Promise<{ stdout: string; stderr: string }> {
+  async run(request: CommandRequest): Promise<{ stdout: string; stdoutBytes?: Buffer; stderr: string }> {
     this.calls.push(request);
     if (this.fail?.(request)) throw new Error("injected command failure");
     const args = request.args;
@@ -49,7 +50,8 @@ class Commands implements CommandPort {
       const childInput = this.copies.get(config.args.at(-1).match(/from (.+)\. Treat/)[1]);
       this.launches.push({ config, input: childInput });
       await this.guard?.();
-      return { stdout: typeof this.requirement === "string" && childInput.subphase === "requirements" ? this.requirement : JSON.stringify(childInput.subphase === "requirements" ? this.requirement : this.design ?? design(this.requirement as RequirementsArtifact)), stderr: "" };
+      const stdout = piJsonStream(typeof this.requirement === "string" && childInput.subphase === "requirements" ? this.requirement : JSON.stringify(childInput.subphase === "requirements" ? this.requirement : this.design ?? design(this.requirement as RequirementsArtifact)), childInput.profile);
+      return { stdout, stdoutBytes: Buffer.from(stdout), stderr: "" };
     }
     return { stdout: "", stderr: "" };
   }

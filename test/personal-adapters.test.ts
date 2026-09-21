@@ -1,3 +1,4 @@
+import { piJsonStream } from "./helpers/pi-json.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -20,6 +21,7 @@ const BASE = "a".repeat(40);
 const TOKEN = `ghs_${"x".repeat(40)}`;
 const execFileAsync = promisify(execFile);
 
+function piResult(stdout: string): CommandResult { return byteResult(piJsonStream(stdout)); }
 function byteResult(stdout: string): CommandResult { return { stdout, stdoutBytes: Buffer.from(stdout), stderr: "" }; }
 
 class RecordingCommands implements CommandPort {
@@ -89,7 +91,7 @@ async function runPiOutput(
       if (request.command === "sbx" && request.args.includes("--print")) {
         launch = { ...request, args: [...request.args] };
         assert.ok(document);
-        return byteResult(stdout(document));
+        return piResult(stdout(document));
       }
       return byteResult("");
     },
@@ -113,7 +115,7 @@ test("Pi phase timeout is propagated to the actual sandbox launch command", asyn
       async run(request) {
         if (request.command === "sbx" && request.args.includes("--print")) {
           launch = request;
-          return byteResult(JSON.stringify(reducedPayload("plan")));
+          return piResult(JSON.stringify(reducedPayload("plan")));
         }
         return byteResult("");
       },
@@ -198,7 +200,7 @@ test("Pi adapter launches exact profiles under env -i and gives Retro only read-
         if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
         if (request.command === "sbx" && request.args.includes("--print")) {
           const phase = phaseDocument?.["phase"] as PersonalPhase;
-          return byteResult(JSON.stringify({
+          return piResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
           }));
         }
@@ -362,7 +364,7 @@ test("Pi adapter launches every approved policy triple exactly", async () => {
         if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
         if (request.command === "sbx" && request.args.includes("--print")) {
           const phase = phaseDocument?.["phase"] as PersonalPhase;
-          return byteResult(JSON.stringify({
+          return piResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase, attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: `${phase} passed`, details: details(phase),
           }));
         }
@@ -402,7 +404,7 @@ test("Pi adapter launches both deterministic Plan buckets with their exact profi
         requests.push({ ...request, args: [...request.args] });
         if (request.command === "sbx" && request.args[0] === "cp") phaseDocument = JSON.parse(await readFile(request.args[1]!, "utf8"));
         if (request.command === "sbx" && request.args.includes("--print")) {
-          return byteResult(JSON.stringify({
+          return piResult(JSON.stringify({
             runId: phaseDocument?.["runId"], phase: "plan", attempt: phaseDocument?.["attempt"], sessionId: phaseDocument?.["sessionId"], sessionFile: phaseDocument?.["sessionFile"], inputHead: phaseDocument?.["expectedHead"], outputHead: BASE, status: "passed", summary: "plan passed", details: details("plan"),
           }));
         }
@@ -451,7 +453,7 @@ test("passing Plan output without actionable steps is rejected", async () => {
     let document: Record<string, unknown> | undefined;
     const commands: CommandPort = { async run(request) {
       if (request.args[0] === "cp") document = JSON.parse(await readFile(request.args[1]!, "utf8"));
-      if (request.args.includes("--print")) return byteResult(JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }));
+      if (request.args.includes("--print")) return piResult(JSON.stringify({ runId: document?.["runId"], phase: "plan", attempt: 1, sessionId: document?.["sessionId"], sessionFile: document?.["sessionFile"], inputHead: BASE, outputHead: BASE, status: "passed", summary: "empty", details: { steps: [] } }));
       return byteResult("");
     } };
     const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: ["npm test"] });

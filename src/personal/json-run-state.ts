@@ -1,3 +1,4 @@
+import { validateTelemetryDisposition } from "./telemetry.js";
 import { observeOwnerFile, ownerProcessIdentity, parseOperation, type OperationEvidence } from "./owner-observation.js";
 import { validateCorrectionState, assertCorrectionUnchanged } from "./report-correction.js";
 import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
@@ -18,7 +19,7 @@ import { JsonRunEventOutbox } from "./run-events.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
-  "reportCorrectionPolicy", "reportCorrections",
+  "telemetry", "reportCorrectionPolicy", "reportCorrections",
   "escalationPolicy", "escalationDigest", "stagedTransitions",
   "profiles",
   "planSelection",
@@ -621,6 +622,7 @@ function assertExactReservedFailureTarget(current: PersonalRunState, next: Perso
     controllerPid: null,
     endedAt,
     lastError: next.lastError,
+    ...(next.telemetry ? { telemetry: next.telemetry } : {}),
     updatedAt: next.updatedAt,
   };
   const startedTime = Date.parse(current.startedAt!);
@@ -773,6 +775,10 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   nullableSha(state["head"], "head");
   if ((state["baseSha"] === null) !== (state["head"] === null)) throw new Error("run state Git identity is incomplete");
   validateResolvedProfiles(state);
+  if (state["telemetry"] !== undefined) {
+    validateTelemetryDisposition(state["telemetry"]);
+    if (state["status"] === "running" || (state["telemetry"].status === "available" && state["telemetry"].terminalVersion > (state["version"] as number))) throw new Error("invalid telemetry state binding");
+  }
   validateCorrectionState(state as unknown as PersonalRunState);
   validateStagedState(state as unknown as PersonalRunState);
 
@@ -1001,6 +1007,7 @@ function validateResolvedProfiles(state: Record<string, unknown>): void {
 }
 
 function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  if (current.telemetry !== undefined && !isDeepStrictEqual(current.telemetry, next.telemetry)) throw new Error("terminal telemetry is immutable");
   if (current.planExecution !== next.planExecution) throw new Error("Plan execution mode is immutable");
   if (!isDeepStrictEqual(current.launchEvidence, next.launchEvidence)) throw new Error("launch evidence is immutable");
   for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigPath", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {

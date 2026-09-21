@@ -1,3 +1,4 @@
+import { validateTelemetryDisposition } from "./telemetry.js";
 import { parsePhaseResult } from "./phase-payload.js";
 import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
@@ -817,6 +818,17 @@ export class PersonalMvpController {
     }
   }
 
+  async #withTelemetry(state: PersonalRunState): Promise<PersonalRunState> {
+    if (state.status === "running" || state.telemetry || !this.#phases.finalizeTelemetry) return state;
+    try {
+      const telemetry = await this.#phases.finalizeTelemetry(state);
+      validateTelemetryDisposition(telemetry);
+      if (telemetry.status === "available" && telemetry.terminalVersion !== state.version) throw new Error("telemetry terminal revision mismatch");
+      return { ...state, telemetry };
+    }
+    catch { return { ...state, telemetry: { status: "unavailable", diagnostic: "publication_failed" } }; }
+  }
+
   #context(state: PersonalRunState): RunContext {
     const context = {} as RunContext;
     context.state = state;
@@ -827,7 +839,7 @@ export class PersonalMvpController {
       updatedAt,
     });
     context.persist = async (changes, prepared) => {
-      const next = nextState(changes);
+      const next = await this.#withTelemetry(nextState(changes));
       prepared?.(structuredClone(next));
       await this.#states.save(next);
       context.state = next;
@@ -862,7 +874,7 @@ export class PersonalMvpController {
     };
     context.failReserved = async (changes, prepared) => {
       const endedAt = this.#timestampAtOrAfter(context.state.updatedAt, ...(typeof changes.endedAt === "string" ? [changes.endedAt] : []));
-      const next = nextState({ ...changes, endedAt }, this.#timestampAtOrAfter(endedAt));
+      const next = await this.#withTelemetry(nextState({ ...changes, endedAt }, this.#timestampAtOrAfter(endedAt)));
       prepared?.(structuredClone(next));
       if (this.#states.failReserved) {
         await this.#states.failReserved(next);

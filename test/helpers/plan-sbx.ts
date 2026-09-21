@@ -1,5 +1,6 @@
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Executable transport double used across a real private supervisor fork. */
 export async function createPlanSbx(root: string, record: string): Promise<string> {
@@ -36,7 +37,7 @@ else if (a.includes('node')) {
   const prompt = c.args[c.args.indexOf('--system-prompt')+1];
   fs.appendFileSync(record, JSON.stringify({phase: input.subphase, prompt, digest: input.launchDigest, promptDigest: input.systemPromptDigest, args: c.args, data: input, stagingPath: fs.readFileSync(mapped(inputPath) + '.source', 'utf8'), guardStagingPath: fs.readFileSync(mapped(a.at(-1)) + '.source', 'utf8'), supervisorPid, envKeys: Object.keys(process.env)})+'\\n');
   const artifact = input.subphase === 'requirements' ? { version:1,inputHead:input.expectedHead,problem:'deliver change',acceptanceCriteria:['verified'],nonGoals:[],assumptions:[],dependencies:[],openQuestions:[],readiness:'ready' } : {version:1,inputHead:input.expectedHead,requirementsDigest:input.requirements.digest,steps:['implement'],affectedComponents:['src'],tests:['npm test'],risks:[],exactHeadEvidence:{head:input.expectedHead,observations:['inspected repository']},projectWiki:{status:'not_required',reason:'fixture adds no durable knowledge'}};
-  process.stdout.write(JSON.stringify(artifact));
+  import(${JSON.stringify(pathToFileURL(path.resolve("fixtures/pi-json-stream.mjs")).href)}).then(({piJsonStream}) => process.stdout.write(piJsonStream(JSON.stringify(artifact), input.profile)));
 } else if (a.at(-1).includes('rev-parse HEAD')) process.stdout.write('a'.repeat(40)+'\\n');
 `, { mode: 0o700 });
   return executable;

@@ -49,7 +49,7 @@ test("shared storage preserves non-text bytes before rejecting decoding", async 
 
 test("runner preserves invalid encoding before parsing and rejects string-only evidence transport", { skip: process.platform !== "linux" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "squire-report-transport-"));
-  const input = { phase: "implement", attempt: 1, runId: "aidev-306-fixture", sandbox: "fixture", expectedHead: "a".repeat(40), profile: { provider: "fake", model: "fake", thinking: "low" } } as PhaseInput;
+  const input: PhaseInput = { ticket: { id: "AIDEV-306", title: "fixture", description: "fixture" }, repository: "fixture/repo", baseBranch: "main", branch: "fixture", originalTicketBaseSha: "a".repeat(40), previous: {}, feedback: [], previousCumulative: [], phase: "implement", attempt: 1, runId: "aidev-306-fixture", sandbox: "fixture", expectedHead: "a".repeat(40), profile: { provider: "fake", model: "fake", thinking: "low" } };
   try {
     for (const transport of [true, false]) {
       const runner = new SandboxPiPhaseRunner({ stagingRoot: root, testCommands: [], commands: { async run() { return { stdout: bytes.toString("utf8"), stderr: "", ...(transport ? { stdoutBytes: bytes } : {}) }; } } });

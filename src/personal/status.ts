@@ -153,6 +153,7 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
     `Title: ${display(state.ticketTitle)}`,
     `Run ID: ${display(state.runId)}`,
     `Status: ${display(state.status)}`,
+    `Telemetry: ${state.telemetry?.status === "available" ? state.telemetry.completeness + " (squire telemetry RUN-ID)" : "unavailable / incomplete"}`,
     `Lifecycle: ${display(state.lifecycle ?? state.step)}`,
     `Phase: ${display(state.step)}`,
     `Attempt: ${attempt}`,

@@ -1,3 +1,4 @@
+import { piJsonStream } from "./pi-json-stream.mjs";
 // Test-only actual-process crash at charged correction dispatch. No network,
 // model, installed controller, activation, or historical run is involved.
 import path from 'node:path';
@@ -20,9 +21,9 @@ const runner = new SandboxPiPhaseRunner({ stagingRoot: root, testCommands: [], c
     if (!spec.args.includes('--print')) return { stdout: '', stdoutBytes: Buffer.alloc(0), stderr: '' };
     const implement = input.phase === 'implement';
     if (implement) current = head;
-    const stdout = JSON.stringify({ outputHead: current, status: 'passed', summary: 'fixture', details: implement ? {
+    const stdout = piJsonStream(JSON.stringify({ outputHead: current, status: 'passed', summary: 'fixture', details: implement ? {
       changes: ['fixture'], projectWiki: { status: 'not_required', reason: 'fixture changes no durable knowledge' }, verification: ['untrusted'],
-    } : { steps: ['implement'] } });
+    } : { steps: ['implement'] } }), input.profile);
     return { stdout, stdoutBytes: Buffer.from(stdout), stderr: '' };
   },
 } });

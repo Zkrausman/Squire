@@ -1,3 +1,5 @@
+import { readRunTelemetry } from "../src/personal/telemetry.js";
+import { piJsonStream } from "./helpers/pi-json.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
@@ -44,7 +46,7 @@ async function fixture(fault?: Fault, maximum = 1) {
         if (fault === "facts") value.details.projectWiki.reason = "invented";
         bytes = corrected = Buffer.from(JSON.stringify(value) + "\r\n");
         if (fault === "cancel") abort.abort(new Error("fixture cancellation"));
-        if (fault === "command") throw new CommandExecutionError("timeout", "fixture command timeout", bytes.toString(), undefined, bytes);
+        if (fault === "command") { const stream = Buffer.from(piJsonStream(bytes.toString(), document.profile)); throw new CommandExecutionError("timeout", "fixture command timeout", stream.toString(), undefined, stream); }
       } else {
         phases.push(document.phase);
         if (document.phase === "review") assert.equal(snapshots.at(-1)?.results.implement?.status, "passed");
@@ -63,10 +65,12 @@ async function fixture(fault?: Fault, maximum = 1) {
           original = bytes;
         }
       }
-      return { stdout: bytes.toString("utf8"), stdoutBytes: bytes, stderr: "" };
+      if (fault === "utf8" && document.phase === "implement") { original = Buffer.alloc(0); return { stdout: bytes.toString(), stdoutBytes: bytes, stderr: "" }; }
+      const stream = Buffer.from(piJsonStream(bytes.toString("utf8"), document.profile));
+      return { stdout: stream.toString("utf8"), stdoutBytes: stream, stderr: "" };
     },
   };
-  const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, testCommands: [] });
+  const runner = new SandboxPiPhaseRunner({ commands, stagingRoot: root, telemetryStateDirectory: path.join(root, "state"), testCommands: [] });
   if (process.platform === "win32") assert.ok(runner.reportEvidence instanceof WindowsReportEvidence);
   if (fault === "capability") runner.prepareReportCorrection = async () => { throw new Error("Windows report evidence native capability unavailable; rebuild native support"); };
   if (fault === "successDigest") {
@@ -95,6 +99,18 @@ test("native production capture corrects eligible JSON shape only, then independ
     assert.deepEqual(f.phases, ["plan", "implement", "review", "test", "retro"]);
     assert.equal(f.corrections.length, 1);
     assert.equal(f.published, true);
+    const telemetry = await readRunTelemetry(state, path.join(f.root, "state"));
+    assert.ok(telemetry.status === "available");
+    assert.equal(telemetry.summary.sessions.length, 6);
+    assert.equal(telemetry.summary.totals.tokensComplete, true);
+    assert.equal(telemetry.summary.totals.tokens.input, 60);
+    const originalSession = telemetry.summary.sessions.find(s => s.phase === "implement" && s.kind === "phase")!;
+    const correctionSession = telemetry.summary.sessions.find(s => s.kind === "report-correction")!;
+    assert.equal(originalSession.outcome, "invalid_report");
+    assert.equal(correctionSession.outcome, "passed");
+    assert.equal(correctionSession.correctionAttempt, 1);
+    assert.notEqual(originalSession.sessionId, correctionSession.sessionId);
+    assert.equal(correctionSession.sessionFile, null);
     const ledger = state.reportCorrections!;
     assert.equal(ledger.at(-1)?.kind, "accepted");
     assert.equal(ledger.at(-1)?.used, 1); assert.equal(ledger.at(-1)?.remaining, 0);

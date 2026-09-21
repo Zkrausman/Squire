@@ -52,3 +52,6 @@ export * from "./personal/github-publisher.js";
 export * from "./personal/run-events.js";
 export * from "./personal/run-watcher.js";
 export * from "./personal/notification-worker.js";
+
+export * from "./personal/telemetry.js";
+export * from "./personal/pi-telemetry-parser.js";

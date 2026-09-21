@@ -14,3 +14,4 @@
 - [Staged model escalation policy](staged-model-escalation-policy.md)
 - [Portable Squire operator skill](/concepts/squire-operator-skill.md)
 - [Report-only format correction](report-only-format-correction.md)
+- [Controller-owned current-run telemetry](controller-owned-run-telemetry.md)
