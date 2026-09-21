@@ -15,3 +15,4 @@
 - [Portable Squire operator skill](/concepts/squire-operator-skill.md)
 - [Report-only format correction](report-only-format-correction.md)
 - [Durable current-run telemetry](durable-run-telemetry.md)
+- [Transient phase launch retry](transient-phase-launch-retry.md)

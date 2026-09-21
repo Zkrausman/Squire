@@ -1,3 +1,4 @@
+import { validateLaunchGenerations, assertLaunchGenerationsUnchanged, launchSessionMatches } from "./launch-retry.js";
 import { observeOwnerFile, ownerProcessIdentity, parseOperation, type OperationEvidence } from "./owner-observation.js";
 import { validateCorrectionState, assertCorrectionUnchanged } from "./report-correction.js";
 import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
@@ -18,7 +19,7 @@ import { JsonRunEventOutbox } from "./run-events.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
-  "reportCorrectionPolicy", "reportCorrections",
+  "reportCorrectionPolicy", "reportCorrections", "launchRetryPolicy", "launchGenerations",
   "escalationPolicy", "escalationDigest", "stagedTransitions",
   "profiles",
   "planSelection",
@@ -175,6 +176,7 @@ export class JsonRunStateStore implements RunStatePort {
         const current = await this.#read(target, state.runId);
         if (!current) throw new Error(`run state does not exist: ${state.runId}`);
         if (state.version !== current.version + 1) throw new Error("run state version must advance by one");
+        if ((state.launchGenerations?.length ?? 0) !== (current.launchGenerations?.length ?? 0) && await readLock(this.#reservationPath(state.ticketId)) !== state.runId) throw new Error("launch generation reservation owner mismatch");
         assertResolvedProfilesUnchanged(current, state);
         assertLaunchIdentityUnchanged(current, state);
         assertRemediationAttemptsAppendOnly(current, state);
@@ -773,6 +775,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   nullableSha(state["head"], "head");
   if ((state["baseSha"] === null) !== (state["head"] === null)) throw new Error("run state Git identity is incomplete");
   validateResolvedProfiles(state);
+  validateLaunchGenerations(state as unknown as PersonalRunState);
   validateCorrectionState(state as unknown as PersonalRunState);
   validateStagedState(state as unknown as PersonalRunState);
 
@@ -796,7 +799,7 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   for (const [key, result] of Object.entries(results)) {
     const phase = key as PersonalPhase;
     validatePhaseResultShape(result, phase, { allowLegacyImplementProjectWiki: state["profiles"] === undefined && phase === "implement" });
-    if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || result.sessionFile !== `/ticket/sessions/${phase}/${result.attempt}.jsonl`) throw new Error(`run state ${phase} result identity mismatch`);
+    if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || !launchSessionMatches(state as unknown as PersonalRunState, result)) throw new Error(`run state ${phase} result identity mismatch`);
     if (result.phase === "plan" && state["planExecution"] === "supervised-v1") {
       if (!result.details.supervision || result.details.supervision.launchDigest !== (state["launchEvidence"] as { digest: string }).digest) throw new Error("supervised Plan evidence missing or mismatched");
     }
@@ -1049,6 +1052,7 @@ async function acquireUpdateLock(directory: string, runId: string): Promise<() =
 }
 
 function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
+  assertLaunchGenerationsUnchanged(current, next);
   assertCorrectionUnchanged(current, next);
   assertStagedUnchanged(current, next);
   if (current.profiles) {

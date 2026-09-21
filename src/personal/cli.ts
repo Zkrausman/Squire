@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { isDirectEntry } from "./entrypoint.js";
 import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
 import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 import { PersonalMvpController, type StartBackgroundOptions } from "./controller.js";
 import { NodeCommandRunner } from "./command.js";
 import { loadBoundPersonalMvpConfig, loadPersonalMvpConfig, resolveConfigPath, type PersonalMvpConfig } from "./config.js";
@@ -388,6 +389,6 @@ function writeError(error: unknown): void {
   process.stderr.write(`Squire stopped: ${sanitizeTerminalText(message)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectEntry(import.meta.url, process.argv[1])) {
   process.exitCode = await main();
 }

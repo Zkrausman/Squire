@@ -22,7 +22,7 @@ const policy: EscalationPolicy = { implement: { stages: [stage("first", 2), stag
 const request = { ticketId: "AIDEV-277", repository: "example/repo", repositoryPath: "/tmp/example-repo", sourceRef: "HEAD", baseBranch: "main" };
 const base = "a".repeat(40);
 function result(input: PhaseInput, status: PhaseResult["status"] = "passed", head = input.expectedHead): PhaseResult {
-  const common = { runId: input.runId, attempt: input.attempt, sessionId: `${input.phase}-${input.attempt}`, sessionFile: `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`, inputHead: input.expectedHead, outputHead: head, profile: input.profile, status, summary: `${input.phase} ${status}` };
+  const common = { runId: input.runId, attempt: input.attempt, sessionId: input.reportSession?.sessionId ?? `${input.phase}-${input.attempt}`, sessionFile: (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`), inputHead: input.expectedHead, outputHead: head, profile: input.profile, status, summary: `${input.phase} ${status}` };
   switch (input.phase) {
     case "plan": return { ...common, phase: "plan", details: { steps: ["deliver"] } };
     case "implement": return { ...common, phase: "implement", details: { changes: ["change"], projectWiki: { status: "not_required", reason: "no durable knowledge change" } } };
@@ -220,7 +220,12 @@ test("foreground and detached execution use identical frozen schedules, reject c
     await assert.rejects(persistLaunchMaterial(material, { ...reserved, escalationDigest: "f".repeat(64) }, root), /escalation policy mismatch/);
     const b = await detached.controller.runReserved(request, reserved.runId, digest);
     assert.equal(b.status, "completed");
-    assert.deepEqual(a.stagedTransitions, b.stagedTransitions);
+    // Independent launches intentionally have different immutable generation paths.
+    for (const state of [a, b]) for (const transition of state.stagedTransitions ?? []) {
+      if (transition.result) assert.ok(state.launchGenerations?.some(g => transition.result!.sessionFile === `/ticket/sessions/${g.phase}/${g.attempt}-${g.id}.jsonl`));
+    }
+    const schedule = (state: PersonalRunState) => state.stagedTransitions?.map(t => t.result ? { ...t, result: { ...t.result, sessionFile: "generation-qualified", sessionId: "generation-issued" } } : t);
+    assert.deepEqual(schedule(a), schedule(b));
     assert.deepEqual(a.attempts, b.attempts);
     assert.deepEqual(foreground.inputs.map(i => i.profile), detached.inputs.map(i => i.profile));
     const events = await states.readEvents(b.runId);

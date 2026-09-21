@@ -1,3 +1,4 @@
+import { DAYBREAK_VERIFICATION, LaunchFailure } from "./launch-retry.js";
 import { captureInvocation, sessionSeed } from "./telemetry-capture.js";
 import { invocation, TelemetryStore } from "./telemetry-store.js";
 import { MAX_STREAM_BYTES, terminalReport } from "./telemetry-stream.js";
@@ -11,7 +12,7 @@ import type { PlanProgress } from "./plan-artifacts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { composeSystemPrompt, validateLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
 import { persistWindowsPhaseInput } from "./windows-launch.js";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
 import { CommandExecutionError, type CommandPort } from "./command.js";
 import { parsePhaseResult } from "./phase-payload.js";
@@ -72,20 +73,31 @@ export class SandboxPiPhaseRunner implements PhasePort {
     // phase with an ambiguous model identity.
     const deadline = input.deadline ?? performance.now() + this.#timeoutMs;
     const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
+    if (input.launchGeneration) {
+      const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
+      if (!uuid.test(input.launchGeneration.id) || ![1, 2].includes(input.launchGeneration.generation) || !input.reportSession || !uuid.test(input.reportSession.sessionId) || input.reportSession.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}-${input.launchGeneration.id}.jsonl`) throw new PhaseExecutionError("protocol", "invalid immutable launch generation identity");
+    }
     const sessionId = input.reportSession?.sessionId ?? randomUUID();
     const phaseDirectory = `/ticket/sessions/${input.phase}`;
-    const sessionFile = `${phaseDirectory}/${input.attempt}.jsonl`;
-    const inputPath = `/ticket/artifacts/inputs/${input.phase}-${input.attempt}.json`;
+    const suffix = input.launchGeneration ? `${input.attempt}-${input.launchGeneration.id}` : `${input.attempt}`;
+    const sessionFile = input.reportSession?.sessionFile ?? `${phaseDirectory}/${suffix}.jsonl`;
+    const inputPath = `/ticket/artifacts/inputs/${input.phase}-${suffix}.json`;
     const localDirectory = path.join(this.#stagingRoot, input.runId, "phase-inputs");
-    const localInput = path.join(localDirectory, `${input.phase}-${input.attempt}.json`);
+    const localInput = path.join(localDirectory, `${input.phase}-${suffix}.json`);
     if (process.platform !== "win32") await mkdir(localDirectory, { recursive: true, mode: 0o700 });
     let localInputCreated = false;
     try {
       const prompt = composeSystemPrompt(this.#material, input.phase);
       const bytes = `${JSON.stringify({ ...input, sessionId, sessionFile, testCommands: this.#testCommands, launchDigest: this.#material?.digest, systemPromptDigest: createHash("sha256").update(prompt).digest("hex") }, null, 2)}\n`;
-      if (process.platform === "win32") persistWindowsPhaseInput(localInput, bytes);
-      else await writeFile(localInput, bytes, { mode: 0o600 });
-      localInputCreated = true;
+      if (process.platform === "win32") {
+        persistWindowsPhaseInput(localInput, bytes);
+        localInputCreated = true;
+      } else {
+        const file = await open(localInput, "wx", 0o600);
+        localInputCreated = true;
+        try { await file.writeFile(bytes); }
+        finally { await file.close(); }
+      }
 
       await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
       const home = `/ticket/runtime/home/${input.phase}`;
@@ -129,6 +141,12 @@ export class SandboxPiPhaseRunner implements PhasePort {
         timeoutMs: remaining(deadline),
         maxOutputBytes: MAX_STREAM_BYTES,
       }, signal).catch(async error => {
+        // The print/JSON boundary emits every model/tool event on stdout.
+        // Only exact pre-event stderr from a naturally exited process qualifies;
+        // partial JSON, timeout, signal, or generic exception text never does.
+        if (error instanceof CommandExecutionError && error.stdoutBytes?.length === 0 && error.launchExit?.exited && error.launchExit.code === 1 && profile.provider === "openai-codex" && error.launchExit.stderrBytes.equals(Buffer.from(DAYBREAK_VERIFICATION + "\n"))) {
+          throw new LaunchFailure({ version: 1, kind: "entitlement-verification", code: DAYBREAK_VERIFICATION, boundary: "before-model-events", resultObserved: false, processExited: true });
+        }
         if (error instanceof CommandExecutionError && error.stdoutBytes) throw new CorrectionExecutionFailure(await this.#capture(error.stdoutBytes, sessionId, sessionFile), error);
         throw error;
       });
@@ -146,7 +164,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
       // launches, rather than retaining sensitive run material indefinitely.
-      if (process.platform !== "win32" || localInputCreated) await rm(localInput, { force: true });
+      if (localInputCreated) await rm(localInput, { force: true });
     }
   }
   async telemetryTerminal(state: PersonalRunState): Promise<{ complete: boolean }> { return { complete: (await this.telemetry.finalize(state)).complete }; }

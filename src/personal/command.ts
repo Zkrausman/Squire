@@ -27,7 +27,7 @@ export interface CommandPort {
 
 /** Partial stdout is evidence, never authority to turn command failure into a result. */
 export class CommandExecutionError extends PhaseExecutionError {
-  constructor(classification: ExecutionFailure, message: string, readonly stdout: string, options?: ErrorOptions, readonly stdoutBytes?: Buffer) { super(classification, message, options); }
+  constructor(classification: ExecutionFailure, message: string, readonly stdout: string, options?: ErrorOptions, readonly stdoutBytes?: Buffer, readonly launchExit?: { readonly code: number; readonly stderrBytes: Buffer; readonly exited: boolean }) { super(classification, message, options); }
 }
 
 export class NodeCommandRunner implements CommandPort {
@@ -49,7 +49,7 @@ export class NodeCommandRunner implements CommandPort {
         }
         const failure = error as Error & { code?: string | number };
         const detail = request.sensitive || request.redactDiagnostics ? "sensitive command failed" : stderr.toString("utf8").trim() || stdout.toString("utf8").trim() || failure.message;
-        reject(new CommandExecutionError(signal?.aborted ? "cancelled" : (failure as Error & { killed?: boolean }).killed ? "timeout" : typeof failure.code === "string" && ["ENOENT", "EACCES", "ENOBUFS"].includes(failure.code) ? "infrastructure" : "unknown", `${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, request.sensitive ? "" : stdout.toString("utf8"), { cause: error }, request.sensitive ? Buffer.alloc(0) : stdout));
+        reject(new CommandExecutionError(signal?.aborted ? "cancelled" : (failure as Error & { killed?: boolean }).killed ? "timeout" : typeof failure.code === "string" && ["ENOENT", "EACCES", "ENOBUFS"].includes(failure.code) ? "infrastructure" : "unknown", `${request.command} failed${failure.code === undefined ? "" : ` (${String(failure.code)})`}: ${detail.slice(0, 4_000)}`, request.sensitive ? "" : stdout.toString("utf8"), { cause: error }, request.sensitive ? Buffer.alloc(0) : stdout, !request.sensitive && typeof failure.code === "number" ? { code: failure.code, stderrBytes: stderr, exited: !signal?.aborted && !(failure as Error & { killed?: boolean }).killed } : undefined));
       });
       // Non-interactive commands must observe EOF. In particular, Pi print mode
       // waits for stdin to close before processing its positional prompt.

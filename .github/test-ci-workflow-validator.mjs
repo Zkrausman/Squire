@@ -143,6 +143,8 @@ try {
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-launch.test.js ", ""), "missing native Windows security tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-state-replace.test.js ", ""), "missing native Windows state replacement tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js ", ""), "missing actual captured-material CLI regression");
+  await expectValidatorRejects(workflow.replace("dist/test/personal-launch-retry.test.js ", ""), "missing transient launch retry regression");
+  await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js dist/test/personal-launch-retry.test.js", "dist/test/personal-launch-retry.test.js dist/test/personal-launch-material.test.js"), "reordered paired launch contracts");
   await expectValidatorRejects(workflow.replace("      fail-fast: false\n", ""), "cancelling other Windows version evidence after one failure");
   await expectValidatorRejects(workflow.replace('          - "20.17.0"', '          - "20"'), "missing exact minimum Node version");
   await expectValidatorRejects(workflow.replace('          - "22.9.0"', '          - "22"'), "missing exact minimum Node 22 version");

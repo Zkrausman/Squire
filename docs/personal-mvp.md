@@ -338,3 +338,19 @@ The production runner/controller fixture in `test/personal-windows-report-correc
 ### Current-run efficiency reporting
 
 Use `squire telemetry RUN-ID [--json] [--config FILE]` for private per-session, Plan-subphase, phase and run token/time/Pi-recorded-cost accounting. Missing or incomplete usage never changes phase outcomes. See [telemetry authority, completeness and retention](telemetry.md); legacy backfill and multi-run comparisons are deferred.
+
+### Transient phase-launch recovery
+
+Optional `launchRetryPolicy: { "maxRetries": 0 }` disables automatic transient
+launch recovery; omission defaults to one retry. No other retry count or policy
+field is accepted. A retry is a new immutable session/generation of the same
+logical phase attempt, at the same candidate HEAD and captured inputs. It waits
+one second within the original phase deadline and never replays accepted earlier
+phases. Only trusted allowlisted pre-event provider failures qualify; dirty or
+changed workspaces, partial output, timeout, invalid authentication, malformed
+reports and model/tool failures do not. Supervised Plan is not replayed.
+
+Status/watch distinguishes generation backoff from model work. Failed and retried
+sessions both appear in accounting; unavailable usage is unknown, not zero.
+Crash/restart does not authorize recovery of an orphaned launch generation or
+reservation: the controller refuses redispatch and requires human authorization.

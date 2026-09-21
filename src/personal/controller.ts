@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { classifyLaunchFailure, validateLaunchRetryPolicy, RETRY_DELAY_MS, type LaunchRetryPolicy, type LaunchGeneration } from "./launch-retry.js";
 import { parsePhaseResult } from "./phase-payload.js";
 import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
@@ -75,6 +77,7 @@ export interface PersonalMvpControllerOptions {
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
   readonly escalationPolicy?: EscalationPolicy;
+  readonly launchRetryPolicy?: LaunchRetryPolicy;
   readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly phaseTimeoutMs?: number;
   /** Optional process identity for persisted foreground/background evidence. */
@@ -136,6 +139,8 @@ export class PersonalMvpController {
   readonly #newId: () => string;
   readonly #modelPolicy: PersonalModelPolicy;
   readonly #escalationPolicy: EscalationPolicy | undefined;
+  readonly #retryPolicy: LaunchRetryPolicy;
+  readonly #launchOwner = randomUUID();
   readonly #correctionPolicy: ReportCorrectionPolicy;
   readonly #phaseTimeoutMs: number;
   readonly #controllerPid: number | undefined;
@@ -148,6 +153,7 @@ export class PersonalMvpController {
     if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
     const staged = this.#material?.config.escalationPolicy ?? options.escalationPolicy;
     this.#escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
+    this.#retryPolicy = validateLaunchRetryPolicy(this.#material ? this.#material.config.launchRetryPolicy : options.launchRetryPolicy);
     this.#correctionPolicy = validateReportCorrectionPolicy(this.#material ? this.#material.config.reportCorrectionPolicy : options.reportCorrectionPolicy);
     this.#phaseTimeoutMs = this.#material?.config.phaseTimeoutMs ?? options.phaseTimeoutMs ?? 3600000;
     if (!Number.isSafeInteger(this.#phaseTimeoutMs) || this.#phaseTimeoutMs <= 0 || this.#phaseTimeoutMs > 14400000) throw new Error("invalid controller phase timeout");
@@ -192,7 +198,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
-    const state: PersonalRunState = { ...baseline, reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
+    const state: PersonalRunState = { ...baseline, launchRetryPolicy: this.#retryPolicy, launchGenerations: [], reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
       if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
@@ -228,6 +234,7 @@ export class PersonalMvpController {
       // parent invocation and is not authority to enter detached execution.
       const loaded = await this.#readState(runId);
       if (!loaded) throw new Error(`reserved run state not found: ${runId}`);
+      if (loaded.launchGenerations?.length) throw new Error("phase launch history exists; restart requires human authorization and cannot redispatch");
       if (
         loaded.ticketId !== request.ticketId
         || loaded.repository !== request.repository
@@ -532,10 +539,9 @@ export class PersonalMvpController {
     if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
     const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
     const stagedAccounting = context.state.stagedTransitions?.find(t => t.phase === phase && t.attempt === attempt && t.kind === "reserved");
-    const input: PhaseInput = Object.freeze({
+    let input: PhaseInput = Object.freeze({
       telemetryAttribution: { trigger: stagedAccounting ? stagedAccounting.reason as "initial" | "retry" | "stage_advanced" | "remediation" : attempt > 1 ? "remediation" : "initial", stageIndex: stagedAccounting?.stageIndex ?? null, stageAttempt: stagedAccounting?.stageAttempt ?? null },
       deadline,
-      ...(phase === "implement" ? { reportSession: Object.freeze({ sessionId: randomUUID(), sessionFile: `/ticket/sessions/${phase}/${attempt}.jsonl` }) } : {}),
       runId: context.state.runId,
       ticket: Object.freeze({ ...ticket }),
       repository: request.repository,
@@ -569,7 +575,7 @@ export class PersonalMvpController {
     let progressWrites = Promise.resolve();
     let progressCount = 0;
     try {
-      result = await this.#phases.run(input, signal, progress => {
+      const launched = await this.#runLaunchGenerations(context, input, signal, current => { input = current; }, progress => {
         validatePlanProgress(progress);
         const snapshot = structuredClone(progress);
         if (!acceptingProgress || phase !== "plan" || context.state.planExecution !== "supervised-v1" || snapshot.runId !== input.runId || snapshot.attempt !== attempt || snapshot.subphase !== ["requirements", "implementation-design"][progressCount]) return Promise.reject(new Error("stale or unordered Plan progress"));
@@ -580,6 +586,8 @@ export class PersonalMvpController {
         });
         return progressWrites;
       });
+      result = launched.result;
+      input = launched.input;
       successfulCapture = this.#phases.reportCapture?.(result);
       if (this.#phases.reportCapture && !successfulCapture && !(result.phase === "plan" && result.details.supervision)) throw new Error("phase adapter omitted report evidence");
       if (successfulCapture) {
@@ -658,6 +666,56 @@ export class PersonalMvpController {
     return evidencedResult;
   }
 
+  async #runLaunchGenerations(context: RunContext, original: PhaseInput, signal: AbortSignal, onInput: (input: PhaseInput) => void, progress: Parameters<PhasePort["run"]>[2]): Promise<{ input: PhaseInput; result: PhaseResult }> {
+    if (original.phase === "plan" && context.state.planExecution === "supervised-v1") return { input: original, result: await this.#phases.run(original, signal, progress) };
+    original = freezeLaunchInput(structuredClone(original));
+    // Bind all logical inputs, including captured prompt/config identity and
+    // the shared deadline. Only the generation/session identity may change.
+    const { reportSession: _session, ...logical } = original;
+    const inputDigest = createHash("sha256").update(canonical({ logical, launch: context.state.launchEvidence ?? null })).digest("hex");
+    for (const generation of [1, 2] as const) {
+      signal.throwIfAborted();
+      const id = randomUUID(), sessionId = randomUUID();
+      const input: PhaseInput = freezeLaunchInput({ ...original, launchGeneration: { id, generation },
+        reportSession: { sessionId, sessionFile: `/ticket/sessions/${original.phase}/${original.attempt}-${id}.jsonl` },
+        telemetryAttribution: { ...original.telemetryAttribution!, trigger: generation === 2 ? "retry" : original.telemetryAttribution!.trigger } });
+      let row: LaunchGeneration = { id, owner: this.#launchOwner, phase: input.phase, attempt: input.attempt, generation, sessionId, inputDigest, expectedHead: input.expectedHead,
+        kind: "reserved", failure: null, resultDigest: null, timestamp: this.#timestamp(), delayMs: generation === 1 ? 0 : RETRY_DELAY_MS, elapsedDelayMs: 0, classifierVersion: 1, rule: "not-allowlisted" };
+      const append = async () => context.persist({ launchGenerations: [...context.state.launchGenerations!, row] });
+      await append(); // CAS before waiting, never retry a persistence error.
+      if (generation === 2) {
+        const start = this.#monotonicNow();
+        await delay(RETRY_DELAY_MS, undefined, { signal });
+        row = { ...row, elapsedDelayMs: Math.max(0, this.#monotonicNow() - start) };
+        await this.#workspaces.assertClean(input.sandbox);
+        if (await this.#workspaces.currentHead(input.sandbox) !== input.expectedHead) throw new Error("retry workspace HEAD changed; human authorization required");
+      }
+      signal.throwIfAborted();
+      if (this.#monotonicNow() >= input.deadline!) throw new PhaseExecutionError("timeout", "original launch deadline exhausted");
+      row = { ...row, kind: "dispatched", timestamp: this.#timestamp() };
+      await append(); // Durable at-most-once dispatch. Orphaned dispatch is ambiguous.
+      onInput(input);
+      let result: PhaseResult;
+      try { result = await this.#phases.run(input, signal, progress); }
+      catch (error) {
+        const rule = signal.aborted ? "not-allowlisted" : classifyLaunchFailure(error);
+        row = { ...row, kind: "failed", failure: classifyExecutionFailure(error, signal), rule, timestamp: this.#timestamp() };
+        await append();
+        // Plan supervisor can already have accepted a paid child: never replay it.
+        if (generation === 2 || context.state.launchRetryPolicy?.maxRetries !== 1 || rule === "not-allowlisted" || signal.aborted || input.phase === "plan" && context.state.planExecution === "supervised-v1") throw error;
+        await this.#workspaces.assertClean(input.sandbox); // Independent, non-aborted inspection.
+        if (await this.#workspaces.currentHead(input.sandbox) !== input.expectedHead) throw new Error("retry workspace HEAD changed; human authorization required");
+        if (this.#monotonicNow() + RETRY_DELAY_MS >= input.deadline!) throw new PhaseExecutionError("timeout", "insufficient original launch budget for retry");
+        await this.#phases.reportEvidence?.release?.();
+        continue;
+      }
+      row = { ...row, kind: "returned", resultDigest: createHash("sha256").update(canonical(result)).digest("hex"), timestamp: this.#timestamp() };
+      await append(); // Returned is not acceptance. Existing independent gates follow.
+      return { input, result };
+    }
+    throw new Error("launch retry exhausted");
+  }
+
   async #correctHandoff(context: RunContext, input: PhaseInput, invalid: InvalidPhaseHandoff | CorrectionExecutionFailure, observedHead: string | undefined, workspaceError: unknown, signal: AbortSignal): Promise<PhaseResult> {
     const policy = context.state.reportCorrectionPolicy!;
     const port = this.#phases.reportEvidence;
@@ -711,7 +769,7 @@ export class PersonalMvpController {
       if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
       active();
       if (original.sessionId !== input.reportSession?.sessionId) throw new Error("original report producer mismatch");
-      if (original.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("original report session identity mismatch");
+      if (original.sessionFile !== (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("original report session identity mismatch");
       decodeReport(originalBytes); // invalid UTF-8 stays preserved, never trusted facts
       const analysis = analyzeImplementReport(original, input);
       if (!analysis.unexpected.length) throw new Error("unsupported handoff error class");
@@ -1076,7 +1134,8 @@ function validateRequest(request: RunRequest): void {
 function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHead: string): void {
   validatePhaseResultShape(result, input.phase);
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt) throw new Error("phase result identity mismatch");
-  if (result.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("phase result session file mismatch");
+  if (input.launchGeneration && input.reportSession && !(result.phase === "plan" && result.details.supervision) && result.sessionId !== input.reportSession.sessionId) throw new Error("phase result generation session mismatch");
+  if (result.sessionFile !== (result.phase === "plan" && result.details.supervision ? `/ticket/sessions/plan/${input.attempt}.jsonl` : input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("phase result session file mismatch");
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
   if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");
@@ -1240,3 +1299,11 @@ function startupAbortReason(signal: AbortSignal): Error {
 // Keep this import type referenced in generated declarations without exposing a
 // second launcher implementation from the controller module.
 export type { BackgroundLaunchRequest, BackgroundLauncher } from "./background-launcher.js";
+
+function freezeLaunchInput<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeLaunchInput(child);
+    Object.freeze(value);
+  }
+  return value;
+}

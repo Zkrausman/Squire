@@ -87,7 +87,7 @@ async function harness(options: Options = {}) {
         const value = payload(input);
         if (input.phase !== "implement") {
           if (input.phase === "review" && options.reviewRemediation && input.attempt === 1) { value.status = "remediation_required"; value.details.findings = ["synthetic remediation"]; }
-          return parsePhaseResult(JSON.stringify(value), input, `${input.phase}-${input.attempt}`, `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`, input.profile);
+          return parsePhaseResult(JSON.stringify(value), input, input.reportSession?.sessionId ?? `${input.phase}-${input.attempt}`, (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`), input.profile);
         }
         head = HEAD;
         options.beforeOriginal?.(h);

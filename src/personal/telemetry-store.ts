@@ -221,7 +221,12 @@ export class TelemetryStore {
         const rows = sessions.filter(s => s.phase === phase && s.attempt === attempt && !s.correction);
         if (phase === "plan" && state.planExecution === "supervised-v1") {
           if (rows.length !== 2 || !rows.some(s => s.subphase === "requirements") || !rows.some(s => s.subphase === "implementation-design")) return false;
-        } else if (rows.length !== 1) return false;
+        } else {
+          const generations = state.launchGenerations?.filter(g => g.phase === phase && g.attempt === attempt && g.kind === "reserved");
+          if (generations?.length) {
+            if (rows.length !== generations.length || !generations.every(g => rows.some(r => r.sessionId === g.sessionId))) return false;
+          } else if (rows.length !== 1) return false;
+        }
       }
       return true;
     }) && sessions.every(s => s.attempt <= state.attempts[s.phase]) && (state.reportCorrections ?? []).filter(c => c.kind === "launched").every(c => sessions.some(s => s.sessionId === c.producer));

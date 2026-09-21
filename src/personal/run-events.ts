@@ -13,6 +13,7 @@ export const MAX_RUN_EVENT_COUNT = 256;
 export const MAX_RUN_EVENT_BYTES = 64 * 1024;
 
 export const RUN_EVENT_TYPES = [
+  "launch_reserved", "launch_dispatched", "launch_returned", "launch_failed",
   "report_correction_observed", "report_correction_launched", "report_correction_accepted", "report_correction_stopped",
   "run_reserved",
   "run_started",
@@ -53,6 +54,7 @@ export interface RunEvent {
   readonly type: RunEventType;
   readonly phase?: PersonalPhase;
   readonly attempt?: number;
+  readonly generation?: 1 | 2;
   readonly outcome?: RunEventOutcome;
   readonly staged?: Omit<StagedTransition, "result">;
   readonly correction?: { readonly sequence: number; readonly maximum: number; readonly used: number; readonly remaining: number };
@@ -66,6 +68,7 @@ interface EventFields {
   readonly type: RunEventType;
   readonly phase?: PersonalPhase;
   readonly attempt?: number;
+  readonly generation?: 1 | 2;
   readonly outcome?: RunEventOutcome;
   readonly staged?: Omit<StagedTransition, "result">;
   readonly correction?: { readonly sequence: number; readonly maximum: number; readonly used: number; readonly remaining: number };
@@ -86,6 +89,7 @@ export function createRunEvent(fields: EventFields): RunEvent {
     stateRevision: fields.stateRevision,
     timestamp: fields.timestamp,
     type: fields.type,
+    ...(fields.generation === undefined ? {} : { generation: fields.generation }),
     ...(fields.phase === undefined ? {} : { phase: fields.phase }),
     ...(fields.attempt === undefined ? {} : { attempt: fields.attempt }),
     ...(fields.outcome === undefined ? {} : { outcome: fields.outcome }),
@@ -101,7 +105,7 @@ export function createRunEvent(fields: EventFields): RunEvent {
  * replacement is committed but its outbox publication is missed, a consumer
  * can synthesize the same ID from current state and deduplicate it.
  */
-export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "type"> & Partial<Pick<EventFields, "phase" | "attempt" | "outcome" | "correction">>): string {
+export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "type"> & Partial<Pick<EventFields, "phase" | "attempt" | "outcome" | "correction" | "generation">>): string {
   const key = [
     fields.runId,
     fields.ticketId,
@@ -109,6 +113,7 @@ export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "typ
     fields.phase ?? "",
     fields.attempt === undefined ? "" : String(fields.attempt),
     fields.outcome ?? "",
+    ...(fields.generation ? [String(fields.generation)] : []),
     ...(fields.correction ? [String(fields.correction.sequence)] : []),
   ].join("|");
   return createHash("sha256").update(key, "utf8").digest("hex");
@@ -117,7 +122,7 @@ export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "typ
 export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("run event must be an object");
   const object = value as Record<string, unknown>;
-  const allowed = ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type", "phase", "attempt", "outcome", "staged", "correction"];
+  const allowed = ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type", "phase", "attempt", "outcome", "staged", "correction", "generation"];
   if (Object.keys(object).some(key => !allowed.includes(key))) throw new Error("run event fields are invalid");
   for (const key of ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type"] as const) {
     if (!Object.prototype.hasOwnProperty.call(object, key)) throw new Error("run event fields are incomplete");
@@ -133,6 +138,9 @@ export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (object["attempt"] !== undefined && (!Number.isSafeInteger(object["attempt"]) || (object["attempt"] as number) < 1 || (object["attempt"] as number) > 1_000_000)) throw new Error("run event attempt is invalid");
   if (object["outcome"] !== undefined && (typeof object["outcome"] !== "string" || !RUN_EVENT_OUTCOMES.includes(object["outcome"] as RunEventOutcome))) throw new Error("run event outcome is invalid");
   const typed = object["type"] as RunEventType;
+  if (typed.startsWith("launch_")) {
+    if (![1, 2].includes(object["generation"] as number) || object["phase"] === undefined || object["attempt"] === undefined) throw new Error("invalid launch event identity");
+  } else if (object["generation"] !== undefined) throw new Error("unexpected launch generation");
   if (typed.startsWith("report_correction_")) {
     const c = object["correction"] as RunEvent["correction"];
     if (!c || Object.keys(c).sort().join() !== "maximum,remaining,sequence,used" || object["phase"] !== "implement" || !Number.isSafeInteger(object["attempt"]) || !Number.isSafeInteger(c.sequence) || c.sequence < 1 || c.sequence > 2000 || !Number.isSafeInteger(c.maximum) || c.maximum < 0 || c.maximum > 2 || !Number.isSafeInteger(c.used) || c.used < 0 || c.used > c.maximum || c.remaining !== c.maximum - c.used) throw new Error("invalid report correction event budget");
@@ -152,6 +160,7 @@ export function validateRunEvent(value: unknown): asserts value is RunEvent {
     runId: object["runId"],
     ticketId: object["ticketId"],
     type: object["type"] as RunEventType,
+    ...(object["generation"] === undefined ? {} : { generation: object["generation"] as 1 | 2 }),
     ...(object["correction"] === undefined ? {} : { correction: object["correction"] as NonNullable<RunEvent["correction"]> }),
     ...(object["phase"] === undefined ? {} : { phase: object["phase"] as PersonalPhase }),
     ...(object["attempt"] === undefined ? {} : { attempt: object["attempt"] as number }),
@@ -170,7 +179,7 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
     type,
     ...extra,
   });
-  const events: RunEvent[] = [...stagedEvents(next, previous?.stagedTransitions?.length ?? 0), ...correctionEvents(next, previous?.reportCorrections?.length ?? 0)];
+  const events: RunEvent[] = [...launchEvents(next, previous?.launchGenerations?.length ?? 0), ...stagedEvents(next, previous?.stagedTransitions?.length ?? 0), ...correctionEvents(next, previous?.reportCorrections?.length ?? 0)];
 
   if (previous === undefined) {
     if (next.executionMode === "background" && next.launchState !== undefined) {
@@ -246,7 +255,7 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
     type,
     ...extra,
   });
-  const events: RunEvent[] = [...stagedEvents(state), ...correctionEvents(state, 0)];
+  const events: RunEvent[] = [...launchEvents(state, 0), ...stagedEvents(state), ...correctionEvents(state, 0)];
 
   // A failed reserved background launch committed no reserved->started
   // transition. It still has durable reservation evidence, but must never be
@@ -530,4 +539,8 @@ function correctionEvents(state: PersonalRunState, start: number): RunEvent[] {
     type: `report_correction_${r.kind}`, phase: r.phase, attempt: r.attempt,
     correction: { sequence: start + index + 1, maximum: r.maximum, used: r.used, remaining: r.remaining },
   }));
+}
+
+function launchEvents(state: PersonalRunState, offset: number): RunEvent[] {
+  return (state.launchGenerations ?? []).slice(offset).map(g => createRunEvent({ runId: state.runId, ticketId: state.ticketId, stateRevision: state.version, timestamp: g.timestamp, type: `launch_${g.kind}`, phase: g.phase, attempt: g.attempt, generation: g.generation }));
 }

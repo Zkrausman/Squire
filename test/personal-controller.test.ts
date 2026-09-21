@@ -49,8 +49,8 @@ function phaseResult(input: PhaseInput, head: string, status: PhaseResult["statu
   const common = {
     runId: input.runId,
     attempt: input.attempt,
-    sessionId: `${input.phase}-${input.attempt}`,
-    sessionFile: `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`,
+    sessionId: input.reportSession?.sessionId ?? `${input.phase}-${input.attempt}`,
+    sessionFile: (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`),
     inputHead: input.expectedHead,
     outputHead: head,
     status,
@@ -263,7 +263,7 @@ test("controller compares remediation dispositions with the cumulative wiki diff
         workspace.head = REMEDIATED;
         workspace.wikiPaths = [".llm-wiki/wiki/concepts/first.md"];
         const prior = input.previousCumulative.find(item => item.phase === "implement");
-        if (prior?.phase === "implement") (prior.details.changes as string[]).push("mutated clone only");
+        if (prior?.phase === "implement") assert.throws(() => (prior.details.changes as string[]).push("mutated clone only"), TypeError);
       } else {
         workspace.head = IMPLEMENTED;
         workspace.wikiPaths = [".llm-wiki/wiki/concepts/first.md"];
@@ -307,7 +307,7 @@ test("Retro receives the tested HEAD and all prior phase results in its own reco
   assert.deepEqual(Object.keys(retroInput?.previous ?? {}).sort(), ["implement", "plan", "review", "test"]);
   assert.equal(retroInput?.previousCumulative.length, 4);
   assert.equal(result.attempts.retro, 1);
-  assert.equal(result.sessions.retro, "retro-1");
+  assert.equal(result.sessions.retro, harness.inputs.find(i => i.phase === "retro")!.reportSession!.sessionId);
   assert.deepEqual(result.results.retro?.details, { lessons: ["Keep exact HEAD gates explicit"], followUps: [] });
 });
 

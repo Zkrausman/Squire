@@ -2,7 +2,7 @@ import { createPlanSbx } from "./helpers/plan-sbx.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import test from "node:test";
@@ -100,6 +100,12 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
     const config = { repository: { slug: "example/repo", path: repository, sourceRef: "HEAD", baseBranch: "main" }, dataDirectory: data, linear: { apiKeyEnv: "SQUIRE_FIXTURE_KEY" }, github: { tokenCommand: ["false"] }, sandbox: { roleUser: "1000:1000", piExecutable: "pi", piAgentDirectory: "/ticket/pi-agent" }, testCommands: ["npm test"], promptPolicy: { version: 1, id: "custom", root: prompts, plan: ["requirements", "implementation-design"] } };
     const states = new JsonRunStateStore(path.join(data, "state"));
     const captures: any[][] = [];
+    // Exercise argv spelling distinct from Node's canonical ESM URL. The old
+    // string guard exited zero without ever capturing/deleting any source.
+    const cliEntry = process.platform === "win32"
+      ? path.resolve("dist/src/personal/cli.js").replace(/^[a-z]:/iu, drive => drive.toLowerCase())
+      : path.join(root, "squire-cli-alias.js");
+    if (process.platform !== "win32") await symlink(path.resolve("dist/src/personal/cli.js"), cliEntry);
     for (const background of [false, true]) {
       await mkdir(prompts);
       const phases = Object.fromEntries(["plan", "implement", "review", "test", "retro"].map(p => [p, `${p}.md`]));
@@ -112,13 +118,16 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${path.join(root, "bin")}${path.delimiter}${process.env["PATH"]}`, SQUIRE_FIXTURE_EXIT: exitMarker, SQUIRE_FIXTURE_KEY: "stubbed", SQUIRE_FIXTURE_CONFIG: configFile, SQUIRE_FIXTURE_PROMPTS: prompts, SQUIRE_FIXTURE_RECORD: record, NODE_OPTIONS: `--import=${pathToFileURL(path.resolve("fixtures/prompt-launch-stubs.mjs")).href}` };
       delete env["SQUIRE_DATA_DIR"]; delete env["SQUIRE_CONFIG"];
       const exit = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn(process.execPath, [path.resolve("dist/src/personal/cli.js"), "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+        const child = spawn(process.execPath, [cliEntry, "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
         let stderr = ""; child.stderr.on("data", d => { stderr += d; }); child.on("error", reject); child.on("exit", code => code === 0 ? resolve(code) : reject(new Error(stderr)));
       });
       assert.equal(exit, 0);
       let runs = await states.findByTicket("AIDEV-1");
       const deadline = Date.now() + 30_000;
       while (runs.some(s => s.status === "running") && Date.now() < deadline) { await new Promise(r => setTimeout(r, 20)); runs = await states.findByTicket("AIDEV-1"); }
+      // An entrypoint no-op used to make every([]) pass, masking Windows
+      // argv/ESM canonical-path mismatches until the source-deletion assertion.
+      assert.equal(runs.length, background ? 2 : 1, "CLI must create one fresh run");
       assert.ok(runs.every(s => s.status === "completed"), JSON.stringify(runs));
       if (background) {
         for (;;) {
@@ -183,4 +192,15 @@ test("correction policy raw/effective launch binding rejects mismatches before a
   assert.throws(() => validateLaunchMaterial(rehash(v)), /correction policy mismatch/);
   v.config.reportCorrectionPolicy = raw.reportCorrectionPolicy;
   assert.equal(validateLaunchMaterial(rehash(v)).config.reportCorrectionPolicy?.maxAttempts, 0);
+});
+
+test("launch retry raw/effective capture binding is closed and immutable", () => {
+  const mismatch: any = structuredClone(TEST_MATERIAL);
+  mismatch.config.launchRetryPolicy = { maxRetries: 0 };
+  assert.throws(() => validateLaunchMaterial(rehash(mismatch)), /launch retry policy mismatch/);
+  for (const policy of [{ maxRetries: 2 }, { maxRetries: 1, unknown: true }, null]) {
+    const value: any = structuredClone(TEST_MATERIAL);
+    value.config.launchRetryPolicy = policy;
+    assert.throws(() => validateLaunchMaterial(rehash(value)), /launchRetryPolicy/);
+  }
 });
