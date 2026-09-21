@@ -19,7 +19,7 @@ preflight, immediately before invocation. Every reservation consumes one slot,
 including open reservations after crashes. No refund, resume or terminal reopening.
 
 Only a validated failed result with matching identity, profile, session and HEAD
-can retry. The next slot stays in-stage until its allowance is consumed. Typed
+can retry. The next slot stays in-stage until its allowance is consumed. For staged advancement, typed
 execution errors are closed and terminal: cancellation (interrupted), timeout,
 authentication, infrastructure, protocol, unknown. Never infer retry safety or
 auth failures from stderr. Supervised Plan operational errors propagate as typed
@@ -47,3 +47,10 @@ graph, provider failover, generic budgeting or failed-run recovery.
 See [user contract](../../../docs/staged-escalation.md),
 `src/personal/controller.ts`, `src/personal/staged-attempts.ts`, and
 `test/personal-escalation-policy.test.ts`.
+
+[Transient launch retry](transient-phase-launch-retry.md) is a separate same-attempt
+protocol: one proven empty provider failure may relaunch at the same profile and
+exact HEAD, without consuming another staged slot or replaying accepted phases.
+It cannot retry model-authored failure, advance a stage, or recover a partial Plan
+supervisor. Its launch ledger is independent of the staged reservation/closure
+journal, and default retry maximum one can be reduced to zero.

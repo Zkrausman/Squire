@@ -32,7 +32,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   validateExecutablePlan(material.config.promptPolicy!.plan);
   if (input.phase !== "plan" || material.config.promptPolicy!.plan.length !== 2) throw new Error("supervisor requires selected Plan children");
   const profile = validatePhaseProfile(input.profile);
-  const supervisorId = randomUUID();
+  const supervisorId = input.reportSession?.sessionId ?? randomUUID();
   const root = `/run/squire-plan-${supervisorId}`;
   const local = path.join(options.stagingRoot, input.runId, "plan", String(input.attempt), supervisorId);
   if (process.platform !== "win32") await mkdir(local, { recursive: true, mode: 0o700 });
@@ -129,7 +129,7 @@ export async function supervisePlan(input: PhaseInput, options: PlanSupervisorOp
   const result: PlanPhaseResult = {
     runId: input.runId, phase: "plan", attempt: input.attempt, sessionId: supervisorId,
     // Compatibility slot identifies the deterministic lifecycle, NOT a model session.
-    sessionFile: `/ticket/sessions/plan/${input.attempt}.jsonl`, inputHead: input.expectedHead, outputHead: input.expectedHead, profile,
+    sessionFile: input.reportSession?.sessionFile ?? `/ticket/sessions/plan/${input.attempt}.jsonl`, inputHead: input.expectedHead, outputHead: input.expectedHead, profile,
     status: outcome === "ready" ? "passed" : "failed",
     summary: diagnostic ?? (outcome === "needs_clarification" ? `Plan needs clarification: ${requirements!.openQuestions.join("; ")}`.slice(0, 8000) : "Requirements and Implementation Design validated"),
     details: { steps: design?.steps ?? ["Resolve Plan blockers before Implement."], supervision: { version: 1, supervisorId, outcome, launchDigest: material.digest, children } },

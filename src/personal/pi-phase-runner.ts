@@ -1,3 +1,5 @@
+import { classifyProviderLaunch } from "./provider-launch.js";
+import { launchPaths } from "./launch-retry.js";
 import { captureInvocation, sessionSeed } from "./telemetry-capture.js";
 import { invocation, TelemetryStore } from "./telemetry-store.js";
 import { MAX_STREAM_BYTES, terminalReport } from "./telemetry-stream.js";
@@ -33,6 +35,7 @@ export interface SandboxPiPhaseRunnerOptions {
 }
 
 export class SandboxPiPhaseRunner implements PhasePort {
+  readonly launchRetry = true;
   readonly reportEvidence: ReportEvidencePort;
   readonly telemetry: TelemetryStore;
   readonly #captures = new WeakMap<PhaseResult, ReportCapture>();
@@ -70,21 +73,22 @@ export class SandboxPiPhaseRunner implements PhasePort {
     // Validate the controller-bound profile before creating any staging or
     // sandbox artifacts. A malformed profile must not partially launch a
     // phase with an ambiguous model identity.
+    if (input.launchGeneration !== undefined && (![1, 2].includes(input.launchGeneration) || !input.reportSession || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(input.reportSession.sessionId))) throw new PhaseExecutionError("protocol", "invalid controller launch identity");
     const deadline = input.deadline ?? performance.now() + this.#timeoutMs;
     const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
     const sessionId = input.reportSession?.sessionId ?? randomUUID();
     const phaseDirectory = `/ticket/sessions/${input.phase}`;
-    const sessionFile = `${phaseDirectory}/${input.attempt}.jsonl`;
-    const inputPath = `/ticket/artifacts/inputs/${input.phase}-${input.attempt}.json`;
+    const { sessionFile, inputPath } = launchPaths(input.phase, input.attempt, input.launchGeneration ?? 1);
+    if (input.reportSession && input.reportSession.sessionFile !== sessionFile) throw new Error("launch session path mismatch");
     const localDirectory = path.join(this.#stagingRoot, input.runId, "phase-inputs");
-    const localInput = path.join(localDirectory, `${input.phase}-${input.attempt}.json`);
+    const localInput = path.join(localDirectory, path.posix.basename(inputPath));
     if (process.platform !== "win32") await mkdir(localDirectory, { recursive: true, mode: 0o700 });
     let localInputCreated = false;
     try {
       const prompt = composeSystemPrompt(this.#material, input.phase);
       const bytes = `${JSON.stringify({ ...input, sessionId, sessionFile, testCommands: this.#testCommands, launchDigest: this.#material?.digest, systemPromptDigest: createHash("sha256").update(prompt).digest("hex") }, null, 2)}\n`;
       if (process.platform === "win32") persistWindowsPhaseInput(localInput, bytes);
-      else await writeFile(localInput, bytes, { mode: 0o600 });
+      else await writeFile(localInput, bytes, { mode: 0o600, flag: "wx" });
       localInputCreated = true;
 
       await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
@@ -133,6 +137,11 @@ export class SandboxPiPhaseRunner implements PhasePort {
         throw error;
       });
 
+      const launchFailure = output.stdoutBytes && classifyProviderLaunch(output.stdoutBytes, { sessionId, profile });
+      if (launchFailure) {
+        await this.telemetry.settle(input.runId, sessionId, "execution-failed").catch(() => undefined);
+        throw launchFailure;
+      }
       const capture = await this.#capture(output.stdoutBytes, sessionId, sessionFile);
       try {
         const result = parsePhaseResult(capture.raw, input, sessionId, sessionFile, profile);
@@ -146,7 +155,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
       // Phase inputs can contain ticket text and feedback. Remove the host
       // staging copy on every exit path, including failed or cancelled Pi
       // launches, rather than retaining sensitive run material indefinitely.
-      if (process.platform !== "win32" || localInputCreated) await rm(localInput, { force: true });
+      if (localInputCreated) await rm(localInput, { force: true });
     }
   }
   async telemetryTerminal(state: PersonalRunState): Promise<{ complete: boolean }> { return { complete: (await this.telemetry.finalize(state)).complete }; }

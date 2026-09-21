@@ -338,3 +338,15 @@ The production runner/controller fixture in `test/personal-windows-report-correc
 ### Current-run efficiency reporting
 
 Use `squire telemetry RUN-ID [--json] [--config FILE]` for private per-session, Plan-subphase, phase and run token/time/Pi-recorded-cost accounting. Missing or incomplete usage never changes phase outcomes. See [telemetry authority, completeness and retention](telemetry.md); legacy backfill and multi-run comparisons are deferred.
+
+## Transient provider launch failures
+
+New production runs capture `launchRetryPolicy` (default one retry, deterministic
+1,000 ms backoff; maximum configurable down to zero). A strict trusted provider
+classifier can relaunch the same phase before any model/tool/result activity,
+using a fresh session generation at the exact unchanged HEAD. Accepted earlier
+phases are not repeated. Unknown/ambiguous failures, failed model results and
+supervised Plan child errors remain non-retryable by this mechanism. See
+[transient phase-launch recovery](transient-launch-retry.md) for the allowlist,
+immutable ledger, cost/deadline checks, status/watch, telemetry and conservative
+no-resume crash boundary. Exact-head Review/Test, CI and merge gates are unchanged.

@@ -84,3 +84,13 @@ observations cannot collapse into one event. Charges are persisted before dispat
 Events contain no reports, paths, prompts or diagnostics: consult the state's
 `reportCorrections` ledger and referenced host evidence for those. Event pruning
 never restores correction allowance or changes a historical terminal run.
+
+## Transient launch recovery
+
+Generation-aware bounded events (`launch_failed`, `launch_retry_scheduled`,
+`launch_retry_started`, `launch_retry_returned`, `launch_retry_stopped`) expose
+retry used/remaining and classifier version/rule, never raw provider diagnostics.
+Generation participates in semantic IDs, so reconciliation preserves both launches
+without duplicating notices. `returned` is not phase acceptance. Status labels
+reserved generation 2 `retrying-backoff`, separately from dispatched `model-work`.
+See [the launch protocol](transient-launch-retry.md) for fail-closed crash behavior.

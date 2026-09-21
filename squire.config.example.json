@@ -47,5 +47,6 @@
   "testCommands": [
     "npm test"
   ],
+  "launchRetryPolicy": { "maxRetries": 1, "backoffMs": 1000 },
   "phaseTimeoutMs": 3600000
 }

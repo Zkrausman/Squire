@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { classifyTransientLaunch, validateLaunchRetryPolicy, logicalInputDigest, launchPaths, type LaunchRetryPolicy, type LaunchRecord } from "./launch-retry.js";
 import { parsePhaseResult } from "./phase-payload.js";
 import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
@@ -77,6 +79,9 @@ export interface PersonalMvpControllerOptions {
   readonly escalationPolicy?: EscalationPolicy;
   readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly phaseTimeoutMs?: number;
+  readonly launchRetryPolicy?: LaunchRetryPolicy;
+  /** Trusted monetary authority; missing means no monetary ceiling. */
+  readonly authorizeLaunchCost?: (input: PhaseInput, signal: AbortSignal) => Promise<boolean>;
   /** Optional process identity for persisted foreground/background evidence. */
   readonly controllerPid?: number;
   /** Receives persistence failures that cannot be represented in run state. */
@@ -138,6 +143,9 @@ export class PersonalMvpController {
   readonly #escalationPolicy: EscalationPolicy | undefined;
   readonly #correctionPolicy: ReportCorrectionPolicy;
   readonly #phaseTimeoutMs: number;
+  readonly #launchRetryPolicy: LaunchRetryPolicy;
+  readonly #authorizeLaunchCost: PersonalMvpControllerOptions["authorizeLaunchCost"];
+  readonly #launchOwner = randomUUID();
   readonly #controllerPid: number | undefined;
   readonly #onPersistenceError: (error: unknown) => void;
   readonly #contexts = new Map<string, RunContext>();
@@ -149,6 +157,8 @@ export class PersonalMvpController {
     const staged = this.#material?.config.escalationPolicy ?? options.escalationPolicy;
     this.#escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
     this.#correctionPolicy = validateReportCorrectionPolicy(this.#material ? this.#material.config.reportCorrectionPolicy : options.reportCorrectionPolicy);
+    this.#launchRetryPolicy = validateLaunchRetryPolicy(this.#material ? this.#material.config.launchRetryPolicy : options.launchRetryPolicy);
+    this.#authorizeLaunchCost = options.authorizeLaunchCost;
     this.#phaseTimeoutMs = this.#material?.config.phaseTimeoutMs ?? options.phaseTimeoutMs ?? 3600000;
     if (!Number.isSafeInteger(this.#phaseTimeoutMs) || this.#phaseTimeoutMs <= 0 || this.#phaseTimeoutMs > 14400000) throw new Error("invalid controller phase timeout");
     this.#tickets = options.tickets;
@@ -192,7 +202,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
-    const state: PersonalRunState = { ...baseline, reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
+    const state: PersonalRunState = { ...baseline, ...(this.#phases.launchRetry ? { launchRetryPolicy: this.#launchRetryPolicy, launches: [] } : {}), reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
     if (this.#states.reserve) {
       if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
@@ -532,7 +542,7 @@ export class PersonalMvpController {
     if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
     const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
     const stagedAccounting = context.state.stagedTransitions?.find(t => t.phase === phase && t.attempt === attempt && t.kind === "reserved");
-    const input: PhaseInput = Object.freeze({
+    let input: PhaseInput = Object.freeze({
       telemetryAttribution: { trigger: stagedAccounting ? stagedAccounting.reason as "initial" | "retry" | "stage_advanced" | "remediation" : attempt > 1 ? "remediation" : "initial", stageIndex: stagedAccounting?.stageIndex ?? null, stageAttempt: stagedAccounting?.stageAttempt ?? null },
       deadline,
       ...(phase === "implement" ? { reportSession: Object.freeze({ sessionId: randomUUID(), sessionFile: `/ticket/sessions/${phase}/${attempt}.jsonl` }) } : {}),
@@ -569,7 +579,7 @@ export class PersonalMvpController {
     let progressWrites = Promise.resolve();
     let progressCount = 0;
     try {
-      result = await this.#phases.run(input, signal, progress => {
+      const launched = await this.#runLaunchGenerations(context, input, signal, progress => {
         validatePlanProgress(progress);
         const snapshot = structuredClone(progress);
         if (!acceptingProgress || phase !== "plan" || context.state.planExecution !== "supervised-v1" || snapshot.runId !== input.runId || snapshot.attempt !== attempt || snapshot.subphase !== ["requirements", "implementation-design"][progressCount]) return Promise.reject(new Error("stale or unordered Plan progress"));
@@ -579,7 +589,9 @@ export class PersonalMvpController {
           await context.persist({ planProgress: snapshot });
         });
         return progressWrites;
-      });
+      }, selected => { input = selected; });
+      input = launched.input;
+      result = launched.result;
       successfulCapture = this.#phases.reportCapture?.(result);
       if (this.#phases.reportCapture && !successfulCapture && !(result.phase === "plan" && result.details.supervision)) throw new Error("phase adapter omitted report evidence");
       if (successfulCapture) {
@@ -658,6 +670,67 @@ export class PersonalMvpController {
     return evidencedResult;
   }
 
+  async #runLaunchGenerations(context: RunContext, logical: PhaseInput, signal: AbortSignal, onProgress: Parameters<PhasePort["run"]>[2], onInput: (input: PhaseInput) => void): Promise<{ input: PhaseInput; result: PhaseResult }> {
+    if (!context.state.launches) return { input: logical, result: await this.#phases.run(logical, signal, onProgress) };
+    // A started lifecycle is never re-entered by runReserved. In particular a
+    // persisted dispatch is not permission to guess that its process exited.
+    if (context.state.launches.some(r => r.phase === logical.phase && r.attempt === logical.attempt)) throw new Error("launch already reserved; human authorization required");
+    logical = freezeLaunchInput(structuredClone(logical));
+    const policy = context.state.launchRetryPolicy!;
+    const logicalDigest = logicalInputDigest(logical);
+    const promptDigest = createHash("sha256").update(composeSystemPrompt(this.#material, logical.phase)).digest("hex");
+    for (const generation of [1, 2] as const) {
+      const session = { sessionId: randomUUID(), ...launchPaths(logical.phase, logical.attempt, generation) };
+      const input: PhaseInput = Object.freeze({ ...logical, launchGeneration: generation, reportSession: Object.freeze({ sessionId: session.sessionId, sessionFile: session.sessionFile }) });
+      let record: LaunchRecord = { phase: logical.phase, attempt: logical.attempt, generation, ...session, logicalDigest, promptDigest, expectedHead: logical.expectedHead, owner: this.#launchOwner, deadline: logical.deadline!, kind: "reserved", timestamp: this.#timestamp(), delayMs: generation === 1 ? 0 : policy.backoffMs, elapsedDelayMs: 0, failure: null, errorCode: null };
+      const append = async (changes: Partial<LaunchRecord>): Promise<void> => {
+        const next = { ...record, ...changes, timestamp: this.#timestamp() };
+        await context.persist({ launches: [...context.state.launches!, next] });
+        record = next;
+      };
+      // CAS publication precedes the delay and every dispatch. A stale writer
+      // cannot reach run(), even when racing the same generation/session.
+      await append({});
+      let progress = false;
+      try {
+        signal.throwIfAborted();
+        const waitingAt = this.#monotonicNow();
+        if (waitingAt + record.delayMs >= logical.deadline!) throw new PhaseExecutionError("timeout", "original phase deadline exhausted before launch retry");
+        while (this.#monotonicNow() - waitingAt < record.delayMs) await delay(Math.ceil(record.delayMs - (this.#monotonicNow() - waitingAt)), undefined, { signal });
+        const elapsedDelayMs = Math.max(0, this.#monotonicNow() - waitingAt);
+        await this.#workspaces.assertClean(input.sandbox, signal);
+        if (await this.#workspaces.currentHead(input.sandbox, signal) !== input.expectedHead) throw new Error("launch HEAD changed; human authorization required");
+        if (this.#authorizeLaunchCost) {
+          let abort!: () => void;
+          const interrupted = new Promise<false>(resolve => { abort = () => resolve(false); signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort(); });
+          let authorized = false;
+          try { authorized = await Promise.race([this.#authorizeLaunchCost(input, signal), interrupted]) === true; }
+          catch { /* No arbitrary budget-provider response enters durable state. */ }
+          finally { signal.removeEventListener("abort", abort); }
+          if (!authorized) throw new PhaseExecutionError("infrastructure", "launch cost authorization unavailable or exhausted");
+        }
+        signal.throwIfAborted();
+        if (this.#monotonicNow() >= logical.deadline!) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
+        await append({ kind: "dispatched", elapsedDelayMs });
+        onInput(input);
+        const result = await this.#phases.run(input, signal, async event => { progress = true; await onProgress?.(event); });
+        await append({ kind: "returned" });
+        return { input, result };
+      } catch (error) {
+        const failure = record.kind === "dispatched" && !progress && !signal.aborted ? classifyTransientLaunch(error) : undefined;
+        // Nothing from arbitrary exceptions enters status, events or the ledger.
+        if (record.kind === "reserved" || record.kind === "dispatched") {
+          const kind = record.kind === "reserved" ? "stopped" : error instanceof InvalidPhaseHandoff || error instanceof CorrectionExecutionFailure ? "returned" : "failed";
+          await append({ kind, failure: failure ?? null, errorCode: kind === "returned" ? null : classifyExecutionFailure(error, signal) });
+        }
+        if (!failure || generation > policy.maxRetries) throw error;
+        await this.#workspaces.assertClean(input.sandbox, signal);
+        if (await this.#workspaces.currentHead(input.sandbox, signal) !== input.expectedHead) throw new Error("launch retry HEAD changed; human authorization required");
+      }
+    }
+    throw new Error("transient launch retry exhausted");
+  }
+
   async #correctHandoff(context: RunContext, input: PhaseInput, invalid: InvalidPhaseHandoff | CorrectionExecutionFailure, observedHead: string | undefined, workspaceError: unknown, signal: AbortSignal): Promise<PhaseResult> {
     const policy = context.state.reportCorrectionPolicy!;
     const port = this.#phases.reportEvidence;
@@ -711,7 +784,7 @@ export class PersonalMvpController {
       if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
       active();
       if (original.sessionId !== input.reportSession?.sessionId) throw new Error("original report producer mismatch");
-      if (original.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("original report session identity mismatch");
+      if (original.sessionFile !== (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("original report session identity mismatch");
       decodeReport(originalBytes); // invalid UTF-8 stays preserved, never trusted facts
       const analysis = analyzeImplementReport(original, input);
       if (!analysis.unexpected.length) throw new Error("unsupported handoff error class");
@@ -1076,7 +1149,8 @@ function validateRequest(request: RunRequest): void {
 function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHead: string): void {
   validatePhaseResultShape(result, input.phase);
   if (result.runId !== input.runId || result.phase !== input.phase || result.attempt !== input.attempt) throw new Error("phase result identity mismatch");
-  if (result.sessionFile !== `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`) throw new Error("phase result session file mismatch");
+  if (input.launchGeneration && result.sessionId !== input.reportSession?.sessionId) throw new Error("phase result launch identity mismatch");
+  if (result.sessionFile !== (input.reportSession?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("phase result session file mismatch");
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
   if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");
@@ -1240,3 +1314,13 @@ function startupAbortReason(signal: AbortSignal): Error {
 // Keep this import type referenced in generated declarations without exposing a
 // second launcher implementation from the controller module.
 export type { BackgroundLaunchRequest, BackgroundLauncher } from "./background-launcher.js";
+
+/** Freeze detached JSON data, including prior results and feedback, before any
+ * adapter can retain a reference across launch generations. */
+function freezeLaunchInput<T>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeLaunchInput(child);
+    Object.freeze(value);
+  }
+  return value;
+}

@@ -2,7 +2,7 @@
 
 `escalationPolicy` is optional **user-global** configuration. Without it, Squire
 uses the existing `modelPolicy`, deterministic two-bucket Plan assignment, and
-fixed-profile control flow; a failed phase is not automatically retried. Omitted
+fixed-profile control flow; a failed model result is not automatically retried. Omitted
 phases retain that behavior. The approved global model defaults have not changed.
 
 This example is illustrative, not a model hierarchy or provider recommendation:
@@ -52,10 +52,10 @@ refunds, resumed attempts, failed-run imports or terminal-state reopening.
 | Supervised Plan `needs_clarification` | No; resolve the questions |
 | Review/Test `remediation_required` | No unchanged gate retry; existing remediation sequence only |
 | Cancellation | No; interrupted |
-| Timeout, authentication, infrastructure/transport/sandbox failure | No; failed |
+| Timeout, authentication, infrastructure/transport/sandbox failure | No staged retry; failed, except the separate proven pre-result launch rule below |
 | Parser, protocol, profile/session/HEAD mismatch or other ambiguous/unknown error | No; failed closed |
 
-Only validated failed results are retry-eligible—not process exit codes, text
+Only validated failed results are **staged** retry-eligible—not process exit codes, text
 that mentions an error, or unvalidated model output. Trusted adapters use closed
 error classifications; where no machine classification exists, failure remains
 `unknown`, terminal. Authentication is never guessed from stderr. No failure in
@@ -77,6 +77,12 @@ remediation counter. Staged totals and remediation caps intersect, rather than
 multiply. Exhaustion is terminal, naming phase, policy digest, last zero-based
 stage, consumed/configured totals and trigger. Correct the issue and explicitly
 launch a new run if appropriate; no accepted result is manufactured.
+
+The separate [transient launch protocol](transient-launch-retry.md) may relaunch
+one proven pre-result provider failure with the **same** profile, HEAD and logical
+attempt. It consumes no additional staged slot, does not advance capability and
+cannot retry a failed model result. Its default maximum is one, configurable to
+zero. Supervised Plan child failures remain terminal. Unproven effects fail closed.
 
 ## Immutable evidence and unchanged gates
 

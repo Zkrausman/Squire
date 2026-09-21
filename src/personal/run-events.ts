@@ -1,3 +1,4 @@
+import { LAUNCH_RULES } from "./launch-retry.js";
 import { STAGED_REASONS, STAGED_CLASSIFICATIONS, type StagedTransition } from "./staged-attempts.js";
 import { validatePhaseProfile } from "./model-policy.js";
 import { createHash } from "node:crypto";
@@ -13,6 +14,7 @@ export const MAX_RUN_EVENT_COUNT = 256;
 export const MAX_RUN_EVENT_BYTES = 64 * 1024;
 
 export const RUN_EVENT_TYPES = [
+  "launch_failed", "launch_retry_scheduled", "launch_retry_started", "launch_retry_returned", "launch_retry_stopped",
   "report_correction_observed", "report_correction_launched", "report_correction_accepted", "report_correction_stopped",
   "run_reserved",
   "run_started",
@@ -55,6 +57,7 @@ export interface RunEvent {
   readonly attempt?: number;
   readonly outcome?: RunEventOutcome;
   readonly staged?: Omit<StagedTransition, "result">;
+  readonly launch?: { readonly generation: 1 | 2; readonly maximum: 0 | 1; readonly used: number; readonly remaining: number; readonly classifierVersion: 1; readonly rule: typeof LAUNCH_RULES[number] | null };
   readonly correction?: { readonly sequence: number; readonly maximum: number; readonly used: number; readonly remaining: number };
 }
 
@@ -68,6 +71,7 @@ interface EventFields {
   readonly attempt?: number;
   readonly outcome?: RunEventOutcome;
   readonly staged?: Omit<StagedTransition, "result">;
+  readonly launch?: { readonly generation: 1 | 2; readonly maximum: 0 | 1; readonly used: number; readonly remaining: number; readonly classifierVersion: 1; readonly rule: typeof LAUNCH_RULES[number] | null };
   readonly correction?: { readonly sequence: number; readonly maximum: number; readonly used: number; readonly remaining: number };
 }
 
@@ -89,6 +93,7 @@ export function createRunEvent(fields: EventFields): RunEvent {
     ...(fields.phase === undefined ? {} : { phase: fields.phase }),
     ...(fields.attempt === undefined ? {} : { attempt: fields.attempt }),
     ...(fields.outcome === undefined ? {} : { outcome: fields.outcome }),
+    ...(fields.launch === undefined ? {} : { launch: fields.launch }),
     ...(fields.correction === undefined ? {} : { correction: fields.correction }),
     ...(fields.staged === undefined ? {} : { staged: fields.staged }),
   };
@@ -101,7 +106,7 @@ export function createRunEvent(fields: EventFields): RunEvent {
  * replacement is committed but its outbox publication is missed, a consumer
  * can synthesize the same ID from current state and deduplicate it.
  */
-export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "type"> & Partial<Pick<EventFields, "phase" | "attempt" | "outcome" | "correction">>): string {
+export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "type"> & Partial<Pick<EventFields, "phase" | "attempt" | "outcome" | "correction" | "launch">>): string {
   const key = [
     fields.runId,
     fields.ticketId,
@@ -110,6 +115,7 @@ export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "typ
     fields.attempt === undefined ? "" : String(fields.attempt),
     fields.outcome ?? "",
     ...(fields.correction ? [String(fields.correction.sequence)] : []),
+    ...(fields.launch ? [String(fields.launch.generation)] : []),
   ].join("|");
   return createHash("sha256").update(key, "utf8").digest("hex");
 }
@@ -117,7 +123,7 @@ export function eventIdFor(fields: Pick<EventFields, "runId" | "ticketId" | "typ
 export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("run event must be an object");
   const object = value as Record<string, unknown>;
-  const allowed = ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type", "phase", "attempt", "outcome", "staged", "correction"];
+  const allowed = ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type", "phase", "attempt", "outcome", "staged", "correction", "launch"];
   if (Object.keys(object).some(key => !allowed.includes(key))) throw new Error("run event fields are invalid");
   for (const key of ["schemaVersion", "eventId", "runId", "ticketId", "stateRevision", "timestamp", "type"] as const) {
     if (!Object.prototype.hasOwnProperty.call(object, key)) throw new Error("run event fields are incomplete");
@@ -133,6 +139,10 @@ export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (object["attempt"] !== undefined && (!Number.isSafeInteger(object["attempt"]) || (object["attempt"] as number) < 1 || (object["attempt"] as number) > 1_000_000)) throw new Error("run event attempt is invalid");
   if (object["outcome"] !== undefined && (typeof object["outcome"] !== "string" || !RUN_EVENT_OUTCOMES.includes(object["outcome"] as RunEventOutcome))) throw new Error("run event outcome is invalid");
   const typed = object["type"] as RunEventType;
+  if (typed.startsWith("launch_")) {
+    const l = object["launch"] as RunEvent["launch"];
+    if (!l || Object.keys(l).sort().join() !== "classifierVersion,generation,maximum,remaining,rule,used" || ![1, 2].includes(l.generation) || ![0, 1].includes(l.maximum) || l.used !== l.generation - 1 || l.remaining !== l.maximum - l.used || l.remaining < 0 || l.classifierVersion !== 1 || (l.rule !== null && !LAUNCH_RULES.includes(l.rule)) || object["phase"] === undefined || object["attempt"] === undefined || (typed !== "launch_failed" && l.generation !== 2)) throw new Error("invalid launch event");
+  } else if (object["launch"] !== undefined) throw new Error("unexpected launch event evidence");
   if (typed.startsWith("report_correction_")) {
     const c = object["correction"] as RunEvent["correction"];
     if (!c || Object.keys(c).sort().join() !== "maximum,remaining,sequence,used" || object["phase"] !== "implement" || !Number.isSafeInteger(object["attempt"]) || !Number.isSafeInteger(c.sequence) || c.sequence < 1 || c.sequence > 2000 || !Number.isSafeInteger(c.maximum) || c.maximum < 0 || c.maximum > 2 || !Number.isSafeInteger(c.used) || c.used < 0 || c.used > c.maximum || c.remaining !== c.maximum - c.used) throw new Error("invalid report correction event budget");
@@ -152,6 +162,7 @@ export function validateRunEvent(value: unknown): asserts value is RunEvent {
     runId: object["runId"],
     ticketId: object["ticketId"],
     type: object["type"] as RunEventType,
+    ...(object["launch"] === undefined ? {} : { launch: object["launch"] as NonNullable<RunEvent["launch"]> }),
     ...(object["correction"] === undefined ? {} : { correction: object["correction"] as NonNullable<RunEvent["correction"]> }),
     ...(object["phase"] === undefined ? {} : { phase: object["phase"] as PersonalPhase }),
     ...(object["attempt"] === undefined ? {} : { attempt: object["attempt"] as number }),
@@ -170,7 +181,7 @@ export function deriveRunEvents(previous: PersonalRunState | undefined, next: Pe
     type,
     ...extra,
   });
-  const events: RunEvent[] = [...stagedEvents(next, previous?.stagedTransitions?.length ?? 0), ...correctionEvents(next, previous?.reportCorrections?.length ?? 0)];
+  const events: RunEvent[] = [...stagedEvents(next, previous?.stagedTransitions?.length ?? 0), ...correctionEvents(next, previous?.reportCorrections?.length ?? 0), ...launchEvents(next, previous?.launches?.length ?? 0)];
 
   if (previous === undefined) {
     if (next.executionMode === "background" && next.launchState !== undefined) {
@@ -246,7 +257,7 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
     type,
     ...extra,
   });
-  const events: RunEvent[] = [...stagedEvents(state), ...correctionEvents(state, 0)];
+  const events: RunEvent[] = [...stagedEvents(state), ...correctionEvents(state, 0), ...launchEvents(state, 0)];
 
   // A failed reserved background launch committed no reserved->started
   // transition. It still has durable reservation evidence, but must never be
@@ -530,4 +541,13 @@ function correctionEvents(state: PersonalRunState, start: number): RunEvent[] {
     type: `report_correction_${r.kind}`, phase: r.phase, attempt: r.attempt,
     correction: { sequence: start + index + 1, maximum: r.maximum, used: r.used, remaining: r.remaining },
   }));
+}
+
+function launchEvents(state: PersonalRunState, start: number): RunEvent[] {
+  return (state.launches ?? []).slice(start).flatMap(r => {
+    const type: RunEventType | undefined = r.kind === "failed" ? (r.generation === 1 ? "launch_failed" : "launch_retry_stopped") : r.generation === 1 ? undefined : ({ reserved: "launch_retry_scheduled", dispatched: "launch_retry_started", returned: "launch_retry_returned", stopped: "launch_retry_stopped" } as const)[r.kind];
+    if (!type) return [];
+    const rule = r.failure?.rule ?? state.launches?.find(l => l.phase === r.phase && l.attempt === r.attempt && l.generation === 1 && l.kind === "failed")?.failure?.rule ?? null;
+    return [createRunEvent({ runId: state.runId, ticketId: state.ticketId, stateRevision: state.version, timestamp: r.timestamp, type, phase: r.phase, attempt: r.attempt, launch: { generation: r.generation, maximum: state.launchRetryPolicy!.maxRetries, used: r.generation - 1, remaining: state.launchRetryPolicy!.maxRetries - r.generation + 1, classifierVersion: 1, rule } })];
+  });
 }

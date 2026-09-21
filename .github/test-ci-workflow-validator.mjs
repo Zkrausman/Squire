@@ -125,6 +125,10 @@ try {
     await expectValidatorRejects(workflow.replace(marker, marker.replace(/timeout-minutes: \d+/, "timeout-minutes: 360")), `excessive timeout: ${marker}`);
   }
 
+  const retryRegression = " dist/test/personal-launch-retry.test.js";
+  assert.equal(workflow.includes(retryRegression), true, "Windows launch retry regression missing");
+  await expectValidatorRejects(workflow.replace(retryRegression, ""), "missing Windows launch retry coverage");
+
   for (const name of ["stream", "store", "controller"]) {
     const regression = ` dist/test/personal-telemetry-${name}.test.js`;
     assert.equal(workflow.includes(regression), true, `Windows telemetry ${name} regression missing`);

@@ -1,3 +1,4 @@
+import { currentLaunch } from "./launch-retry.js";
 import { isDeepStrictEqual } from "node:util";
 import { escalationDigest, validateEscalationPolicy, type PhaseProfile } from "./model-policy.js";
 import { EXECUTION_FAILURES, type ExecutionFailure } from "./execution-failure.js";
@@ -77,7 +78,9 @@ export function validateStagedState(state: PersonalRunState): void {
       if (reason !== (result ? "result" : "execution_failure")) throw new Error("invalid staged closure reason");
       if (result) {
         validatePhaseResultShape(result, selection.phase);
-        if (result.runId !== state.runId || result.sessionFile !== `/ticket/sessions/${selection.phase}/${selection.attempt}.jsonl` || result.attempt !== selection.attempt || !isDeepStrictEqual(result.profile, selection.profile) || sessions.has(result.sessionId)) throw new Error("staged result provenance mismatch");
+        const launch = currentLaunch(state, selection.phase, selection.attempt);
+        if (state.launches && (!launch || launch.kind !== "returned" || launch.sessionId !== result.sessionId || launch.expectedHead !== result.inputHead)) throw new Error("staged result launch provenance mismatch");
+        if (result.runId !== state.runId || result.sessionFile !== (currentLaunch(state, selection.phase, selection.attempt)?.sessionFile ?? `/ticket/sessions/${selection.phase}/${selection.attempt}.jsonl`) || result.attempt !== selection.attempt || !isDeepStrictEqual(result.profile, selection.profile) || sessions.has(result.sessionId)) throw new Error("staged result provenance mismatch");
         const expected = result.status === "failed" ? (result.phase === "plan" && result.details.supervision?.outcome === "needs_clarification" ? "needs_clarification" : "eligible_failure") : result.status;
         if (classification !== expected || (result.phase !== "implement" && result.inputHead !== result.outputHead)) throw new Error("staged result classification/HEAD mismatch");
         sessions.add(result.sessionId);

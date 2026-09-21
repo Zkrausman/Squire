@@ -1,3 +1,4 @@
+import type { LaunchRetryPolicy, LaunchRecord } from "./launch-retry.js";
 import type { ReportCorrectionPolicy, CorrectionRecord, ReportCapture, ReportCorrectionInput } from "./report-correction.js";
 import type { ReportEvidencePort } from "./report-evidence.js";
 import type { EscalationPolicy } from "./model-policy.js";
@@ -95,6 +96,7 @@ export interface RetroPhaseResult extends PhaseResultBase {
 export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult | RetroPhaseResult;
 
 export interface PhaseInput {
+  readonly launchGeneration?: 1 | 2;
   /** Controller-owned accounting attribution; never selected by the model. */
   readonly telemetryAttribution?: { readonly trigger: "initial" | "retry" | "stage_advanced" | "remediation"; readonly stageIndex: number | null; readonly stageAttempt: number | null };
   /** Controller monotonic deadline, never reset for correction. */
@@ -153,6 +155,8 @@ export interface PublicationResult {
 }
 
 export interface PersonalRunState {
+  readonly launchRetryPolicy?: LaunchRetryPolicy;
+  readonly launches?: readonly LaunchRecord[];
   readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly reportCorrections?: readonly CorrectionRecord[];
   readonly schemaVersion: 1;
@@ -249,6 +253,8 @@ export interface WorkspacePort {
 }
 
 export interface PhasePort {
+  /** Supports controller-issued immutable generation/session identities. */
+  readonly launchRetry?: true;
   telemetryTerminal?(state: PersonalRunState): Promise<void | { readonly complete: boolean }>;
   telemetrySettled?(result: PhaseResult): Promise<void>;
   readonly reportEvidence?: ReportEvidencePort;

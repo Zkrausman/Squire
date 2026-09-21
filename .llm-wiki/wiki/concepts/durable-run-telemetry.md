@@ -17,3 +17,14 @@ Durations derive only from persisted host dispatch/observed successful-command b
 `squire telemetry RUN-ID [--json] [--config FILE]` is a single-run host-only artifact reader without external adapters or mutable-session inspection. Legacy/missing artifacts explicitly report unavailable/incomplete; unsafe artifacts fail with sanitized errors. Terminal accounting warnings do not relabel accepted workflow evidence. The typed reader/validator and versioned artifact are exported for AIDEV-309, which owns backfill, cohorts, baseline reproduction and merge/CI scorecards. Squire completion is not a merge or exact-head CI claim.
 
 Implementation and authority details: `src/personal/telemetry-{capture,stream,store}.ts`, `pi-phase-runner.ts`, `plan-supervisor.ts`, `controller.ts`, and [docs/telemetry.md](../../../docs/telemetry.md). The three telemetry suites run in the ordinary tests and the bounded unconditional Windows gate. Keep workflow test commands, executable validator expectations and negative validator probes in lockstep.
+
+[Transient launch recovery](transient-phase-launch-retry.md) adds optional
+`launchGeneration` to v1 session/invocation rows. The failed launch and retry retain
+separate UUIDs/endpoints/outcomes under one logical attempt; generation 2 has trigger
+`retry`. Modern inventory reconciles dispatched launch-ledger sessions/path digests
+and HEADs, rather than assuming one non-correction row per attempt. Reserved or
+missing rows leave inventory incomplete. Legacy rows without generation remain
+readable, and supervised Plan still counts children rather than its aggregate.
+An empty provider error has unknown billing, not an invented zero. Recovery adds
+only failed gate/retry accounting; accepted Plan/Implement have no added replay
+rows. The launch retry suite is included in both normal and bounded Windows gates.

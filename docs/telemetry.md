@@ -59,8 +59,26 @@ Bounds: 64 MiB captured stdout per invocation; 2 MiB independently verified raw 
 
 `RunTelemetry`, `TelemetrySession`, `TelemetryTotals`, `TelemetryInvocation`, `UsageAccounting`, `TelemetryStore.read`, `validateRunTelemetry`, `telemetryTotals` and `formatTelemetry` are exported from `src/index.ts`. `schemaVersion: 1`, `authority: pi-0.84.4-controller-json-v1` identify this authority model. Readers validate the closed normalized schema, exact run identity, bounded values, private storage and session-to-phase-to-run reconciliation before exposing output. Token/duration totals contain `known` and `complete`; recorded cost adds `source: pi-recorded`. Null session dimensions are unknown, not zero. Plan subphase totals are nested within Plan and must not be added to Plan again.
 
-AIDEV-309 owns historical backfill, cohort comparison, baseline reproduction, exact-head CI/merge binding and scorecards. There is no arbitrary directory scan, historical rewrite or multi-run command here. Preserve pre-change artifacts and policy identities now. Future comparisons must select comparable gate classes, distinguish completed from merged tickets, retain retry/correction/infrastructure costs, disclose missing accounting and small sample sizes, and avoid causal model-quality claims. This delivery changes no retry, context, model-selection, remediation-budget, review, test or merge policy.
+AIDEV-309 owns historical backfill, cohort comparison, baseline reproduction, exact-head CI/merge binding and scorecards. There is no arbitrary directory scan, historical rewrite or multi-run command here. Preserve pre-change artifacts and policy identities now. Future comparisons must select comparable gate classes, distinguish completed from merged tickets, retain retry/correction/infrastructure costs, disclose missing accounting and small sample sizes, and avoid causal model-quality claims. Telemetry does not authorize retries or change context, model-selection, remediation-budget, Review/Test or merge policy.
 
 ## Checks
 
 Parser, private-store and production-controller fixtures cover the six-session run, remediation, staged profiles, report correction, interruption, unknown endpoints/cost, malformed/duplicate/unsupported streams, privacy and session-file tampering. They run in the normal suite and the existing bounded unconditional Windows launch matrix. Workflow commands, executable validator expectations and negative probes must change together; Linux tests do not replace the exact-head Windows gate.
+
+## Transient launch generations
+
+[Transient launch recovery](transient-launch-retry.md) adds optional
+`launchGeneration` (1 or 2) to invocation/session rows without changing the logical
+`attempt`. Legacy v1 artifacts without it remain valid. The failed launch and
+retry are separate immutable UUID rows; the retry trigger is `retry`. Modern
+inventory reconciles exact dispatched ledger sessions, paths and HEADs rather
+than requiring exactly one row per phase attempt. A reserved-but-undispatched or
+missing row leaves accounting incomplete. Supervised Plan still inventories its
+two children, not the aggregate journal.
+
+The Daybreak error has an observed process endpoint and `execution-failed`
+outcome, but zero placeholder usage is not a provider bill: its charge remains
+unknown. Recovery adds the gate launch/retry rows only; accepted Plan and
+Implement add no extra time/token/cost rows. Cohort consumers should compare the
+same logical gates, retain infrastructure costs and missing dimensions, and not
+infer a paid replay or a zero-cost failure from session count alone.

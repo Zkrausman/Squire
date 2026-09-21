@@ -170,6 +170,11 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
   ];
   const staged = [...(state.stagedTransitions ?? [])].reverse().find(t => !phase || t.phase === phase);
   const selectionReason = [...(state.stagedTransitions ?? [])].reverse().find(t => t.kind === "reserved" && t.phase === staged?.phase && t.attempt === staged.attempt)?.reason;
+  const launch = state.launches?.at(-1);
+  if (launch) {
+    const rule = launch.failure?.rule ?? state.launches?.find(r => r.phase === launch.phase && r.attempt === launch.attempt && r.failure)?.failure?.rule ?? "none";
+    lines.push(`Launch: phase=${launch.phase} attempt=${launch.attempt} generation=${launch.generation} used=${launch.generation - 1} remaining=${state.launchRetryPolicy!.maxRetries - launch.generation + 1} activity=${state.status !== "running" && ["reserved", "dispatched"].includes(launch.kind) ? "human-authorization-required" : launch.kind === "reserved" && launch.generation === 2 ? "retrying-backoff" : launch.kind === "dispatched" ? "model-work" : launch.kind} classifier=1 rule=${rule} error=${launch.errorCode ?? "none"} delay=${launch.delayMs}ms elapsed=${launch.elapsedDelayMs}ms`);
+  }
   const correction = state.reportCorrections?.at(-1);
   if (state.reportCorrectionPolicy) lines.push(`Report correction: maximum=${state.reportCorrectionPolicy.maxAttempts} per phase attempt${correction ? ` phase=${correction.phase} attempt=${correction.attempt} used=${correction.used} remaining=${correction.remaining} status=${correction.kind}` : ` used=0 remaining=${state.reportCorrectionPolicy.maxAttempts}`}`);
   if (staged) lines.push(`Escalation: ${staged.phase} stage=${staged.stageIndex + 1}/${state.escalationPolicy![staged.phase]!.stages.length} stage-consumed=${staged.stageAttempt}/${staged.stageMaximum} consumed=${staged.consumed} remaining=${staged.remaining} reason=${staged.reason} selected-by=${selectionReason} classification=${staged.classification ?? "reserved"} policy=${staged.policyDigest}`);
@@ -194,6 +199,7 @@ export function formatRunEvent(event: RunEvent): string {
   if (event.phase !== undefined) fields.push(`phase=${display(event.phase)}`);
   if (event.attempt !== undefined) fields.push(`attempt=${event.attempt}`);
   if (event.outcome !== undefined) fields.push(`outcome=${display(event.outcome)}`);
+  if (event.launch) fields.push(`generation=${event.launch.generation}`, `retry-used=${event.launch.used}`, `retry-remaining=${event.launch.remaining}`, `classifier=${event.launch.classifierVersion}`, `rule=${event.launch.rule ?? "none"}`);
   if (event.staged) {
     const t = event.staged;
     fields.push(`stage=${t.stageIndex + 1}`, `stage-consumed=${t.stageAttempt}/${t.stageMaximum}`, `consumed=${t.consumed}`, `remaining=${t.remaining}`, `profile=${display(`${t.profile.provider}/${t.profile.model}@${t.profile.thinking}`)}`, `reason=${t.reason}`, `classification=${t.classification ?? "reserved"}`, `policy=${t.policyDigest}`);
