@@ -8,5 +8,6 @@
 - [Windows launch capture](windows-launch-capture.md)
 - [Node 24 runtime and gates](node-24-runtime-and-gate-policy.md)
 - [Operator skill](squire-operator-skill.md)
+- [Local bug reporting](squire-bug-reporting.md)
 
 Predecessor workflow concept pages are historical pointers only, not execution authority.
