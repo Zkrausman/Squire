@@ -5,17 +5,21 @@
 Review the whole skill directory as executable guidance. Merging a PR does not
 install or activate it. Only after review/merge **and owner install approval**:
 
-1. Locate the trusted reviewed source and its exact commit. Locate the installed
-   Pi package and its official `docs/skills.md`; verify supported discovery for
-   that actual version, not an assumed match with another machine's Pi.
-2. Choose one global destination: `~/.pi/agent/skills/squire-operator` (recommended)
-   or `~/.agents/skills/squire-operator`. Expand `~` using the native user's home;
-   these are portable locations, not literal backslash-escaped paths.
-3. Check that the destination does not already exist, including symlinks. If it
-   exists, stop for an explicitly reviewed replacement plan. Create only missing
-   parent directories and copy the **entire** `skills/squire-operator` directory
-   to that destination, refusing overwrite. Include `SKILL.md` and `references/`;
-   do not copy just the entry file or symlink back into a mutable checkout.
+1. Locate the trusted reviewed Squire source and its exact commit. Locate the
+   installed Pi package and its official `docs/skills.md`; verify supported
+   discovery for that actual version, not an assumed match with another machine's
+   Pi.
+2. With owner approval, invoke the built Squire executable's
+   `squire install-skills` command. It resolves `PI_CODING_AGENT_DIR` when
+   explicitly set, otherwise `%USERPROFILE%\.pi\agent` on Windows or
+   `$HOME/.pi/agent` on POSIX, and installs beneath `~/.pi/agent/skills/`.
+   The command owns exactly `squire-operator` and `squire-bug-report`; it reports
+   `installed`, `refreshed`, or `current`, preserves unrelated skills, and never
+   runs a skill helper. The skill does not invoke this command or install itself.
+3. Confirm the deterministic command output and nonzero failure status. The
+   command rejects source/destination aliases and unsafe agent roots, and uses a
+   bounded sibling replacement with rollback/cleanup for an owned skill. Do not
+   pass arbitrary source, target, plugin, or path options.
 4. Open a fresh trusted Pi session in a different project, or use Pi's `/reload`
    resource reload in an existing session (verify support in installed Pi docs).
    Check that startup skill metadata advertises `squire-operator` without a

@@ -13,6 +13,7 @@ export type {
   ParsedStatusArguments,
   ParsedTelemetryArguments,
   ParsedWatchArguments,
+  ParsedInstallSkillsArguments,
 } from "./cli-arguments.js";
 
 const VERSION_FLAGS = new Set(["--version", "-V"]);
@@ -42,6 +43,17 @@ export async function main(argv = process.argv.slice(2), runtime: RuntimeOverrid
   if (!supportedRuntime) {
     process.stderr.write(`${unsupportedRuntimeMessage(nodeVersion)}\n`);
     return 1;
+  }
+  // Skill installation is intentionally dispatched before cli-main. This
+  // keeps configuration, credentials, providers, Docker, Linear, GitHub and
+  // the controller graph out of the owner-invoked installation path.
+  if (argv[0] === "install-skills") {
+    if (argv.length !== 1) {
+      process.stderr.write(CLI_USAGE);
+      return 2;
+    }
+    const implementation = await import("./install-skills.js");
+    return implementation.installSkillsCommand();
   }
   const implementation = await import("./cli-main.js");
   return implementation.main(argv, runtime);
