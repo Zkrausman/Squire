@@ -36,11 +36,15 @@ fallback or manual failed-candidate promotion. Authorized recovery is distinguis
 from clean normal success. Cumulative projectWiki accounting retains the original
 ticket baseline across attempts and includes every committed changed wiki path.
 
-Activation is a separate owner-approved post-review/merge step: copy the complete
-reviewed directory into a supported global location, refusing overwrite, then
-verify discovery and reference reads in a fresh trusted session in another project.
-Merge never installs the skill. Delegation, merge, tags, publication, installation,
-deployment and real-world actions retain separate authority gates.
+Activation is a separate owner-approved post-review/merge step: from the trusted
+reviewed Squire build, the owner invokes `squire install-skills`, which owns only
+`squire-operator` and `squire-bug-report` beneath the resolved Pi agent
+`skills` directory. It compares bytes, preserves unrelated skills, rejects
+aliases, and uses bounded replacement/rollback with ordinary owner-writable
+installed modes. The skill does not invoke the command or install itself. A
+fresh trusted session in another project then verifies discovery and reference
+reads. Merge never installs the skill. Delegation, merge, tags, publication,
+installation, deployment and real-world actions retain separate authority gates.
 
 `test/squire-operator.test.ts` checks frontmatter, contained references, shipped
 CLI grammar (including rejection of invented interfaces), command-source evidence

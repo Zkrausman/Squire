@@ -17,7 +17,7 @@ import { findRunState, formatRunEvent, formatRunStatus, sanitizeTerminalText, St
 import { watchRun } from "./run-watcher.js";
 import type { RunEvent } from "./run-events.js";
 import type { RunRequest, TicketPort } from "./types.js";
-import { CLI_USAGE, parseArguments, RUN_PATTERN, type ParsedRunArguments, type ParsedStatusArguments, type ParsedTelemetryArguments, type ParsedWatchArguments } from "./cli-arguments.js";
+import { CLI_USAGE, parseArguments, RUN_PATTERN, type ParsedInstallSkillsArguments, type ParsedRunArguments, type ParsedStatusArguments, type ParsedTelemetryArguments, type ParsedWatchArguments } from "./cli-arguments.js";
 
 interface ParsedReservedArguments extends ParsedRunArguments {
   readonly reservedRunId: string;
@@ -43,6 +43,7 @@ export async function main(argv = process.argv.slice(2), runtime: { nodeVersion?
   if (parsed.command === "telemetry") return telemetryCommand(parsed);
   if (parsed.command === "status") return statusCommand(parsed);
   if (parsed.command === "watch") return watchCommand(parsed);
+  if (parsed.command === "install-skills") return installSkillsCommand(parsed);
   return runCommand(parsed, runtime.cliPath);
 }
 
@@ -53,6 +54,11 @@ export async function telemetryCommand(parsed: ParsedTelemetryArguments): Promis
     process.stdout.write((parsed.json ? JSON.stringify(artifact ?? { schemaVersion: 1, runId: parsed.selector, available: false, complete: false, reason: "no_terminal_artifact" }) : formatTelemetry(artifact, parsed.selector)) + "\n");
     return 0;
   } catch { process.stderr.write("Telemetry unavailable: check configuration and private terminal artifact integrity.\n"); return 1; }
+}
+
+async function installSkillsCommand(_parsed: ParsedInstallSkillsArguments): Promise<number> {
+  const implementation = await import("./install-skills.js");
+  return implementation.installSkillsCommand();
 }
 
 async function runCommand(parsed: ParsedRunArguments, cliPath = fileURLToPath(new URL("./cli.js", import.meta.url))): Promise<number> {

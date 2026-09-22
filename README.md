@@ -8,6 +8,7 @@ squire run AIDEV-123 --background
 squire status AIDEV-123
 squire watch AIDEV-123
 squire telemetry aidev-123-0123456789
+squire install-skills
 squire --version
 squire -V
 ```
@@ -19,6 +20,8 @@ A clean run has two model sessions. Implement is the only writer. Verify combine
 - [Status](docs/read-only-status.md), [events](docs/run-events.md), [telemetry](docs/telemetry.md)
 - [Runtime and required gates](docs/runtime-and-gate-policy.md)
 - [Operator skill](skills/squire-operator/SKILL.md)
+
+`squire install-skills` is the explicit owner-invoked command for installing or refreshing the two packaged Pi skills (`squire-operator` and `squire-bug-report`). It uses `PI_CODING_AGENT_DIR` when set, otherwise the documented per-user Pi agent directory, preserves unrelated skills, and does not load Squire configuration or providers.
 
 ## Development
 

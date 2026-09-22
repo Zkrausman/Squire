@@ -2,6 +2,8 @@
 
 Install Node 24, Git and the native Docker Sandbox CLI (`sbx`). Build Squire with `npm ci` and `npm run build`. Windows also requires Python, MSVC/Windows SDK and the built native addon; missing security support fails closed.
 
+After reviewing the packaged skills and with owner approval, invoke `squire install-skills` explicitly. It installs or refreshes only `squire-operator` and `squire-bug-report` beneath `PI_CODING_AGENT_DIR` when set, or `%USERPROFILE%\.pi\agent` / `$HOME/.pi/agent` otherwise. It reports `installed`, `refreshed`, or `current`, preserves unrelated skills, and runs before configuration or provider initialization. It never runs skill helpers or installs arbitrary sources; a failed replacement exits nonzero and is cleaned up.
+
 Use an approved sandbox template containing Node 24, Git, Pi, `sh` and util-linux `setpriv`. The phase role is an unprivileged numeric uid:gid (example `1000:1000`). It must not have an ambient privilege bypass. Tests may create ignored outputs, not mutate tracked source. Verify's Git metadata stays sealed after completion.
 
 Copy `squire.config.example.json` to the per-user config location or select an explicit file with `--config`. Fill in the target repository, exact source ref/base, private data directory outside the checkout, App token helper, sandbox template/auth and target-specific `testCommands`. Model profiles are exactly implement and verify. Retired policy keys are rejected, not migrated silently.

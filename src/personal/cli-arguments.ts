@@ -4,7 +4,7 @@ import path from "node:path";
 const TICKET_PATTERN = /^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u;
 export const RUN_PATTERN = /^[a-z][a-z0-9]+-[a-z0-9][a-z0-9-]{7,127}$/u;
 
-export const CLI_USAGE = "Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire telemetry <RUN-ID> [--json] [--config <file>]\n";
+export const CLI_USAGE = "Usage: squire run <LINEAR-TICKET-ID> [--background] [--config <file>]\n       squire status <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire watch <TICKET-ID-or-RUN-ID> [--config <file>]\n       squire telemetry <RUN-ID> [--json] [--config <file>]\n       squire install-skills\n";
 
 export interface ParsedRunArguments {
   readonly command: "run";
@@ -32,11 +32,18 @@ export interface ParsedTelemetryArguments {
   readonly json: boolean;
 }
 
-export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments | ParsedTelemetryArguments;
+export interface ParsedInstallSkillsArguments {
+  readonly command: "install-skills";
+  /** Deliberately absent; this optional type member keeps the parser result shape readable without resolving config. */
+  readonly config?: never;
+}
+
+export type ParsedArguments = ParsedRunArguments | ParsedStatusArguments | ParsedWatchArguments | ParsedTelemetryArguments | ParsedInstallSkillsArguments;
 
 /** Parse only the public grammar without importing the runtime/controller graph. */
 export function parseArguments(argv: readonly string[]): ParsedArguments | undefined {
   const command = argv[0];
+  if (command === "install-skills") return argv.length === 1 ? { command } : undefined;
   if (command !== "run" && command !== "status" && command !== "watch" && command !== "telemetry") return undefined;
   let positional: string | undefined;
   let explicit: string | undefined;
