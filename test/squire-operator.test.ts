@@ -34,6 +34,15 @@ test("operator skill frontmatter and all packaged references are portable", asyn
   assert.equal(links, 2);
 });
 
+test("operator skill keeps async observation optional and non-authoritative", async () => {
+  const text = `${await read("skills/squire-operator/SKILL.md")}\n${await operations()}`;
+  assert.match(text, /async `squire-observer` child is optional/u);
+  assert.match(text, /only to preserve owner[-\s]conversation availability/u);
+  assert.match(text, /direct native non-model `squire watch` remains preferred/u);
+  assert.match(text, /watcher receipt is observation only/u);
+  assert.match(text, /no workflow.*retry.*publication.*merge authority/su);
+});
+
 test("every public Squire example parses with the shipped CLI; invented interfaces fail", async () => {
   const text = await operations();
   const examples = text.split("\n").filter(line => line.startsWith("squire "));

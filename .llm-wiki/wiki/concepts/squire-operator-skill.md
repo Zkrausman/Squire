@@ -38,18 +38,28 @@ ticket baseline across attempts and includes every committed changed wiki path.
 
 Activation is a separate owner-approved post-review/merge step: from the trusted
 reviewed Squire build, the owner invokes `squire install-skills`, which owns only
-`squire-operator` and `squire-bug-report` beneath the resolved Pi agent
-`skills` directory. It compares bytes, preserves unrelated skills, rejects
-aliases, and uses bounded replacement/rollback with ordinary owner-writable
-installed modes. The skill does not invoke the command or install itself. A
-fresh trusted session in another project then verifies discovery and reference
-reads. Merge never installs the skill. Delegation, merge, tags, publication,
-installation, deployment and real-world actions retain separate authority gates.
+`squire-operator` and `squire-bug-report` beneath `skills/` and the advertised
+`squire-observer` file beneath `agents/` in the resolved Pi agent directory. It
+compares bytes, preserves unrelated skills/agents, rejects aliases, and uses
+bounded replacement/rollback with ordinary owner-writable installed modes. The
+skill does not invoke the command or install itself. A fresh trusted session in
+another project then verifies skill discovery and observer advertisement and
+reads the installed references. Merge never installs these resources.
+Delegation, merge, tags, publication, installation, deployment and real-world
+actions retain separate authority gates.
+
+When blocking the owner conversation is acceptable, direct native non-model
+`squire watch` is preferred. An async `squire-observer` child is optional and
+exists only to preserve conversation availability; its one receipt is
+observation, never workflow, retry, publication or merge authority. It requires
+the parent-supplied existing run ID, trusted executable/cwd and exact config,
+and a timeout is not run completion.
 
 `test/squire-operator.test.ts` checks frontmatter, contained references, shipped
-CLI grammar (including rejection of invented interfaces), command-source evidence
-and seven documented stop/preservation/escalation scenarios. These static checklist
-checks are not an executable policy engine or live access proof.
+CLI grammar (including rejection of invented interfaces), command-source evidence,
+observer guidance and seven documented stop/preservation/escalation scenarios.
+These static checklist checks are not an executable policy engine or live access
+proof.
 `scripts/validate-squire-operator.mjs` separately copies the installed global layout
 into temporary HOME/settings, uses a fresh non-Squire context and the installed
 Pi public loadSkills/formatSkillsForPrompt exports, and reports actual package and
