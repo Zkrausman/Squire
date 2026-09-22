@@ -24,8 +24,11 @@ sbx templates are not host Docker images. Host-only CLI availability is an exter
 operator check, not a requirement to install sbx or seek host access inside phases.
 Read-only App probes cannot guarantee future push/publication success.
 
-The public personal CLI remains run/status/watch. Observation is event-driven or
-bounded and non-model. Clean normal success requires exact candidate/phase evidence,
+The public personal CLI supports run/status/watch/telemetry plus dependency-free
+`--version` and `-V` aliases. The version bootstrap reads only the declared package
+metadata, dispatches before the runtime/controller graph, and rejects extra or
+incompatible version operands through the bounded usage error. Observation is
+event-driven or bounded and non-model. Clean normal success requires exact candidate/phase evidence,
 App publication, persisted terminal success and reservation release; passing phases
 alone do not overcome terminal publication failure. Failed artifacts remain intact;
 no output/state repair, invented resume, silent paid relaunch, personal-credential

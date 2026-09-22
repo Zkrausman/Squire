@@ -8,6 +8,8 @@ squire run AIDEV-123 --background
 squire status AIDEV-123
 squire watch AIDEV-123
 squire telemetry aidev-123-0123456789
+squire --version
+squire -V
 ```
 
 A clean run has two model sessions. Implement is the only writer. Verify combines security/correctness review and configured tests without source-write authority. Failure is terminal and immutable; there is no automatic model replay or report repair. Never merge on model attestation alone.

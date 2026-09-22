@@ -8,11 +8,14 @@ sources: []
 # Node 24 runtime and gate policy
 
 Production Squire accepts stable Node.js 24 only (`>=24 <25` in package metadata
-and the root lock record). The CLI checks before argument parsing, reserved child
-handling, configuration, credentials, or provider/model work. Imports, build,
-workflow validation, and `npm test` remain usable in the governed Node 22 phase
-sandbox: bootstrap compatibility is not production support. Version injection is
-an imported test seam, never an executable flag/environment override. Node 24
+and the root lock record). Except for the dependency-free `--version`/`-V` bootstrap,
+the CLI checks before argument parsing, reserved child handling, configuration,
+credentials, or provider/model work. Version dispatch reads only package metadata,
+works before the runtime guard, and rejects version-flag combinations through the
+bounded usage path. Imports, build, workflow validation, and `npm test` remain usable
+in the governed Node 22 phase sandbox: bootstrap compatibility is not production
+support. Version injection is an imported test seam, never an executable environment
+override. Node 24
 integration tests use the production CLI; pure predicate tests inject version
 strings for 20/22/24/25 without installing other executables.
 
