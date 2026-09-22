@@ -16,7 +16,7 @@ reason to install/upgrade Pi globally.
 
 ## Prerequisites
 
-- Node.js (`npm`)
+- Node.js 24 (`npm`); Node 20, 22, and 25 are not supported production runtimes
 - Docker
 - `pi` CLI (`pi --version`)
 - GitHub App token helper available to your shell
@@ -27,6 +27,7 @@ reason to install/upgrade Pi globally.
 From the repository root:
 
 ```bash
+node --version # must be v24.x for Squire CLI use
 npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 ```
@@ -37,6 +38,10 @@ inside the ticket sandbox before phases run and validates it with
 `.github/validate-ticket-runtime.mjs`. This keeps the repository-wide test
 command from confusing missing Pi/wiki/TUI prerequisites with product
 failures.
+
+The governed Node 22 phase sandbox retains import/build/test and workflow-validation
+compatibility only; it cannot run the production Squire CLI. See
+[runtime and required-check policy](runtime-and-gate-policy.md).
 
 ## 2) Create the per-user configuration
 

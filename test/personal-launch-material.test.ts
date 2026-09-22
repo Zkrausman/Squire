@@ -1,3 +1,4 @@
+import { cliPath } from "./support/runtime-compatible-cli.js";
 import { createPlanSbx } from "./helpers/plan-sbx.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -113,7 +114,7 @@ test("actual foreground and detached CLI reach Pi with identical captured prompt
       delete env["SQUIRE_DATA_DIR"]; delete env["SQUIRE_CONFIG"];
       let childStderr = "";
       const exit = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn(process.execPath, [path.resolve("dist/src/personal/cli.js"), "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+        const child = spawn(process.execPath, [cliPath, "run", "AIDEV-1", "--config", configFile, ...(background ? ["--background"] : [])], { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
         child.stderr.on("data", d => { childStderr += d; }); child.on("error", reject); child.on("close", code => code === 0 ? resolve(code) : reject(new Error(childStderr)));
       });
       assert.equal(exit, 0);

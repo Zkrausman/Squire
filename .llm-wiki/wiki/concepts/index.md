@@ -16,3 +16,5 @@
 - [Report-only format correction](report-only-format-correction.md)
 - [Durable current-run telemetry](durable-run-telemetry.md)
 - [Transient phase-launch retry](transient-phase-launch-retry.md)
+
+- [Node 24 runtime and gate policy](node-24-runtime-and-gate-policy.md)

@@ -18,6 +18,9 @@ export interface RunEventConsumerOptions {
   /** Bounded non-LLM reconciliation fallback; it is not a busy polling loop. */
   readonly reconcileIntervalMs?: number;
   readonly signal?: AbortSignal;
+  /** Windows must never install libuv directory watch handles. */
+  readonly platform?: NodeJS.Platform;
+  readonly watch?: typeof fsWatch;
 }
 
 export interface RunEventWatchResult {
@@ -31,11 +34,10 @@ const MAX_DEBOUNCE_MS = 5_000;
 const MAX_RECONCILE_INTERVAL_MS = 60_000;
 
 /**
- * Filesystem-blocking, non-LLM run event consumer. Both state and event
- * directories are watched so an atomic rename of a state/outbox file is
- * visible on Windows as well as POSIX. A low-frequency timer only reconciles
- * missed OS notifications; it never invokes a ticket, Docker, Git, Pi, or
- * publication adapter.
+ * Bounded, non-LLM run event consumer. Windows uses timer reconciliation only:
+ * hosted Node 24 libuv directory handles can abort during atomic replacement.
+ * Other platforms watch directories with the same timer as fallback. Neither
+ * mechanism invokes a ticket, Docker, Git, Pi, or publication adapter.
  */
 export class RunEventConsumer {
   readonly #states: RunEventConsumerOptions["states"];
@@ -44,6 +46,8 @@ export class RunEventConsumer {
   readonly #debounceMs: number;
   readonly #reconcileIntervalMs: number;
   readonly #signal: AbortSignal | undefined;
+  readonly #platform: NodeJS.Platform;
+  readonly #watch: typeof fsWatch;
   readonly #seen = new Set<string>();
   readonly #watchers: FSWatcher[] = [];
   readonly #waiters = new Set<() => void>();
@@ -60,6 +64,8 @@ export class RunEventConsumer {
     this.#debounceMs = bounded(options.debounceMs ?? DEFAULT_DEBOUNCE_MS, 0, MAX_DEBOUNCE_MS, "debounce interval");
     this.#reconcileIntervalMs = bounded(options.reconcileIntervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS, 1, MAX_RECONCILE_INTERVAL_MS, "reconciliation interval");
     this.#signal = options.signal;
+    this.#platform = options.platform ?? process.platform;
+    this.#watch = options.watch ?? fsWatch;
   }
 
   get eventsDelivered(): number { return this.#eventsDelivered; }
@@ -75,16 +81,15 @@ export class RunEventConsumer {
     // Resolve before installing watchers, then once afterwards. The second
     // reconciliation closes the race where a writer replaces a file between
     // the first read and watcher registration.
-    let state = await this.#reconcile();
-    if (isTerminal(state)) return { state, eventsDelivered: this.#eventsDelivered };
-    await this.#installWatchers();
-    state = await this.#reconcile();
-    if (isTerminal(state)) {
-      this.stop();
-      return { state, eventsDelivered: this.#eventsDelivered };
-    }
-
     try {
+      let state = await this.#reconcile();
+      if (isTerminal(state)) return { state, eventsDelivered: this.#eventsDelivered };
+      await this.#installWatchers();
+      state = await this.#reconcile();
+      if (isTerminal(state)) {
+        return { state, eventsDelivered: this.#eventsDelivered };
+      }
+
       while (!this.#stopped) {
         this.#throwIfStoppedOrAborted();
         await this.#waitForWakeOrTimeout();
@@ -133,6 +138,8 @@ export class RunEventConsumer {
     const eventDirectory = eventDirectoryOf(this.#states, stateDirectory);
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     await mkdir(eventDirectory, { recursive: true, mode: 0o700 });
+    this.#throwIfStoppedOrAborted();
+    if (this.#platform === "win32") return;
     this.#watchDirectory(stateDirectory);
     if (eventDirectory !== stateDirectory) this.#watchDirectory(eventDirectory);
   }
@@ -140,15 +147,20 @@ export class RunEventConsumer {
   #watchDirectory(directory: string): void {
     let watcher: FSWatcher;
     try {
-      // Watching the containing directory, rather than a file descriptor, is
-      // required for rename-based atomic replacement on Windows.
-      watcher = fsWatch(directory, { persistent: true }, () => this.#scheduleWake());
+      // Directory watches survive rename-based atomic replacement on POSIX.
+      watcher = this.#watch(directory, { persistent: true }, () => this.#scheduleWake());
     } catch {
       // The bounded reconciliation timer remains the recovery path when an OS
       // watcher cannot be installed. This is still non-LLM and non-busy.
       return;
     }
-    watcher.on("error", () => this.#scheduleWake());
+    watcher.on("error", () => {
+      const index = this.#watchers.indexOf(watcher);
+      if (index === -1) return;
+      this.#watchers.splice(index, 1);
+      watcher.close();
+      this.#scheduleWake();
+    });
     this.#watchers.push(watcher);
   }
 

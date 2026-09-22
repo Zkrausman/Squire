@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isSupportedNodeVersion, unsupportedRuntimeMessage } from "./runtime-version.js";
 import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
 import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
@@ -46,7 +47,13 @@ interface ParsedReservedArguments extends ParsedRunArguments {
   readonly reservedConfigDigest: string;
 }
 
-export async function main(argv = process.argv.slice(2)): Promise<number> {
+/** Injection is for imported bootstrap tests only; the executable never reads overrides. */
+export async function main(argv = process.argv.slice(2), runtime: { nodeVersion?: string; cliPath?: string } = {}): Promise<number> {
+  const nodeVersion = runtime.nodeVersion ?? process.versions.node;
+  if (!isSupportedNodeVersion(nodeVersion)) {
+    process.stderr.write(`${unsupportedRuntimeMessage(nodeVersion)}\n`);
+    return 1;
+  }
   const reserved = parseReservedArguments(argv);
   if (reserved) return runReservedCommand(reserved);
 
@@ -59,7 +66,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (parsed.command === "telemetry") return telemetryCommand(parsed);
   if (parsed.command === "status") return statusCommand(parsed);
   if (parsed.command === "watch") return watchCommand(parsed);
-  return runCommand(parsed);
+  return runCommand(parsed, runtime.cliPath);
 }
 
 export function parseArguments(argv: readonly string[]): ParsedArguments | undefined {
@@ -109,7 +116,7 @@ export async function telemetryCommand(parsed: ParsedTelemetryArguments): Promis
   } catch { process.stderr.write("Telemetry unavailable: check configuration and private terminal artifact integrity.\n"); return 1; }
 }
 
-async function runCommand(parsed: ParsedRunArguments): Promise<number> {
+async function runCommand(parsed: ParsedRunArguments, cliPath = fileURLToPath(import.meta.url)): Promise<number> {
   // Install the background-startup handlers before loading configuration. A
   // signal cannot create a durable run before reservation, but once startup
   // reaches that boundary it must be recorded as interrupted until spawn is
@@ -140,7 +147,7 @@ async function runCommand(parsed: ParsedRunArguments): Promise<number> {
     if (parsed.background) {
       try {
         const launchOptions: StartBackgroundOptions = {
-          cliPath: fileURLToPath(import.meta.url),
+          cliPath,
           configPath: parsed.config,
           stateDirectory: config.paths.state,
           logsDirectory: path.join(config.dataDirectory, "logs"),

@@ -1,3 +1,6 @@
+import { EventEmitter } from "node:events";
+import { type FSWatcher, type watch as fsWatch } from "node:fs";
+import { setImmediate as immediate } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { access, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -7,7 +10,7 @@ import { deterministicFeatureBranch } from "../src/personal/identity.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { formatRunEvent } from "../src/personal/status.js";
 import { deriveRunEvents, MAX_RUN_EVENT_COUNT, synthesizeCurrentRunEvents, validateRunEvent, type RunEvent } from "../src/personal/run-events.js";
-import { watchRun } from "../src/personal/run-watcher.js";
+import { RunEventConsumer, watchRun } from "../src/personal/run-watcher.js";
 import { RunNotificationWorker } from "../src/personal/notification-worker.js";
 import type { PlanPhaseResult, PersonalRunState } from "../src/personal/types.js";
 
@@ -188,7 +191,7 @@ test("watch reconciles a missed terminal event and exits without live adapters",
   }
 });
 
-test("directory watcher observes atomic state replacement and coalesced notifications", async () => {
+for (const platform of [process.platform, "win32"] as const) test(`watch observes atomic replacement (${platform}) without duplicate delivery`, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "squire-events-atomic-watch-"));
   let timer: NodeJS.Timeout | undefined;
   let writer: Promise<void> | undefined;
@@ -200,8 +203,11 @@ test("directory watcher observes atomic state replacement and coalesced notifica
     await states.reserve(initial);
     const seen: RunEvent[] = [];
     let changed = false;
+    let watchCalls = 0;
     const watching = watchRun({
       states,
+      platform,
+      ...(platform === "win32" ? { watch: (() => { watchCalls++; throw new Error("Windows invoked fs.watch"); }) as typeof fsWatch } : {}),
       signal: abort.signal,
       selector: RUN_ID,
       debounceMs: 10,
@@ -223,6 +229,7 @@ test("directory watcher observes atomic state replacement and coalesced notifica
       },
     });
     const result = await watching;
+    assert.equal(watchCalls, 0);
     await writer;
     assert.equal(result.state.status, "failed");
     assert.equal(seen.filter(event => event.type === "run_started").length, 1);
@@ -390,3 +397,91 @@ test("reconciliation never fabricates run_started for an unclaimed failed backgr
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+for (const platform of ["win32", "linux"] as const) {
+  for (const ending of ["terminal", "stop", "abort", "watch-error", "watch-unavailable", "reconcile-error"] as const) {
+    test(`bounded consumer ${platform}: ${ending} clears all wake timers/handles`, async t => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "squire-watch-seam-"));
+      const abort = new AbortController();
+      let current = state();
+      let reads = 0;
+      let failRead = false;
+      let ready!: () => void;
+      const initialized = new Promise<void>(resolve => { ready = resolve; });
+      const handles: (EventEmitter & { close(): void; closes: number })[] = [];
+      const callbacks: (() => void)[] = [];
+      const watched: string[] = [];
+      const events: RunEvent[] = [];
+      const consumer = new RunEventConsumer({
+        states: {
+          directory,
+          async create() { assert.fail("consumer wrote state"); },
+          async save() { assert.fail("consumer wrote state"); },
+          async findActive() { return current; },
+          async read() { reads++; if (failRead) throw new Error("read failed"); return current; },
+          async readEvents() { if (reads === 2) ready(); return []; },
+        },
+        selector: RUN_ID, platform, signal: abort.signal,
+        reconcileIntervalMs: 200, debounceMs: 10,
+        onEvent: event => { events.push(event); },
+        watch: ((name: string, _options: unknown, callback: () => void) => {
+          watched.push(name);
+          assert.notEqual(platform, "win32", "Windows must never invoke fs.watch");
+          if (ending === "watch-unavailable") throw new Error("watch unavailable");
+          callbacks.push(callback);
+          const handle = Object.assign(new EventEmitter(), { closes: 0, close() { this.closes++; }, ref() { return this; }, unref() { return this; } });
+          handles.push(handle);
+          return handle as unknown as FSWatcher;
+        }) as typeof fsWatch,
+      });
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const scheduled = t.mock.method(globalThis, "setTimeout");
+      const cleared = t.mock.method(globalThis, "clearTimeout");
+      const watching = consumer.watch();
+      // Attach rejection handling before advancing clocks or aborting.
+      const outcome = watching.then(value => ({ value, error: undefined }), error => ({ value: undefined, error: error as Error }));
+      try {
+        await initialized;
+        await immediate();
+        assert.equal(reads, 2, "only initial race-closing reconciliation");
+        assert.deepEqual(watched, platform === "win32" ? [] : [directory, path.join(directory, "events")]);
+        t.mock.timers.tick(199);
+        await immediate();
+        assert.equal(reads, 2, "no busy polling before configured bound");
+        if (ending === "terminal" || ending === "watch-unavailable") current = terminal(current);
+        if (ending === "reconcile-error") failRead = true;
+        if (ending === "stop") { callbacks.forEach(callback => callback()); consumer.stop(); }
+        if (ending === "abort") { callbacks.forEach(callback => callback()); abort.abort(new Error("test abort")); }
+        if (ending === "watch-error") {
+          handles.forEach(handle => handle.emit("error", new Error("watch failed")));
+          current = terminal(current);
+        }
+        t.mock.timers.tick(1);
+        await immediate();
+        const result = await outcome;
+        if (ending === "terminal" || ending === "watch-error" || ending === "watch-unavailable") {
+          assert.equal(result.error, undefined);
+          assert.equal(result.value?.state.status, "failed");
+          assert.equal(reads, 3, "terminal visible at configured reconciliation bound");
+          assert.deepEqual(events.map(event => event.type), ["run_started", "terminal_failed"]);
+        } else {
+          assert.match(result.error?.message ?? "", /stopped|test abort|read failed/);
+        }
+        assert.ok(handles.every(handle => handle.closes === 1));
+        for (const call of scheduled.mock.calls) {
+          assert.ok(cleared.mock.calls.some(clear => clear.arguments[0] === call.result), "every debounce/reconciliation timer was cleared");
+        }
+        const finalReads = reads;
+        t.mock.timers.runAll(); // leaked debounce/reconcile timers would run here
+        await immediate();
+        assert.equal(reads, finalReads, "no reads after terminal/stop/abort/failure");
+      } finally {
+        consumer.stop();
+        await outcome;
+        t.mock.restoreAll();
+        t.mock.timers.reset();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
+}

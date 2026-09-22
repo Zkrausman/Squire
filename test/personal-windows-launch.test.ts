@@ -1,3 +1,4 @@
+import { cliPath } from "./support/runtime-compatible-cli.js";
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fsPromises from "node:fs/promises";
@@ -237,7 +238,7 @@ test("Windows cancellation at material realpath and launcher boundaries cannot s
           assert.equal(boundary, "launcher", "material-await cancellation must prevent launcher invocation");
           entered = true; abort.abort(new Error("cancel at launcher")); throw abort.signal.reason;
         } },
-        cliPath: path.resolve("dist/src/personal/cli.js"), configPath: path.resolve("squire.config.example.json"),
+        cliPath, configPath: path.resolve("squire.config.example.json"),
         stateDirectory: root, logsDirectory: path.join(root, "logs"), launchConfigDigest: TEST_CONFIG_DIGEST, signal: abort.signal,
       }), /cancel at/);
       assert.equal(entered, true); assert.deepEqual(errors, []);
