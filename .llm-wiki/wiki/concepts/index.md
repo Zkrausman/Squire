@@ -10,5 +10,6 @@
 - [Operator skill](squire-operator-skill.md)
 - [Local bug reporting](squire-bug-reporting.md)
 - [Explicit packaged Pi skill installation](squire-skill-installation.md)
+- [Bounded Squire observer agent](squire-observer-agent.md)
 
 Predecessor workflow concept pages are historical pointers only, not execution authority.

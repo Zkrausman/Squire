@@ -16,6 +16,7 @@ async function packageFixture(root: string): Promise<string> {
   const packageRoot = path.join(root, "package");
   await mkdir(packageRoot, { recursive: true });
   await cp(path.join(repository, "skills"), path.join(packageRoot, "skills"), { recursive: true });
+  await cp(path.join(repository, "agents"), path.join(packageRoot, "agents"), { recursive: true });
   return packageRoot;
 }
 
@@ -35,28 +36,42 @@ test("first install, refresh, idempotence, preservation, and writable modes", as
     const packageRoot = await packageFixture(root);
     const agent = path.join(root, "agent");
     const unrelatedFile = path.join(agent, "skills", "unrelated", "keep.txt");
+    const unrelatedAgent = path.join(agent, "agents", "unrelated.md");
     await mkdir(path.dirname(unrelatedFile), { recursive: true });
+    await mkdir(path.dirname(unrelatedAgent), { recursive: true });
     await writeFile(unrelatedFile, "unrelated");
+    await writeFile(unrelatedAgent, "unrelated agent");
 
     // Simulate a read-only packaged/build checkout. These bits are not
     // artifact content and must not be inherited by installed files.
     await chmod(path.join(packageRoot, "skills", "squire-operator", "SKILL.md"), 0o444);
     const first = await installSkills({ packageRoot, env: environment(agent) });
     assert.deepEqual(first.skills.map(item => item.status), ["installed", "installed"]);
+    assert.deepEqual(first.agents.map(item => item.status), ["installed"]);
     assert.equal((await stat(path.join(agent, "skills", "squire-operator", "SKILL.md"))).mode & 0o200, 0o200);
+    assert.equal((await stat(path.join(agent, "agents", "squire-observer.md"))).mode & 0o200, 0o200);
     assert.equal(await readFile(unrelatedFile, "utf8"), "unrelated");
+    assert.equal(await readFile(unrelatedAgent, "utf8"), "unrelated agent");
 
     const second = await installSkills({ packageRoot, env: environment(agent) });
     assert.deepEqual(second.skills.map(item => item.status), ["current", "current"]);
+    assert.deepEqual(second.agents.map(item => item.status), ["current"]);
 
     const changed = path.join(agent, "skills", "squire-operator", "SKILL.md");
     await writeFile(changed, "changed by test");
     await chmod(changed, 0o444);
+    const changedAgent = path.join(agent, "agents", "squire-observer.md");
+    await writeFile(changedAgent, "changed observer by test");
+    await chmod(changedAgent, 0o444);
     const third = await installSkills({ packageRoot, env: environment(agent) });
     assert.deepEqual(third.skills.map(item => item.status), ["refreshed", "current"]);
+    assert.deepEqual(third.agents.map(item => item.status), ["refreshed"]);
     assert.deepEqual(await readFile(changed), await readFile(path.join(packageRoot, "skills", "squire-operator", "SKILL.md")));
+    assert.deepEqual(await readFile(changedAgent), await readFile(path.join(packageRoot, "agents", "squire-observer.md")));
     assert.equal((await stat(changed)).mode & 0o200, 0o200);
+    assert.equal((await stat(changedAgent)).mode & 0o200, 0o200);
     assert.equal(await readFile(unrelatedFile, "utf8"), "unrelated");
+    assert.equal(await readFile(unrelatedAgent, "utf8"), "unrelated agent");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -81,6 +96,15 @@ test("packaged and owned destination aliases are rejected", { skip: process.plat
     await symlink(destinationTarget, destination);
     await assert.rejects(installSkills({ packageRoot: cleanPackageRoot, env: environment(agent) }), /alias/u);
     assert.deepEqual(await readdir(destinationTarget), []);
+
+    const agentAliasRoot = path.join(root, "agent-agent-alias");
+    const destinationAgent = path.join(agentAliasRoot, "agents", "squire-observer.md");
+    const destinationAgentTarget = path.join(root, "outside-observer");
+    await mkdir(path.dirname(destinationAgent), { recursive: true });
+    await writeFile(destinationAgentTarget, "outside observer");
+    await symlink(destinationAgentTarget, destinationAgent);
+    await assert.rejects(installSkills({ packageRoot: cleanPackageRoot, env: environment(agentAliasRoot) }), /alias/u);
+    assert.equal(await readFile(destinationAgentTarget, "utf8"), "outside observer");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -7,8 +7,11 @@ import { fileURLToPath } from "node:url";
 
 /** The only skill directories Squire is permitted to install or refresh. */
 export const OWNED_SKILLS = ["squire-operator", "squire-bug-report"] as const;
+/** The only packaged Pi agent Squire is permitted to install or refresh. */
+export const OWNED_AGENTS = ["squire-observer"] as const;
 
 export type OwnedSkill = typeof OWNED_SKILLS[number];
+export type OwnedAgent = typeof OWNED_AGENTS[number];
 export type InstallSkillStatus = "installed" | "refreshed" | "current";
 
 export interface InstalledSkill {
@@ -16,8 +19,14 @@ export interface InstalledSkill {
   readonly status: InstallSkillStatus;
 }
 
+export interface InstalledAgent {
+  readonly agent: OwnedAgent;
+  readonly status: InstallSkillStatus;
+}
+
 export interface InstallSkillsResult {
   readonly skills: readonly InstalledSkill[];
+  readonly agents: readonly InstalledAgent[];
 }
 
 export class SkillInstallError extends Error {
@@ -125,19 +134,26 @@ export function resolvePiAgentDirectory(options: PiAgentDirectoryOptions = {}): 
   return normalized;
 }
 
-/** Install exactly the two packaged Squire skills and return deterministic status records. */
+/** Install exactly the two packaged Squire skills and named observer agent, returning deterministic status records. */
 export async function installSkills(options: InstallSkillsOptions = {}): Promise<InstallSkillsResult> {
   const fileSystem = { ...realFileSystem, ...(options.fileSystem ?? {}) };
   const platform = options.platform ?? process.platform;
   const agentDirectory = resolvePiAgentDirectory(options);
   const packageRoot = await resolvePackageRoot(options.packageRoot, fileSystem);
   const packagedSkillsRoot = path.join(packageRoot, "skills");
+  const packagedAgentsRoot = path.join(packageRoot, "agents");
 
   await requireDirectory(packagedSkillsRoot, "packaged skills", fileSystem);
+  await requireDirectory(packagedAgentsRoot, "packaged agents", fileSystem);
   const packaged = new Map<OwnedSkill, TreeSnapshot>();
   for (const skill of OWNED_SKILLS) {
     const source = path.join(packagedSkillsRoot, skill);
     packaged.set(skill, await snapshotTree(source, `packaged ${skill}`, fileSystem));
+  }
+  const packagedAgents = new Map<OwnedAgent, FileSnapshot>();
+  for (const agent of OWNED_AGENTS) {
+    const source = path.join(packagedAgentsRoot, `${agent}.md`);
+    packagedAgents.set(agent, await snapshotFile(source, `packaged ${agent}`, fileSystem));
   }
 
   const createdDirectories: string[] = [];
@@ -145,6 +161,8 @@ export async function installSkills(options: InstallSkillsOptions = {}): Promise
     createdDirectories.push(...await ensureDirectory(agentDirectory, "Pi agent root", fileSystem));
     const installedSkillsRoot = path.join(agentDirectory, "skills");
     createdDirectories.push(...await ensureDirectory(installedSkillsRoot, "Pi skills directory", fileSystem));
+    const installedAgentsRoot = path.join(agentDirectory, "agents");
+    createdDirectories.push(...await ensureDirectory(installedAgentsRoot, "Pi agents directory", fileSystem));
 
     const plans: SkillPlan[] = [];
     for (const skill of OWNED_SKILLS) {
@@ -160,13 +178,35 @@ export async function installSkills(options: InstallSkillsOptions = {}): Promise
       });
     }
 
+    const agentPlans: AgentPlan[] = [];
+    for (const agent of OWNED_AGENTS) {
+      const destination = path.join(installedAgentsRoot, `${agent}.md`);
+      const installed = await optionalFileSnapshot(destination, `installed ${agent}`, fileSystem);
+      const source = packagedAgents.get(agent)!;
+      agentPlans.push({
+        agent,
+        destination,
+        source,
+        destinationExists: installed !== undefined,
+        status: installed === undefined ? "installed" : fileSnapshotsEqual(source, installed, platform) ? "current" : "refreshed",
+      });
+    }
+
     for (const plan of plans) {
       if (plan.status !== "current") {
         await replaceSkill(plan, installedSkillsRoot, platform, fileSystem);
       }
     }
+    for (const plan of agentPlans) {
+      if (plan.status !== "current") {
+        await replaceAgent(plan, installedAgentsRoot, platform, fileSystem);
+      }
+    }
 
-    return { skills: plans.map(({ skill, status }) => ({ skill, status })) };
+    return {
+      skills: plans.map(({ skill, status }) => ({ skill, status })),
+      agents: agentPlans.map(({ agent, status }) => ({ agent, status })),
+    };
   } catch (error) {
     await removeEmptyDirectories(createdDirectories, fileSystem);
     throw asInstallError(error, "skill installation did not complete");
@@ -186,7 +226,9 @@ export async function installSkillsCommand(): Promise<number> {
 }
 
 export function formatInstallSkillsResult(result: InstallSkillsResult): string {
-  return `${result.skills.map(({ skill, status }) => `${skill}: ${status}`).join("\n")}\n`;
+  const skills = result.skills.map(({ skill, status }) => `${skill}: ${status}`);
+  const agents = (result.agents ?? []).map(({ agent, status }) => `${agent}: ${status}`);
+  return `${[...skills, ...agents].join("\n")}\n`;
 }
 
 interface TreeSnapshot {
@@ -197,10 +239,23 @@ interface TreeSnapshot {
   readonly rootWritable: boolean;
 }
 
+interface FileSnapshot {
+  readonly bytes: Buffer;
+  readonly writable: boolean;
+}
+
 interface SkillPlan {
   readonly skill: OwnedSkill;
   readonly destination: string;
   readonly source: TreeSnapshot;
+  readonly destinationExists: boolean;
+  readonly status: InstallSkillStatus;
+}
+
+interface AgentPlan {
+  readonly agent: OwnedAgent;
+  readonly destination: string;
+  readonly source: FileSnapshot;
   readonly destinationExists: boolean;
   readonly status: InstallSkillStatus;
 }
@@ -336,6 +391,35 @@ async function snapshotTree(root: string, label: string, fileSystem: InstallSkil
   return { files, directories, writableFiles, writableDirectories, rootWritable: isOwnerWritable(rootStats) };
 }
 
+async function snapshotFile(file: string, label: string, fileSystem: InstallSkillsFileSystem): Promise<FileSnapshot> {
+  let stats: Stats;
+  try {
+    stats = await fileSystem.lstat(file);
+  } catch (error) {
+    throw asInstallError(error, `${label} is unavailable`);
+  }
+  if (stats.isSymbolicLink()) throw new SkillInstallError(`${label} contains an alias`);
+  if (!stats.isFile()) throw new SkillInstallError(`${label} is not a regular file`);
+  if (stats.nlink > 1) throw new SkillInstallError(`${label} contains an aliased file`);
+  let bytes: Buffer;
+  try {
+    bytes = await fileSystem.readFile(file);
+  } catch (error) {
+    throw asInstallError(error, `${label} could not be read`);
+  }
+  return { bytes, writable: isOwnerWritable(stats) };
+}
+
+async function optionalFileSnapshot(file: string, label: string, fileSystem: InstallSkillsFileSystem): Promise<FileSnapshot | undefined> {
+  try {
+    await fileSystem.lstat(file);
+  } catch (error) {
+    if (isNotFound(error)) return undefined;
+    throw asInstallError(error, `${label} could not be inspected`);
+  }
+  return await snapshotFile(file, label, fileSystem);
+}
+
 async function optionalSnapshot(root: string, label: string, fileSystem: InstallSkillsFileSystem): Promise<TreeSnapshot | undefined> {
   try {
     await fileSystem.lstat(root);
@@ -344,6 +428,11 @@ async function optionalSnapshot(root: string, label: string, fileSystem: Install
     throw asInstallError(error, `${label} could not be inspected`);
   }
   return await snapshotTree(root, label, fileSystem);
+}
+
+function fileSnapshotsEqual(source: FileSnapshot, installed: FileSnapshot, platform: InstallSkillsPlatform): boolean {
+  if (!source.bytes.equals(installed.bytes)) return false;
+  return platform === "win32" || installed.writable;
 }
 
 function snapshotsEqual(source: TreeSnapshot, installed: TreeSnapshot, platform: InstallSkillsPlatform): boolean {
@@ -426,6 +515,66 @@ async function replaceSkill(plan: SkillPlan, skillsRoot: string, platform: Insta
   }
 }
 
+async function replaceAgent(plan: AgentPlan, agentsRoot: string, platform: InstallSkillsPlatform, fileSystem: InstallSkillsFileSystem): Promise<void> {
+  let temporaryDirectory: string | undefined;
+  let temporaryFile: string | undefined;
+  let backup: string | undefined;
+  let installed = false;
+  try {
+    temporaryDirectory = await fileSystem.mkdtemp(path.join(agentsRoot, `.${plan.agent}.squire-install-`));
+    temporaryFile = path.join(temporaryDirectory, `${plan.agent}.md`);
+    await fileSystem.writeFile(temporaryFile, plan.source.bytes, { flag: "wx", mode: INSTALL_FILE_MODE });
+    await fileSystem.chmod(temporaryFile, INSTALL_FILE_MODE);
+
+    if (plan.destinationExists) {
+      backup = await unusedSibling(agentsRoot, plan.agent, "backup", fileSystem);
+      try {
+        await fileSystem.rename(plan.destination, backup);
+      } catch (error) {
+        throw asInstallError(error, "could not prepare the observer replacement");
+      }
+    }
+
+    try {
+      await fileSystem.rename(temporaryFile, plan.destination);
+      temporaryFile = undefined;
+      installed = true;
+    } catch (error) {
+      throw asInstallError(error, "could not install the observer replacement");
+    }
+
+    const verified = await snapshotFile(plan.destination, `installed ${plan.agent}`, fileSystem);
+    if (!fileSnapshotsEqual(plan.source, verified, platform)) {
+      throw new SkillInstallError("installed observer does not match its packaged contents");
+    }
+
+    if (backup !== undefined) {
+      try {
+        await fileSystem.rm(backup, { recursive: false, force: false });
+        backup = undefined;
+      } catch (error) {
+        throw asInstallError(error, "could not clean up the observer replacement");
+      }
+    }
+  } catch (error) {
+    if (backup !== undefined) {
+      try {
+        await restoreAgentBackup(plan.destination, backup, agentsRoot, plan.agent, installed, fileSystem);
+        backup = undefined;
+      } catch {
+        // Preserve an unrestored backup rather than deleting the prior owned
+        // agent. The command remains failed and cannot report success.
+      }
+    } else if (installed) {
+      await bestEffortRemove(plan.destination, fileSystem);
+    }
+    if (temporaryFile !== undefined) await bestEffortRemove(temporaryFile, fileSystem);
+    throw asInstallError(error, "observer replacement did not complete");
+  } finally {
+    if (temporaryDirectory !== undefined) await bestEffortRemove(temporaryDirectory, fileSystem);
+  }
+}
+
 async function populateTemporaryDirectory(temporary: string, source: TreeSnapshot, fileSystem: InstallSkillsFileSystem): Promise<void> {
   try {
     await fileSystem.chmod(temporary, INSTALL_DIRECTORY_MODE);
@@ -464,9 +613,24 @@ async function restoreBackup(destination: string, backup: string, skillsRoot: st
   await bestEffortRemove(discarded, fileSystem);
 }
 
-async function unusedSibling(directory: string, skill: OwnedSkill, purpose: string, fileSystem: InstallSkillsFileSystem): Promise<string> {
+async function restoreAgentBackup(destination: string, backup: string, agentsRoot: string, agent: OwnedAgent, installed: boolean, fileSystem: InstallSkillsFileSystem): Promise<void> {
+  if (!installed) {
+    await fileSystem.rename(backup, destination);
+    return;
+  }
+  const discarded = await unusedSibling(agentsRoot, agent, "rollback", fileSystem);
+  try {
+    await fileSystem.rename(destination, discarded);
+    await fileSystem.rename(backup, destination);
+  } catch (error) {
+    throw asInstallError(error, "could not roll back the observer replacement");
+  }
+  await bestEffortRemove(discarded, fileSystem);
+}
+
+async function unusedSibling(directory: string, name: string, purpose: string, fileSystem: InstallSkillsFileSystem): Promise<string> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const candidate = path.join(directory, `.${skill}.squire-${purpose}-${randomUUID()}`);
+    const candidate = path.join(directory, `.${name}.squire-${purpose}-${randomUUID()}`);
     try {
       await fileSystem.lstat(candidate);
     } catch (error) {

@@ -120,8 +120,13 @@ if current configuration later changes.
 Use one event-driven non-model `watch`; it exits at terminal state, but its exit
 code is not the run's success verdict. Alternatively authorize a bounded host
 non-model observer with a deadline, maximum checks and escalation on expiry.
-No model status polling, unbounded watchdog loops or silent paid reruns. If watch
-fails or the deadline expires, preserve evidence and escalate, not relaunch.
+An async `squire-observer` child is optional and exists only to preserve owner-
+conversation availability; when blocking is acceptable, direct native
+non-model `squire watch` remains preferred. Its one watcher receipt is
+observation only and grants no workflow, retry, publication or merge authority.
+A child/tool timeout is observer timeout, never run completion. No model status
+polling, unbounded watchdog loops or silent paid reruns. If watch fails or the
+deadline expires, preserve evidence and escalate, not relaunch.
 
 The controller owns the immutable Contract, one Implement and one independent Verify. Failure is terminal; only the owner can authorize a separate new run. Do not bypass gates
 or mutate a candidate after its checks. Before reporting clean normal success:

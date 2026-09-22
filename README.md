@@ -21,7 +21,7 @@ A clean run has two model sessions. Implement is the only writer. Verify combine
 - [Runtime and required gates](docs/runtime-and-gate-policy.md)
 - [Operator skill](skills/squire-operator/SKILL.md)
 
-`squire install-skills` is the explicit owner-invoked command for installing or refreshing the two packaged Pi skills (`squire-operator` and `squire-bug-report`). It uses `PI_CODING_AGENT_DIR` when set, otherwise the documented per-user Pi agent directory, preserves unrelated skills, and does not load Squire configuration or providers.
+`squire install-skills` is the explicit owner-invoked command for installing or refreshing the two packaged Pi skills (`squire-operator` and `squire-bug-report`) plus the named `squire-observer` agent. It uses `PI_CODING_AGENT_DIR` when set, otherwise the documented per-user Pi agent directory, preserves unrelated skills and agents, and does not load Squire configuration or providers.
 
 ## Development
 

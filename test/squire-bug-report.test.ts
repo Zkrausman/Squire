@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 const run = promisify(execFile);
+const root = process.cwd();
 const helper = path.resolve("skills/squire-bug-report/bug-report.mjs");
 
 function environment(home: string, sessionId?: string): NodeJS.ProcessEnv {
@@ -86,4 +87,20 @@ test("bug report helper resolves the fixed POSIX and Windows profile paths", asy
   const module = await import(pathToFileURL(helper).href);
   assert.equal(module.inboxDirectory("posix", { HOME: "/home/ada" }), "/home/ada/.squire/bug-reports/inbox");
   assert.equal(module.inboxDirectory("win32", { USERPROFILE: "C:\\Users\\Ada" }), "C:\\Users\\Ada\\.squire\\bug-reports\\inbox");
+});
+
+test("bug-report skill defines the bounded semantic auto-report decision", async () => {
+  const skill = await readFile(path.join(root, "skills/squire-bug-report/SKILL.md"), "utf8");
+  assert.match(skill, /whenever you encounter or strongly suspect a bug in Squire\s+itself/iu);
+  assert.match(skill, /before ending the turn/u);
+  assert.match(skill, /ordinary target-repository failures/u);
+  assert.match(skill, /expected behavior/u);
+  assert.match(skill, /user error/u);
+  assert.match(skill, /duplicate/u);
+  assert.match(skill, /Do not claim deterministic bug detection/u);
+  assert.match(skill, /reason.*context.*required|both are required/su);
+  assert.match(skill, /PI_SESSION_ID/u);
+  assert.match(skill, /local inbox capture/u);
+  assert.match(skill, /not ticket\s+creation/u);
+  assert.match(skill, /does not contact Linear or GitHub/u);
 });

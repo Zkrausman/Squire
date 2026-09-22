@@ -12,20 +12,24 @@ install or activate it. Only after review/merge **and owner install approval**:
 2. With owner approval, invoke the built Squire executable's
    `squire install-skills` command. It resolves `PI_CODING_AGENT_DIR` when
    explicitly set, otherwise `%USERPROFILE%\.pi\agent` on Windows or
-   `$HOME/.pi/agent` on POSIX, and installs beneath `~/.pi/agent/skills/`.
-   The command owns exactly `squire-operator` and `squire-bug-report`; it reports
-   `installed`, `refreshed`, or `current`, preserves unrelated skills, and never
-   runs a skill helper. The skill does not invoke this command or install itself.
+   `$HOME/.pi/agent` on POSIX, and installs beneath its `skills/` and `agents/`
+   directories. The command owns exactly the `squire-operator` and
+   `squire-bug-report` skills plus the `squire-observer` agent; it reports
+   `installed`, `refreshed`, or `current`, preserves unrelated skills and
+   agents, and never runs a skill helper. The skill does not invoke this command
+   or install itself.
 3. Confirm the deterministic command output and nonzero failure status. The
    command rejects source/destination aliases and unsafe agent roots, and uses a
-   bounded sibling replacement with rollback/cleanup for an owned skill. Do not
-   pass arbitrary source, target, plugin, or path options.
+   bounded sibling replacement with rollback/cleanup for each owned skill or
+   agent. Do not pass arbitrary source, target, plugin, or path options.
 4. Open a fresh trusted Pi session in a different project, or use Pi's `/reload`
    resource reload in an existing session (verify support in installed Pi docs).
    Check that startup skill metadata advertises `squire-operator` without a
-   collision/warning. Ask it to read the skill, or use `/skill:squire-operator`,
-   then resolve and read both references from the **installed** directory. This
-   verification authorizes no ticket launch or paid workflow by itself.
+   collision/warning. Confirm the advertised `squire-observer` agent is present
+   alongside the skill. Ask it to read the skill, or use
+   `/skill:squire-operator`, then resolve and read both references from the
+   **installed** directory. This verification authorizes no ticket launch or
+   paid workflow by itself.
 
 Global discovery advertises the description at startup and loads the body on
 demand. Project `.pi/skills` and `.agents/skills` discovery requires a trusted

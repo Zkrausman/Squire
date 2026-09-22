@@ -23,6 +23,12 @@ not the current project.
    manually publish failed candidates, silently change credentials or relaunch.
 5. Hand off facts and next authorized action, not inherited conversation context.
 
+## Optional async observation
+
+An async `squire-observer` child is optional and exists only to preserve owner-conversation availability while one existing run is watched. When blocking the owner conversation is acceptable, direct native non-model `squire watch` remains preferred. The child receives the exact trusted executable, working directory, existing run ID and config path; it performs one blocking watch followed by one status and returns one bounded receipt.
+
+A watcher receipt is observation only. It grants no workflow authority and cannot authorize a retry, recovery, publication, merge, or any other action. A timeout is observer evidence, never run completion; use persisted Squire status for workflow decisions.
+
 Honor repository safety instructions and owner stop gates. Delegation, merge,
 tags, publication, installation/deployment and real-world actions each require
 separate applicable authority; this skill grants none. Run approval must cover
