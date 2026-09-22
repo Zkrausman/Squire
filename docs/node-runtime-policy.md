@@ -40,6 +40,34 @@ and schema checks. Their original runtime provenance is not rewritten. Old green
 runs are not evidence of current runtime support, and this policy does not repair,
 resume or promote failed candidates.
 
+## Selecting the runtime for local and phase tests
+
+`npm test` builds first and deliberately rejects Node 20/22 before running tests.
+An unsupported-version diagnostic is a test-environment prerequisite failure,
+not permission to relax the engines, skip the build, or bypass the preflight.
+Select Node 24 in the **same shell/environment that launches the test command**;
+a Node 24 installation elsewhere on the machine does not change PATH. npm
+lifecycle scripts and subprocesses must also resolve `node` to that installation.
+Invoking only npm's entry point with an absolute Node 24 executable is insufficient
+if its child scripts still find Node 22 on PATH.
+
+For example, with an already installed, trusted Node 24 on POSIX:
+
+```sh
+export PATH="/absolute/path/to/node24/bin:$PATH"
+node --version # must print v24.x.x
+node scripts/runtime-preflight.mjs
+npm ci --engine-strict
+npm test
+```
+
+On Windows, select the Node 24 installation in the test shell's PATH as well.
+For automated phase tests, the controller/sandbox owner must provision Node 24
+and select it for each phase's command environment; a PATH export in one agent's
+shell is not a persistent change to later phase environments. Rerun the actual
+checks under Node 24 and retain their exact-head evidence; an earlier Node 22
+refusal is not a passing test result.
+
 ## CI and comparison boundary
 
 [`.github/required-check-policy.json`](../.github/required-check-policy.json) records

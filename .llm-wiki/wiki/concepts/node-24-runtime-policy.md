@@ -19,6 +19,14 @@ rebuild native binaries locally and test. Historical artifacts remain readable
 under existing integrity/schema rules; old Node 20/22 runs retain their provenance
 but do not establish current support or permit recovery/promotion of failed runs.
 
+Test execution requires Node 24 on the launching shell's PATH, including npm
+lifecycle children; invoking npm through an absolute Node 24 binary alone does
+not select Node 24 for child `node` commands. `npm test` rejecting Node 22 is an
+environment prerequisite failure, not grounds to bypass the build/preflight.
+Controller/sandbox owners must select Node 24 for each phase environment; one
+agent shell's PATH export does not persist to later phases. Rerun the checks in
+the supported environment rather than treating the refusal as a passing result.
+
 `.github/required-check-policy.json` names `node24-only-v1`, replacing the older
 unversioned Node 20.17/22.9/24 cohort. Comparisons must disclose the policy version
 and exact head. Node 24-only CI retains clean install/build/full tests, both Linux
