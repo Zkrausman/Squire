@@ -9,7 +9,9 @@ auth-file contents, environment dumps or whole secret-bearing configurations.
   identity, rather than trusting the first PATH hit. A source build uses the
   trusted checkout's `npm ci --ignore-scripts --no-audit --no-fund` then
   `npm run build`; its entry is `dist/src/personal/cli.js`. Inspect that version's
-  CLI/config schema before use. There is no public Squire version/health command.
+  CLI/config schema before use. `squire --version` and `squire -V` report the
+  package version without loading runtime integrations; there is no public
+  Squire health command.
   Read target repository instructions (including AGENTS.md), safety constraints,
   status and remotes; verify the intended hosting repository and actual remote
   default branch. Never assume `main`; `master` or another branch may be correct.
