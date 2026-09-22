@@ -1,14 +1,5 @@
----
-type: entity
-created: 2026-09-01
-updated: 2026-09-01
-category: project
-confidence: high
-sources: [sources/SRC-2026-09-01-001, sources/SRC-2026-09-01-004]
----
-
 # Squire
 
-Squire is a trusted TypeScript orchestration control plane that advances one ticket through independent Plan, Implement, Review, and Test phases while leaving final merge to a human. The controller enforces mechanics and privileged boundaries; the Pi Orchestrator owns workflow reasoning. [Architecture source](/sources/SRC-2026-09-01-001.md)
+Squire is a trusted TypeScript controller for one owner-approved immutable ticket contract, one writable Implement candidate and one fresh independent read-only Verify session. It publishes only the exact verified head through a GitHub App, preserves required exact-head CI, and leaves merge to the owner.
 
-Core design knowledge includes the [trusted controller boundary](/concepts/trusted-controller-boundary.md), [five-session Pi topology](/concepts/five-session-pi-rpc-topology.md), and [immutable handoff validation](/concepts/immutable-handoff-validation.md). The versioned contract basis is [AIDEV-215](/sources/SRC-2026-09-01-004.md).
+The durable authority model is [Contract → Implement → Verify](../concepts/contract-implement-verify-workflow.md). Failure is terminal and immutable; historical state remains inspectable but cannot be executed or promoted. Model profiles and current-run telemetry cover only Implement and Verify.

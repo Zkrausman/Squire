@@ -168,17 +168,8 @@ export function formatRunStatus(state: PersonalRunState, now: Date = new Date())
     `Stdout log: ${display(state.stdoutPath ?? "unavailable")}`,
     `Stderr log: ${display(state.stderrPath ?? "unavailable")}`,
   ];
-  const staged = [...(state.stagedTransitions ?? [])].reverse().find(t => !phase || t.phase === phase);
-  const selectionReason = [...(state.stagedTransitions ?? [])].reverse().find(t => t.kind === "reserved" && t.phase === staged?.phase && t.attempt === staged.attempt)?.reason;
-  const correction = state.reportCorrections?.at(-1);
   const launch = state.launchGenerations?.at(-1);
   if (launch) lines.push(`Phase launch: phase=${launch.phase} attempt=${launch.attempt} generation=${launch.generation} activity=${state.status === "running" && launch.kind === "retrying" ? "retry_backoff" : launch.kind === "dispatched" ? "model_work" : launch.kind} delayMs=${launch.delayMs}`);
-  if (state.reportCorrectionPolicy) lines.push(`Report correction: maximum=${state.reportCorrectionPolicy.maxAttempts} per phase attempt${correction ? ` phase=${correction.phase} attempt=${correction.attempt} used=${correction.used} remaining=${correction.remaining} status=${correction.kind}` : ` used=0 remaining=${state.reportCorrectionPolicy.maxAttempts}`}`);
-  if (staged) lines.push(`Escalation: ${staged.phase} stage=${staged.stageIndex + 1}/${state.escalationPolicy![staged.phase]!.stages.length} stage-consumed=${staged.stageAttempt}/${staged.stageMaximum} consumed=${staged.consumed} remaining=${staged.remaining} reason=${staged.reason} selected-by=${selectionReason} classification=${staged.classification ?? "reserved"} policy=${staged.policyDigest}`);
-  else if (state.escalationDigest) lines.push(`Escalation policy: ${state.escalationDigest} (no attempt reserved for current phase)`);
-  if (state.step === "plan" && state.planProgress) lines.push(`Progress: Plan / ${state.planProgress.subphase === "requirements" ? "Requirements" : "Implementation Design"}`);
-  const plan = state.results.plan?.phase === "plan" ? state.results.plan.details.supervision : undefined;
-  if (plan?.outcome === "needs_clarification") lines.push(`Plan blocked: ${display(state.results.plan!.summary)}`);
   if (state.executionMode) lines.push(`Execution mode: ${display(state.executionMode)}`);
   if (state.controllerPid !== undefined && state.controllerPid !== null) lines.push(`Controller PID: ${state.controllerPid}`);
   return `${lines.join("\n")}\n`;
@@ -196,10 +187,7 @@ export function formatRunEvent(event: RunEvent): string {
   if (event.phase !== undefined) fields.push(`phase=${display(event.phase)}`);
   if (event.attempt !== undefined) fields.push(`attempt=${event.attempt}`);
   if (event.outcome !== undefined) fields.push(`outcome=${display(event.outcome)}`);
-  if (event.staged) {
-    const t = event.staged;
-    fields.push(`stage=${t.stageIndex + 1}`, `stage-consumed=${t.stageAttempt}/${t.stageMaximum}`, `consumed=${t.consumed}`, `remaining=${t.remaining}`, `profile=${display(`${t.profile.provider}/${t.profile.model}@${t.profile.thinking}`)}`, `reason=${t.reason}`, `classification=${t.classification ?? "reserved"}`, `policy=${t.policyDigest}`);
-  }
+
   return `${fields.join(" ")}\n`;
 }
 
@@ -250,13 +238,11 @@ function phaseForStatus(step: PersonalRunState["step"]): PersonalPhase | undefin
 }
 
 function profileForStatus(state: PersonalRunState, phase: PersonalPhase | undefined) {
-  const staged = [...(state.stagedTransitions ?? [])].reverse().find(t => !phase || t.phase === phase);
-  if (staged) return staged.profile;
   if (phase && state.profiles?.[phase]) return state.profiles[phase];
   // During launch/preparation there is no current phase yet, but the selected
   // Plan profile is already durable and is the most useful resolved model to
   // show. Legacy files deliberately remain unavailable.
-  return state.profiles?.plan;
+  return state.profiles?.implement;
 }
 
 function compareStates(left: PersonalRunState, right: PersonalRunState): number {

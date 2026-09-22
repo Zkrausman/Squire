@@ -1,17 +1,13 @@
+import { InvalidPhaseHandoff, ReportExecutionFailure } from "./report-capture.js";
 import { setTimeout as retryDelay } from "node:timers/promises";
 import { classifyLaunchFailure, generationIdentity, launchInputDigest, validateLaunchRetryPolicy, LAUNCH_BACKOFF_MS, LAUNCH_CLASSIFIER, type LaunchRetryPolicy, type LaunchRecord } from "./launch-retry.js";
 import { parsePhaseResult } from "./phase-payload.js";
 import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
-import { InvalidPhaseHandoff, CorrectionExecutionFailure, analyzeImplementReport, parseCorrectedReport, sameReportFacts, validateReportCorrectionPolicy, type ReportCorrectionPolicy, type CorrectionRecord, type ReportCapture } from "./report-correction.js";
 import { decodeReport, verifyReportEvidence } from "./report-evidence.js";
-import { requireStagedSlot, reservation } from "./staged-attempts.js";
-import { classifyExecutionFailure, PhaseExecutionError } from "./execution-failure.js";
-import { validateEscalationPolicy, escalationDigest, type EscalationPolicy } from "./model-policy.js";
-import { validatePlanProgress } from "./plan-artifacts.js";
-import { validateExecutablePlan } from "./prompt-policy.js";
+import { classifyExecutionFailure } from "./execution-failure.js";
 import { createHash, randomUUID } from "node:crypto";
-import { canonical, composeSystemPrompt, launchEvidence, persistLaunchMaterial, readLaunchMaterial, validateLaunchMaterial, type LaunchMaterial, type LaunchEvidence } from "./launch-material.js";
+import { canonical, launchEvidence, persistLaunchMaterial, readLaunchMaterial, validateLaunchMaterial, type LaunchMaterial, type LaunchEvidence } from "./launch-material.js";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -27,7 +23,7 @@ import {
   type PersonalModelPolicy,
   type PhaseProfile,
 } from "./model-policy.js";
-import { validatePhaseResultShape, validateProjectWikiDisposition, validateProjectWikiPaths } from "./phase-result.js";
+import { validateVerifyCommands, validatePhaseResultShape, validateProjectWikiDisposition, validateProjectWikiPaths } from "./phase-result.js";
 import type {
   PersonalPhase,
   PersonalRunState,
@@ -42,7 +38,6 @@ import type {
   TicketPort,
   WorkspacePort,
   PhasePort,
-  RemediationAttemptEvidence,
 } from "./types.js";
 
 interface RunContext {
@@ -76,10 +71,9 @@ export interface PersonalMvpControllerOptions {
   readonly newId?: () => string;
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
-  readonly escalationPolicy?: EscalationPolicy;
   readonly launchRetryPolicy?: LaunchRetryPolicy;
-  readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
   readonly phaseTimeoutMs?: number;
+  readonly testCommands?: readonly string[];
   /** Optional process identity for persisted foreground/background evidence. */
   readonly controllerPid?: number;
   /** Receives persistence failures that cannot be represented in run state. */
@@ -138,24 +132,22 @@ export class PersonalMvpController {
   readonly #monotonicNow: () => number;
   readonly #newId: () => string;
   readonly #modelPolicy: PersonalModelPolicy;
-  readonly #escalationPolicy: EscalationPolicy | undefined;
   readonly #retryPolicy: LaunchRetryPolicy;
-  readonly #correctionPolicy: ReportCorrectionPolicy;
   readonly #phaseTimeoutMs: number;
+  readonly #testCommands: readonly string[];
   readonly #controllerPid: number | undefined;
   readonly #onPersistenceError: (error: unknown) => void;
   readonly #contexts = new Map<string, RunContext>();
   readonly #reservedClaims = new Set<string>();
 
   constructor(options: PersonalMvpControllerOptions) {
+    for (const key of ["escalationPolicy", "reportCorrectionPolicy", "promptPolicy", "remediationPolicy"]) if (Object.hasOwn(options,key)) throw new Error(`${key} is retired; remove it and configure only implement/verify`);
     this.#material = options.launchMaterial === undefined ? undefined : validateLaunchMaterial(options.launchMaterial);
-    if (this.#material) validateExecutablePlan(this.#material.config.promptPolicy!.plan);
-    const staged = this.#material?.config.escalationPolicy ?? options.escalationPolicy;
-    this.#escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
     this.#retryPolicy = validateLaunchRetryPolicy(this.#material ? this.#material.config.launchRetryPolicy : options.launchRetryPolicy);
-    this.#correctionPolicy = validateReportCorrectionPolicy(this.#material ? this.#material.config.reportCorrectionPolicy : options.reportCorrectionPolicy);
     this.#phaseTimeoutMs = this.#material?.config.phaseTimeoutMs ?? options.phaseTimeoutMs ?? 3600000;
     if (!Number.isSafeInteger(this.#phaseTimeoutMs) || this.#phaseTimeoutMs <= 0 || this.#phaseTimeoutMs > 14400000) throw new Error("invalid controller phase timeout");
+    this.#testCommands = this.#material?.config.testCommands ?? options.testCommands ?? [];
+    if (!this.#testCommands.length || new Set(this.#testCommands).size !== this.#testCommands.length) throw new Error("configured test commands must be nonempty and distinct");
     this.#tickets = options.tickets;
     this.#workspaces = options.workspaces;
     this.#phases = options.phases;
@@ -166,7 +158,7 @@ export class PersonalMvpController {
     this.#newId = options.newId ?? randomUUID;
     this.#controllerPid = options.controllerPid;
     this.#onPersistenceError = options.onPersistenceError ?? (() => undefined);
-    this.#modelPolicy = validateModelPolicy(options.modelPolicy ?? APPROVED_PERSONAL_MODEL_POLICY);
+    this.#modelPolicy = validateModelPolicy(this.#material?.config.modelPolicy ?? options.modelPolicy ?? APPROVED_PERSONAL_MODEL_POLICY);
   }
 
   /**
@@ -182,12 +174,10 @@ export class PersonalMvpController {
       request.ticketId,
       request.modelPolicy ?? this.#modelPolicy,
     );
-    const staged = request.escalationPolicy ?? this.#escalationPolicy;
-    const escalationPolicy = staged === undefined ? undefined : validateEscalationPolicy(staged);
-    if (this.#material && canonical(escalationPolicy) !== canonical(this.#material.config.escalationPolicy)) throw new Error("request escalation policy differs from launch capture");
+    if (this.#material && canonical(resolved.profiles) !== canonical(this.#material.config.modelPolicy)) throw new Error("request model policy differs from capture");
     const identity = createRunIdentity(request, options.runId ?? this.#newId(), options.runId);
     const startedAt = this.#timestamp();
-    const baseline = initialState(identity.runId, identity.sandbox, identity.branch, request, resolved.profiles, resolved.planSelection, startedAt, {
+    const baseline = initialState(identity.runId, identity.sandbox, identity.branch, request, resolved.profiles, startedAt, {
       executionMode,
       ...(options.stdoutPath !== undefined ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath !== undefined ? { stderrPath: options.stderrPath } : {}),
@@ -197,7 +187,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
-    const state: PersonalRunState = { ...baseline, launchRetryPolicy: this.#retryPolicy, launchGenerations: [], reportCorrectionPolicy: this.#correctionPolicy, reportCorrections: [], ...(escalationPolicy ? { escalationPolicy, escalationDigest: escalationDigest(escalationPolicy), stagedTransitions: [] } : {}) };
+    const state: PersonalRunState = { ...baseline, launchRetryPolicy: this.#retryPolicy, launchGenerations: [] };
     if (this.#states.reserve) {
       if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
@@ -221,7 +211,7 @@ export class PersonalMvpController {
 
   /**
    * Execute one already-reserved identity. The detached child uses this path;
-   * it never creates a second run or reselects the Plan model bucket.
+   * it never creates a second run or reselects model policy.
    */
   async runReserved(request: RunRequest, runId: string, launchConfigDigest: string, signal?: AbortSignal, launchConfigPath?: string): Promise<PersonalRunState> {
     validateRequest(request);
@@ -232,6 +222,7 @@ export class PersonalMvpController {
       // Always claim persisted state. Cached state can belong to the reserving
       // parent invocation and is not authority to enter detached execution.
       const loaded = await this.#readState(runId);
+      if (loaded?.schemaVersion !== 2) throw new Error("historical runs are read-only");
       if (!loaded) throw new Error(`reserved run state not found: ${runId}`);
       if (
         loaded.ticketId !== request.ticketId
@@ -391,7 +382,10 @@ export class PersonalMvpController {
     try {
       const ticket = await this.#tickets.get(request.ticketId, signal);
       if (ticket.id !== request.ticketId) throw new Error("Linear returned a different ticket");
+      const contractBytes = JSON.stringify(ticket);
+      if (Buffer.byteLength(contractBytes) > 128 * 1024) throw new Error("ticket contract exceeds bound");
       await context.persist({
+        contract: { ticket: structuredClone(ticket), digest: createHash("sha256").update(contractBytes).digest("hex") },
         ticketTitle: ticket.title,
         step: "preparing",
         lifecycle: "preparing",
@@ -411,18 +405,16 @@ export class PersonalMvpController {
       if (workspace.head !== workspace.baseSha) throw new Error("prepared workspace did not start at the base SHA");
       await context.persist({ baseSha: workspace.baseSha, head: workspace.head, preparationState: "ready", lifecycle: "running" });
 
-      await this.#executePhase(context, ticket, request, "plan", [], signal);
-      await this.#executePhase(context, ticket, request, "implement", [], signal);
-      await this.#ensureReview(context, ticket, request, signal);
-      await this.#ensureTest(context, ticket, request, signal);
-      await this.#ensureRetro(context, ticket, request, signal);
+      await this.#executePhase(context, ticket, request, "implement", signal);
+      await this.#executePhase(context, ticket, request, "verify", signal);
 
       const completeResults = requirePassingResults(context.state);
       const head = requireHead(context.state);
-      await context.persist({ step: "publishing", lifecycle: "publishing" });
+      await context.persist({ step: "publishing", lifecycle: "publishing", publicationState: "publishing" });
       const bundle = await this.#workspaces.exportBundle({ runId: context.state.runId, sandbox: context.state.sandbox, branch: context.state.branch, baseSha: requireBase(context.state), head }, signal);
       if (bundle.baseSha !== context.state.baseSha || bundle.head !== head || bundle.branch !== context.state.branch) throw new Error("candidate bundle identity mismatch");
       const published = await this.#publication.publish({
+        contractDigest: context.state.contract!.digest,
         runId: context.state.runId,
         ticket,
         repository: request.repository,
@@ -433,7 +425,7 @@ export class PersonalMvpController {
         phases: completeResults,
       }, signal);
       if (!/^https:\/\/[^\s]+$/u.test(published.url)) throw new Error("publisher returned an invalid PR URL");
-      await context.persist({ step: "complete", status: "completed", lifecycle: "completed", endedAt: this.#timestamp(), prUrl: published.url, lastError: null });
+      await context.persist({ step: "complete", status: "completed", lifecycle: "completed", endedAt: this.#timestamp(), prUrl: published.url, publicationState: "published", terminalReason: "verified_candidate_published", lastError: null });
       await this.#publishTelemetry(context.state);
       await this.#releaseReservation(context);
       this.#contexts.delete(context.state.runId);
@@ -445,407 +437,87 @@ export class PersonalMvpController {
     }
   }
 
-  async #ensureReview(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal): Promise<void> {
-    let result = await this.#executePhase(context, ticket, request, "review", [], signal);
-    if (result.status === "remediation_required") {
-      if (context.state.remediations.review >= 1) throw new Error("Review remediation budget exhausted");
-      for (const phase of ["implement", "review"] as const) requireStagedSlot(context.state, phase, "remediation_required");
-      await context.persist({
-        remediations: { ...context.state.remediations, review: context.state.remediations.review + 1 },
-        remediationAttempts: appendRemediationAttempt(context.state, "review", result.attempt),
-      });
-      await this.#executePhase(context, ticket, request, "implement", feedback(result), signal);
-      result = await this.#executePhase(context, ticket, request, "review", [], signal);
-    }
-    if (result.status !== "passed") throw new Error(`Review did not pass: ${result.summary}`);
-  }
-
-  async #ensureTest(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal): Promise<void> {
-    let result = await this.#executePhase(context, ticket, request, "test", [], signal);
-    if (result.status === "remediation_required") {
-      if (context.state.remediations.test >= 1) throw new Error("Test remediation budget exhausted");
-      for (const phase of ["implement", "review", "test"] as const) requireStagedSlot(context.state, phase, "remediation_required");
-      await context.persist({
-        remediations: { ...context.state.remediations, test: context.state.remediations.test + 1 },
-        remediationAttempts: appendRemediationAttempt(context.state, "test", result.attempt),
-      });
-      await this.#executePhase(context, ticket, request, "implement", feedback(result), signal);
-      await this.#ensureReview(context, ticket, request, signal);
-      result = await this.#executePhase(context, ticket, request, "test", [], signal);
-    }
-    if (result.status !== "passed") throw new Error(`Test did not pass: ${result.summary}`);
-  }
-
-  async #ensureRetro(context: RunContext, ticket: Ticket, request: RunRequest, signal?: AbortSignal): Promise<void> {
-    const test = context.state.results.test;
-    const head = requireHead(context.state);
-    if (!test || test.status !== "passed" || test.inputHead !== head || test.outputHead !== head) throw new Error("Retro requires a fresh passing Test at the current HEAD");
-    const result = await this.#executePhase(context, ticket, request, "retro", [], signal);
-    if (result.status !== "passed") throw new Error(`Retro did not pass: ${result.summary}`);
-  }
-
-  async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, phaseFeedback: readonly string[], signal?: AbortSignal): Promise<PhaseResult> {
-    if (!context.state.escalationPolicy?.[phase]) return this.#executePhaseOnce(context, ticket, request, phase, phaseFeedback, signal);
-    let nextFeedback = phaseFeedback.slice(0, 20).map(item => item.slice(0, 2000));
-    let trigger = phaseFeedback.length ? "remediation_required" : "initial";
-    for (;;) {
-      signal?.throwIfAborted();
-      const slot = requireStagedSlot(context.state, phase, trigger)!;
-      // No attempt is charged for controller-owned preflight failures.
-      if (signal?.aborted) throw signal.reason;
-      await this.#workspaces.assertClean(context.state.sandbox, signal);
-      if (await this.#workspaces.currentHead(context.state.sandbox, signal) !== requireHead(context.state)) throw new Error(`${phase} started at an unexpected Git HEAD`);
-      signal?.throwIfAborted();
-      const reserved = reservation(context.state, slot);
-      await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: slot.attempt }, stagedTransitions: [...context.state.stagedTransitions!, reserved] });
-      let result: PhaseResult;
-      try {
-        result = await this.#executePhaseOnce(context, ticket, request, phase, nextFeedback, signal, slot.profile);
-      } catch (error) {
-        const classification = classifyExecutionFailure(error, signal);
-        await context.persist({ stagedTransitions: [...context.state.stagedTransitions!, { ...slot, kind: "closed", reason: "execution_failure", classification }] });
-        throw error;
-      }
-      const classification = result.status === "failed" ? (result.phase === "plan" && result.details.supervision?.outcome === "needs_clarification" ? "needs_clarification" : "eligible_failure") : result.status;
-      await context.persist({ stagedTransitions: [...context.state.stagedTransitions!, { ...slot, kind: "closed", reason: "result", classification, result }] });
-      if (classification === "needs_clarification") throw new Error(`Plan needs clarification: ${result.summary}`);
-      if (classification !== "eligible_failure") return result;
-      nextFeedback = feedback(result).slice(0, 20).map(item => item.slice(0, 2000));
-      trigger = classification;
-    }
-  }
-
-  async #executePhaseOnce(...args: Parameters<PersonalMvpController["executePhaseWithEvidence"]>): Promise<PhaseResult> {
-    try { return await this.executePhaseWithEvidence(...args); }
-    finally { await this.#phases.reportEvidence?.release?.(); }
-  }
-
-  private async executePhaseWithEvidence(
-    context: RunContext,
-    ticket: Ticket,
-    request: RunRequest,
-    phase: PersonalPhase,
-    phaseFeedback: readonly string[],
-    signal?: AbortSignal,
-    stagedProfile?: PhaseProfile,
-  ): Promise<PhaseResult> {
-    const deadline = this.#monotonicNow() + this.#phaseTimeoutMs;
-    const timeoutSignal = AbortSignal.timeout(this.#phaseTimeoutMs);
-    signal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, signal?: AbortSignal): Promise<PhaseResult> {
+    if (context.state.schemaVersion !== 2 || context.state.status !== "running" || context.state.attempts[phase] !== 0) throw new Error("phase cannot replay");
     const expectedHead = requireHead(context.state);
-    const attempt = context.state.attempts[phase] + (stagedProfile ? 0 : 1);
-    if (!stagedProfile) await context.persist({ step: phase, planProgress: null, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
-    const expectedProfile = Object.freeze({ ...(stagedProfile ?? resolvedProfile(context.state, phase)) });
-    const stagedAccounting = context.state.stagedTransitions?.find(t => t.phase === phase && t.attempt === attempt && t.kind === "reserved");
-    let input: PhaseInput = Object.freeze({
-      telemetryAttribution: { trigger: stagedAccounting ? stagedAccounting.reason as "initial" | "retry" | "stage_advanced" | "remediation" : attempt > 1 ? "remediation" : "initial", stageIndex: stagedAccounting?.stageIndex ?? null, stageAttempt: stagedAccounting?.stageAttempt ?? null },
-      deadline,
-      ...(phase === "implement" ? { reportSession: Object.freeze({ sessionId: randomUUID(), sessionFile: `/ticket/sessions/${phase}/${attempt}.jsonl` }) } : {}),
-      runId: context.state.runId,
-      ticket: Object.freeze({ ...ticket }),
-      repository: request.repository,
-      baseBranch: request.baseBranch,
-      sandbox: context.state.sandbox,
-      branch: context.state.branch,
-      phase,
-      attempt,
-      expectedHead,
-      originalTicketBaseSha: requireBase(context.state),
-      previousCumulative: cumulativePreviousResults(context.state),
-      profile: expectedProfile,
-      ...(stagedProfile ? { escalationDigest: context.state.escalationDigest! } : {}),
-      // A phase adapter is untrusted with respect to controller state. Give it
-      // detached, immutable inputs so a retained reference cannot mutate the
-      // resolved policy or prior evidence between persistence boundaries.
-      previous: structuredClone(context.state.results),
-      feedback: Object.freeze([...phaseFeedback]),
-    });
-    if (!stagedProfile && phase !== "implement") {
-      await this.#workspaces.assertClean(context.state.sandbox, signal);
-      const startingHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
-      if (startingHead !== expectedHead) throw new Error(`${phase} started at an unexpected Git HEAD`);
-    }
-    let result: PhaseResult | undefined;
-    let successfulCapture: ReportCapture | undefined;
-    let successfulBytes: Buffer | undefined;
-    let phaseFailed = false;
-    let phaseError: unknown;
-    let acceptingProgress = true;
-    let progressWrites = Promise.resolve();
-    let progressCount = 0;
+    await this.#workspaces.assertClean(context.state.sandbox, signal);
+    if (await this.#workspaces.currentHead(context.state.sandbox, signal) !== expectedHead) throw new Error("phase baseline changed");
+    await context.persist({ step: phase, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: 1 } });
+    const deadline = this.#monotonicNow() + this.#phaseTimeoutMs;
+    const timeout = AbortSignal.timeout(this.#phaseTimeoutMs);
+    signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    let input: PhaseInput = {
+      telemetryAttribution: { trigger: "initial" }, deadline,
+      runId: context.state.runId, ticket: structuredClone(ticket), contractDigest: context.state.contract!.digest,
+      ...(phase === "verify" ? { implementationEvidence: (context.state.results.implement as ImplementPhaseResult).details } : {}),
+      testCommands: this.#testCommands, repository: request.repository, baseBranch: request.baseBranch,
+      sandbox: context.state.sandbox, branch: context.state.branch, phase, attempt: 1,
+      expectedHead, originalTicketBaseSha: requireBase(context.state), profile: resolvedProfile(context.state, phase),
+    };
+    const inputDigest = launchInputDigest(input);
+    const deadlineAt = new Date(this.#now().getTime() + this.#phaseTimeoutMs).toISOString();
+    let result: PhaseResult;
     try {
-      const inputDigest = launchInputDigest(input);
-      const deadlineAt = new Date(this.#now().getTime() + Math.max(0, deadline - this.#monotonicNow())).toISOString();
-      let delayMs = 0;
       for (let generation = 0; ; generation++) {
         signal.throwIfAborted();
-        if (this.#monotonicNow() >= deadline) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
-        const identity = generationIdentity(phase, attempt, generation as 0 | 1, randomUUID());
-        if (context.state.launchRetryPolicy) input = Object.freeze({ ...input, launchGeneration: identity, ...(phase === "implement" ? { reportSession: { sessionId: identity.sessionId, sessionFile: identity.sessionFile } } : {}) });
+        const identity = generationIdentity(phase, 1, generation as 0 | 1, randomUUID());
+        input = { ...input, launchGeneration: identity };
         const record = async (kind: LaunchRecord["kind"], rule: LaunchRecord["rule"] = null, errorCode: LaunchRecord["errorCode"] = null) => {
-          if (!context.state.launchRetryPolicy) return; // Legacy reserved runs retain one-shot execution.
-          await context.persist({ launchGenerations: [...context.state.launchGenerations!, { ...identity, phase, attempt, expectedHead, inputDigest, deadlineAt, kind, timestamp: this.#timestamp(), delayMs, classifier: LAUNCH_CLASSIFIER, rule, errorCode }] });
+          await context.persist({ launchGenerations: [...context.state.launchGenerations!, { ...identity, phase, attempt: 1, expectedHead, inputDigest, deadlineAt, kind, timestamp: this.#timestamp(), delayMs: generation ? LAUNCH_BACKOFF_MS : 0, classifier: LAUNCH_CLASSIFIER, rule, errorCode }] });
         };
-        // CAS persistence precedes invocation. A crash after dispatch is ambiguous;
-        // no restart path may infer success or dispatch this identity again.
-        await record("reserved");
-        await record("dispatched");
-        try {
-          signal.throwIfAborted();
-          if (this.#monotonicNow() >= deadline) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
-          result = await this.#phases.run(structuredClone(input), signal, progress => {
-            validatePlanProgress(progress);
-            const snapshot = structuredClone(progress);
-            if (!acceptingProgress || phase !== "plan" || context.state.planExecution !== "supervised-v1" || snapshot.runId !== input.runId || snapshot.attempt !== attempt || snapshot.subphase !== ["requirements", "implementation-design"][progressCount]) return Promise.reject(new Error("stale or unordered Plan progress"));
-            progressCount++;
-            progressWrites = progressWrites.then(async () => {
-              if (context.state.status !== "running" || context.state.step !== "plan" || context.state.attempts.plan !== attempt) throw new Error("late Plan progress");
-              await context.persist({ planProgress: snapshot });
-            });
-            return progressWrites;
-          });
-          await record("returned");
-          break;
-        } catch (error) {
+        await record("reserved"); await record("dispatched");
+        try { result = await this.#phases.run(structuredClone(input), signal); await record("returned"); break; }
+        catch (error) {
           const rule = classifyLaunchFailure(error);
           let clean = false;
-          if (rule && !progressCount && !signal.aborted) {
-            try { await this.#workspaces.assertClean(input.sandbox, signal); clean = await this.#workspaces.currentHead(input.sandbox, signal) === expectedHead; } catch { /* ambiguous effects: fail closed */ }
-          }
+          if (rule && !signal.aborted) { try { await this.#workspaces.assertClean(input.sandbox, signal); clean = await this.#workspaces.currentHead(input.sandbox, signal) === expectedHead; } catch {} }
           await record("failed", clean ? rule! : null, classifyExecutionFailure(error, signal));
-          if (!rule || !clean || generation >= (context.state.launchRetryPolicy?.maxRetries ?? 0) || signal.aborted || deadline - this.#monotonicNow() <= LAUNCH_BACKOFF_MS) throw error;
+          if (!rule || !clean || generation >= this.#retryPolicy.maxRetries || signal.aborted || deadline - this.#monotonicNow() <= LAUNCH_BACKOFF_MS) throw error;
           await record("retrying", rule);
-          const before = this.#monotonicNow();
           await retryDelay(LAUNCH_BACKOFF_MS, undefined, { signal });
-          delayMs = Math.max(LAUNCH_BACKOFF_MS, Math.floor(this.#monotonicNow() - before));
-          // Check again after backoff. Failed candidates never become the baseline.
           await this.#workspaces.assertClean(input.sandbox, signal);
           if (await this.#workspaces.currentHead(input.sandbox, signal) !== expectedHead) throw new Error("retry baseline changed");
         }
       }
-      successfulCapture = this.#phases.reportCapture?.(result);
-      if (this.#phases.reportCapture && !successfulCapture && !(result.phase === "plan" && result.details.supervision)) throw new Error("phase adapter omitted report evidence");
-      if (successfulCapture) {
-        successfulCapture = structuredClone(successfulCapture);
-        if (!this.#phases.reportEvidence) throw new Error("controller report evidence read port unavailable");
-        if (!Number.isFinite(Date.parse(successfulCapture.timestamp)) || ((input.launchGeneration ?? input.reportSession) && (successfulCapture.sessionId !== (input.launchGeneration ?? input.reportSession)!.sessionId || successfulCapture.sessionFile !== (input.launchGeneration ?? input.reportSession)!.sessionFile))) throw new Error("report capture provenance mismatch");
-        successfulBytes = await verifyReportEvidence(this.#phases.reportEvidence, successfulCapture.evidence);
-        const raw = decodeReport(successfulBytes);
-        if (raw !== successfulCapture.raw) throw new Error("report capture content mismatch");
-        const parsed = parsePhaseResult(raw, input, successfulCapture.sessionId, successfulCapture.sessionFile, expectedProfile);
-        if (!isDeepStrictEqual(parsed, result)) throw new Error("report capture/result mismatch");
-        result = parsed;
-      }
-    } catch (error) {
-      phaseFailed = true;
-      phaseError = error;
-    } finally {
-      acceptingProgress = false;
-      try { await progressWrites; } catch (error) { phaseFailed = true; phaseError = error; }
-    }
-    let observedHead: string | undefined;
-    let workspaceFailed = false;
-    let workspaceDiagnostic: unknown;
-    try {
-      observedHead = await this.#workspaces.currentHead(context.state.sandbox, signal);
-      await this.#workspaces.assertClean(context.state.sandbox, signal);
-    } catch (error) {
-      workspaceFailed = true;
-      workspaceDiagnostic = error;
-    }
-    if (stagedProfile && signal?.aborted) throw new PhaseExecutionError("cancelled", "phase interrupted", { cause: signal.reason });
-    if (phaseFailed && (phaseError instanceof InvalidPhaseHandoff || phaseError instanceof CorrectionExecutionFailure) && phase === "implement") {
-      result = await this.#correctHandoff(context, input, phaseError, observedHead, workspaceFailed ? workspaceDiagnostic ?? new Error("workspace inspection rejected without diagnostic") : undefined, signal);
-      phaseFailed = false;
-    }
-    if (phaseFailed) {
-      if (workspaceFailed) throw withSecondaryWorkspaceDiagnostic(phaseError, workspaceDiagnostic);
-      throw phaseError;
-    }
-    if (workspaceFailed) throw workspaceDiagnostic;
-    if (observedHead === undefined) throw new Error(`${phase} did not produce an observed Git HEAD`);
-    if (!result) throw new PhaseExecutionError("protocol", `${phase} returned no result`);
-    let evidencedResult: PhaseResult;
-    try {
-      evidencedResult = result.profile === undefined
-        ? { ...structuredClone(result), profile: { ...expectedProfile } }
-        : structuredClone(result);
-      validatePhaseResult(evidencedResult, input, observedHead);
-      if (stagedProfile && (!result.profile || (Object.values(context.state.sessions).includes(evidencedResult.sessionId) || context.state.stagedTransitions?.some(t => t.result?.sessionId === evidencedResult.sessionId)))) throw new Error("staged result missing profile or reused session");
-      if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
-      if (phase === "plan" && context.state.launchEvidence?.planSubphases.length) {
-        if (evidencedResult.phase !== "plan" || !evidencedResult.details.supervision || evidencedResult.details.supervision.launchDigest !== context.state.launchEvidence.digest) throw new Error("supervised Plan evidence required");
-        for (const child of evidencedResult.details.supervision.children) {
-          if (!this.#material || child.promptDigest !== createHash("sha256").update(composeSystemPrompt(this.#material, "plan", child.subphase)).digest("hex")) throw new Error("supervised Plan prompt binding mismatch");
-        }
-        if (evidencedResult.details.supervision.children.length > progressCount) throw new Error("supervised Plan progress evidence missing");
-      }
-    } catch (error) {
-      throw new PhaseExecutionError("protocol", error instanceof Error ? error.message : String(error), { cause: error });
-    }
-    if (!stagedProfile && evidencedResult.status === "failed") {
-      await this.#phases.telemetrySettled?.(evidencedResult).catch(() => undefined);
-      if (evidencedResult.phase === "plan" && evidencedResult.details.supervision) await context.persist({ results: { ...context.state.results, plan: evidencedResult }, sessions: { ...context.state.sessions, plan: evidencedResult.sessionId } });
-      throw new Error(`${phase} failed: ${evidencedResult.summary}`);
-    }
-    if (phase === "implement" && evidencedResult.status !== "passed" && !(stagedProfile && evidencedResult.status === "failed")) throw new Error("Implement must return passed or failed");
-    if (phase !== "implement" && observedHead !== expectedHead) throw new Error(`${phase} changed Git HEAD`);
-    if (phase === "implement") await this.#reconcileProjectWikiDisposition(context, evidencedResult as ImplementPhaseResult, observedHead, signal);
-    if (successfulCapture) await verifyReportEvidence(this.#phases.reportEvidence!, successfulCapture.evidence, successfulBytes);
-    await context.persist({
-      head: observedHead,
-      sessions: { ...context.state.sessions, [phase]: evidencedResult.sessionId },
-      results: { ...context.state.results, [phase]: evidencedResult },
-    });
-    await this.#phases.telemetrySettled?.(evidencedResult).catch(() => undefined);
-    return evidencedResult;
-  }
-
-  async #correctHandoff(context: RunContext, input: PhaseInput, invalid: InvalidPhaseHandoff | CorrectionExecutionFailure, observedHead: string | undefined, workspaceError: unknown, signal: AbortSignal): Promise<PhaseResult> {
-    const policy = context.state.reportCorrectionPolicy!;
-    const port = this.#phases.reportEvidence;
-    const original = structuredClone(invalid.capture);
-    const head = observedHead && /^[a-f0-9]{40,64}$/u.test(observedHead) ? observedHead : null;
-    // An input HEAD is not evidence of the candidate's identity. Fail closed
-    // before recording any clean observation when Git returned no valid SHA.
-    if (head === null && workspaceError === undefined) workspaceError = new Error("controller.currentHead returned invalid Git SHA");
-    let used = 0;
-    let diagnostic = invalid.message;
-    const verified: { ref: NonNullable<CorrectionRecord["evidence"]>; content: Buffer | string }[] = [];
-    const references: string[] = [original.evidence?.path ?? "missing"];
-    const record = async (kind: CorrectionRecord["kind"], evidence?: CorrectionRecord["evidence"], producer?: string): Promise<void> => {
-      await context.persist({ reportCorrections: [...context.state.reportCorrections!, {
-        phase: "implement", attempt: input.attempt, kind, used, maximum: policy.maxAttempts, remaining: policy.maxAttempts - used,
-        timestamp: this.#timestamp(), diagnostic: diagnostic.slice(0, 2000), head,
-        ...(evidence ? { evidence } : {}), ...(producer ? { producer } : {}),
-      }] });
-    };
-    const verify = async (capture: ReportCapture): Promise<Buffer> => {
-      if (!port) throw new Error("controller report evidence read port unavailable");
-      if (!capture || typeof capture.raw !== "string" || typeof capture.sessionId !== "string" || !capture.sessionId.trim() || capture.sessionId.length > 128 || typeof capture.sessionFile !== "string" || capture.sessionFile.length > 512 || !Number.isFinite(Date.parse(capture.timestamp))) throw new Error("invalid report capture provenance");
-      const bytes = await verifyReportEvidence(port, capture.evidence);
-      if (bytes.toString("utf8") !== capture.raw) throw new Error("report evidence bytes/content/length/digest mismatch");
-      verified.push({ ref: structuredClone(capture.evidence), content: bytes });
-      return bytes;
-    };
-    const observation = async (capture: ReportCapture, error: unknown, snapshotHead: string | undefined): Promise<void> => {
-      // Bind controller-generated content, not adapter assertions, to a separate
-      // exclusive artifact and independently read it back before persistence.
-      const content = JSON.stringify({ timestamp: this.#timestamp(), producer: "controller", runId: input.runId, phase: input.phase, attempt: input.attempt,
-        inputHead: input.expectedHead, originalTicketBaseSha: input.originalTicketBaseSha, candidateHead: snapshotHead && /^[a-f0-9]{40,64}$/u.test(snapshotHead) ? snapshotHead : null,
-        unchangedAndClean: error === undefined && head !== null && snapshotHead === head, diagnostic, report: capture.evidence, reportTimestamp: capture.timestamp, reportProducer: capture.sessionId, sessionFile: capture.sessionFile, profile: input.profile,
-        workspaceDiagnostic: error === undefined ? null : "controller.currentHead/assertClean failed; inspect workspace independently" });
-      const ref = structuredClone(await port!.write(content));
-      references.push(ref.path);
-      await verifyReportEvidence(port!, ref, content);
-      verified.push({ ref, content });
-      await record("observed", ref, "controller");
-    };
-    const active = (): void => {
       signal.throwIfAborted();
-      if (!input.deadline || this.#monotonicNow() >= input.deadline) throw new PhaseExecutionError("timeout", "original phase deadline exhausted");
-    };
-    try {
-      const originalBytes = await verify(original);
-      await record("observed", original.evidence, original.sessionId);
-      await observation(original, workspaceError, observedHead);
-      if (invalid instanceof CorrectionExecutionFailure) throw invalid;
-      if (workspaceError !== undefined) throw withSecondaryWorkspaceDiagnostic(invalid, workspaceError);
-      if (!observedHead || !/^[a-f0-9]{40,64}$/u.test(observedHead)) throw new Error("controller.currentHead returned invalid Git SHA");
-      active();
-      if (original.sessionId !== input.reportSession?.sessionId) throw new Error("original report producer mismatch");
-      if (original.sessionFile !== (input.launchGeneration?.sessionFile ?? `/ticket/sessions/${input.phase}/${input.attempt}.jsonl`)) throw new Error("original report session identity mismatch");
-      decodeReport(originalBytes); // invalid UTF-8 stays preserved, never trusted facts
-      const analysis = analyzeImplementReport(original, input);
-      if (!analysis.unexpected.length) throw new Error("unsupported handoff error class");
-      validatePhaseResult(analysis.facts, input, observedHead);
-      if (analysis.facts.phase !== "implement" || analysis.facts.status !== "passed") throw new Error("failed/ambiguous phase reports are not format-correctable");
-      await this.#reconcileProjectWikiDisposition(context, analysis.facts, observedHead, signal);
-      if (!policy.allowedErrorClasses.includes("implement-unexpected-details-fields") || !this.#phases.correctReport) throw new Error("report correction disabled or unavailable");
-      const assertOwner = async (): Promise<void> => {
-        if (this.#states.reservationOwner && await this.#states.reservationOwner(input.ticket.id) !== input.runId) throw new Error("report correction reservation ownership mismatch");
-      };
-      await assertOwner();
-      let latest = original;
-      const producers = new Set([original.sessionId]);
-      while (used < policy.maxAttempts) {
-        active();
-        // Re-read all prior evidence before each continuation: a replaced old
-        // artifact cannot be hidden by a valid later response.
-        for (const item of verified) await verifyReportEvidence(port!, item.ref, item.content);
-        await assertOwner();
-        await this.#phases.prepareReportCorrection?.();
-        active();
-        used++;
-        const producerId = randomUUID();
-        await record("launched", undefined, producerId); // irrevocable charge BEFORE dispatch
-        let response: ReportCapture | undefined;
-        let responseBytes: Buffer | undefined;
-        let executionError: unknown;
-        try {
-          response = structuredClone(await this.#phases.correctReport(structuredClone({ input, original, latest, diagnostic, diagnostics: analysis.unexpected.map(key => ({ path: ["details", key], code: "unexpected-field" as const })), correctionAttempt: used, producerId, deadline: input.deadline! }), signal));
-        } catch (error) {
-          if (error instanceof CorrectionExecutionFailure) response = structuredClone(error.capture);
-          executionError = error instanceof PhaseExecutionError ? error : new PhaseExecutionError(classifyExecutionFailure(error), error instanceof Error ? error.message : "correction execution rejected without diagnostic", { cause: error });
-        }
-        // Inspection is mandatory even after cancellation/command failure. It
-        // authorizes no further paid work and deliberately has no aborted signal.
-        let afterError: unknown;
-        let afterHead: string | undefined;
-        try {
-          const after = await this.#workspaces.currentHead(input.sandbox);
-          afterHead = after;
-          await this.#workspaces.assertClean(input.sandbox);
-          if (after !== observedHead) throw new Error("candidate HEAD changed during report correction");
-        } catch (error) { afterError = error ?? new Error("workspace inspection rejected without diagnostic"); }
-        if (response) {
-          references.push(response.evidence?.path ?? "missing");
-          responseBytes = await verify(response);
-          try { decodeReport(responseBytes); parseCorrectedReport(response, original, input); diagnostic = "corrected schema valid; semantic and independent gates pending"; }
-          catch (error) { diagnostic = error instanceof Error ? error.message : String(error); }
-          if (response.sessionId !== producerId || response.sessionFile !== `/run/squire-report-${producerId}/no-session`) throw new Error("correction producer mismatch");
-          if (producers.has(response.sessionId)) throw new Error("correction reused a producer session");
-          producers.add(response.sessionId);
-          await record("observed", response.evidence, response.sessionId);
-          await observation(response, afterError, afterHead);
-        } else await observation(latest, afterError ?? executionError, afterHead);
-        if (afterError !== undefined) throw withSecondaryWorkspaceDiagnostic(executionError ?? invalid, afterError);
-        if (executionError !== undefined) throw executionError;
-        active();
-        if (!response || !responseBytes) throw new Error("correction returned no report");
-        decodeReport(responseBytes);
-        latest = response;
-        try { JSON.parse(response.raw); } catch { diagnostic = "implement wrote malformed result JSON"; continue; }
-        // A well-formed response with any changed safety fact is terminal, even
-        // when its first schema error would otherwise be eligible.
-        const correctedAnalysis = analyzeImplementReport({ ...response, sessionId: original.sessionId, sessionFile: original.sessionFile }, input);
-        if (!sameReportFacts(analysis.facts, correctedAnalysis.facts)) throw new Error("corrected report changed original required facts or identity");
-        try {
-          const accepted = parseCorrectedReport(response, original, input);
-          validatePhaseResult(accepted, input, observedHead);
-          await this.#reconcileProjectWikiDisposition(context, accepted as ImplementPhaseResult, observedHead, signal);
-          const finalHead = await this.#workspaces.currentHead(input.sandbox, signal);
-          await this.#workspaces.assertClean(input.sandbox, signal);
-          if (finalHead !== observedHead) throw new Error("candidate changed before correction acceptance");
-          // Every evidence version must still exist with its original content.
-          await verify(original); await verify(response);
-          for (const item of verified) await verifyReportEvidence(port!, item.ref, item.content);
-          active();
-          await assertOwner();
-          diagnostic = "strict corrected report accepted; independent Review/Test still required";
-          await record("accepted", undefined, producerId);
-          return accepted;
-        } catch (error) {
-          if (!correctedAnalysis.unexpected.length) throw error;
-          diagnostic = error instanceof Error ? error.message : String(error);
-        }
+      if (this.#monotonicNow() >= deadline) throw new Error("phase deadline exhausted");
+      const capture = this.#phases.reportCapture?.(result);
+      if (this.#phases.reportCapture && !capture) throw new Error("missing raw report evidence");
+      if (capture) {
+        await context.persist({ reports: { ...context.state.reports, [phase]: capture.evidence } });
+        if (!this.#phases.reportEvidence || capture.sessionId !== input.launchGeneration!.sessionId || capture.sessionFile !== input.launchGeneration!.sessionFile) throw new Error("report capture provenance mismatch");
+        const bytes = await verifyReportEvidence(this.#phases.reportEvidence, capture.evidence);
+        const parsed = parsePhaseResult(decodeReport(bytes), input, capture.sessionId, capture.sessionFile, input.profile);
+        if (!isDeepStrictEqual(parsed, result)) throw new Error("report capture/result mismatch");
       }
-      throw new Error(`report correction budget exhausted (${used}/${policy.maxAttempts})`);
+      const head = await this.#workspaces.currentHead(input.sandbox, signal);
+      // Preserve an observed candidate even when its report is failed. It is never promoted.
+      if (phase === "implement") await context.persist({ head, candidate: head });
+      await this.#workspaces.assertClean(input.sandbox, signal);
+      validatePhaseResult(result, input, head);
+      if (result.sessionId !== input.launchGeneration!.sessionId || Object.values(context.state.sessions).includes(result.sessionId)) throw new Error("phase session identity reused or mismatched");
+      if (phase === "verify") {
+        if (head !== expectedHead || head !== context.state.candidate) throw new Error("Verify changed candidate identity");
+        validateVerifyCommands(result, this.#testCommands);
+      } else if (result.status === "passed") {
+        if (head === requireBase(context.state)) throw new Error("Implement produced no candidate commit");
+        if (!this.#workspaces.assertDescendant) throw new Error("workspace lacks ancestry check");
+        await this.#workspaces.assertDescendant(input.sandbox, requireBase(context.state), head, signal);
+        await this.#reconcileProjectWikiDisposition(context, result as ImplementPhaseResult, head, signal);
+      }
+      await context.persist({ results: { ...context.state.results, [phase]: result }, sessions: { ...context.state.sessions, [phase]: result.sessionId }, ...(phase === "verify" ? { verifyDisposition: result.status } : {}) });
+      await this.#phases.telemetrySettled?.(result).catch(() => undefined);
+      if (result.status !== "passed") throw new Error(`${phase} failed: ${result.summary}`);
+      return result;
     } catch (error) {
-      diagnostic = `${invalid.message}; report correction stopped: ${error instanceof Error ? error.message : String(error)}`;
-      try { await record("stopped"); } catch (persistenceError) { this.#reportPersistenceError(persistenceError); }
-      throw new PhaseExecutionError(signal.aborted ? "cancelled" : error instanceof PhaseExecutionError ? error.classification : "protocol", `${diagnostic.slice(0, 1200)}; human action: inspect preserved report evidence ${references.join(", ").slice(0, 650)}; do not promote this candidate`, { cause: error });
-    }
+      if ((error instanceof InvalidPhaseHandoff || error instanceof ReportExecutionFailure) && !context.state.reports?.[phase]) await context.persist({ reports: { ...context.state.reports, [phase]: error.capture.evidence } });
+      if (phase === "implement" && context.state.candidate === null) {
+        const head = await this.#workspaces.currentHead(input.sandbox).catch(() => null);
+        if (head && /^[a-f0-9]{40}$/u.test(head)) await context.persist({ head, candidate: head });
+      }
+      if (phase === "verify" && context.state.verifyDisposition === "not_run") await context.persist({ verifyDisposition: "failed" });
+      throw error;
+    } finally { await this.#phases.reportEvidence?.release?.(); }
   }
 
   async #reconcileProjectWikiDisposition(context: RunContext, result: ImplementPhaseResult, head: string, signal?: AbortSignal): Promise<void> {
@@ -953,21 +625,17 @@ export class PersonalMvpController {
       failure = `reservation release blocked or unverified: ${error instanceof Error ? error.message : String(error)}`;
     }
     if (failure === undefined) return;
-    try {
-      // Preserve the original terminal lastError and write a distinct,
-      // actionable cleanup outcome. The state CAS prevents this diagnostic
-      // from overwriting a newer owner or revision.
-      await context.persist({ reservationCleanupFailure: failure.slice(0, 2_000) });
-    } catch (diagnosticError) {
-      this.#reportPersistenceError(diagnosticError);
-      this.#reportPersistenceError(new Error(failure));
-    }
+    // Terminal state is immutable, including when cleanup fails. Diagnostics
+    // belong in private controller logs, never a terminal-state repair write.
+    this.#reportPersistenceError(new Error(failure));
   }
 
   async #recordTerminal(context: RunContext, error: unknown, interrupted: boolean): Promise<void> {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
     const status = interrupted ? "interrupted" : "failed";
     const changes: Partial<PersonalRunState> = {
+      terminalReason: message || "run_failed",
+      ...(context.state.publicationState === "publishing" ? { publicationState: "failed" } : {}),
       status,
       lifecycle: status,
       endedAt: this.#timestamp(),
@@ -1044,13 +712,13 @@ function initialState(
   branch: string,
   request: RunRequest,
   profiles: NonNullable<PersonalRunState["profiles"]>,
-  planSelection: NonNullable<PersonalRunState["planSelection"]>,
   startedAt: string,
   metadata: Required<Pick<PersonalRunMetadata, "executionMode" | "controllerPid">> & Pick<PersonalRunMetadata, "stdoutPath" | "stderrPath" | "launchConfigPath" | "launchConfigDigest" | "launchEvidence">,
 ): PersonalRunState {
   const background = metadata.executionMode === "background";
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    contract: null, candidate: null, verifyDisposition: "not_run", publicationState: "not_started", ciDisposition: "pending", mergeDisposition: "not_merged", terminalReason: null,
     version: 1,
     runId,
     ticketId: request.ticketId,
@@ -1073,20 +741,16 @@ function initialState(
     ...(metadata.launchConfigPath !== undefined ? { launchConfigPath: metadata.launchConfigPath } : {}),
     ...(metadata.launchConfigDigest !== undefined ? { launchConfigDigest: metadata.launchConfigDigest } : {}),
     ...(metadata.launchEvidence !== undefined ? { launchEvidence: metadata.launchEvidence } : {}),
-    ...(metadata.launchEvidence?.planSubphases.length ? { planExecution: "supervised-v1" as const } : {}),
     sandbox,
     repository: request.repository,
     baseBranch: request.baseBranch,
     baseSha: null,
     branch,
     profiles,
-    planSelection,
     head: null,
     sessions: {},
-    attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 },
+    attempts: { implement: 0, verify: 0 },
     results: {},
-    remediations: { review: 0, test: 0 },
-    remediationAttempts: { review: [], test: [] },
     prUrl: null,
     lastError: null,
     updatedAt: startedAt,
@@ -1110,6 +774,7 @@ function createRunIdentity(request: RunRequest, suppliedId: string, explicitRunI
 }
 
 function validateRequest(request: RunRequest): void {
+  for (const key of ["escalationPolicy", "reportCorrectionPolicy", "promptPolicy", "remediationPolicy"]) if (Object.hasOwn(request,key)) throw new Error(`${key} is retired; start a new Contract/Implement/Verify run`);
   if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(request.ticketId)) throw new Error("invalid Linear ticket identifier");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(request.repository)) throw new Error("repository must be owner/name");
   if (!request.repositoryPath || !/^[A-Za-z0-9._/-]+$/u.test(request.baseBranch)) throw new Error("invalid repository configuration");
@@ -1123,33 +788,6 @@ function validatePhaseResult(result: PhaseResult, input: PhaseInput, observedHea
   if (result.inputHead !== input.expectedHead) throw new Error("phase result input HEAD mismatch");
   if (result.outputHead !== observedHead) throw new Error("phase result output HEAD mismatch");
   if (!result.profile || result.profile.provider !== input.profile.provider || result.profile.model !== input.profile.model || result.profile.thinking !== input.profile.thinking) throw new Error("phase result profile identity mismatch");
-}
-
-function appendRemediationAttempt(state: PersonalRunState, phase: "review" | "test", attempt: number): RemediationAttemptEvidence {
-  const current = state.remediationAttempts ?? { review: [], test: [] };
-  const prior = current[phase];
-  if (!Number.isSafeInteger(attempt) || attempt < 1 || prior.some(entry => entry === attempt) || (prior.length > 0 && attempt <= prior[prior.length - 1]!)) {
-    throw new Error(`invalid ${phase} remediation attempt evidence`);
-  }
-  return { ...current, [phase]: [...prior, attempt] };
-}
-
-function withSecondaryWorkspaceDiagnostic(primary: unknown, secondary: unknown): Error {
-  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
-  const secondaryMessage = (secondary instanceof Error ? secondary.message : String(secondary))
-    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
-    .replace(/(bearer\s+|(?:token|password|api[_-]?key)\s*[=:]\s*)\S+/giu, "$1[redacted]").slice(0, 500);
-  const error = new PhaseExecutionError(classifyExecutionFailure(primary), `${primaryMessage}; secondary workspace diagnostic: ${secondaryMessage} [source=controller WorkspacePort.currentHead/assertClean]`, { cause: primary });
-  return error;
-}
-
-function feedback(result: PhaseResult): readonly string[] {
-  if (result.phase === "review") return result.details.findings.length ? result.details.findings : [result.summary];
-  if (result.phase === "test") {
-    const failed = result.details.commands.filter(command => command.exitCode !== 0).map(command => `${command.command}: ${command.summary}`);
-    return failed.length ? failed : [result.summary];
-  }
-  return [result.summary];
 }
 
 function requireHead(state: PersonalRunState): string {
@@ -1166,21 +804,6 @@ function sameProjectWikiPathSet(left: readonly string[], right: readonly string[
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-/** Preserve every prior output, rather than only the latest result per phase. */
-function cumulativePreviousResults(state: PersonalRunState): readonly PhaseResult[] {
-  const results: PhaseResult[] = [];
-  const seen = new Set<string>();
-  for (const result of [
-    ...Object.values(state.results),
-    ...(state.stagedTransitions ?? []).map(transition => transition.result),
-  ]) {
-    if (!result || seen.has(result.sessionId)) continue;
-    seen.add(result.sessionId);
-    results.push(structuredClone(result));
-  }
-  return Object.freeze(results);
-}
-
 function resolvedProfile(state: PersonalRunState, phase: PersonalPhase): PhaseProfile {
   const profile = state.profiles?.[phase];
   if (!profile) throw new Error(`run has no resolved ${phase} Pi profile`);
@@ -1188,16 +811,9 @@ function resolvedProfile(state: PersonalRunState, phase: PersonalPhase): PhasePr
 }
 
 function requirePassingResults(state: PersonalRunState): Readonly<Record<PersonalPhase, PhaseResult>> {
-  const plan = state.results.plan;
-  const implement = state.results.implement;
-  const review = state.results.review;
-  const test = state.results.test;
-  const retro = state.results.retro;
-  const head = requireHead(state);
-  if (!plan || !implement || !review || !test || !retro) throw new Error("all phase results are required before publication");
-  if ([plan, implement, review, test, retro].some(result => result.status !== "passed")) throw new Error("all phases must pass before publication");
-  if (review.inputHead !== head || review.outputHead !== head || test.inputHead !== head || test.outputHead !== head || retro.inputHead !== head || retro.outputHead !== head) throw new Error("Review, Test, and Retro are stale for the publication HEAD");
-  return { plan, implement, review, test, retro };
+  const { implement, verify } = state.results;
+  if (!implement || !verify || implement.status !== "passed" || verify.status !== "passed" || verify.inputHead !== state.candidate || verify.outputHead !== state.candidate || state.head !== state.candidate) throw new Error("publication requires exact verified candidate");
+  return { implement, verify };
 }
 
 export function backgroundLogPaths(logsDirectory: string, runId: string): BackgroundLogPaths {

@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "runId",
+    "ticketId",
+    "stateRevision",
+    "timestamp",
+    "type"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{7,127}$"
+    },
+    "ticketId": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]+-[1-9][0-9]*$"
+    },
+    "stateRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "type": {
+      "enum": [
+        "launch_reserved",
+        "launch_dispatched",
+        "launch_failed",
+        "launch_returned",
+        "launch_retrying",
+        "run_reserved",
+        "run_started",
+        "phase_started",
+        "phase_completed",
+        "publication_started",
+        "publication_completed",
+        "terminal_succeeded",
+        "terminal_failed"
+      ]
+    },
+    "phase": {
+      "enum": [
+        "implement",
+        "verify"
+      ]
+    },
+    "attempt": {
+      "const": 1
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "completed",
+        "interrupted"
+      ]
+    },
+    "generation": {
+      "enum": [
+        0,
+        1
+      ]
+    }
+  }
+}

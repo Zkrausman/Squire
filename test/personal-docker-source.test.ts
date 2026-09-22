@@ -208,7 +208,11 @@ test("declared ticket runtime is provisioned and incomplete declarations fail cl
     assert.equal(commands.runtimeRequests.length, 1);
   });
 
-  await t.test("symlinked declaration", async () => {
+  await t.test("symlinked declaration", async t => {
+    if (process.platform === "win32") {
+      t.skip("Windows fixture transport materializes repository symlinks; Linux CI exercises rejection");
+      return;
+    }
     const root = await mkdtemp(path.join(os.tmpdir(), "squire-runtime-symlink-"));
     t.after(() => rm(root, { recursive: true, force: true }));
     const repository = path.join(root, "repository");
@@ -222,6 +226,11 @@ test("declared ticket runtime is provisioned and incomplete declarations fail cl
     await writeFile(path.join(repository, ".github/validate-ticket-runtime.mjs"), "process.exit(0);\n");
     await git(repository, ["add", "."]);
     await git(repository, ["commit", "-qm", "symlinked runtime"]);
+    const indexedMode = (await git(repository, ["ls-files", "-s", ".github/runtime/package.json"])).split(" ")[0];
+    if (indexedMode !== "120000") {
+      t.skip("Git for Windows materialized the fixture as a regular file");
+      return;
+    }
 
     const sandboxRoot = path.join(root, "sandbox");
     const commands = new SandboxShim(sandboxRoot, "squire-aidev-1-runtime-link");

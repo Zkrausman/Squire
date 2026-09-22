@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { PhaseExecutionError, EXECUTION_FAILURES, type ExecutionFailure } from "./execution-failure.js";
-import { rejectAmbiguousJson } from "./report-correction.js";
+import { rejectAmbiguousJson } from "./report-capture.js";
 import type { PersonalPhase, PersonalRunState, PhaseInput } from "./types.js";
 
 export const LAUNCH_CLASSIFIER = "pre-result-provider-v1";
@@ -92,7 +92,7 @@ export function validateLaunchRetryState(state: PersonalRunState): void {
   for (const r of state.launchGenerations) {
     if (
       !r || Object.keys(r).sort().join() !== "attempt,classifier,deadlineAt,delayMs,errorCode,expectedHead,generation,inputDigest,inputPath,kind,phase,rule,sessionFile,sessionId,timestamp"
-      || !["plan", "implement", "review", "test", "retro"].includes(r.phase)
+      || !["implement", "verify"].includes(r.phase)
       || !Number.isSafeInteger(r.attempt) || r.attempt < 1 || r.attempt > state.attempts[r.phase as PersonalPhase]
       || ![0, 1].includes(r.generation) || r.generation > policy.maxRetries
       || (r.generation === 1 && r.delayMs < LAUNCH_BACKOFF_MS)

@@ -1,4 +1,4 @@
-import { rejectAmbiguousJson } from "./report-correction.js";
+import { rejectAmbiguousJson } from "./report-capture.js";
 import { createHash } from "node:crypto";
 import type { PhaseProfile } from "./model-policy.js";
 
@@ -90,12 +90,12 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
   let recordedCost: bigint | null = 0n;
   const messages: Obj[] = [];
   const seen = new Set<string>();
-  let active = false, ended = false, turn = false, message: string | undefined;
+  let active = false, ended = false, settled = false, turn = false, message: string | undefined;
   let diagnostic: Diagnostic | undefined;
   let turnMessage: Obj | undefined;
   let lastTimestamp = 0;
   for (const e of events) {
-    if (ended) return emptyUsage("invalid_stream");
+    if (ended && e["type"] !== "agent_settled") return emptyUsage("invalid_stream");
     switch (e["type"]) {
       case "agent_start": if (!keys(e, ["type"]) || active || messages.length) return emptyUsage("invalid_stream"); active = true; break;
       case "turn_start": if (!keys(e, ["type"]) || !active || turn) return emptyUsage("invalid_stream"); turn = true; turnMessage = undefined; break;
@@ -146,11 +146,16 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
       }
       case "turn_end": if (!keys(e, ["type", "message", "toolResults"]) || !Array.isArray(e["toolResults"]) || !turnMessage || digest(e["message"]) !== digest(turnMessage) || !turn || message) return emptyUsage("invalid_stream"); turn = false; break;
       case "agent_end": {
-        if (!keys(e, ["type", "messages"]) || !active || turn || message || !Array.isArray(e["messages"])) return emptyUsage("partial_stream");
+        if (!keys(e, ["type", "messages", "willRetry"]) || !active || turn || message || !Array.isArray(e["messages"]) || (e["willRetry"] !== undefined && typeof e["willRetry"] !== "boolean")) return emptyUsage("partial_stream");
         const assistants = e["messages"].filter((m: unknown) => object(m) && m["role"] === "assistant");
         if (digest(assistants) !== digest(messages)) return emptyUsage("identity_mismatch");
+        if (e["willRetry"] === true) return emptyUsage("partial_stream");
         ended = true; break;
       }
+      case "agent_settled":
+        if (!keys(e, ["type"]) || !ended || settled) return emptyUsage("invalid_stream");
+        settled = true;
+        break;
       case "tool_execution_start": case "tool_execution_update": case "tool_execution_end": if (!turn || message) return emptyUsage("invalid_stream"); break;
       default: return emptyUsage("invalid_stream");
     }

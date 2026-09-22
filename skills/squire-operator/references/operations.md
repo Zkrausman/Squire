@@ -14,7 +14,7 @@ auth-file contents, environment dumps or whole secret-bearing configurations.
   status and remotes; verify the intended hosting repository and actual remote
   default branch. Never assume `main`; `master` or another branch may be correct.
   Resolve the approved source to a commit SHA and use that as `repository.sourceRef`.
-  Preserve the original ticket baseline through all remediation attempts.
+  Preserve the original ticket baseline through the single candidate.
 - **Isolation.** Do not reset, clean, stash or commit the owner's dirty checkout.
   Keep unrelated changes out of the source. Use an approved isolated source
   checkout pinned to the verified SHA when needed. Squire bundles the committed
@@ -121,17 +121,13 @@ non-model observer with a deadline, maximum checks and escalation on expiry.
 No model status polling, unbounded watchdog loops or silent paid reruns. If watch
 fails or the deadline expires, preserve evidence and escalate, not relaunch.
 
-The controller owns Plan, Implement, independent Review, Test, and read-only
-Retro, including bounded configured remediation/escalation. Do not bypass gates
+The controller owns the immutable Contract, one Implement and one independent Verify. Failure is terminal; only the owner can authorize a separate new run. Do not bypass gates
 or mutate a candidate after its checks. Before reporting clean normal success:
 
 1. Read persisted `<state>/<run-id>.json` and phase evidence, not just an outbox,
    PR link, transcript or all-green phase summary. Verify run/ticket/repository,
    source SHA, config binding, attempts, input/output HEADs and complete results.
-2. Match final Implement output to the candidate SHA. Latest Review, Test and
-   Retro must pass with input and output bound to that same SHA. Retro is
-   read-only. External CI is separate from local Test; verify required CI on the
-   exact PR head and do not describe local Test as hosted CI.
+2. Match final Implement output to the candidate SHA. Verify must pass with input and output bound to that same SHA and every configured test command represented. Verify is source-read-only. External CI is separate; verify required CI on the exact PR head and do not describe local tests as hosted CI.
 3. Verify App-authored PR identity, intended base, branch and exact published
    head; do not merge. Persisted status/lifecycle must be `completed`, with
    end timestamp, PR URL and no terminal error. Publication failure after passing
@@ -142,7 +138,7 @@ or mutate a candidate after its checks. Before reporting clean normal success:
    A terminal record alone does not prove release; a later different owner is a
    separate run and must not be touched.
 5. Keep the original ticket baseline for cumulative `projectWiki` disposition
-   through final HEAD, not just the latest attempt's diff. Every changed committed
+   through final HEAD, not a partial working diff. Every changed committed
    `.llm-wiki` path must be reported; a no-update result needs a concrete durable
    knowledge reason. Only the target worktree's wiki is eligible, never a personal
    or host vault; exclude transcripts, routine status, secrets and unrelated notes.
@@ -154,9 +150,7 @@ preflight/authority, infrastructure/auth, phase/contract, test/product, or termi
 publication/persistence failure. Give the owner sanitized evidence and a bounded
 next decision. Do not repair phase JSON/state, invent resume, manually publish
 failed candidates or silently substitute personal credentials. Additional paid
-launches require explicit approval. Any operator-authorized recovery is labelled
-recovery with its own authority/evidence, not clean normal success; preserve the
-failed run unchanged. Ambiguous reservations require external owner investigation
+launches require explicit approval. There is no recovery or promotion of this run; only an explicitly authorized new run may produce another candidate. Preserve the failed run unchanged. Ambiguous reservations require external owner investigation
 of controller ownership/liveness before separately authorized cleanup, never an
 automatic retry or kill by guessed PID.
 

@@ -13,6 +13,16 @@ test("pinned Pi assistant message_end accounting, cache classes and exact decima
   assert.equal(terminalReport(piJson("report")), "report");
   assert.equal(decimalText(decimalUnits("0.1") + decimalUnits("0.2")), "0.3");
 });
+test("current Pi agent_end plus agent_settled retains authoritative usage", () => {
+  const events = piEvents("report");
+  Object.assign(events.at(-1), { willRetry: false });
+  events.push({ type: "agent_settled" });
+  const parsed = parse(events);
+  assert.deepEqual(parsed.tokens, { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 });
+  assert.equal(parsed.messages, 1);
+  assert.deepEqual(parsed.diagnostics, []);
+});
+
 test("absent/invalid cost and missing token dimensions are unknown, never zero/guessed", () => {
   for (const bad of [undefined, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: -1 }, { secret: "credential-command" }]) {
     const e = piEvents("private"); usage(e).cost = bad;

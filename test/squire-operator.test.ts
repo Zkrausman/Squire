@@ -14,7 +14,7 @@ const operations = (): Promise<string> => read("skills/squire-operator/reference
 test("operator skill frontmatter and all packaged references are portable", async () => {
   assert.deepEqual((await readdir(skillRoot)).sort(), ["SKILL.md", "references"]);
   const body = await readFile(path.join(skillRoot, "SKILL.md"), "utf8");
-  const frontmatter = /^---\nname: ([^\n]+)\ndescription: ([^\n]+)\n---\n/u.exec(body);
+  const frontmatter = /^---\r?\nname: ([^\r\n]+)\r?\ndescription: ([^\r\n]+)\r?\n---\r?\n/u.exec(body);
   assert.ok(frontmatter);
   assert.equal(frontmatter[1], "squire-operator");
   assert.ok(frontmatter[2]!.length > 0 && frontmatter[2]!.length <= 1024);
@@ -39,7 +39,7 @@ test("every public Squire example parses with the shipped CLI; invented interfac
   const examples = text.split("\n").filter(line => line.startsWith("squire "));
   assert.equal(examples.length, 5);
   for (const example of examples) {
-    const argv = example.split(" ").slice(1).map(value => ({
+    const argv = example.trim().split(" ").slice(1).map(value => ({
       "TICKET-ID": "DEMO-123", "RUN-ID": "demo-123-1234567890", CONFIG: "operator-config.json",
     })[value] ?? value);
     const parsed = parseArguments(argv);

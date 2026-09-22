@@ -1,116 +1,23 @@
 # Squire
 
-Squire is a personal AI delivery tool intended to take one software ticket through **Plan → Implement → Review → Test → Retro**, open a pull request, and leave the merge to its human owner.
+Squire delivers one owner-approved ticket through **Contract → Implement → fresh independent Verify**, publishes the exact verified candidate with a GitHub App, and leaves required exact-head CI and merge to the owner.
 
-## Current MVP
-
-The approved first milestone is deliberately small:
-
-```bash
+```sh
 squire run AIDEV-123
-# Return immediately and follow the persisted run:
 squire run AIDEV-123 --background
 squire status AIDEV-123
-squire status aidev-123-0123456789
 squire watch AIDEV-123
+squire telemetry aidev-123-0123456789
 ```
 
-`watch` consumes durable, bounded controller events from the filesystem. It
-uses bounded timer reconciliation on Windows and directory notifications with
-a timer fallback elsewhere,
-deduplicates and reconciles from persisted state, prints sanitized meaningful
-transitions, and never invokes Pi/model work while waiting. See
-[`docs/run-events.md`](docs/run-events.md) for the state-first crash contract,
-provider-neutral adapters, and deferred Discord delivery. New run state keeps
-exact bounded Review/Test remediation attempts for conservative restart
-reconciliation; legacy aggregate counters are never treated as historical
-phase evidence. An unclaimed reserved launch that fails before child handoff
-reports `run_reserved` and terminal failure, not `run_started`.
+A clean run has two model sessions. Implement is the only writer. Verify combines security/correctness review and configured tests without source-write authority. Failure is terminal and immutable; there is no automatic model replay or report repair. Never merge on model attestation alone.
 
-One trusted local controller will fetch the ticket, create one Docker Sandbox, run five independent Pi phase processes, require Review, Test, and Retro to pass the current Git HEAD, and create or reuse one pull request. Every Implement result records a project-wiki disposition: `updated` names the complete committed `.llm-wiki/...` diff and summarizes the durable knowledge, while `not_required` gives a concrete reason. Implement evaluates durable architecture, workflow, operational, and constraint knowledge in the target worktree only; personal/host vaults, secrets, transcripts, routine status, and unrelated material never enter the project wiki. Required wiki edits are committed before Review, Test, and Retro freeze the exact head. Any pre-existing uncommitted control-worktree wiki backlog is handled by a separate reviewed reconciliation and is never bundled into a feature PR. Retro runs read-only after Test with a fresh session, records lessons and proposed follow-ups, and publishes them in the PR body; Squire does not automatically turn those follow-ups into Linear issues or mutate the wiki during Retro. Docker Sandbox is the host isolation boundary; same-ticket phases share that trust boundary. Ambiguous failures stop for the owner rather than invoking production-scale recovery or compensation.
+- [Workflow and authority](docs/personal-mvp.md)
+- [First run and configuration](docs/first-run.md)
+- [Status](docs/read-only-status.md), [events](docs/run-events.md), [telemetry](docs/telemetry.md)
+- [Runtime and required gates](docs/runtime-and-gate-policy.md)
+- [Operator skill](skills/squire-operator/SKILL.md)
 
-See the authoritative [Personal MVP plan](docs/personal-mvp.md) and [scope audit](docs/audits/2026-09-personal-mvp-scope-audit.md). The older [requirements](docs/mvp-requirements.md), [architecture](docs/mvp-architecture.md), and [ticket path](docs/mvp-ticket-path.md) are retained as historical design context where they conflict with the approved personal MVP.
+## Development
 
-## Developer preview
-
-For a complete first-run walkthrough, see [`docs/first-run.md`](docs/first-run.md).
-
-```bash
-# Use Node.js 24 (node --version).
-npm ci --ignore-scripts --no-audit --no-fund
-npm run build
-# Copy squire.config.example.json to your per-user Squire directory and edit
-# the repository checkout, sandbox, and token settings.
-npm run squire -- run AIDEV-123
-```
-
-Node.js 24 is the sole supported production runtime (`>=24 <25`) on every platform. All CLI commands, including reserved background children, reject other majors before config/provider/model work. The governed Node 22 sandbox can still import modules, build, validate workflows, and run tests; this is bootstrap compatibility, not production support. See [runtime and gate policy](docs/runtime-and-gate-policy.md). On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture, protected phase-input staging, and read-only external custom prompt capture on local NTFS. Custom sources may allow other readers, but not untrusted authors; private captured material remains confidential. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
-
-Squire does not search the checkout for configuration. The implicit config is
-`%USERPROFILE%\.squire\config.json` on Windows and
-`$XDG_CONFIG_HOME/squire/config.json` (or `~/.config/squire/config.json`) on
-Linux. `--config <file>` takes precedence over `SQUIRE_CONFIG`, which takes
-precedence over that per-user default. `dataDirectory` is the one JSON setting
-for mutable data and logs; `SQUIRE_DATA_DIR` is its only Squire environment
-override and takes precedence over the JSON value. It defaults to
-`%LOCALAPPDATA%\Squire` on Windows and
-`$XDG_STATE_HOME/squire` (or `~/.local/state/squire`) on Linux. The pre-existing
-`paths.state`, `paths.bridges`, and `paths.staging` settings remain supported
-and resolve relative to the selected config file. All data destinations are
-checked after resolving symlinks and must remain
-outside the repository. The repository path should be an explicit checkout
-path. Configuration objects are closed: unknown fields and legacy root aliases
-are rejected rather than silently ignored, and `repository.sourceRef` must be a
-non-whitespace, non-control Git revision.
-
-The configured Docker Sandbox template must provide Git, Node.js, and Pi at `sandbox.piExecutable`. `sandbox.piAuthFile` is an explicitly provisioned, ticket-usable model credential copied into the sandbox; it must not be a GitHub or Linear delivery credential. Keep this dedicated Pi OAuth file under the per-user Squire directory and never commit it. `github.tokenCommand` names a trusted host helper that prints one short-lived GitHub App installation token. Squire supplies that token only to host-side Git/`gh` publication commands and never passes it into the sandbox.
-
-The canonical JSON policy key is `modelPolicy`; the approved personal policy is fixed in the example: Plan bucket A is
-`openai-codex/gpt-6-astra` at `medium`, bucket B is
-`openai-codex/gpt-5.6-sol` at `high`, Implement is
-`openai-codex/gpt-5.6-luna` at `max`, Review and Retro are
-`openai-codex/gpt-5.6-sol` at `medium`, and Test is
-`openai-codex/gpt-5.6-terra` at `high`. Plan chooses one bucket from the
-canonical repository/ticket identity exactly once; the selection digest and
-all five resolved phase profiles are persisted with the run and each phase
-result records the profile that actually launched Pi.
-
-Background runs write `<run-id>.stdout.log` and `<run-id>.stderr.log` in the
-`logs` directory beneath `dataDirectory`. The detached child is bound to the
-exact selected config bytes and its absolute config pathname, so relative
-configuration paths cannot silently resolve against another copy. Before
-handoff, the production Docker workspace resolves `repository.sourceRef` to one
-commit and persists that source SHA; child preparation verifies the ref still
-names the bound commit before creating bridge, staging, or sandbox resources.
-`status` reads persisted JSON and read-only, exact-process owner evidence without
-acquiring the mutation mutex, including while a Windows controller holds it. It
-does not contact Linear, Git, Docker, Pi, or GitHub. See
-[read-only status](docs/read-only-status.md) for authoritative evidence and ambiguity. State writes
-are versioned and serialized per run, while reservation reserve/release
-operations use a short-lived per-ticket boundary; malformed or orphan
-reservations are reported as ambiguous rather than reclaimed. A detached child
-is intentionally not a crash-perfect supervisor: a forced kill or power loss
-can leave an ambiguous reservation, and ticket status reports it even when an
-older terminal run exists. Exact run-ID status remains available for a
-historical record beside a readable active replacement, but reports a
-reservation whose owner is missing or inactive as ambiguous. Do not delete or
-reuse that run's sandbox or reservation based on status or PID liveness. Inspect
-the logs, state and exact controller identity; observation does not authorize
-stranded-lock recovery.
-
-> Squire is under active development. The controller-level flow is automated, but a real sandbox/template end-to-end acceptance run is still required.
-
-### Optional staged escalation
-
-User-global `escalationPolicy` can assign bounded ordered provider/model/thinking
-stages to individual phases. Omission preserves fixed-profile behavior and the
-approved defaults. The placeholder stages in `squire.config.example.json` are
-**illustrative only**: remove that block or replace its profiles before use.
-See [staged escalation](docs/staged-escalation.md) for validation bounds, exact
-attempt charging, terminal failure classes, immutable launch capture, exhaustion,
-remediation-limit intersection and status/watch evidence. Independent gates are
-unchanged; configuration changes never affect an active run.
-
-### Run efficiency
-
-`squire telemetry RUN-ID [--json] [--config FILE]` reads the private current-run terminal summary: separate Plan subphases, attempts/profiles/outcomes, token classes, invocation/run duration, Pi-recorded cost or unknown, and accounting completeness. It never reads model-writable transcripts. See [telemetry authority and retention](docs/telemetry.md). Historical backfill and cohort comparisons are not included.
+Production requires Node 24. Run `npm ci`, `npm run build`, `npm run validate:contracts`, and `npm test`. Native Windows coverage runs on Windows CI; local Linux success is not Windows or CodeQL evidence. Configuration examples require exactly `modelPolicy.implement` and `modelPolicy.verify`; obsolete workflow controls are rejected with migration guidance.

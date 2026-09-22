@@ -1,3 +1,4 @@
+import { APPROVED_PERSONAL_MODEL_POLICY } from "../src/personal/model-policy.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, readFile, readdir, rename as fsRename, rm } from "node:fs/promises";
@@ -14,10 +15,10 @@ function failure(code: string): NodeJS.ErrnoException {
 
 function stateAt(version: number): PersonalRunState {
   return {
-    schemaVersion: 1, version, runId: "aidev-1-0123456789", ticketId: "AIDEV-1", ticketTitle: "test",
+    schemaVersion: 2, contract: null, candidate: null, verifyDisposition: "not_run", publicationState: "not_started", ciDisposition: "pending", mergeDisposition: "not_merged", terminalReason: null, profiles: APPROVED_PERSONAL_MODEL_POLICY, version, runId: "aidev-1-0123456789", ticketId: "AIDEV-1", ticketTitle: "test",
     status: "running", step: "preparing", sandbox: "squire-aidev-1-0123456789", repository: "example/repo", baseBranch: "main", baseSha: null,
-    branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), head: null, sessions: {}, attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 },
-    results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: null, updatedAt: `2026-09-10T00:00:0${version}.000Z`,
+    branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), head: null, sessions: {}, attempts: { implement: 0, verify: 0 },
+    results: {},  prUrl: null, lastError: null, updatedAt: `2026-09-10T00:00:0${version}.000Z`,
   };
 }
 

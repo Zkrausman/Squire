@@ -1,5 +1,7 @@
 {
-  "launchRetryPolicy": { "maxRetries": 1 },
+  "launchRetryPolicy": {
+    "maxRetries": 1
+  },
   "repository": {
     "slug": "OWNER/REPOSITORY",
     "path": "/absolute/path/to/your/repository/checkout",
@@ -11,7 +13,9 @@
     "apiKeyEnv": "LINEAR_API_KEY"
   },
   "github": {
-    "tokenCommand": ["squire-github-app-token"]
+    "tokenCommand": [
+      "squire-github-app-token"
+    ]
   },
   "sandbox": {
     "template": "squire-personal-mvp:latest",
@@ -21,29 +25,16 @@
     "piAuthFile": "pi-auth.json"
   },
   "modelPolicy": {
-    "plan": {
-      "buckets": [
-        { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "medium" },
-        { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high" }
-      ]
-    },
-    "implement": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
-    "review": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "medium" },
-    "test": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
-    "retro": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "medium" }
-  },
-  "escalationPolicy": {
     "implement": {
-      "stages": [
-        { "provider": "YOUR_PROVIDER", "model": "YOUR_INITIAL_MODEL", "thinking": "medium", "maxAttempts": 2 },
-        { "provider": "YOUR_PROVIDER", "model": "YOUR_NEXT_MODEL", "thinking": "high", "maxAttempts": 1 }
-      ]
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna",
+      "thinking": "max"
+    },
+    "verify": {
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol",
+      "thinking": "medium"
     }
-  },
-  "promptPolicy": {
-    "version": 1,
-    "id": "default",
-    "plan": []
   },
   "testCommands": [
     "npm test"

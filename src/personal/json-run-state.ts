@@ -1,29 +1,24 @@
+import { validateEvidenceRef } from "./report-evidence.js";
 import { validateLaunchRetryState, assertLaunchRetryUnchanged } from "./launch-retry.js";
 import { observeOwnerFile, ownerProcessIdentity, parseOperation, type OperationEvidence } from "./owner-observation.js";
-import { validateCorrectionState, assertCorrectionUnchanged } from "./report-correction.js";
-import { validateStagedState, assertStagedUnchanged, stagedSelection } from "./staged-attempts.js";
-import { validatePlanProgress } from "./plan-artifacts.js";
 import { access, lstat, mkdir, open, readFile, readdir, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { validateLaunchEvidence } from "./launch-material.js";
+import { validateModelPolicy } from "./model-policy.js";
 import { deterministicFeatureBranch } from "./identity.js";
 import { renameOverExistingWithRetry, type RenameRetryOptions } from "./atomic-rename.js";
 import { windowsLaunch } from "./windows-launch.js";
 import { validatePhaseResultShape } from "./phase-result.js";
-import { canonicalPlanIdentity, PLAN_SELECTION_VERSION, validatePhaseProfile } from "./model-policy.js";
-import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type PlanSelection, type ResolvedPhaseProfiles, type RunExecutionMode, type RunLifecycle, type RunLaunchState, type RunPreparationState } from "./types.js";
+import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState, type RunStatePort, type PhaseProfile, type ResolvedPhaseProfiles, type RunExecutionMode, type RunLifecycle, type RunLaunchState, type RunPreparationState } from "./types.js";
 import { JsonRunEventOutbox } from "./run-events.js";
 
-const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "remediations", "prUrl", "lastError", "updatedAt"] as const;
+const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "contract", "candidate", "verifyDisposition", "publicationState", "ciDisposition", "mergeDisposition", "terminalReason", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
-  "launchRetryPolicy", "launchGenerations",
-  "reportCorrectionPolicy", "reportCorrections",
-  "escalationPolicy", "escalationDigest", "stagedTransitions",
+  "launchRetryPolicy", "launchGenerations", "reports",
   "profiles",
-  "planSelection",
   "lifecycle",
   "launchState",
   "preparationState",
@@ -39,9 +34,6 @@ const OPTIONAL_STATE_KEYS = [
   "launchConfigPath",
   "launchConfigDigest",
   "launchEvidence",
-  "planProgress",
-  "planExecution",
-  "remediationAttempts",
   "reservationCleanupFailure",
 ] as const;
 const RUN_STATUSES = ["running", "completed", "failed", "interrupted"] as const;
@@ -181,7 +173,6 @@ export class JsonRunStateStore implements RunStatePort {
         if (launchUpdate && (current.status !== "running" || state.status !== "running" || current.controllerPid !== state.controllerPid || (current.controllerPid != null && current.controllerPid !== process.pid) || await readLock(this.#reservationPath(state.ticketId)) !== state.runId)) throw new Error("launch generation ownership mismatch");
         assertResolvedProfilesUnchanged(current, state);
         assertLaunchIdentityUnchanged(current, state);
-        assertRemediationAttemptsAppendOnly(current, state);
         if (sourceBinding && (current.sourceSha === undefined || current.sourceSha !== state.sourceSha)) {
           if (!isReservedLaunch(current) || await readLock(this.#reservationPath(state.ticketId)) !== state.runId) {
             throw new Error(`reserved source binding does not belong to run: ${state.runId}`);
@@ -288,10 +279,10 @@ export class JsonRunStateStore implements RunStatePort {
 
   async findByTicket(ticketId: string): Promise<readonly PersonalRunState[]> {
     assertTicketId(ticketId);
-    return (await this.list()).filter(state => state.ticketId === ticketId);
+    return (await this.list(ticketId)).filter(state => state.ticketId === ticketId);
   }
 
-  async list(): Promise<readonly PersonalRunState[]> {
+  async list(ticketId?: string): Promise<readonly PersonalRunState[]> {
     const files = await readdir(this.directory).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return [];
       throw error;
@@ -299,9 +290,10 @@ export class JsonRunStateStore implements RunStatePort {
     const matches: PersonalRunState[] = [];
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
+      if (ticketId && !file.startsWith(ticketId.toLowerCase()+"-")) continue;
       const filenameRunId = file.slice(0, -".json".length);
       if (!RUN_ID_PATTERN.test(filenameRunId)) throw new Error(`invalid run state filename: ${file}`);
-      const state = await this.#read(path.join(this.directory, file), filenameRunId);
+      const state = await this.#read(path.join(this.directory, file), filenameRunId, true);
       if (state) matches.push(state);
     }
     return matches.sort(compareStates);
@@ -450,7 +442,7 @@ export class JsonRunStateStore implements RunStatePort {
     return path.join(this.directory, "locks", `${ticketId.toLowerCase()}.lock`);
   }
 
-  async #read(file: string, expectedRunId: string): Promise<PersonalRunState | undefined> {
+  async #read(file: string, expectedRunId: string, skipHistorical = false): Promise<PersonalRunState | undefined> {
     let metadata: Awaited<ReturnType<typeof lstat>>;
     try {
       metadata = await lstat(file);
@@ -471,6 +463,13 @@ export class JsonRunStateStore implements RunStatePort {
       throw error;
     }
     const value: unknown = JSON.parse(raw);
+    if (skipHistorical && value && typeof value === "object" && (value as Record<string, unknown>)["schemaVersion"] === 1) {
+      const historical = value as Record<string, unknown>;
+      if (historical["runId"] !== expectedRunId || !TICKET_ID_PATTERN.test(String(historical["ticketId"]))) throw new Error("invalid historical identity");
+      if (historical["status"] === "running") throw new Error("historical active state is ambiguous; owner investigation required");
+      if (!["failed", "completed", "interrupted"].includes(String(historical["status"]))) throw new Error("invalid historical status");
+      return undefined;
+    }
     validateState(value);
     if (value.runId !== expectedRunId) throw new Error("run state filename/runId mismatch");
     return value;
@@ -625,6 +624,7 @@ function assertExactReservedFailureTarget(current: PersonalRunState, next: Perso
     controllerPid: null,
     endedAt,
     lastError: next.lastError,
+    terminalReason: next.lastError,
     updatedAt: next.updatedAt,
   };
   const startedTime = Date.parse(current.startedAt!);
@@ -760,150 +760,41 @@ function encode(state: PersonalRunState): string {
 }
 
 export function validateState(value: unknown): asserts value is PersonalRunState {
-  const state = exactObject(value, REQUIRED_STATE_KEYS, "run state", OPTIONAL_STATE_KEYS);
-  if (state["schemaVersion"] !== 1 || !integer(state["version"], 1)) throw new Error("invalid run state version");
-  if (!text(state["runId"], 128) || !/^[a-z0-9][a-z0-9-]{7,127}$/u.test(state["runId"])) throw new Error("invalid run state runId");
-  if (!text(state["ticketId"], 64) || !/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(state["ticketId"])) throw new Error("invalid run state ticketId");
-  if (!state["runId"].startsWith(`${state["ticketId"].toLowerCase()}-`)) throw new Error("run state ticket/run identity mismatch");
-  if (!text(state["ticketTitle"], 2_000)) throw new Error("invalid run state ticketTitle");
-  if (typeof state["status"] !== "string" || !RUN_STATUSES.includes(state["status"] as (typeof RUN_STATUSES)[number])) throw new Error("invalid run state status");
-  if (typeof state["step"] !== "string" || !RUN_STEPS.includes(state["step"] as (typeof RUN_STEPS)[number])) throw new Error("invalid run state step");
-  validateLifecycleMetadata(state);
-  if (state["sandbox"] !== `squire-${state["runId"]}`) throw new Error("run state sandbox identity mismatch");
-  if (!text(state["repository"], 256) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(state["repository"])) throw new Error("invalid run state repository");
-  if (!text(state["baseBranch"], 256) || !/^[A-Za-z0-9._/-]+$/u.test(state["baseBranch"]) || state["baseBranch"].includes("..")) throw new Error("invalid run state baseBranch");
-  if (state["branch"] !== deterministicFeatureBranch(state["repository"], state["ticketId"])) throw new Error("run state branch identity mismatch");
-  nullableSha(state["baseSha"], "baseSha");
-  nullableSha(state["head"], "head");
-  if ((state["baseSha"] === null) !== (state["head"] === null)) throw new Error("run state Git identity is incomplete");
-  validateResolvedProfiles(state);
-  validateCorrectionState(state as unknown as PersonalRunState);
-  validateLaunchRetryState(state as unknown as PersonalRunState);
-  validateStagedState(state as unknown as PersonalRunState);
-
-  const attempts = exactObject(state["attempts"], PERSONAL_PHASES, "run state attempts");
-  for (const phase of PERSONAL_PHASES) if (!integer(attempts[phase], 0)) throw new Error(`invalid run state ${phase} attempts`);
-  if (state["planExecution"] !== undefined && (state["planExecution"] !== "supervised-v1" || JSON.stringify((state["launchEvidence"] as { planSubphases?: unknown } | undefined)?.planSubphases) !== JSON.stringify(["requirements", "implementation-design"]))) throw new Error("invalid Plan execution mode");
-  if (state["planProgress"] !== undefined && state["planProgress"] !== null) {
-    validatePlanProgress(state["planProgress"]);
-    const progress = state["planProgress"];
-    if (state["planExecution"] !== "supervised-v1" || state["step"] !== "plan" || progress.runId !== state["runId"] || progress.attempt !== attempts["plan"]) throw new Error("run state Plan progress identity mismatch");
+  const v = exactObject(value, REQUIRED_STATE_KEYS, "run state", OPTIONAL_STATE_KEYS);
+  if (v["schemaVersion"] !== 2) throw new Error("historical run state is read-only; start a new run");
+  const s = v as unknown as PersonalRunState;
+  if (!integer(s.version,1) || !RUN_ID_PATTERN.test(s.runId) || !TICKET_ID_PATTERN.test(s.ticketId) || !s.runId.startsWith(s.ticketId.toLowerCase()+"-") || s.sandbox !== `squire-${s.runId}` || !text(s.ticketTitle,2000)) throw new Error("invalid state identity");
+  if (!RUN_STATUSES.includes(s.status) || !RUN_STEPS.includes(s.step) || !validTimestamp(s.updatedAt)) throw new Error("invalid state lifecycle");
+  if (s.branch !== deterministicFeatureBranch(s.repository,s.ticketId)) throw new Error("invalid state branch");
+  validateLifecycleMetadata(v); validateModelPolicy(s.profiles);
+  for (const key of ["baseSha", "head", "candidate"] as const) nullableSha(s[key],key);
+  if (s.contract !== null) {
+    const c = exactObject(s.contract,["ticket","digest"],"contract");
+    const t = exactObject(c["ticket"],["id","title","description"],"contract ticket",["url"]);
+    if (t["id"] !== s.ticketId || !text(t["title"],2000) || typeof t["description"] !== "string" || Buffer.byteLength(JSON.stringify(t)) > 128*1024 || c["digest"] !== createHash("sha256").update(JSON.stringify(t)).digest("hex")) throw new Error("invalid immutable contract");
   }
-  const remediations = exactObject(state["remediations"], ["review", "test"], "run state remediations");
-  for (const phase of ["review", "test"] as const) if (!integer(remediations[phase], 0) || (remediations[phase] as number) > 1) throw new Error(`invalid run state ${phase} remediations`);
-  validateRemediationAttempts(state["remediationAttempts"], remediations, attempts, state["results"]);
-
-  const sessions = subsetObject(state["sessions"], PERSONAL_PHASES, "run state sessions");
-  for (const [phase, sessionId] of Object.entries(sessions)) {
-    if (!text(sessionId, 128)) throw new Error(`invalid run state ${phase} session`);
-  }
-  const results = subsetObject(state["results"], PERSONAL_PHASES, "run state results");
-  for (const [key, result] of Object.entries(results)) {
-    const phase = key as PersonalPhase;
-    validatePhaseResultShape(result, phase, { allowLegacyImplementProjectWiki: state["profiles"] === undefined && phase === "implement" });
-    if (result.runId !== state["runId"] || result.attempt > (attempts[phase] as number) || sessions[phase] !== result.sessionId || result.sessionFile !== ((state as unknown as PersonalRunState).launchGenerations?.find(r => r.sessionId === result.sessionId)?.sessionFile ?? `/ticket/sessions/${phase}/${result.attempt}.jsonl`)) throw new Error(`run state ${phase} result identity mismatch`);
-    if (result.phase === "plan" && state["planExecution"] === "supervised-v1") {
-      if (!result.details.supervision || result.details.supervision.launchDigest !== (state["launchEvidence"] as { digest: string }).digest) throw new Error("supervised Plan evidence missing or mismatched");
-    }
-    const profiles = state["profiles"] as ResolvedPhaseProfiles | undefined;
-    if (profiles) {
-      if (!result.profile || !sameProfile(result.profile, stagedSelection(state as unknown as PersonalRunState, phase, result.attempt)?.profile ?? profiles[phase])) throw new Error(`run state ${phase} profile evidence is missing or does not match the resolved profile`);
-    }
-
-  }
-
-  if (state["prUrl"] !== null && (!text(state["prUrl"], 2_000) || !/^https:\/\/[^\s]+$/u.test(state["prUrl"]))) throw new Error("invalid run state prUrl");
-  if (state["lastError"] !== null && !text(state["lastError"], 2_000)) throw new Error("invalid run state lastError");
-  if (state["reservationCleanupFailure"] !== undefined && !text(state["reservationCleanupFailure"], 2_000)) throw new Error("invalid run state reservation cleanup failure");
-  if (!text(state["updatedAt"], 64) || !validTimestamp(state["updatedAt"])) throw new Error("invalid run state updatedAt");
-
-  if (state["status"] === "running" && (state["step"] === "complete" || state["lastError"] !== null || state["prUrl"] !== null)) throw new Error("running state has terminal fields");
-  if ((state["status"] === "failed" || state["status"] === "interrupted") && state["lastError"] === null) throw new Error("stopped state requires lastError");
-  if (state["status"] === "completed") {
-    if (state["step"] !== "complete" || state["prUrl"] === null || state["lastError"] !== null || state["head"] === null) throw new Error("completed state is incomplete");
-    for (const phase of PERSONAL_PHASES) {
-      const result = results[phase] as import("./types.js").PhaseResult | undefined;
-      if (!result || !sessions[phase] || result.status !== "passed" || result.attempt !== attempts[phase]) throw new Error("completed state is missing a latest passing phase");
-    }
-    const implementation = results["implement"] as import("./types.js").ImplementPhaseResult;
-    const review = results["review"] as import("./types.js").ReviewPhaseResult;
-    const test = results["test"] as import("./types.js").TestPhaseResult;
-    const retro = results["retro"] as import("./types.js").RetroPhaseResult;
-    if (implementation.outputHead !== state["head"] || review.inputHead !== state["head"] || review.outputHead !== state["head"] || test.inputHead !== state["head"] || test.outputHead !== state["head"] || retro.inputHead !== state["head"] || retro.outputHead !== state["head"]) throw new Error("completed state has stale gates");
-  } else if (state["step"] === "complete") {
-    throw new Error("only completed state may use the complete step");
-  }
-  if (state["step"] !== "preparing" && state["step"] !== "launching" && state["baseSha"] === null) throw new Error("started run has no Git identity");
-  if (PERSONAL_PHASES.includes(state["step"] as PersonalPhase) && (attempts[state["step"] as PersonalPhase] as number) < 1) throw new Error("active phase has no attempt");
-}
-
-function validateRemediationAttempts(
-  value: unknown,
-  remediations: Record<string, unknown>,
-  attempts: Record<string, unknown>,
-  results: unknown,
-): void {
-  if (value === undefined) return; // Legacy v1 states did not retain exact remediation attempts.
-  const evidence = exactObject(value, ["review", "test"], "run state remediation attempts");
-  const resultObject = results && typeof results === "object" && !Array.isArray(results) ? results as Record<string, unknown> : undefined;
-  for (const phase of ["review", "test"] as const) {
-    const entries = evidence[phase];
-    if (!Array.isArray(entries) || entries.length > REMEDIATION_ATTEMPT_LIMIT) throw new Error(`invalid run state ${phase} remediation attempts`);
-    const count = remediations[phase];
-    if (!integer(count, 0) || entries.length !== count) throw new Error(`run state ${phase} remediation attempts do not match the counter`);
-    const phaseAttemptCount = attempts[phase];
-    if (!integer(phaseAttemptCount, 0)) throw new Error(`invalid run state ${phase} attempts`);
-    let previous = 0;
-    for (const entry of entries) {
-      if (!integer(entry, 1) || (entry as number) > MAX_PHASE_ATTEMPT || (entry as number) > (phaseAttemptCount as number) || (entry as number) <= previous) {
-        throw new Error(`invalid run state ${phase} remediation attempt ordering`);
-      }
-      previous = entry as number;
-    }
-    const latest = resultObject?.[phase];
-    if (latest && typeof latest === "object" && !Array.isArray(latest)) {
-      const latestRecord = latest as Record<string, unknown>;
-      if (typeof latestRecord["attempt"] === "number" && entries.includes(latestRecord["attempt"]) && latestRecord["status"] !== "remediation_required") {
-        throw new Error(`run state ${phase} remediation evidence disagrees with its result`);
-      }
+  if (!["not_run","passed","failed"].includes(s.verifyDisposition) || !["not_started","publishing","published","failed"].includes(s.publicationState) || s.ciDisposition !== "pending" || s.mergeDisposition !== "not_merged") throw new Error("invalid independent dispositions");
+  exactObject(s.attempts,PERSONAL_PHASES,"attempts"); subsetObject(s.results,PERSONAL_PHASES,"results"); subsetObject(s.sessions,PERSONAL_PHASES,"sessions");
+  for(const phase of PERSONAL_PHASES) {
+    if (![0,1].includes(s.attempts[phase])) throw new Error("one attempt per phase");
+    const r=s.results[phase];
+    if(r) {
+      validatePhaseResultShape(r,phase);
+      if(r.runId !== s.runId || s.attempts[phase] !== 1 || s.sessions[phase] !== r.sessionId || !isDeepStrictEqual(r.profile,s.profiles![phase])) throw new Error("result envelope mismatch");
+      if (phase === "implement" ? r.outputHead !== s.candidate : r.inputHead !== s.candidate || r.outputHead !== s.candidate || s.verifyDisposition !== r.status) throw new Error("candidate evidence mismatch");
     }
   }
-}
-
-function assertRemediationAttemptsAppendOnly(current: PersonalRunState, next: PersonalRunState): void {
-  const previous = current.remediationAttempts;
-  const proposed = next.remediationAttempts;
-  for (const phase of ["review", "test"] as const) {
-    if (next.remediations[phase] < current.remediations[phase]) throw new Error(`run state ${phase} remediation counter cannot decrease`);
-  }
-  if (previous === undefined) {
-    if (proposed === undefined) {
-      // A legacy record remains legacy until a controller has exact evidence for
-      // a newly committed request. Never invent its older remediation history.
-      return;
-    }
-    for (const phase of ["review", "test"] as const) {
-      const entries = proposed[phase];
-      const priorCount = current.remediations[phase];
-      if (priorCount > 0) throw new Error(`cannot add exact ${phase} remediation history to a legacy run state`);
-      if (entries.length === 0 && next.remediations[phase] === 0) continue;
-      const result = next.results[phase];
-      const exactCurrentRequest = next.remediations[phase] === 1
-        && entries.length === 1
-        && result?.attempt === entries[0]
-        && result?.status === "remediation_required";
-      if (!exactCurrentRequest) throw new Error(`legacy ${phase} remediation evidence is not an exact append`);
-    }
-    return;
-  }
-  if (proposed === undefined) throw new Error("run state remediation evidence cannot be removed");
-  for (const phase of ["review", "test"] as const) {
-    const oldEntries = previous[phase];
-    const newEntries = proposed[phase];
-    if (newEntries.length < oldEntries.length || oldEntries.some((entry, index) => newEntries[index] !== entry)) {
-      throw new Error(`run state ${phase} remediation evidence is not append-only`);
-    }
-  }
+  if (s.attempts.verify && (!s.candidate || s.results.implement?.status !== "passed")) throw new Error("Verify requires accepted Implement candidate");
+  if (s.candidate && s.head !== s.candidate) throw new Error("candidate identity changed");
+  if (s.lastError !== null && !text(s.lastError,2000)) throw new Error("invalid terminal diagnostic");
+  if (s.prUrl !== null && (!text(s.prUrl,2000) || !/^https:\/\/[^\s]+$/u.test(s.prUrl))) throw new Error("invalid publication URL");
+  if (s.results.implement && s.results.implement.inputHead !== s.baseSha) throw new Error("Implement baseline mismatch");
+  if (s.sessions.implement && s.sessions.implement === s.sessions.verify) throw new Error("sessions must be independent");
+  if (s.status === "running" ? s.terminalReason !== null || s.lastError !== null : !text(s.terminalReason,2000)) throw new Error("invalid terminal reason");
+  if (s.status === "completed" && (s.step !== "complete" || s.publicationState !== "published" || !s.prUrl || s.verifyDisposition !== "passed" || s.results.verify?.status !== "passed")) throw new Error("completion requires verified publication");
+  if (s.publicationState === "publishing" || s.publicationState === "published") if(s.verifyDisposition !== "passed" || s.results.verify?.status !== "passed") throw new Error("publication requires Verify");
+  if (s.reports) { subsetObject(s.reports, PERSONAL_PHASES, "reports"); for (const r of Object.values(s.reports)) validateEvidenceRef(r); }
+  validateLaunchRetryState(s);
 }
 
 function exactObject(value: unknown, keys: readonly string[], label: string, optionalKeys: readonly string[] = []): Record<string, unknown> {
@@ -978,35 +869,7 @@ function validateLifecycleMetadata(state: Record<string, unknown>): void {
   if (lifecycle === "completed" && state["step"] !== "complete") throw new Error("completed lifecycle has a different step");
 }
 
-function validateResolvedProfiles(state: Record<string, unknown>): void {
-  const profilesValue = state["profiles"];
-  const selectionValue = state["planSelection"];
-  // Published v1 states predate model evidence. They remain readable, but
-  // this branch intentionally does not invent profiles for their old results.
-  if (profilesValue === undefined && selectionValue === undefined) return;
-  if (profilesValue === undefined || selectionValue === undefined) throw new Error("run state resolved profiles and Plan selection must be persisted together");
-  if (!profilesValue || typeof profilesValue !== "object" || Array.isArray(profilesValue)) throw new Error("run state profiles must be an object");
-  const profiles = profilesValue as Record<string, unknown>;
-  if (Object.keys(profiles).length !== PERSONAL_PHASES.length || Object.keys(profiles).some(key => !PERSONAL_PHASES.includes(key as PersonalPhase))) throw new Error("run state profiles fields are invalid");
-  for (const phase of PERSONAL_PHASES) validatePhaseProfile(profiles[phase], `run state profiles.${phase}`);
-
-  if (!selectionValue || typeof selectionValue !== "object" || Array.isArray(selectionValue)) throw new Error("run state Plan selection must be an object");
-  const selection = selectionValue as Record<string, unknown>;
-  const selectionKeys = ["version", "identity", "repository", "ticketId", "digest", "bucket", "profile"];
-  if (Object.keys(selection).length !== selectionKeys.length || Object.keys(selection).some(key => !selectionKeys.includes(key))) throw new Error("run state Plan selection fields are invalid");
-  if (selection["version"] !== PLAN_SELECTION_VERSION || typeof selection["identity"] !== "string" || !/^[a-f0-9]{64}$/u.test(String(selection["digest"]))) throw new Error("run state Plan selection version or digest is invalid");
-  if (selection["bucket"] !== "a" && selection["bucket"] !== "b") throw new Error("run state Plan selection bucket is invalid");
-  const identity = canonicalPlanIdentity(String(state["repository"]), String(state["ticketId"]));
-  if (selection["identity"] !== identity.identity || selection["repository"] !== identity.repository || selection["ticketId"] !== identity.ticketId) throw new Error("run state Plan selection identity mismatch");
-  const expectedDigest = createPlanDigest(identity.identity);
-  if (selection["digest"] !== expectedDigest) throw new Error("run state Plan selection digest mismatch");
-  const expectedBucket = (Number.parseInt(expectedDigest.slice(0, 2), 16) & 1) === 0 ? "a" : "b";
-  if (selection["bucket"] !== expectedBucket || !sameProfile(selection["profile"], profiles["plan"])) throw new Error("run state Plan selection profile mismatch");
-  validatePhaseProfile(selection["profile"], "run state Plan selection profile");
-}
-
 function assertLaunchIdentityUnchanged(current: PersonalRunState, next: PersonalRunState): void {
-  if (current.planExecution !== next.planExecution) throw new Error("Plan execution mode is immutable");
   if (!isDeepStrictEqual(current.launchEvidence, next.launchEvidence)) throw new Error("launch evidence is immutable");
   for (const key of ["repository", "repositoryPath", "sourceRef", "baseBranch", "launchConfigPath", "launchConfigDigest", "executionMode", "stdoutPath", "stderrPath"] as const) {
     if (current[key] !== next[key]) throw new Error("background launch identity is immutable");
@@ -1054,35 +917,20 @@ async function acquireUpdateLock(directory: string, runId: string): Promise<() =
 }
 
 function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
-  assertCorrectionUnchanged(current, next);
-  assertLaunchRetryUnchanged(current, next);
-  assertStagedUnchanged(current, next);
-  if (current.profiles) {
-    if (!next.profiles || !next.planSelection || !current.planSelection || !sameProfiles(current.profiles, next.profiles) || !sameSelection(current.planSelection, next.planSelection)) throw new Error("resolved phase profiles are immutable");
-    return;
+  if (current.schemaVersion !== 2 || current.status !== "running") throw new Error("terminal and historical state is immutable");
+  assertLaunchRetryUnchanged(current,next);
+  const order = ["launching","preparing","implement","verify","publishing","complete"];
+  if (order.indexOf(next.step) < order.indexOf(current.step)) throw new Error("workflow cannot move backwards");
+  if (current.head !== null && current.head !== next.head && (next.step !== "implement" || current.candidate !== null)) throw new Error("only Implement can bind candidate identity");
+  for (const phase of PERSONAL_PHASES) if (next.attempts[phase] !== current.attempts[phase] && next.step !== phase) throw new Error("attempt must belong to active phase");
+  if (current.publicationState !== next.publicationState && !({not_started:["publishing"],publishing:["published","failed"],published:[],failed:[]} as Record<string,string[]>)[current.publicationState]!.includes(next.publicationState)) throw new Error("publication cannot replay");
+
+  for (const key of ["profiles","runId","ticketId","branch","sandbox"] as const) if(!isDeepStrictEqual(current[key],next[key])) throw new Error(`${key} is immutable`);
+  for (const key of ["contract","baseSha","candidate"] as const) if(current[key] !== null && !isDeepStrictEqual(current[key],next[key])) throw new Error(`${key} is immutable`);
+  for(const phase of PERSONAL_PHASES) {
+    if(current.reports?.[phase] && !isDeepStrictEqual(current.reports[phase],next.reports?.[phase])) throw new Error("report identity immutable");
+    if(current.results[phase] && !isDeepStrictEqual(current.results[phase],next.results[phase])) throw new Error("accepted evidence is immutable");
+    if(next.attempts[phase] < current.attempts[phase]) throw new Error("attempt cannot replay");
   }
-  if (next.profiles || next.planSelection) {
-    if (Object.keys(current.results).length > 0) throw new Error("cannot add model evidence to a legacy run state with executed phases");
-  }
-}
-
-function sameProfiles(left: ResolvedPhaseProfiles, right: ResolvedPhaseProfiles): boolean {
-  return PERSONAL_PHASES.every(phase => sameProfile(left[phase], right[phase]));
-}
-
-function sameSelection(left: PlanSelection, right: PlanSelection): boolean {
-  return left.version === right.version && left.identity === right.identity && left.repository === right.repository && left.ticketId === right.ticketId && left.digest === right.digest && left.bucket === right.bucket && sameProfile(left.profile, right.profile);
-}
-
-function sameProfile(left: PhaseProfile | unknown, right: PhaseProfile | unknown): boolean {
-  if (!left || typeof left !== "object" || !right || typeof right !== "object") return false;
-  const a = left as PhaseProfile;
-  const b = right as PhaseProfile;
-  return a.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
-}
-
-function createPlanDigest(identity: string): string {
-  // Kept local so state validation recomputes the persisted identity rather
-  // than trusting a caller-provided digest.
-  return createHash("sha256").update(identity, "utf8").digest("hex");
+  if (current.verifyDisposition !== "not_run" && current.verifyDisposition !== next.verifyDisposition) throw new Error("Verify disposition immutable");
 }
