@@ -10,6 +10,8 @@ const validator = await readFile(join(root, ".github/validate-ci-workflow.mjs"),
 const runtimeValidator = await readFile(join(root, ".github/validate-ticket-runtime.mjs"), "utf8");
 const runtimeManifest = await readFile(join(root, ".github/runtime/package.json"), "utf8");
 const runtimeLock = await readFile(join(root, ".github/runtime/package-lock.json"), "utf8");
+const companionPaths = [".github/workflows/codeql.yml", ".github/required-check-policy.json", "package.json", "package-lock.json"];
+const companions = Object.fromEntries(await Promise.all(companionPaths.map(async name => [name, await readFile(join(root, name), "utf8")])));
 const nestedRuntimeRoot = "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works";
 const provisionCommands = [
   'sudo install -d -m 700 -o "$(id -u)" -g "$(id -g)" /ticket /ticket/runtime /ticket/workspace',
@@ -106,7 +108,59 @@ try {
   await writeFile(join(temporary, ".github/runtime/package.json"), runtimeManifest);
   await writeFile(join(temporary, ".github/runtime/package-lock.json"), runtimeLock);
 
+  for (const [name, content] of Object.entries(companions)) await writeFile(join(temporary, name), content);
+  await writeFile(join(temporary, ".github/workflows/ci.yml"), workflow);
+  const valid = await runValidator(temporary);
+  assert.equal(valid.status, 0, `valid workflow/policy fixture rejected: ${valid.stderr}`);
+
+  // Missing companions, including the newly required advanced workflow, fail closed.
+  for (const name of [".github/workflows/ci.yml", ...companionPaths]) {
+    await rm(join(temporary, name));
+    assert.notEqual((await runValidator(temporary)).status, 0, `accepted missing ${name}`);
+    await writeFile(join(temporary, name), name.endsWith("/ci.yml") ? workflow : companions[name]);
+  }
+  const mutateCompanion = async (name, mutate, reason) => {
+    const changed = mutate(companions[name]);
+    assert.notEqual(changed, companions[name], `ineffective probe: ${reason}`);
+    await writeFile(join(temporary, name), changed);
+    assert.notEqual((await runValidator(temporary)).status, 0, `accepted ${reason}`);
+    await writeFile(join(temporary, name), companions[name]);
+  };
+  const codeqlPath = ".github/workflows/codeql.yml";
+  for (const language of ["javascript-typescript", "actions"]) {
+    await mutateCompanion(codeqlPath, s => s.replace(`          - ${language}\n`, ""), `missing CodeQL ${language}`);
+  }
+  for (const [before, after] of [
+    ["  pull_request:\n", ""], ["      - main", "      - other"],
+    ["    name: Analyze", "    if: false\n    name: Analyze"],
+    ["      - name: Analyze\n", "      - name: Analyze\n        continue-on-error: true\n"],
+    ["      - name: Initialize CodeQL\n", "      - name: Initialize CodeQL\n        if: false\n"],
+    ["github/codeql-action/init@v4", "github/codeql-action/init@v3"],
+    ["github/codeql-action/analyze@v4", "github/codeql-action/analyze@v3"],
+    ["actions/checkout@v5", "actions/checkout@v4"],
+    ["timeout-minutes: 15", "timeout-minutes: 360"],
+    ["      security-events: write", "      contents: write"],
+    ["      actions: read\n", ""],
+    ["      fail-fast: false", "      fail-fast: true"],
+    ["          languages: ${{ matrix.language }}", "          languages: javascript-typescript"],
+  ]) await mutateCompanion(codeqlPath, s => s.replace(before, after), `CodeQL regression ${before}`);
+  const policyPath = ".github/required-check-policy.json";
+  const policy = JSON.parse(companions[policyPath]);
+  for (let index = 0; index < policy.checks.length; index++) {
+    await mutateCompanion(policyPath, s => { const p = JSON.parse(s); p.checks.splice(index, 1); return JSON.stringify(p); }, `missing policy gate ${index}`);
+  }
+  for (const [before, after] of [
+    ['"version": 1', '"version": 2'], ['"schemaVersion": 1', '"schemaVersion": 2'],
+    ['"node": "24"', '"node": "22"'], ["Analyze (actions)", "CodeQL"],
+    ["windows-launch-capture (24)", "windows-launch-capture (22)"],
+    [".github/workflows/ci.yml", ".github/workflows/other.yml"],
+  ]) await mutateCompanion(policyPath, s => s.replace(before, after), `policy mismatch ${before}`);
+  for (const name of ["package.json", "package-lock.json"]) {
+    await mutateCompanion(name, s => s.replace(">=24 <25", ">=22"), `${name} engine regression`);
+  }
+
   const expectValidatorRejects = async (mutatedWorkflow, reason) => {
+    assert.notEqual(mutatedWorkflow, workflow, `ineffective probe: ${reason}`);
     await writeFile(join(temporary, ".github/workflows/ci.yml"), mutatedWorkflow);
     const result = await runValidator(temporary);
     assert.notEqual(result.status, 0, `validator accepted ${reason}`);
@@ -144,8 +198,16 @@ try {
   await expectValidatorRejects(workflow.replace("dist/test/personal-windows-state-replace.test.js ", ""), "missing native Windows state replacement tests");
   await expectValidatorRejects(workflow.replace("dist/test/personal-launch-material.test.js ", ""), "missing actual captured-material CLI regression");
   await expectValidatorRejects(workflow.replace("      fail-fast: false\n", ""), "cancelling other Windows version evidence after one failure");
-  await expectValidatorRejects(workflow.replace('          - "20.17.0"', '          - "20"'), "missing exact minimum Node version");
-  await expectValidatorRejects(workflow.replace('          - "22.9.0"', '          - "22"'), "missing exact minimum Node 22 version");
+  for (const version of ["20.17.0", "22.9.0", "25"]) {
+    await expectValidatorRejects(workflow.replace('          - "24"', `          - "${version}"`), `unsupported Windows Node ${version}`);
+    await expectValidatorRejects(workflow.replaceAll('node-version: "24"', `node-version: "${version}"`), `unsupported application Node ${version}`);
+  }
+  for (const action of ["checkout", "setup-node"]) {
+    await expectValidatorRejects(workflow.replace(`actions/${action}@v5`, `actions/${action}@v4`), `obsolete ${action} action runtime`);
+  }
+  for (const name of ["clean-install-build-test", "filesystem-event-integration", "windows-launch-capture"]) {
+    await expectValidatorRejects(workflow.replace(`  ${name}:`, `  removed-${name}:`), `missing application gate ${name}`);
+  }
   await expectValidatorRejects(workflow.replace(" dist/test/personal-plan-supervisor.test.js", ""), "missing supervised Plan regression");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", ["echo runtime provisioning", "# npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund"]), "comment-substituted provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", [...provisionCommands.slice(0, 3), "set +e", provisionCommands[3], "echo runtime install completed"]), "status-masked provisioning");

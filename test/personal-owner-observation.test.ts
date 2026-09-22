@@ -1,3 +1,4 @@
+import { cliPath } from "./support/runtime-compatible-cli.js";
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -52,7 +53,7 @@ for (const stage of ["reserve-published", "claim-before-state", "claim-published
       });
       const before = await snapshot(directory);
       for (const selector of [reserved().runId, "AIDEV-1"]) {
-        const result = await exec(process.execPath, [path.resolve("dist/src/personal/cli.js"), "status", selector, "--config", configPath], { timeout: 10_000, env: { ...process.env, SQUIRE_DATA_DIR: root } });
+        const result = await exec(process.execPath, [cliPath, "status", selector, "--config", configPath], { timeout: 10_000, env: { ...process.env, SQUIRE_DATA_DIR: root } });
         assert.match(result.stdout, /Run ID: aidev-1-observation123/);
         assert.match(result.stdout, stage === "abandon-published" ? /Status: failed/ : /Status: running/);
         if (stage === "claim-published") assert.match(result.stdout, new RegExp(`Controller PID: ${child.pid}`));

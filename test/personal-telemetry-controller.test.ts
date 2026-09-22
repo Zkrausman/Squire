@@ -1,3 +1,4 @@
+import { cliPath } from "./support/runtime-compatible-cli.js";
 import type { PersonalMvpConfig } from "../src/personal/config.js";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -79,7 +80,7 @@ for (const fault of ["normal", "remediation", "staged", "malformed-usage", "dupl
     // CLI uses only config + terminal artifact, no repository or external command.
     const config = path.join(root, "config.json");
     await writeFile(config, JSON.stringify({ ...JSON.parse(Buffer.from(TEST_MATERIAL.rawConfig, "base64").toString()), dataDirectory: root, paths: { state: path.join(root, "state"), staging: root, bridges: path.join(root, "bridges") } }));
-    const result = await promisify(execFile)(process.execPath, ["dist/src/personal/cli.js", "telemetry", state.runId, "--json", "--config", config]);
+    const result = await promisify(execFile)(process.execPath, [cliPath, "telemetry", state.runId, "--json", "--config", config]);
     assert.deepEqual(JSON.parse(result.stdout), artifact);
   } finally { await runner.reportEvidence.release?.(); await rm(root, { recursive: true, force: true }); }
 });

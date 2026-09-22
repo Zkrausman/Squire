@@ -1,3 +1,4 @@
+import { cliPath, main } from "./support/runtime-compatible-cli.js";
 import { DetachedProcessFixture } from "./helpers/detached-process-fixture.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
@@ -13,7 +14,7 @@ import { backgroundLogPaths, PersonalMvpController } from "../src/personal/contr
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { resolvePhaseProfiles } from "../src/personal/model-policy.js";
 import { formatRunStatus, findRunState, StatusLookupError } from "../src/personal/status.js";
-import { main, parseArguments } from "../src/personal/cli.js";
+import { parseArguments } from "../src/personal/cli.js";
 import type { PersonalRunState, RunRequest, WorkspacePort } from "../src/personal/types.js";
 
 const REQUEST: RunRequest = {
@@ -408,7 +409,7 @@ test("background bootstrap transport does not add ambient variables to a capture
         launchEnvironment = request.env;
         return { pid: 777 };
       } },
-      cliPath: path.resolve("dist/src/personal/cli.js"),
+      cliPath,
       configPath: path.resolve("squire.config.example.json"),
       logsDirectory: path.join(root, "logs"),
       launchConfigDigest: TEST_CONFIG_DIGEST,
@@ -433,7 +434,7 @@ test("background bootstrap transport follows the JSON store when no override is 
         launchEnvironment = request.env;
         return { pid: 777 };
       } },
-      cliPath: path.resolve("dist/src/personal/cli.js"),
+      cliPath,
       configPath: path.resolve("squire.config.example.json"),
       logsDirectory: path.join(root, "logs"),
       launchConfigDigest: TEST_CONFIG_DIGEST,
@@ -460,7 +461,7 @@ test("background launch binds the source commit and child verifies it during pre
     });
     const started = await parent.startBackground(REQUEST, {
       launcher: { async launch() { return { pid: 777 }; } },
-      cliPath: path.resolve("dist/src/personal/cli.js"),
+      cliPath,
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory: states.directory,
       logsDirectory: path.join(root, "logs"),
@@ -499,7 +500,7 @@ test("background parent performs no post-spawn state write and child validates i
     const run = controller(states);
     const launched = await run.startBackground(REQUEST, {
       launcher: { async launch() { return { pid: 777 }; } },
-      cliPath: path.resolve("dist/src/personal/cli.js"),
+      cliPath,
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory: states.directory,
       logsDirectory: path.join(root, "logs"),
@@ -702,7 +703,7 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
     const alreadyAborted = new AbortController();
     alreadyAborted.abort(new Error("operator interrupted before launch"));
     await assert.rejects(run.startBackground({ ...REQUEST, ticketId: "AIDEV-2" }, {
-      cliPath: path.resolve("dist/src/personal/cli.js"),
+      cliPath,
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory: states.directory,
       logsDirectory: path.join(root, "logs"),
@@ -723,7 +724,7 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
     };
     const starting = run.startBackground(REQUEST, {
       launcher,
-      cliPath: path.resolve("dist/src/personal/cli.js"),
+      cliPath,
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory: states.directory,
       logsDirectory: path.join(root, "logs"),
@@ -913,7 +914,7 @@ test("child bootstrap failure clamps a future reservation timestamp and releases
     const reservedAt = "9999-12-31T23:59:59.999Z";
     const reserved = await controller(states, new Date(reservedAt)).reserve(REQUEST, { executionMode: "background", launchConfigDigest: digest });
     const exit = await spawnExit(process.execPath, [
-      path.resolve("dist/src/personal/cli.js"), "run", REQUEST.ticketId,
+      cliPath, "run", REQUEST.ticketId,
       "--config", path.join(root, "missing-config.json"),
       "--reserved-run-id", reserved.runId,
       "--reserved-config-sha256", digest,
@@ -940,7 +941,7 @@ test("bootstrap fallback cannot terminalize a reservation with a different ticke
     const reserved = await controller(states).reserve({ ...REQUEST, ticketId: "AIDEV-2" }, { executionMode: "background", launchConfigDigest: digest });
     const missingConfig = path.join(root, "missing-config.json");
     const wrongTicketExit = await spawnExit(process.execPath, [
-      path.resolve("dist/src/personal/cli.js"), "run", REQUEST.ticketId,
+      cliPath, "run", REQUEST.ticketId,
       "--config", missingConfig,
       "--reserved-run-id", reserved.runId,
       "--reserved-config-sha256", digest,
@@ -950,7 +951,7 @@ test("bootstrap fallback cannot terminalize a reservation with a different ticke
 
     const matchingTicket = { ...REQUEST, ticketId: "AIDEV-2" };
     const wrongDigestExit = await spawnExit(process.execPath, [
-      path.resolve("dist/src/personal/cli.js"), "run", matchingTicket.ticketId,
+      cliPath, "run", matchingTicket.ticketId,
       "--config", missingConfig,
       "--reserved-run-id", reserved.runId,
       "--reserved-config-sha256", "2".repeat(64),
@@ -978,7 +979,7 @@ test("bootstrap fallback requires its reservation to be present and unchanged", 
       if (item.replacement === undefined) await unlink(lock);
       else await writeFile(lock, `${item.replacement}\n`, "utf8");
       const exit = await spawnExit(process.execPath, [
-        path.resolve("dist/src/personal/cli.js"), "run", item.ticketId,
+        cliPath, "run", item.ticketId,
         "--config", path.join(root, "missing-config.json"),
         "--reserved-run-id", reserved.runId,
         "--reserved-config-sha256", digest,
@@ -1003,7 +1004,7 @@ test("background launch rejects direct and resolved destinations inside the repo
     const request = { ...REQUEST, repositoryPath: repository };
     const launch = (stateDirectory: string, logsDirectory: string) => controller(states).startBackground(request, {
       launcher: { async launch() { return { pid: 1 }; } },
-      cliPath: path.resolve("dist/src/personal/cli.js"),
+      cliPath,
       configPath: path.resolve("squire.config.example.json"),
       stateDirectory,
       logsDirectory,

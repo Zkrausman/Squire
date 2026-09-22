@@ -47,7 +47,11 @@ auth-file contents, environment dumps or whole secret-bearing configurations.
   checks do not establish that a future push or PR creation will succeed: token
   expiry, rules and service failures remain possible. Host delivery credentials
   stay out of sandbox/model context; the sandbox auth file is model-only.
-- **Runtime and approval.** Verify configured `sandbox.template`, role user,
+- **Runtime and approval.** Verify the host runs Node.js 24 (`>=24 <25`) before
+  invoking Squire; other majors fail before config/provider/model work. Node 22
+  import/build/test/workflow validation in governed ticket phases is bootstrap
+  compatibility only, not production support. Do not upgrade host/global runtimes
+  without owner approval. Verify configured `sandbox.template`, role user,
   sandbox-internal `piExecutable`/`piAgentDirectory`, model-only auth availability
   (not contents), approved policy and budgets. Confirm the actual template has
   the target toolchain and repository-specific test commands. Read the target's

@@ -1,3 +1,4 @@
+import { cliPath } from "./support/runtime-compatible-cli.js";
 import { piJson } from "./helpers/pi-json.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -503,7 +504,7 @@ test("configuration requires an external GitHub token command", async () => {
 });
 
 test("CLI invalid invocation exits with usage and starts no adapter", async () => {
-  const cli = fileURLToPath(new URL("../src/personal/cli.js", import.meta.url));
+  const cli = cliPath;
   await assert.rejects(execFileAsync(process.execPath, [cli]), error => {
     const failure = error as Error & { code?: number; stderr?: string };
     assert.equal(failure.code, 2);

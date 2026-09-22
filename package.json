@@ -7,7 +7,7 @@
     "squire": "./dist/src/personal/cli.js"
   },
   "engines": {
-    "node": "^20.17.0 || >=22.9.0"
+    "node": ">=24 <25"
   },
   "scripts": {
     "build": "node scripts/build-windows-launch.mjs && tsc -p tsconfig.json",

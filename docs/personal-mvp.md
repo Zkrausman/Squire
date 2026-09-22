@@ -178,7 +178,7 @@ Before detached spawn, the parent atomically writes `state/launch-material/<runI
 
 ### Windows capture boundary
 
-Windows builds require Python and Visual Studio C++ build tools/Windows SDK already installed, with Node `^20.17.0 || >=22.9.0` (the supported package range on every platform). Windows capture CI tests exact minima 20.17.0 and 22.9.0 plus Node 24 with engine-strict installation. `npm ci` and `npm run build` build the local N-API addon at `build/Release/windows_launch.node`. An `--ignore-scripts` install still needs `npm run build`. Missing native support fails closed with an actionable error; POSIX neither builds nor loads the addon. Do not copy a compiled addon between unreviewed installations. The Windows build also emits `windows_plan_sbx.exe`, a test-only executable shim for the real supervisor-fork harness; production never references it. Its adjacent fixture-owned node-path file and script are removed with each fixture, and argv/std-handle/exit forwarding has a bounded regression.
+Windows builds require Python and Visual Studio C++ build tools/Windows SDK already installed, with Node 24 (`>=24 <25`) (the supported package range on every platform). Windows capture CI tests Node 24 only with engine-strict installation. Governed Node 22 import/build/test compatibility is bootstrap-only, not production CLI support; see [runtime and gate policy](runtime-and-gate-policy.md). `npm ci` and `npm run build` build the local N-API addon at `build/Release/windows_launch.node`. An `--ignore-scripts` install still needs `npm run build`. Missing native support fails closed with an actionable error; POSIX neither builds nor loads the addon. Do not copy a compiled addon between unreviewed installations. The Windows build also emits `windows_plan_sbx.exe`, a test-only executable shim for the real supervisor-fork harness; production never references it. Its adjacent fixture-owned node-path file and script are removed with each fixture, and argv/std-handle/exit forwarding has a bounded regression.
 
 Windows custom prompt sources support local NTFS only, checked with opened-volume filesystem information; other filesystems, remote/device paths, drive aliases and reparse components fail closed. The repository must exist so a retained canonical repository handle can anchor exclusion (including repository junction aliases). Manifest filenames remain direct ASCII root members; ADS, DOS device names, trailing dots and traversal are rejected, including unselected subphase entries. Native source capture is read-only and never repairs ACLs.
 
@@ -333,7 +333,7 @@ Command output is captured as exact Buffers (including available partial output 
 
 `test/personal-report-correction.test.ts` uses synthetic reports and offline fake ports; it does not recover or authenticate the owner-reported incident artifacts. No original incident run ID/candidate SHA was supplied. The separately described failed delivery finding motivates independent content reads, not adoption or repair of its candidate. Live model acceptance requires separate scoped approval.
 
-The production runner/controller fixture in `test/personal-windows-report-correction.test.ts` uses deterministic model transport with real native evidence on Windows; `personal-windows-report-evidence.test.ts` covers native security and lifecycle boundaries. Linux runs all available validation, but cannot substitute for Windows execution. The PR’s exact-head `windows-launch-capture` matrix (Node 20.17.0, 22.9.0 and 24) is a mandatory real-Windows merge gate. Prior failed runs/candidates must not be repaired or promoted.
+The production runner/controller fixture in `test/personal-windows-report-correction.test.ts` uses deterministic model transport with real native evidence on Windows; `personal-windows-report-evidence.test.ts` covers native security and lifecycle boundaries. Linux runs all available validation, but cannot substitute for Windows execution. The PR’s exact-head `windows-launch-capture` matrix (Node 24) is a mandatory real-Windows merge gate. Prior failed runs/candidates must not be repaired or promoted.
 
 ### Current-run efficiency reporting
 
@@ -393,7 +393,7 @@ started subphase work/progress or returned a result it cannot qualify for relaun
 The production launch-retry fixture uses real private/report-evidence roots (native
 NTFS ACL/canonical containment on Windows), JSON-store CAS and crash boundaries.
 It runs alongside launch-material, controller, report-correction and telemetry in
-all existing Windows Node 20.17/22.9/24 gates with unchanged timeouts. Offline
+all existing Windows Node 24 gates with unchanged timeouts. Offline
 foreground/detached fixtures stub Linear at `fetch`, count exactly one initial
 issue request and reject all other network activity. This avoids relying on one
 ESM prototype identity across Windows URL spellings. They exercise incomplete

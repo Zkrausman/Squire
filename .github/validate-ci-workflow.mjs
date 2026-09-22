@@ -241,13 +241,13 @@ assert.deepEqual(filesystemJob.steps.map(step => step.name), ["Checkout", "Set u
 const [checkout, setupNode, workflowValidation, negativeProbes, install, provision, runtimeValidation, build, contracts, tests, cleanTree] = job.steps;
 const [filesystemCheckout, filesystemSetupNode, filesystemInstall, filesystemBuild, filesystemTests] = filesystemJob.steps;
 exactKeys(checkout, ["name", "uses", "with"], "Checkout step");
-assert.equal(checkout.uses, "actions/checkout@v4");
+assert.equal(checkout.uses, "actions/checkout@v5");
 exactKeys(checkout.with, ["persist-credentials"], "Checkout.with");
 assert.equal(checkout.with["persist-credentials"], false);
 exactKeys(setupNode, ["name", "uses", "with"], "Set up Node.js step");
-assert.equal(setupNode.uses, "actions/setup-node@v4");
+assert.equal(setupNode.uses, "actions/setup-node@v5");
 exactKeys(setupNode.with, ["node-version", "cache", "cache-dependency-path"], "Set up Node.js.with");
-assert.equal(setupNode.with["node-version"], "22");
+assert.equal(setupNode.with["node-version"], "24");
 assert.equal(setupNode.with.cache, "npm");
 assert.deepEqual(setupNode.with["cache-dependency-path"].trim().split("\n"), ["package-lock.json", ".github/runtime/package-lock.json"]);
 exactKeys(workflowValidation, ["name", "run"], "workflow validation step");
@@ -275,13 +275,13 @@ for (const [label, value] of [["filesystem checkout", filesystemCheckout], ["fil
   assert.equal(Object.hasOwn(value, "continue-on-error"), false, `${label} cannot continue on error`);
 }
 exactKeys(filesystemCheckout, ["name", "uses", "with"], "filesystem Checkout step");
-assert.equal(filesystemCheckout.uses, "actions/checkout@v4");
+assert.equal(filesystemCheckout.uses, "actions/checkout@v5");
 exactKeys(filesystemCheckout.with, ["persist-credentials"], "filesystem Checkout.with");
 assert.equal(filesystemCheckout.with["persist-credentials"], false);
 exactKeys(filesystemSetupNode, ["name", "uses", "with"], "filesystem Set up Node.js step");
-assert.equal(filesystemSetupNode.uses, "actions/setup-node@v4");
+assert.equal(filesystemSetupNode.uses, "actions/setup-node@v5");
 exactKeys(filesystemSetupNode.with, ["node-version", "cache", "cache-dependency-path"], "filesystem Set up Node.js.with");
-assert.equal(filesystemSetupNode.with["node-version"], "22");
+assert.equal(filesystemSetupNode.with["node-version"], "24");
 assert.equal(filesystemSetupNode.with.cache, "npm");
 assert.equal(filesystemSetupNode.with["cache-dependency-path"], "package-lock.json");
 exactKeys(filesystemInstall, ["name", "run"], "filesystem install step");
@@ -294,10 +294,10 @@ assert.equal(filesystemTests.run, "node --test dist/test/personal-run-events.tes
 
 const windowsLaunchJob = document.jobs["windows-launch-capture"];
 assert.deepEqual(windowsLaunchJob, {
-  name: "windows-launch-capture", strategy: { "fail-fast": false, matrix: { node: ["20.17.0", "22.9.0", "24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
+  name: "windows-launch-capture", strategy: { "fail-fast": false, matrix: { node: ["24"] } }, "runs-on": "windows-latest", "timeout-minutes": "15",
   steps: [
-    { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
-    { name: "Set up Node.js", uses: "actions/setup-node@v4", with: { "node-version": "${{ matrix.node }}", cache: "npm", "cache-dependency-path": "package-lock.json" } },
+    { name: "Checkout", uses: "actions/checkout@v5", with: { "persist-credentials": false } },
+    { name: "Set up Node.js", uses: "actions/setup-node@v5", with: { "node-version": "${{ matrix.node }}", cache: "npm", "cache-dependency-path": "package-lock.json" } },
     { name: "Install dependencies", run: "npm ci --engine-strict" },
     { name: "Build", run: "npm run build" },
     { name: "Run Windows launch capture regression", "timeout-minutes": "5", run: "node --test --test-timeout=120000 dist/test/personal-windows-state-replace.test.js dist/test/personal-windows-launch.test.js dist/test/personal-launch-material.test.js dist/test/personal-launch-retry.test.js dist/test/personal-background-status.test.js dist/test/personal-owner-observation.test.js dist/test/personal-controller.test.js dist/test/personal-plan-supervisor.test.js dist/test/personal-report-correction.test.js dist/test/personal-report-bytes.test.js dist/test/personal-windows-report-evidence.test.js dist/test/personal-windows-report-correction.test.js dist/test/personal-telemetry-stream.test.js dist/test/personal-telemetry-store.test.js dist/test/personal-telemetry-controller.test.js" },
@@ -355,3 +355,47 @@ const requiredRuntimePackages = {
 for (const [packagePath, version] of Object.entries(requiredRuntimePackages)) assert.equal(runtimeLock.packages[packagePath]?.version, version, `${packagePath} version is not pinned`);
 
 console.log(`CI workflow, unconditional gate order, ${runtimePackages.length} integrity-bound runtime packages, and pinned ticket-runtime manifest: valid`);
+
+// Advanced setup is repository-managed; GitHub's aggregate CodeQL check and
+// branch protection are platform settings, not identities configured here.
+const CODEQL_PATH = ".github/workflows/codeql.yml";
+const codeql = parseWorkflow(await readFile(CODEQL_PATH, "utf8"));
+assert.deepEqual(codeql, {
+  name: "CodeQL",
+  on: { pull_request: null, push: { branches: ["main"] } },
+  permissions: { contents: "read" },
+  jobs: {
+    analyze: {
+      name: "Analyze (${{ matrix.language }})",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": "15",
+      permissions: { actions: "read", contents: "read", "security-events": "write" },
+      strategy: { "fail-fast": false, matrix: { language: ["javascript-typescript", "actions"] } },
+      steps: [
+        { name: "Checkout", uses: "actions/checkout@v5", with: { "persist-credentials": false } },
+        { name: "Initialize CodeQL", uses: "github/codeql-action/init@v4", with: { languages: "${{ matrix.language }}", "build-mode": "none" } },
+        { name: "Analyze", uses: "github/codeql-action/analyze@v4", with: { category: "/language:${{ matrix.language }}" } },
+      ],
+    },
+  },
+}, "advanced CodeQL must unconditionally analyze both languages with least privilege");
+
+const policy = JSON.parse(await readFile(".github/required-check-policy.json", "utf8"));
+exactKeys(policy, ["schemaVersion", "version", "boundary", "checks"], "required-check policy");
+assert.equal(policy.schemaVersion, 1);
+assert.equal(policy.version, 1);
+assert.equal(policy.boundary, "Version 1 establishes the Node-24 cohort-comparison gate-policy boundary; prior heads are not current-runtime evidence.");
+// Derive emitted check identities from the validated job names/matrix axes.
+// A matrix job without explicit interpolation receives GitHub's value suffix.
+const checks = [
+  { workflow: WORKFLOW_PATH, name: job.name, node: setupNode.with["node-version"] },
+  ...filesystemJob.strategy.matrix.os.map(os => ({ workflow: WORKFLOW_PATH, name: `${filesystemJob.name} (${os})`, node: filesystemSetupNode.with["node-version"] })),
+  ...windowsLaunchJob.strategy.matrix.node.map(node => ({ workflow: WORKFLOW_PATH, name: `${windowsLaunchJob.name} (${node})`, node })),
+  ...codeql.jobs.analyze.strategy.matrix.language.map(language => ({ workflow: CODEQL_PATH, name: codeql.jobs.analyze.name.replace("${{ matrix.language }}", language) })),
+];
+assert.deepEqual(policy.checks, checks, "required-check policy must match every emitted application and advanced CodeQL analysis gate exactly");
+for (const packagePath of ["package.json", "package-lock.json"]) {
+  const metadata = JSON.parse(await readFile(packagePath, "utf8"));
+  assert.equal((metadata.packages?.[""] ?? metadata).engines.node, ">=24 <25", `${packagePath} runtime policy mismatch`);
+}
+console.log("Node 24 application gates, advanced CodeQL languages, and required-check policy v1: valid");

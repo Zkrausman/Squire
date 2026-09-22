@@ -35,16 +35,21 @@ reserved-to-started claim publishes `run_started`. A reservation terminalized
 before that claim therefore never appears to have started.
 
 Consumers sort by state revision, deduplicate by event ID, and reconcile from
-authoritative state before and after installing watchers. If an outbox record
+authoritative state before and after setting up wake mechanisms. If an outbox record
 is malformed or missing, the consumer synthesizes only the bounded transitions
 supported by that state: latest phase results and exact remediation-attempt
 evidence can identify Review/Test attention, while a legacy aggregate counter
-cannot. It uses the same semantic event IDs. It watches the
-containing state and event directories, not an individual file handle, so
-Windows rename-based atomic replacement is observed. Duplicate/coalesced OS
-notifications are debounced; a low-frequency reconciliation timer is only a
-bounded missed-event fallback, not an LLM or busy polling loop. Terminal state
-causes the consumer to exit.
+cannot. It uses the same semantic event IDs. On non-Windows platforms it watches
+the containing state and event directories, not individual file handles;
+duplicate/coalesced notifications are debounced and a bounded reconciliation
+timer recovers missed or unavailable notifications. On Windows it installs **no
+Node/libuv `fs.watch` directory handles** because hosted Node 24 runners can abort
+in libuv during atomic replacement. The same reconciliation timer is the
+authoritative Windows wake mechanism (default 2,000 ms, configurable from 1 to
+60,000 ms, plus filesystem/read/callback execution time). Neither path is an LLM
+or busy polling loop. Terminal state, stop, abort, and errors clear waits and
+close any installed handles. Injectable platform/watch seams and controlled-clock
+tests enforce this bound without invoking providers or models.
 
 The outbox is bounded by both record count and serialized bytes. Retention can
 drop old notifications, so state reconciliation is required and persisted state

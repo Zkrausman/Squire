@@ -16,7 +16,8 @@ squire watch AIDEV-123
 ```
 
 `watch` consumes durable, bounded controller events from the filesystem. It
-blocks on directory notifications (including Windows atomic replacements),
+uses bounded timer reconciliation on Windows and directory notifications with
+a timer fallback elsewhere,
 deduplicates and reconciles from persisted state, prints sanitized meaningful
 transitions, and never invokes Pi/model work while waiting. See
 [`docs/run-events.md`](docs/run-events.md) for the state-first crash contract,
@@ -35,6 +36,7 @@ See the authoritative [Personal MVP plan](docs/personal-mvp.md) and [scope audit
 For a complete first-run walkthrough, see [`docs/first-run.md`](docs/first-run.md).
 
 ```bash
+# Use Node.js 24 (node --version).
 npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 # Copy squire.config.example.json to your per-user Squire directory and edit
@@ -42,7 +44,7 @@ npm run build
 npm run squire -- run AIDEV-123
 ```
 
-Supported Node versions are `^20.17.0 || >=22.9.0`, matching the build dependency engines even on POSIX. On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture, protected phase-input staging, and read-only external custom prompt capture on local NTFS. Custom sources may allow other readers, but not untrusted authors; private captured material remains confidential. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
+Node.js 24 is the sole supported production runtime (`>=24 <25`) on every platform. All CLI commands, including reserved background children, reject other majors before config/provider/model work. The governed Node 22 sandbox can still import modules, build, validate workflows, and run tests; this is bootstrap compatibility, not production support. See [runtime and gate policy](docs/runtime-and-gate-policy.md). On Windows, building requires existing Python and Visual Studio C++ build tools/Windows SDK. The native launch-security addon is mandatory for detached capture, protected phase-input staging, and read-only external custom prompt capture on local NTFS. Custom sources may allow other readers, but not untrusted authors; private captured material remains confidential. See [Windows capture boundary](docs/personal-mvp.md#windows-capture-boundary) for ACL policy, safe destinations, and fail-closed prerequisites.
 
 Squire does not search the checkout for configuration. The implicit config is
 `%USERPROFILE%\.squire\config.json` on Windows and
