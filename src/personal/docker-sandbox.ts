@@ -204,7 +204,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     await this.assertClean(input.sandbox, signal);
     const observed = await this.currentHead(input.sandbox, signal);
     if (observed !== input.head) throw new Error("workspace HEAD changed before bundle export");
-    await this.#commands.run({ command: this.#sbx, args: ["exec", input.sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "bundle", "create", "/ticket/artifacts/candidate.bundle", `refs/heads/${input.branch}`], timeoutMs: 180_000 }, signal);
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "bundle", "create", "/ticket/artifacts/candidate.bundle", `refs/heads/${input.branch}`], timeoutMs: 180_000 }, signal);
     const destination = path.join(this.#stagingRoot, input.runId, "candidate.bundle");
     await rm(destination, { force: true });
     await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });

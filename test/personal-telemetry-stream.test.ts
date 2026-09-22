@@ -23,6 +23,35 @@ test("current Pi agent_end plus agent_settled retains authoritative usage", () =
   assert.deepEqual(parsed.diagnostics, []);
 });
 
+test("current Pi automatic provider retry accounts both cycles without treating retry lifecycle as partial", () => {
+  const events = piEvents("first");
+  const first = events[6].message;
+  const second = structuredClone(first);
+  first.stopReason = "error";
+  first.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  events.at(-1).willRetry = true;
+  second.stopReason = "stop";
+  second.responseId = "response-after-retry";
+  second.timestamp += 1;
+  second.content = [{ type: "text", text: "final" }];
+  events.push(
+    { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "provider transport failed" },
+    { type: "agent_start" },
+    { type: "turn_start" },
+    { type: "message_start", message: { ...second, content: [] } },
+    { type: "message_end", message: second },
+    { type: "auto_retry_end", success: true, attempt: 1 },
+    { type: "turn_end", message: second, toolResults: [] },
+    { type: "agent_end", messages: [second], willRetry: false },
+    { type: "agent_settled" },
+  );
+  const parsed = parse(events);
+  assert.deepEqual(parsed.tokens, { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 });
+  assert.equal(parsed.recordedCost, "0.1");
+  assert.equal(parsed.messages, 2);
+  assert.deepEqual(parsed.diagnostics, []);
+});
+
 test("absent/invalid cost and missing token dimensions are unknown, never zero/guessed", () => {
   for (const bad of [undefined, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: -1 }, { secret: "credential-command" }]) {
     const e = piEvents("private"); usage(e).cost = bad;

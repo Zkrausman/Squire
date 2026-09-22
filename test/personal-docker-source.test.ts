@@ -39,9 +39,11 @@ class SandboxShim implements CommandPort {
     if (request.args[0] === "cp") {
       const source = request.args[1]!;
       const destination = request.args[2]!;
-      const target = path.join(this.sandboxRoot, destination.slice(this.sandbox.length + 1));
+      const fromSandbox = source.startsWith(`${this.sandbox}:`);
+      const actualSource = fromSandbox ? path.join(this.sandboxRoot, source.slice(this.sandbox.length + 1)) : source;
+      const target = fromSandbox ? destination : path.join(this.sandboxRoot, destination.slice(this.sandbox.length + 1));
       await mkdir(path.dirname(target), { recursive: true });
-      await (await import("node:fs/promises")).copyFile(source, target);
+      await (await import("node:fs/promises")).copyFile(actualSource, target);
       return { stdout: "", stderr: "" };
     }
     if (request.args[0] === "exec" && request.args.includes("sh")) {
@@ -74,7 +76,7 @@ class SandboxShim implements CommandPort {
       return this.host.run({ command: "sh", args: ["-lc", translated] }, signal);
     }
     if (request.args[0] === "exec" && request.args.includes("git")) {
-      const args = request.args.slice(request.args.indexOf("git") + 1).map(argument => argument === "/ticket/workspace" ? path.join(this.sandboxRoot, "ticket/workspace") : argument);
+      const args = request.args.slice(request.args.indexOf("git") + 1).map(argument => argument.startsWith("/ticket/") ? path.join(this.sandboxRoot, argument.slice(1)) : argument);
       return this.host.run({ command: "git", args }, signal);
     }
     throw new Error(`unsupported sandbox command: ${request.args.join(" ")}`);
@@ -164,6 +166,10 @@ test("remote-tracking source is pinned and cloned at the exact resolved commit",
   const checkout = path.join(sandboxRoot, "ticket/workspace");
   assert.equal((await readFile(path.join(checkout, "source.txt"), "utf8")).replaceAll("\r\n", "\n"), "one\n");
   assert.ok((await readdir(path.join(root, "staging", "aidev-1-0123456789"))).includes("source.bundle"));
+  const exported = await workspace.exportBundle({ runId: "aidev-1-0123456789", sandbox: "squire-aidev-1-0123456789", branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), baseSha: first, head: first });
+  assert.equal(exported.head, first);
+  const exportRequest = commands.requests.find(request => request.command === "sbx" && request.args.some(argument => argument.endsWith("/candidate.bundle")));
+  assert.deepEqual(exportRequest?.args.slice(0, 4), ["exec", "-u", "root", "squire-aidev-1-0123456789"]);
 });
 
 test("declared ticket runtime is provisioned and incomplete declarations fail closed", async t => {

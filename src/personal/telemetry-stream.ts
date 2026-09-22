@@ -89,15 +89,19 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
   const tokens: UsageAccounting["tokens"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let recordedCost: bigint | null = 0n;
   const messages: Obj[] = [];
+  let cycleMessages: Obj[] = [];
   const seen = new Set<string>();
-  let active = false, ended = false, settled = false, turn = false, message: string | undefined;
+  let active = false, ended = false, settled = false, retryPending = false, autoRetry = false, turn = false, message: string | undefined;
   let diagnostic: Diagnostic | undefined;
   let turnMessage: Obj | undefined;
   let lastTimestamp = 0;
   for (const e of events) {
     if (ended && e["type"] !== "agent_settled") return emptyUsage("invalid_stream");
     switch (e["type"]) {
-      case "agent_start": if (!keys(e, ["type"]) || active || messages.length) return emptyUsage("invalid_stream"); active = true; break;
+      case "agent_start":
+        if (!keys(e, ["type"]) || active || ended || (messages.length > 0 && (!retryPending || !autoRetry))) return emptyUsage("invalid_stream");
+        active = true; retryPending = false; cycleMessages = [];
+        break;
       case "turn_start": if (!keys(e, ["type"]) || !active || turn) return emptyUsage("invalid_stream"); turn = true; turnMessage = undefined; break;
       case "message_start":
         if (!keys(e, ["type", "message"]) || !active || !turn || message || !object(e["message"]) || !["user", "assistant", "toolResult"].includes(e["message"]["role"])) return emptyUsage("invalid_stream");
@@ -111,7 +115,7 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
         if (turnMessage) return emptyUsage("invalid_stream");
         if (!keys(m, ["role", "content", "api", "provider", "model", "responseModel", "responseId", "diagnostics", "usage", "stopReason", "errorMessage", "rawStopReason", "endTurn", "timestamp"]) || !integer(m["timestamp"]) || !Array.isArray(m["content"])) return emptyUsage("invalid_stream");
         if (m["provider"] !== profile.provider || m["model"] !== profile.model || !APIS[profile.provider]!.includes(m["api"])) return emptyUsage("identity_mismatch");
-        if (!["stop", "length", "toolUse"].includes(m["stopReason"])) return emptyUsage("partial_stream");
+        if (!["stop", "length", "toolUse", "error"].includes(m["stopReason"])) return emptyUsage("partial_stream");
         const id = m["responseId"];
         if (id !== undefined && (typeof id !== "string" || !id.length || id.length > 256)) return emptyUsage("identity_mismatch");
         const identity = id ?? digest(m);
@@ -119,7 +123,7 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
         seen.add(identity);
         const u: unknown = m["usage"];
         if (!object(u) || !keys(u, [...TOKEN_FIELDS, "totalTokens", "cost", "reasoning", "cacheWrite1h"])) return emptyUsage("invalid_usage");
-        if (TOKEN_FIELDS.every(f => u[f] === 0) && m["content"].length) return emptyUsage("invalid_usage");
+        if (TOKEN_FIELDS.every(f => u[f] === 0) && m["content"].length && m["stopReason"] !== "error") return emptyUsage("invalid_usage");
         for (const field of TOKEN_FIELDS) {
           const n = u[field];
           if (n === undefined) { tokens[field] = null; diagnostic = "invalid_usage"; }
@@ -142,16 +146,32 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
         }
         if (m["timestamp"] < lastTimestamp) return emptyUsage("invalid_stream");
         lastTimestamp = m["timestamp"]; turnMessage = m;
-        messages.push(m); break;
+        messages.push(m); cycleMessages.push(m); break;
       }
       case "turn_end": if (!keys(e, ["type", "message", "toolResults"]) || !Array.isArray(e["toolResults"]) || !turnMessage || digest(e["message"]) !== digest(turnMessage) || !turn || message) return emptyUsage("invalid_stream"); turn = false; break;
       case "agent_end": {
         if (!keys(e, ["type", "messages", "willRetry"]) || !active || turn || message || !Array.isArray(e["messages"]) || (e["willRetry"] !== undefined && typeof e["willRetry"] !== "boolean")) return emptyUsage("partial_stream");
         const assistants = e["messages"].filter((m: unknown) => object(m) && m["role"] === "assistant");
-        if (digest(assistants) !== digest(messages)) return emptyUsage("identity_mismatch");
-        if (e["willRetry"] === true) return emptyUsage("partial_stream");
-        ended = true; break;
+        if (digest(assistants) !== digest(cycleMessages)) return emptyUsage("identity_mismatch");
+        const finalReason = cycleMessages.at(-1)?.["stopReason"];
+        active = false;
+        if (e["willRetry"] === true) {
+          if (finalReason !== "error") return emptyUsage("invalid_stream");
+          retryPending = true;
+        } else {
+          if (!['stop', 'length'].includes(finalReason as string)) return emptyUsage("partial_stream");
+          ended = true;
+        }
+        break;
       }
+      case "auto_retry_start":
+        if (!keys(e, ["type", "attempt", "maxAttempts", "delayMs", "errorMessage"]) || !retryPending || active || autoRetry || !integer(e["attempt"]) || !integer(e["maxAttempts"]) || !integer(e["delayMs"]) || e["attempt"] < 1 || e["maxAttempts"] < e["attempt"] || typeof e["errorMessage"] !== "string") return emptyUsage("invalid_stream");
+        autoRetry = true;
+        break;
+      case "auto_retry_end":
+        if (!keys(e, ["type", "success", "attempt"]) || !autoRetry || typeof e["success"] !== "boolean" || !integer(e["attempt"])) return emptyUsage("invalid_stream");
+        autoRetry = false;
+        break;
       case "agent_settled":
         if (!keys(e, ["type"]) || !ended || settled) return emptyUsage("invalid_stream");
         settled = true;
@@ -160,6 +180,6 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
       default: return emptyUsage("invalid_stream");
     }
   }
-  if (!ended || !exited || !messages.length || !["stop", "length"].includes(messages.at(-1)!["stopReason"])) return emptyUsage("partial_stream");
+  if (!ended || retryPending || autoRetry || !exited || !messages.length || !["stop", "length"].includes(messages.at(-1)!["stopReason"])) return emptyUsage("partial_stream");
   return { tokens, recordedCost: recordedCost === null ? null : decimalText(recordedCost), costSource: recordedCost === null ? "unknown" : "pi-recorded", messages: messages.length, diagnostics: diagnostic ? [diagnostic] : [] };
 }
