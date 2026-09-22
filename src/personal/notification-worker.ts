@@ -6,7 +6,7 @@ import { RunEventConsumer, type RunEventConsumerOptions, type RunEventWatchResul
 import { validateStatusSelector } from "./status.js";
 import type { RunStatePort } from "./types.js";
 
-export const HOST_NOTIFICATION_EVENT_TYPES = ["attention_required", "terminal_succeeded", "terminal_failed"] as const;
+export const HOST_NOTIFICATION_EVENT_TYPES = ["terminal_succeeded", "terminal_failed"] as const;
 export type HostNotificationEventType = (typeof HOST_NOTIFICATION_EVENT_TYPES)[number];
 
 export interface HostNotificationAdapter {

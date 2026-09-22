@@ -1,3 +1,4 @@
+import { APPROVED_PERSONAL_MODEL_POLICY } from "../src/personal/model-policy.js";
 import { cliPath, main } from "./support/runtime-compatible-cli.js";
 import { DetachedProcessFixture } from "./helpers/detached-process-fixture.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
@@ -73,27 +74,27 @@ test("credential/bootstrap failure is recorded and status never needs live adapt
   }
 });
 
-test("legacy status explicitly reports unavailable timing and model evidence", async () => {
+test("status without timing still displays its bound model profiles", async () => {
   const state: PersonalRunState = {
-    schemaVersion: 1, version: 1, runId: "aidev-1-legacy1234", ticketId: "AIDEV-1", ticketTitle: "Legacy", status: "running", step: "preparing",
+    schemaVersion: 2, contract: null, candidate: null, verifyDisposition: "not_run", publicationState: "not_started", ciDisposition: "pending", mergeDisposition: "not_merged", terminalReason: null, profiles: APPROVED_PERSONAL_MODEL_POLICY, version: 1, runId: "aidev-1-legacy1234", ticketId: "AIDEV-1", ticketTitle: "Legacy", status: "running", step: "preparing",
     sandbox: "squire-aidev-1-legacy1234", repository: "example/repo", baseBranch: "main", baseSha: null, branch: "squire/aidev-1-333bc53d", head: null,
-    sessions: {}, attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 }, results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: null, updatedAt: "2026-09-10T00:00:00.000Z",
+    sessions: {}, attempts: { implement: 0, verify: 0 }, results: {},  prUrl: null, lastError: null, updatedAt: "2026-09-10T00:00:00.000Z",
   };
   const output = formatRunStatus(state, new Date("2026-09-11T00:00:00.000Z"));
   assert.match(output, /Elapsed: unavailable/);
-  assert.match(output, /Model: unavailable/);
+  assert.match(output, /Model: gpt-5.6-luna/);
   assert.match(output, /Current HEAD: unavailable/);
 });
 
 test("status renders persisted phase, timing, model, head, error, PR, and log evidence", () => {
   const output = formatRunStatus({
-    schemaVersion: 1,
+    schemaVersion: 2, contract: null, candidate: null, verifyDisposition: "not_run", publicationState: "not_started", ciDisposition: "pending", mergeDisposition: "not_merged", terminalReason: null, profiles: APPROVED_PERSONAL_MODEL_POLICY,
     version: 4,
     runId: "aidev-1-status1234",
     ticketId: "AIDEV-1",
     ticketTitle: "Status fields",
     status: "completed",
-    step: "review",
+    step: "verify",
     lifecycle: "completed",
     executionMode: "background",
     startedAt: "2026-09-10T00:00:00.000Z",
@@ -109,19 +110,19 @@ test("status renders persisted phase, timing, model, head, error, PR, and log ev
     baseBranch: "main",
     baseSha: "b".repeat(40),
     branch: "squire/aidev-1-status1234",
-    profiles: resolvePhaseProfiles("example/repo", "AIDEV-1").profiles,
+
     head: "c".repeat(40),
     sessions: {},
-    attempts: { plan: 1, implement: 1, review: 2, test: 1, retro: 1 },
+    attempts: { implement: 0, verify: 0 },
     results: {},
-    remediations: { review: 1, test: 0 },
+
     prUrl: "https://github.com/example/repo/pull/12",
     lastError: "a terminal diagnostic",
     reservationCleanupFailure: "reservation release blocked or unverified",
     updatedAt: "2026-09-10T01:01:01.000Z",
   }, new Date("2026-09-11T00:00:00.000Z"));
-  assert.match(output, /Phase: review/);
-  assert.match(output, /Attempt: 2/);
+  assert.match(output, /Phase: verify/);
+  assert.match(output, /Attempt: 0/);
   assert.match(output, /Provider: openai-codex/);
   assert.match(output, /Model: gpt-5\.6-sol/);
   assert.match(output, /Thinking: medium/);
@@ -281,9 +282,9 @@ test("CLI accepts background/status options in either documented order and rejec
 
 test("status lookup supports a read-only embedder without reservation inspection", async () => {
   const state: PersonalRunState = {
-    schemaVersion: 1, version: 1, runId: "aidev-1-embedded123", ticketId: "AIDEV-1", ticketTitle: "Embedded", status: "running", step: "preparing",
+    schemaVersion: 2, contract: null, candidate: null, verifyDisposition: "not_run", publicationState: "not_started", ciDisposition: "pending", mergeDisposition: "not_merged", terminalReason: null, profiles: APPROVED_PERSONAL_MODEL_POLICY, version: 1, runId: "aidev-1-embedded123", ticketId: "AIDEV-1", ticketTitle: "Embedded", status: "running", step: "preparing",
     sandbox: "squire-aidev-1-embedded123", repository: "example/repo", baseBranch: "main", baseSha: null, branch: "squire/aidev-1-333bc53d", head: null,
-    sessions: {}, attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 }, results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: null, updatedAt: "2026-09-10T00:00:00.000Z",
+    sessions: {}, attempts: { implement: 0, verify: 0 }, results: {},  prUrl: null, lastError: null, updatedAt: "2026-09-10T00:00:00.000Z",
   };
   const states = {
     async read(runId: string) { return runId === state.runId ? state : undefined; },
@@ -330,7 +331,7 @@ test("exact historical run IDs remain readable beside a valid replacement reserv
     await states.save({
       ...old,
       version: 2,
-      status: "failed",
+      status: "failed", terminalReason: "failed",
       lifecycle: "failed",
       endedAt: oldEndedAt,
       lastError: "old run failed",
@@ -350,7 +351,7 @@ test("exact historical run IDs remain readable beside a valid replacement reserv
     await states.save({
       ...replacement,
       version: 2,
-      status: "failed",
+      status: "failed", terminalReason: "failed",
       lifecycle: "failed",
       launchState: "failed",
       preparationState: "failed",
@@ -762,7 +763,7 @@ test("CLI SIGINT and SIGTERM before child handoff persist interrupted evidence",
       paths: { state: path.join(root, "state"), bridges: path.join(root, "bridges"), staging: path.join(root, "staging") },
       linear: { apiKeyEnv: "SQUIRE_TEST_LINEAR_KEY" },
       github: { tokenCommand: [process.execPath, "token-helper.js"] },
-      sandbox: { roleUser: "squire", piExecutable: "/usr/bin/pi", piAgentDirectory: "/ticket/pi-agent" },
+      sandbox: { roleUser: "1000:1000", piExecutable: "/usr/bin/pi", piAgentDirectory: "/ticket/pi-agent" },
       testCommands: ["npm test"],
     }), "utf8");
 
@@ -816,7 +817,7 @@ test("cross-process ticket operations serialize two old releases around a replac
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states).reserve(REQUEST);
-    await states.save({ ...old, version: 2, status: "interrupted", lifecycle: "interrupted", endedAt: "2026-09-10T00:00:01.000Z", lastError: "stopped", updatedAt: "2026-09-10T00:00:01.000Z" });
+    await states.save({ ...old, version: 2, status: "interrupted", terminalReason: "stopped", lifecycle: "interrupted", endedAt: "2026-09-10T00:00:01.000Z", lastError: "stopped", updatedAt: "2026-09-10T00:00:01.000Z" });
     const replacement = derivedReservationState(old, "aidev-1-2123456789", "2026-09-10T00:00:02.000Z");
     const inputs = path.join(root, "inputs");
     await mkdir(inputs);
@@ -886,7 +887,7 @@ test("failed reservation cleanup cannot remove a replacement acquired by another
       },
     });
     await waitForFile(failedReady);
-    await states.save({ ...active, version: 2, status: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.500Z", lastError: "stopped", updatedAt: "2026-09-10T00:00:01.500Z" });
+    await states.save({ ...active, version: 2, status: "failed", terminalReason: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.500Z", lastError: "stopped", updatedAt: "2026-09-10T00:00:01.500Z" });
 
     const replacementCaller = path.join(root, "replacement-caller");
     const replacementResult = path.join(root, "replacement-result");
@@ -1037,7 +1038,7 @@ test("status reports orphan reservations over older terminal state", async () =>
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states).reserve(REQUEST);
-    await states.save({ ...old, version: 2, status: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.000Z", lastError: "failed", updatedAt: "2026-09-10T00:00:01.000Z" });
+    await states.save({ ...old, version: 2, status: "failed", terminalReason: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.000Z", lastError: "failed", updatedAt: "2026-09-10T00:00:01.000Z" });
     await states.release(REQUEST.ticketId, old.runId);
     await mkdir(path.join(root, "locks"), { recursive: true });
     await writeFile(path.join(root, "locks", "aidev-1.lock"), "aidev-1-orphan123\n", "utf8");
@@ -1053,7 +1054,7 @@ test("status reports empty or malformed reservation records as ambiguous", async
   try {
     const states = new JsonRunStateStore(root);
     const old = await controller(states).reserve(REQUEST);
-    await states.save({ ...old, version: 2, status: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.000Z", lastError: "failed", updatedAt: "2026-09-10T00:00:01.000Z" });
+    await states.save({ ...old, version: 2, status: "failed", terminalReason: "failed", lifecycle: "failed", endedAt: "2026-09-10T00:00:01.000Z", lastError: "failed", updatedAt: "2026-09-10T00:00:01.000Z" });
     await states.release(REQUEST.ticketId, old.runId);
     await mkdir(path.join(root, "locks"), { recursive: true });
     const lock = path.join(root, "locks", "aidev-1.lock");
@@ -1068,10 +1069,10 @@ test("status reports empty or malformed reservation records as ambiguous", async
 
 test("status escapes CR LF C0 C1 and ESC in external strings", () => {
   const state: PersonalRunState = {
-    schemaVersion: 1, version: 1, runId: "aidev-1-display123", ticketId: "AIDEV-1", ticketTitle: "spoof\r\nStatus: completed\u001b[2J\u0085", status: "failed", step: "preparing",
+    schemaVersion: 2, contract: null, candidate: null, verifyDisposition: "not_run", publicationState: "not_started", ciDisposition: "pending", mergeDisposition: "not_merged", profiles: APPROVED_PERSONAL_MODEL_POLICY, version: 1, runId: "aidev-1-display123", ticketId: "AIDEV-1", ticketTitle: "spoof\r\nStatus: completed\u001b[2J\u0085", status: "failed", terminalReason: "failed", step: "preparing",
     lifecycle: "failed", executionMode: "background", startedAt: "2026-09-10T00:00:00.000Z", endedAt: "2026-09-10T00:00:01.000Z", stdoutPath: "/tmp/out\nforged", stderrPath: "/tmp/err\u009b31m",
     sandbox: "squire-aidev-1-display123", repository: "example/repo", baseBranch: "main", baseSha: null, branch: "squire/aidev-1-333bc53d", head: null,
-    sessions: {}, attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 }, results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: "bad\u0000\nerror\u001b", updatedAt: "2026-09-10T00:00:01.000Z",
+    sessions: {}, attempts: { implement: 0, verify: 0 }, results: {},  prUrl: null, lastError: "bad\u0000\nerror\u001b", updatedAt: "2026-09-10T00:00:01.000Z",
   };
   const output = formatRunStatus(state);
   assert.equal(output.includes("\r"), false);

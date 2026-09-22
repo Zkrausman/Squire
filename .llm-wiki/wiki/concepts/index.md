@@ -1,20 +1,12 @@
-# concepts
+# Concepts
 
-## Concepts
+- [Contract → Implement → Verify](contract-implement-verify-workflow.md)
+- [Trusted controller boundary](trusted-controller-boundary.md)
+- [Background state and status](background-run-state-and-status.md)
+- [Current-run telemetry](durable-run-telemetry.md)
+- [Transient provider launch retry](transient-phase-launch-retry.md)
+- [Windows launch capture](windows-launch-capture.md)
+- [Node 24 runtime and gates](node-24-runtime-and-gate-policy.md)
+- [Operator skill](squire-operator-skill.md)
 
-- [background-run-state-and-status](background-run-state-and-status.md)
-- [five-session-pi-rpc-topology](five-session-pi-rpc-topology.md)
-- [immutable-handoff-validation](immutable-handoff-validation.md)
-- [Deterministic Plan supervisor](deterministic-plan-supervisor.md)
-- [Immutable layered prompt policy](/concepts/immutable-layered-prompt-policy.md)
-- [Run-scoped Pi profiles and trusted wiki footer](run-scoped-pi-profiles-and-trusted-footer.md)
-- [transition-remediation-and-fresh-gates](transition-remediation-and-fresh-gates.md)
-- [token-burn-prevention-for-agent-sessions](token-burn-prevention-for-agent-sessions.md)
-- [trusted-controller-boundary](trusted-controller-boundary.md)
-- [Staged model escalation policy](staged-model-escalation-policy.md)
-- [Portable Squire operator skill](/concepts/squire-operator-skill.md)
-- [Report-only format correction](report-only-format-correction.md)
-- [Durable current-run telemetry](durable-run-telemetry.md)
-- [Transient phase-launch retry](transient-phase-launch-retry.md)
-
-- [Node 24 runtime and gate policy](node-24-runtime-and-gate-policy.md)
+Predecessor workflow concept pages are historical pointers only, not execution authority.

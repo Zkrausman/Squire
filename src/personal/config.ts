@@ -1,11 +1,8 @@
 import { validateLaunchRetryPolicy, type LaunchRetryPolicy } from "./launch-retry.js";
-import { validateReportCorrectionPolicy, type ReportCorrectionPolicy } from "./report-correction.js";
-import { validateEscalationPolicy, type EscalationPolicy } from "./model-policy.js";
 import { createHash } from "node:crypto";
 import { access, open, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_PROMPT_SELECTION, validatePromptSelection, type PromptSelection } from "./prompt-policy.js";
 import { validateSourceRef } from "./identity.js";
 import {
   APPROVED_PERSONAL_MODEL_POLICY,
@@ -54,12 +51,9 @@ export interface PersonalMvpConfig {
     readonly piAgentDirectory: string;
     readonly piAuthFile?: string;
   };
-  /** Normalized policy; Plan is always exactly two equal buckets. */
+  /** Exactly two independently resolved model profiles. */
   readonly modelPolicy: PersonalModelPolicy;
   readonly launchRetryPolicy?: LaunchRetryPolicy;
-  readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
-  readonly escalationPolicy?: EscalationPolicy;
-  readonly promptPolicy?: PromptSelection;
   readonly testCommands: readonly string[];
   /** Maximum Pi phase runtime; omitted means the runner's one-hour default. */
   readonly phaseTimeoutMs?: number;
@@ -170,7 +164,8 @@ export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigP
 /** Pure schema validation for captured raw bytes; never resolves paths or reads the child environment. */
 export function validateCapturedRawConfig(raw: unknown): void {
   const value = object(raw, "captured raw configuration");
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "escalationPolicy", "reportCorrectionPolicy", "launchRetryPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
+  rejectRetiredConfig(value);
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
   for (const key of ["slug", "path", "baseBranch"]) text(repository[key], `repository.${key}`);
@@ -189,14 +184,12 @@ export function validateCapturedRawConfig(raw: unknown): void {
     if (!Array.isArray(commands) || commands.length === 0 || commands.length > limit || commands.some(command => typeof command !== "string" || command.length === 0 || command.length > 2_000)) throw new Error(`${label} must be a bounded non-empty string array`);
   }
   const sandbox = object(value["sandbox"], "sandbox");
+  if (typeof sandbox["roleUser"] !== "string" || !/^[1-9][0-9]*:[1-9][0-9]*$/u.test(sandbox["roleUser"])) throw new Error("sandbox.roleUser must be non-root numeric uid:gid");
   rejectUnknownKeys(sandbox, ["template", "roleUser", "piExecutable", "piAgentDirectory", "piAuthFile"], "sandbox");
   for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key], `sandbox.${key}`);
   for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key], `sandbox.${key}`);
-  validateReportCorrectionPolicy(value["reportCorrectionPolicy"]);
   validateLaunchRetryPolicy(value["launchRetryPolicy"]);
-  if (value["escalationPolicy"] !== undefined) validateEscalationPolicy(value["escalationPolicy"]);
   if (value["modelPolicy"] !== undefined) parseModelPolicy(value["modelPolicy"]);
-  if (value["promptPolicy"] !== undefined) validatePromptSelection(value["promptPolicy"]);
   if (value["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(value["phaseTimeoutMs"]);
 }
 
@@ -205,6 +198,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   const raw: unknown = JSON.parse(bytes.toString("utf8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("configuration must be an object");
   const value = raw as Record<string, unknown>;
+  rejectRetiredConfig(value);
   // Keep the configuration surface deliberately closed. In particular, an
   // unknown top-level field must not become a second spelling for a runtime
   // root or a silently ignored launch control. The explicit legacy aliases
@@ -213,7 +207,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   for (const alias of legacyAliases) {
     if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
   }
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "escalationPolicy", "reportCorrectionPolicy", "launchRetryPolicy", "promptPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
 
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
@@ -224,6 +218,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   const github = object(value["github"], "github");
   rejectUnknownKeys(github, ["tokenCommand"], "github");
   const sandbox = object(value["sandbox"], "sandbox");
+  if (typeof sandbox["roleUser"] !== "string" || !/^[1-9][0-9]*:[1-9][0-9]*$/u.test(sandbox["roleUser"])) throw new Error("sandbox.roleUser must be non-root numeric uid:gid");
   rejectUnknownKeys(sandbox, ["template", "roleUser", "piExecutable", "piAgentDirectory", "piAuthFile"], "sandbox");
   const base = platform === "win32" ? path.win32.dirname(absolute) : path.dirname(absolute);
   const configuredDataDirectory = value["dataDirectory"];
@@ -246,7 +241,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
 
   const phaseTimeoutMs = value["phaseTimeoutMs"] === undefined ? undefined : validatePhaseTimeoutMs(value["phaseTimeoutMs"]);
   const testCommands = value["testCommands"];
-  if (!Array.isArray(testCommands) || testCommands.length === 0 || testCommands.length > 100 || testCommands.some(command => typeof command !== "string" || command.length === 0 || command.length > 2_000)) throw new Error("testCommands must be a non-empty string array");
+  if (!Array.isArray(testCommands) || new Set(testCommands).size !== testCommands.length || testCommands.length === 0 || testCommands.length > 100 || testCommands.some(command => typeof command !== "string" || command.length === 0 || command.length > 2_000)) throw new Error("testCommands must be a non-empty string array");
   const tokenCommand = github["tokenCommand"];
   if (!Array.isArray(tokenCommand) || tokenCommand.length === 0 || tokenCommand.length > 32 || tokenCommand.some(argument => typeof argument !== "string" || argument.length === 0 || argument.length > 2_000)) throw new Error("github.tokenCommand must be a non-empty string array");
   const endpoint = linear["endpoint"];
@@ -296,66 +291,15 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
     },
     modelPolicy,
     launchRetryPolicy: validateLaunchRetryPolicy(value["launchRetryPolicy"]),
-    reportCorrectionPolicy: validateReportCorrectionPolicy(value["reportCorrectionPolicy"]),
-    ...(value["escalationPolicy"] === undefined ? {} : { escalationPolicy: validateEscalationPolicy(value["escalationPolicy"]) }),
-    promptPolicy: value["promptPolicy"] === undefined ? DEFAULT_PROMPT_SELECTION : validatePromptSelection(value["promptPolicy"]),
     testCommands: [...testCommands] as string[],
     ...(phaseTimeoutMs === undefined ? {} : { phaseTimeoutMs }),
   };
 }
 
-function parseModelPolicy(value: unknown): PersonalModelPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("modelPolicy must be an object");
-  const object = value as Record<string, unknown>;
-  const policyKeys = ["plan", "implement", "review", "test", "retro"];
-  if (Object.keys(object).length !== policyKeys.length || Object.keys(object).some(key => !policyKeys.includes(key))) throw new Error("modelPolicy fields are invalid");
-  const plan = parsePlanBuckets(object["plan"]);
-  const result = {
-    plan,
-    implement: parseProfile(object["implement"], "modelPolicy.implement"),
-    review: parseProfile(object["review"], "modelPolicy.review"),
-    test: parseProfile(object["test"], "modelPolicy.test"),
-    retro: parseProfile(object["retro"], "modelPolicy.retro"),
-  };
-  return validateModelPolicy(result, "modelPolicy");
-}
-
-function parsePlanBuckets(value: unknown): readonly [PhaseProfile, PhaseProfile] {
-  let buckets: unknown;
-  if (Array.isArray(value)) {
-    buckets = value;
-  } else if (value && typeof value === "object" && !Array.isArray(value)) {
-    const object = value as Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(object, "buckets")) {
-      if (Object.keys(object).length !== 1) throw new Error("modelPolicy.plan fields are invalid");
-      buckets = object["buckets"];
-    } else if (Object.prototype.hasOwnProperty.call(object, "a") || Object.prototype.hasOwnProperty.call(object, "b")) {
-      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "a") || !Object.prototype.hasOwnProperty.call(object, "b")) throw new Error("modelPolicy.plan buckets must be named a and b");
-      buckets = [object["a"], object["b"]];
-    } else if (Object.prototype.hasOwnProperty.call(object, "bucketA") || Object.prototype.hasOwnProperty.call(object, "bucketB")) {
-      if (Object.keys(object).length !== 2 || !Object.prototype.hasOwnProperty.call(object, "bucketA") || !Object.prototype.hasOwnProperty.call(object, "bucketB")) throw new Error("modelPolicy.plan buckets must include bucketA and bucketB");
-      buckets = [object["bucketA"], object["bucketB"]];
-    }
-    // Accept the pre-policy flat form only as an explicit legacy migration. It
-    // does not silently choose a model: both equal buckets are that profile.
-    else if (Object.prototype.hasOwnProperty.call(object, "provider") || Object.prototype.hasOwnProperty.call(object, "model") || Object.prototype.hasOwnProperty.call(object, "thinking")) buckets = [value, value];
-  }
-  if (!Array.isArray(buckets) || buckets.length !== 2) throw new Error("modelPolicy.plan must contain exactly two buckets");
-  return [parseProfile(buckets[0], "modelPolicy.plan.a"), parseProfile(buckets[1], "modelPolicy.plan.b")];
-}
-
-function parseProfile(value: unknown, label: string): PhaseProfile {
-  return validatePhaseProfile(value, label);
-}
-
-function clonePolicy(policy: PersonalModelPolicy): PersonalModelPolicy {
-  return {
-    plan: [{ ...policy.plan[0] }, { ...policy.plan[1] }],
-    implement: { ...policy.implement },
-    review: { ...policy.review },
-    test: { ...policy.test },
-    retro: { ...policy.retro },
-  };
+function parseModelPolicy(value: unknown): PersonalModelPolicy { return validateModelPolicy(value); }
+function clonePolicy(policy: PersonalModelPolicy): PersonalModelPolicy { return validateModelPolicy(policy); }
+function rejectRetiredConfig(value: Record<string, unknown>): void {
+  for (const key of ["escalationPolicy", "reportCorrectionPolicy", "promptPolicy", "remediation", "remediationPolicy"]) if (Object.hasOwn(value, key)) throw new Error(`${key} is retired; remove it and use only modelPolicy.implement and modelPolicy.verify`);
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {

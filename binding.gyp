@@ -28,10 +28,10 @@
             }
           },
           {
-            "target_name": "windows_plan_sbx",
+            "target_name": "windows_phase_sbx",
             "type": "executable",
             "sources": [
-              "test/native/windows-plan-sbx.cc"
+              "test/native/windows-phase-sbx.cc"
             ]
           }
         ]

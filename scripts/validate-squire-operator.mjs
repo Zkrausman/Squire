@@ -22,6 +22,8 @@ function locatePackage() {
   // explicit installation before checking host-wide locations.
   roots.push("/ticket/runtime/node_modules");
   roots.push(path.resolve(path.dirname(process.execPath), "../lib/node_modules"));
+  if (process.env.NVM_HOME) roots.push(path.join(process.env.NVM_HOME, process.version, "node_modules"));
+  if (process.env.LOCALAPPDATA) roots.push(path.join(process.env.LOCALAPPDATA, "nvm", process.version, "node_modules"));
   for (const root of roots) {
     const candidate = path.join(root, packageName);
     if (existsSync(path.join(candidate, "package.json"))) return realpathSync(candidate);
@@ -80,7 +82,7 @@ try {
     assert.ok(prompt.includes('<name>squire-operator</name>'));
     assert.ok(prompt.includes(skill.description));
     assert.ok(prompt.includes(skill.filePath));
-    const body = readFileSync(skill.filePath, 'utf8');
+    const body = readFileSync(skill.filePath, 'utf8').replaceAll('\\r\\n', '\\n');
     assert.ok(body.startsWith('---\\nname: squire-operator\\n'));
     assert.ok(!prompt.includes('# Squire operator'), 'body must remain on-demand');
     let references = 0;

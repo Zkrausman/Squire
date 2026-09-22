@@ -43,8 +43,8 @@ it does not configure or claim branch-protection settings or an external manifes
 versions, runtime metadata/lock, gate identities, ordering, commands, permissions,
 and unchanged timeout bounds against the policy. Its negative-probe companion
 rejects missing or disabled gates/languages, status masking, weakened bounds,
-and policy mismatches. Native Windows, ACL, launch, telemetry, correction,
-retry, filesystem, full build/test and clean-tree coverage remain mandatory.
+and policy mismatches. Native Windows, ACL, launch, telemetry, verification,
+launch retry, filesystem, full build/test and clean-tree coverage remain mandatory.
 
 Acceptance requires fresh exact-head Node 24 hosted Linux/Windows and advanced
 CodeQL results. Local Node 22 checks prove bootstrap behavior only; they do not

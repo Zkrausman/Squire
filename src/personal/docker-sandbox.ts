@@ -145,9 +145,14 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     return { sandbox: input.sandbox, baseSha, head };
   }
 
+  async assertDescendant(sandbox: string, base: string, head: string, signal?: AbortSignal): Promise<void> {
+    validateName(sandbox, "sandbox"); assertSha(base); assertSha(head);
+    await this.#commands.run({ command: this.#sbx, args: ["exec", sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "merge-base", "--is-ancestor", base, head] }, signal);
+  }
+
   async currentHead(sandbox: string, signal?: AbortSignal): Promise<string> {
     validateName(sandbox, "sandbox");
-    const result = await this.#commands.run({ command: this.#sbx, args: ["exec", sandbox, "git", "-C", "/ticket/workspace", "rev-parse", "HEAD"] }, signal);
+    const result = await this.#commands.run({ command: this.#sbx, args: ["exec", sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "rev-parse", "HEAD"] }, signal);
     const head = result.stdout.trim();
     assertSha(head);
     return head;
@@ -155,7 +160,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
 
   async assertClean(sandbox: string, signal?: AbortSignal): Promise<void> {
     validateName(sandbox, "sandbox");
-    const status = await this.#commands.run({ command: this.#sbx, args: ["exec", sandbox, "git", "-C", "/ticket/workspace", "status", "--porcelain"] }, signal);
+    const status = await this.#commands.run({ command: this.#sbx, args: ["exec", sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "status", "--porcelain"] }, signal);
     if (status.stdout.trim()) throw new Error("workspace has uncommitted changes");
   }
 
@@ -173,7 +178,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     if (observed !== input.head) throw new Error("workspace HEAD changed before project-wiki diff");
     const result = await this.#commands.run({
       command: this.#sbx,
-      args: ["exec", input.sandbox, "git", "-C", "/ticket/workspace", "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "--diff-filter=ACDMRTUXB", `${input.baseSha}..${input.head}`, "--", ".llm-wiki/"],
+      args: ["exec", input.sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "--diff-filter=ACDMRTUXB", `${input.baseSha}..${input.head}`, "--", ".llm-wiki/"],
       timeoutMs: 120_000,
       maxOutputBytes: 512 * 1024,
     }, signal);
@@ -199,7 +204,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     await this.assertClean(input.sandbox, signal);
     const observed = await this.currentHead(input.sandbox, signal);
     if (observed !== input.head) throw new Error("workspace HEAD changed before bundle export");
-    await this.#commands.run({ command: this.#sbx, args: ["exec", input.sandbox, "git", "-C", "/ticket/workspace", "bundle", "create", "/ticket/artifacts/candidate.bundle", `refs/heads/${input.branch}`], timeoutMs: 180_000 }, signal);
+    await this.#commands.run({ command: this.#sbx, args: ["exec", input.sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "bundle", "create", "/ticket/artifacts/candidate.bundle", `refs/heads/${input.branch}`], timeoutMs: 180_000 }, signal);
     const destination = path.join(this.#stagingRoot, input.runId, "candidate.bundle");
     await rm(destination, { force: true });
     await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });

@@ -179,7 +179,7 @@ try {
     await expectValidatorRejects(workflow.replace(marker, marker.replace(/timeout-minutes: \d+/, "timeout-minutes: 360")), `excessive timeout: ${marker}`);
   }
 
-  for (const name of ["stream", "store", "controller"]) {
+  for (const name of ["stream", "store"]) {
     const regression = ` dist/test/personal-telemetry-${name}.test.js`;
     assert.equal(workflow.includes(regression), true, `Windows telemetry ${name} regression missing`);
     await expectValidatorRejects(workflow.replace(regression, ""), `missing Windows telemetry ${name} coverage`);
@@ -208,7 +208,7 @@ try {
   for (const name of ["clean-install-build-test", "filesystem-event-integration", "windows-launch-capture"]) {
     await expectValidatorRejects(workflow.replace(`  ${name}:`, `  removed-${name}:`), `missing application gate ${name}`);
   }
-  await expectValidatorRejects(workflow.replace(" dist/test/personal-plan-supervisor.test.js", ""), "missing supervised Plan regression");
+  await expectValidatorRejects(workflow.replace(" dist/test/personal-adapters.test.js", ""), "missing two-session Verify authority regression");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", ["echo runtime provisioning", "# npm ci --prefix /ticket/runtime --ignore-scripts --no-audit --no-fund"]), "comment-substituted provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Provision ticket runtime", [...provisionCommands.slice(0, 3), "set +e", provisionCommands[3], "echo runtime install completed"]), "status-masked provisioning");
   await expectValidatorRejects(replaceStepRun(workflow, "Validate ticket runtime", ["echo lstatSync", "echo pi-tui/package.json", "echo 0.84.4"]), "substituted runtime validation");

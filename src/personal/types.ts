@@ -1,18 +1,15 @@
 import type { LaunchRetryPolicy, LaunchRecord, LaunchGeneration } from "./launch-retry.js";
-import type { ReportCorrectionPolicy, CorrectionRecord, ReportCapture, ReportCorrectionInput } from "./report-correction.js";
+import type { ReportCapture } from "./report-capture.js";
 import type { ReportEvidencePort } from "./report-evidence.js";
-import type { EscalationPolicy } from "./model-policy.js";
-import type { StagedTransition } from "./staged-attempts.js";
-import type { PlanEvidence, PlanProgress } from "./plan-artifacts.js";
-import type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
+import type { PersonalModelPolicy, PhaseProfile, ResolvedPhaseProfiles } from "./model-policy.js";
 import type { LaunchEvidence } from "./launch-material.js";
 import type { RunEvent } from "./run-events.js";
 
-export type { PersonalModelPolicy, PhaseProfile, PlanSelection, ResolvedPhaseProfiles } from "./model-policy.js";
+export type { PersonalModelPolicy, PhaseProfile, ResolvedPhaseProfiles } from "./model-policy.js";
 
-export const PERSONAL_PHASES = ["plan", "implement", "review", "test", "retro"] as const;
+export const PERSONAL_PHASES = ["implement", "verify"] as const;
 export type PersonalPhase = (typeof PERSONAL_PHASES)[number];
-export type PhaseStatus = "passed" | "remediation_required" | "failed";
+export type PhaseStatus = "passed" | "failed";
 export type RunStatus = "running" | "completed" | "failed" | "interrupted";
 /** The coarse lifecycle shown by `squire status`. */
 export type RunLifecycle = "launching" | "preparing" | "running" | "publishing" | "completed" | "failed" | "interrupted";
@@ -21,9 +18,6 @@ export type RunLaunchState = "reserved" | "started" | "failed";
 export type RunPreparationState = "pending" | "started" | "ready" | "failed";
 export type RunExecutionMode = "foreground" | "background";
 export type RunStep = "launching" | "preparing" | PersonalPhase | "publishing" | "complete";
-export type RemediationPhase = "review" | "test";
-export type RemediationAttemptEvidence = Readonly<Record<RemediationPhase, readonly number[]>>;
-
 export interface Ticket {
   readonly id: string;
   readonly title: string;
@@ -42,11 +36,6 @@ interface PhaseResultBase {
   readonly summary: string;
   /** Resolved profile evidence added by the controller/runner for new runs. */
   readonly profile?: PhaseProfile;
-}
-
-export interface PlanPhaseResult extends PhaseResultBase {
-  readonly phase: "plan";
-  readonly details: { readonly steps: readonly string[]; readonly supervision?: PlanEvidence };
 }
 
 export type ProjectWikiDisposition =
@@ -69,40 +58,25 @@ export interface ImplementPhaseResult extends PhaseResultBase {
   };
 }
 
-export interface ReviewPhaseResult extends PhaseResultBase {
-  readonly phase: "review";
-  readonly details: { readonly findings: readonly string[] };
-}
-
 export interface TestCommandEvidence {
   readonly command: string;
   readonly exitCode: number;
   readonly summary: string;
 }
 
-export interface TestPhaseResult extends PhaseResultBase {
-  readonly phase: "test";
-  readonly details: { readonly commands: readonly TestCommandEvidence[] };
+export interface VerifyPhaseResult extends PhaseResultBase {
+  readonly phase: "verify";
+  readonly details: { readonly findings: readonly string[]; readonly commands: readonly TestCommandEvidence[] };
 }
-
-export interface RetroPhaseResult extends PhaseResultBase {
-  readonly phase: "retro";
-  readonly details: {
-    readonly lessons: readonly string[];
-    readonly followUps: readonly string[];
-  };
-}
-
-export type PhaseResult = PlanPhaseResult | ImplementPhaseResult | ReviewPhaseResult | TestPhaseResult | RetroPhaseResult;
+export type PhaseResult = ImplementPhaseResult | VerifyPhaseResult;
 
 export interface PhaseInput {
   readonly launchGeneration?: LaunchGeneration;
   /** Controller-owned accounting attribution; never selected by the model. */
-  readonly telemetryAttribution?: { readonly trigger: "initial" | "retry" | "stage_advanced" | "remediation"; readonly stageIndex: number | null; readonly stageAttempt: number | null };
-  /** Controller monotonic deadline, never reset for correction. */
+  readonly telemetryAttribution?: { readonly trigger: "initial" | "retry" };
+  /** Controller monotonic deadline, never reset by a launch generation. */
   readonly deadline?: number;
   readonly reportSession?: { readonly sessionId: string; readonly sessionFile: string };
-  readonly escalationDigest?: string;
   readonly runId: string;
   readonly ticket: Ticket;
   readonly repository: string;
@@ -114,12 +88,11 @@ export interface PhaseInput {
   readonly expectedHead: string;
   /** Immutable ticket baseline used to evaluate cumulative wiki disposition. */
   readonly originalTicketBaseSha: string;
-  /** All prior phase outputs, including superseded remediation attempts. */
-  readonly previousCumulative: readonly PhaseResult[];
   /** The controller-resolved profile used for this phase's Pi process. */
   readonly profile: PhaseProfile;
-  readonly previous: Readonly<Partial<Record<PersonalPhase, PhaseResult>>>;
-  readonly feedback: readonly string[];
+  readonly contractDigest: string;
+  readonly implementationEvidence?: ImplementPhaseResult["details"];
+  readonly testCommands: readonly string[];
 }
 
 export interface PreparedWorkspace {
@@ -138,6 +111,7 @@ export interface CandidateBundle {
 }
 
 export interface PublicationInput {
+  readonly contractDigest: string;
   readonly runId: string;
   readonly ticket: Ticket;
   readonly repository: string;
@@ -157,18 +131,22 @@ export interface PublicationResult {
 export interface PersonalRunState {
   readonly launchRetryPolicy?: LaunchRetryPolicy;
   readonly launchGenerations?: readonly LaunchRecord[];
-  readonly reportCorrectionPolicy?: ReportCorrectionPolicy;
-  readonly reportCorrections?: readonly CorrectionRecord[];
-  readonly schemaVersion: 1;
+  readonly reports?: Readonly<Partial<Record<PersonalPhase, import("./report-evidence.js").ReportEvidence>>>;
+  readonly schemaVersion: 2;
+  readonly contract: { readonly ticket: Ticket; readonly digest: string } | null;
+  readonly candidate: string | null;
+  readonly verifyDisposition: "not_run" | "passed" | "failed";
+  readonly publicationState: "not_started" | "publishing" | "published" | "failed";
+  readonly ciDisposition: "pending";
+  readonly mergeDisposition: "not_merged";
+  readonly terminalReason: string | null;
   readonly version: number;
   readonly runId: string;
   readonly ticketId: string;
   readonly ticketTitle: string;
   readonly status: RunStatus;
   readonly step: RunStep;
-  readonly planProgress?: PlanProgress | null;
   /** Missing on legacy captured runs; immutable for new supervised lifecycles. */
-  readonly planExecution?: "supervised-v1";
   /** Additive lifecycle evidence. It is absent on published legacy v1 files. */
   readonly lifecycle?: RunLifecycle;
   readonly launchState?: RunLaunchState;
@@ -194,18 +172,11 @@ export interface PersonalRunState {
   readonly baseSha: string | null;
   readonly branch: string;
   /** Resolved once at run creation and immutable for the life of the run. */
-  readonly escalationPolicy?: EscalationPolicy;
-  readonly escalationDigest?: string;
-  readonly stagedTransitions?: readonly StagedTransition[];
   readonly profiles?: ResolvedPhaseProfiles;
-  readonly planSelection?: PlanSelection;
   readonly head: string | null;
   readonly sessions: Readonly<Partial<Record<PersonalPhase, string>>>;
   readonly attempts: Readonly<Record<PersonalPhase, number>>;
   readonly results: Readonly<Partial<Record<PersonalPhase, PhaseResult>>>;
-  readonly remediations: Readonly<Record<RemediationPhase, number>>;
-  /** Exact Review/Test attempts whose persisted result requested remediation. Absent on legacy v1 state. */
-  readonly remediationAttempts?: RemediationAttemptEvidence;
   readonly prUrl: string | null;
   readonly lastError: string | null;
   /** Durable, actionable reservation cleanup outcome when release is blocked or unverifiable. */
@@ -221,7 +192,6 @@ export interface RunRequest {
   readonly baseBranch: string;
   /** Optional caller-supplied policy; the approved policy is used otherwise. */
   readonly modelPolicy?: PersonalModelPolicy;
-  readonly escalationPolicy?: EscalationPolicy;
 }
 
 export interface TicketPort {
@@ -238,6 +208,7 @@ export interface WorkspacePort {
   /** Resolve a mutable source ref before detached handoff when supported. */
   resolveSource?(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string>;
   prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string; readonly expectedBaseSha?: string }, signal?: AbortSignal): Promise<PreparedWorkspace>;
+  assertDescendant?(sandbox: string, base: string, head: string, signal?: AbortSignal): Promise<void>;
   currentHead(sandbox: string, signal?: AbortSignal): Promise<string>;
   assertClean(sandbox: string, signal?: AbortSignal): Promise<void>;
   /**
@@ -256,12 +227,9 @@ export interface PhasePort {
   telemetryTerminal?(state: PersonalRunState): Promise<void | { readonly complete: boolean }>;
   telemetrySettled?(result: PhaseResult): Promise<void>;
   readonly reportEvidence?: ReportEvidencePort;
-  /** Internal transport envelope, never a model-authored result field.
-   * Supervised Plan has its own artifact protocol instead. */
+  /** Internal transport envelope, never a model-authored result field. */
   reportCapture?(result: PhaseResult): ReportCapture | undefined;
-  prepareReportCorrection?(): Promise<void>;
-  correctReport?(input: ReportCorrectionInput, signal?: AbortSignal): Promise<ReportCapture>;
-  run(input: PhaseInput, signal?: AbortSignal, onProgress?: (progress: PlanProgress) => Promise<void>): Promise<PhaseResult>;
+  run(input: PhaseInput, signal?: AbortSignal): Promise<PhaseResult>;
 }
 
 export interface PublicationPort {

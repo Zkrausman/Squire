@@ -20,7 +20,7 @@ strings for 20/22/24/25 without installing other executables.
 cohort-comparison gate-policy boundary (no manifest existed at the baseline).
 Application CI is Node 24 only: clean install/build/test, filesystem integration
 on Ubuntu and Windows, and the bounded Windows native launch/capture cohort.
-Native/ACL/launch/telemetry/correction/retry/filesystem/security coverage and
+Native/ACL/launch/telemetry/verification/launch-retry/filesystem/security coverage and
 existing timeout bounds are not reduced by the runtime cohort change.
 
 CodeQL default setup is disabled. Repository-managed advanced

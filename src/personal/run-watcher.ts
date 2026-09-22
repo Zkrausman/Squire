@@ -1,3 +1,4 @@
+import { setTimeout as observationDelay } from "node:timers/promises";
 import { watch as fsWatch, type FSWatcher } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -247,6 +248,18 @@ function eventDirectoryOf(states: RunEventConsumerOptions["states"], stateDirect
 }
 
 async function resolveWatchedState(states: RunEventConsumerOptions["states"], selector: string): Promise<PersonalRunState> {
+  // Observation only: let an atomic state/owner release settle, never mutate
+  // evidence or launch work. Stable ambiguity remains an actionable failure.
+  for (let n = 0; ; n++) {
+    try { return await resolveObservedState(states, selector); }
+    catch (error) {
+      if (!(error instanceof StatusLookupError) || error.code !== "ambiguous" || n === 3) throw error;
+      await observationDelay(250);
+    }
+  }
+}
+
+async function resolveObservedState(states: RunEventConsumerOptions["states"], selector: string): Promise<PersonalRunState> {
   try {
     return await findRunState(states, selector);
   } catch (error) {

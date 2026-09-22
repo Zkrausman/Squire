@@ -7,7 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CommandPort } from "./command.js";
 import { validatePhaseResultShape, validateProjectWikiDisposition, validateProjectWikiPaths } from "./phase-result.js";
-import { PERSONAL_PHASES, type ImplementPhaseResult, type PersonalPhase, type PublicationInput, type PublicationPort, type PublicationResult, type RetroPhaseResult } from "./types.js";
+import { PERSONAL_PHASES, type ImplementPhaseResult, type PersonalPhase, type PublicationInput, type PublicationPort, type PublicationResult } from "./types.js";
 
 export interface GitHubTokenProvider {
   getToken(signal?: AbortSignal): Promise<string>;
@@ -386,18 +386,17 @@ function pullRequestBody(input: PublicationInput): string {
     "",
     `Validated head: \`${input.head}\``,
     "",
+    `Contract SHA-256: ${input.contractDigest}`,
+    "",
     "## Squire phases",
     "",
-    `- Plan: ${markdownInline(input.phases.plan.summary)}`,
+    `- Verify: ${markdownInline(input.phases.verify.summary)}`,
     `- Implement: ${markdownInline(input.phases.implement.summary)}`,
-    `- Review: ${markdownInline(input.phases.review.summary)}`,
-    `- Test: ${markdownInline(input.phases.test.summary)}`,
-    `- Retro: ${markdownInline(input.phases.retro.summary)}`,
     "",
     "> Squire does not merge pull requests. The owner retains the final decision.",
     "",
     knowledgeSection(input),
-    retroSection(input),
+    verificationSection(input),
   ].join("\n");
 }
 
@@ -423,29 +422,36 @@ function knowledgeSection(input: PublicationInput): string {
   ].join("\n");
 }
 
-function retroSection(input: PublicationInput): string {
-  const retro = input.phases.retro as RetroPhaseResult;
-  const followUps = retro.details.followUps.length > 0
-    ? retro.details.followUps.map(item => `- [ ] ${markdownListItem(item)}`)
-    : ["No follow-ups proposed."];
-  return [
-    "## Retro",
-    "",
-    "### Lessons",
-    ...retro.details.lessons.map(item => `- ${markdownListItem(item)}`),
-    "",
-    "### Proposed follow-ups",
-    ...followUps,
-    "",
-  ].join("\n");
-}
-
-function markdownListItem(value: string): string {
-  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replaceAll("\n", "\n  ");
-}
-
 const VALIDATED_HEAD_LINE = /^Validated head: `([a-f0-9]{40,64})`$/u;
 const VALIDATED_HEAD_LIKE_LINE = /^\s*Validated\s+head\s*:/iu;
+
+function reconcileManagedSections(body: string, knowledge: string, verification: string): string {
+  const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (/^##\s+(?:Knowledge|Verification)\s*$/iu.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (/^##\s+/u.test(line)) {
+        skipping = false;
+        kept.push(line);
+      }
+      continue;
+    }
+    kept.push(line);
+  }
+  const withoutManaged = kept.join("\n").trimEnd();
+  return `${withoutManaged ? `${withoutManaged}\n\n` : ""}${knowledge.trimEnd()}\n\n${verification.trimEnd()}\n`;
+}
+
+function verificationSection(input: PublicationInput): string {
+  const result = input.phases.verify;
+  if (result.phase !== "verify") throw new Error("missing Verify");
+  return ["## Verification", "", ...result.details.commands.map(c => `- ${markdownInline(c.command)}: exit ${c.exitCode}; ${markdownInline(c.summary)}`), "", "Exact-head required CI and owner merge remain pending.", ""].join("\n");
+}
 
 function validatedHeadMarker(lines: readonly string[]): { readonly index: number; readonly head: string } | undefined {
   // Treat malformed marker-shaped lines as authoritative input too. Accepting
@@ -474,24 +480,26 @@ function reconcilePullRequestBody(body: string, input: PublicationInput, expecte
   const ticketIndex = uniqueLineIndex(lines, `## ${input.ticket.id}`) ?? invalidBody();
   const marker = validatedHeadMarker(lines) ?? invalidBody();
   const validatedIndex = marker.index;
+  const contractIndex = uniqueLineIndex(lines, /^Contract SHA-256: [a-f0-9]{64}$/u) ?? invalidBody();
+  lines[contractIndex] = `Contract SHA-256: ${input.contractDigest}`;
   if (marker.head !== expectedValidatedHead) return invalidBody();
   const squireHeadings = lines.flatMap((line, index) => /^##\s+Squire phases\s*$/u.test(line) ? [index] : []);
-  const retroHeadings = lines.flatMap((line, index) => /^##\s+Retro\s*$/iu.test(line) ? [index] : []);
+  const verificationHeadings = lines.flatMap((line, index) => /^##\s+Verification\s*$/iu.test(line) ? [index] : []);
   const knowledgeHeadingLike = lines.flatMap((line, index) => /^#{2,6}\s+Knowledge\b.*$/iu.test(line) ? [index] : []);
   const squireIndex = squireHeadings.length === 1 ? squireHeadings[0] : undefined;
-  const retroIndex = retroHeadings.length === 1 ? retroHeadings[0] : undefined;
-  if (squireIndex === undefined || retroIndex === undefined || retroIndex <= squireIndex || ticketIndex >= validatedIndex || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
+  const verificationIndex = verificationHeadings.length === 1 ? verificationHeadings[0] : undefined;
+  if (squireIndex === undefined || verificationIndex === undefined || verificationIndex <= squireIndex || ticketIndex >= validatedIndex || validatedIndex >= squireIndex || ticketIndex >= squireIndex) return invalidBody();
   if (knowledgeHeadingLike.length > 1) return invalidBody();
   const knowledgeIndex = knowledgeHeadingLike.length === 1 ? knowledgeHeadingLike[0]! : undefined;
   if (knowledgeIndex !== undefined) {
-    if (lines[knowledgeIndex] !== "## Knowledge" || knowledgeIndex <= squireIndex || knowledgeIndex >= retroIndex) return invalidBody();
+    if (lines[knowledgeIndex] !== "## Knowledge" || knowledgeIndex <= squireIndex || knowledgeIndex >= verificationIndex) return invalidBody();
     const knowledgeEnd = nextHeadingAfter(lines, knowledgeIndex);
     validateExistingKnowledgeSection(lines, knowledgeIndex, knowledgeEnd === -1 ? lines.length : knowledgeEnd, invalidBody);
   }
-  // Between the phase heading and Retro, only the optional managed Knowledge
+  // Between the phase heading and Verification, only the optional managed Knowledge
   // section may be another level-two section. Other headings make owner edits
   // ambiguous and are not safe to reconcile automatically.
-  for (let index = squireIndex + 1; index < retroIndex; index += 1) {
+  for (let index = squireIndex + 1; index < verificationIndex; index += 1) {
     if (/^##\s+/u.test(lines[index] ?? "") && index !== knowledgeIndex) return invalidBody();
   }
   const nextHeading = nextHeadingAfter(lines, squireIndex);
@@ -502,7 +510,7 @@ function reconcilePullRequestBody(body: string, input: PublicationInput, expecte
     lines[matches[0]!] = `- ${capitalize(phase)}: ${markdownInline(input.phases[phase].summary)}`;
   }
   lines[validatedIndex] = `Validated head: \`${input.head}\``;
-  return reconcileManagedSections(lines.join("\n"), knowledgeSection(input), retroSection(input));
+  return reconcileManagedSections(lines.join("\n"), knowledgeSection(input), verificationSection(input));
 }
 
 function uniqueLineIndex(lines: readonly string[], expected: string | RegExp): number | undefined {
@@ -553,29 +561,8 @@ function inlineKnowledgeEvidence(line: string | undefined, prefix: string): stri
   return value.length > 2_000 || !value.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(value) ? undefined : value;
 }
 
-function reconcileManagedSections(body: string, knowledge: string, retro: string): string {
-  const lines = body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-  const kept: string[] = [];
-  let skipping = false;
-  for (const line of lines) {
-    if (/^##\s+(?:Knowledge|Retro)\s*$/iu.test(line)) {
-      skipping = true;
-      continue;
-    }
-    if (skipping) {
-      if (/^##\s+/u.test(line)) {
-        skipping = false;
-        kept.push(line);
-      }
-      continue;
-    }
-    kept.push(line);
-  }
-  const withoutManaged = kept.join("\n").trimEnd();
-  return `${withoutManaged ? `${withoutManaged}\n\n` : ""}${knowledge.trimEnd()}\n\n${retro.trimEnd()}\n`;
-}
-
 function validatePublication(input: PublicationInput): void {
+  if (!/^[a-f0-9]{64}$/u.test(input.contractDigest)) throw new Error("publication requires immutable contract digest");
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(input.repository)) throw new Error("invalid GitHub repository");
   if (!/^[A-Za-z0-9._/-]+$/u.test(input.baseBranch) || input.baseBranch.includes("..") || input.baseBranch.startsWith("/") || input.baseBranch.endsWith("/")) throw new Error("invalid publication base branch");
   if (!/^[A-Z][A-Z0-9]+-[1-9][0-9]*$/u.test(input.ticket.id)) throw new Error("invalid publication ticket");
@@ -591,10 +578,8 @@ function validatePublication(input: PublicationInput): void {
     if (phase === "implement") validateProjectWikiDisposition((result as ImplementPhaseResult).details.projectWiki);
     if (result.runId !== input.runId || result.phase !== phase || result.status !== "passed") throw new Error("publication requires passing phase results for this run");
   }
-  const review = input.phases.review;
-  const test = input.phases.test;
-  const retro = input.phases.retro;
-  if (review.inputHead !== input.head || review.outputHead !== input.head || test.inputHead !== input.head || test.outputHead !== input.head || retro.inputHead !== input.head || retro.outputHead !== input.head) throw new Error("publication requires fresh passing Review, Test, and Retro");
+  const verify = input.phases.verify;
+  if (verify.inputHead !== input.head || verify.outputHead !== input.head || input.phases.implement.outputHead !== input.head) throw new Error("publication requires exact passing Verify");
 }
 
 async function sha256File(file: string): Promise<string> {

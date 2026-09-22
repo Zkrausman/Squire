@@ -1,3 +1,4 @@
+import { APPROVED_PERSONAL_MODEL_POLICY } from "../src/personal/model-policy.js";
 import { cliPath } from "./support/runtime-compatible-cli.js";
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
@@ -12,7 +13,7 @@ import type { PersonalRunState } from "../src/personal/types.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 const exec = promisify(execFile);
 function reserved(): PersonalRunState {
-  return { schemaVersion: 1, version: 1, runId: "aidev-1-observation123", ticketId: "AIDEV-1", ticketTitle: "Owner observation", status: "running", step: "launching", lifecycle: "launching", executionMode: "background", launchState: "reserved", preparationState: "pending", controllerPid: null, startedAt: "2026-09-20T00:00:00.000Z", endedAt: null, sandbox: "squire-aidev-1-observation123", repository: "example/repo", baseBranch: "main", baseSha: null, branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), head: null, sessions: {}, attempts: { plan: 0, implement: 0, review: 0, test: 0, retro: 0 }, results: {}, remediations: { review: 0, test: 0 }, prUrl: null, lastError: null, updatedAt: "2026-09-20T00:00:00.000Z" };
+  return { schemaVersion: 2, contract: null, candidate: null, verifyDisposition: "not_run", publicationState: "not_started", ciDisposition: "pending", mergeDisposition: "not_merged", terminalReason: null, profiles: APPROVED_PERSONAL_MODEL_POLICY, version: 1, runId: "aidev-1-observation123", ticketId: "AIDEV-1", ticketTitle: "Owner observation", status: "running", step: "launching", lifecycle: "launching", executionMode: "background", launchState: "reserved", preparationState: "pending", controllerPid: null, startedAt: "2026-09-20T00:00:00.000Z", endedAt: null, sandbox: "squire-aidev-1-observation123", repository: "example/repo", baseBranch: "main", baseSha: null, branch: deterministicFeatureBranch("example/repo", "AIDEV-1"), head: null, sessions: {}, attempts: { implement: 0, verify: 0 }, results: {},  prUrl: null, lastError: null, updatedAt: "2026-09-20T00:00:00.000Z" };
 }
 async function snapshot(directory: string): Promise<Record<string, string>> {
   const result: Record<string, string> = {};

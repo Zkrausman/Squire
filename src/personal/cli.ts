@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { historicalStatus } from "./historical-state.js";
 import { isSupportedNodeVersion, unsupportedRuntimeMessage } from "./runtime-version.js";
 import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
@@ -247,6 +248,7 @@ async function recordBootstrapFailure(runId: string, ticketId: string, launchCon
       ...(state.preparationState === "pending" ? { preparationState: "failed" as const } : {}),
       endedAt,
       lastError: message,
+      terminalReason: message,
       updatedAt: endedAt,
     };
     // The JSON store performs the ownership check, version check, terminal
@@ -268,6 +270,8 @@ async function watchCommand(parsed: ParsedWatchArguments): Promise<number> {
     // persisted state, and filesystem event consumption, but no Linear,
     // Docker, GitHub, Git, Pi, or model adapter.
     const config = await loadPersonalMvpConfig(parsed.config);
+    const historical = await historicalStatus(config.paths.state, parsed.selector);
+    if (historical) { process.stdout.write(historical); return 0; }
     const states = new JsonRunStateStore(config.paths.state);
     await watchRun({
       states,
@@ -293,6 +297,8 @@ async function statusCommand(parsed: ParsedStatusArguments): Promise<number> {
     // no Linear credential, Docker installation, Pi runtime, GitHub helper, or
     // repository checkout available.
     const config = await loadPersonalMvpConfig(parsed.config);
+    const historical = await historicalStatus(config.paths.state, parsed.selector);
+    if (historical) { process.stdout.write(historical); return 0; }
     const state = await findRunState(new JsonRunStateStore(config.paths.state), parsed.selector);
     process.stdout.write(formatRunStatus(state));
     return 0;

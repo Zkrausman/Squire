@@ -10,7 +10,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "build": "node scripts/build-windows-launch.mjs && tsc -p tsconfig.json",
+    "build": "node scripts/clean-build.mjs && node scripts/build-windows-launch.mjs && tsc -p tsconfig.json",
     "install": "node scripts/build-windows-launch.mjs",
     "validate:contracts": "node scripts/validate-contracts.mjs",
     "squire": "node dist/src/personal/cli.js",

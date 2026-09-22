@@ -7,7 +7,6 @@ import { link, open, readFile, rename, rm, symlink, writeFile } from "node:fs/pr
 import { readdirSync, renameSync, writeFileSync, truncateSync, symlinkSync, linkSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { capturePromptSet } from "../src/personal/prompt-policy.js";
 import { persistLaunchMaterial, readLaunchMaterial, materialPath } from "../src/personal/launch-material.js";
 import { windowsLaunch } from "../src/personal/windows-launch.js";
 import { PersonalMvpController } from "../src/personal/controller.js";
@@ -15,7 +14,7 @@ import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { NodeBackgroundLauncher } from "../src/personal/background-launcher.js";
 import { SandboxPiPhaseRunner } from "../src/personal/pi-phase-runner.js";
 import type { PersonalRunState } from "../src/personal/types.js";
-import { createPlanSbx } from "./helpers/plan-sbx.js";
+import { createPhaseSbx } from "./helpers/phase-sbx.js";
 import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { withWritableSourceMapping } from "./helpers/windows-mapped-source.js";
 import { acl, assertProtectedAcl, grant, launchTestRoot, powershell } from "./helpers/windows-launch.js";
@@ -163,8 +162,6 @@ test("Windows rejects repository-contained material and missing custom roots", w
   const root = await launchTestRoot("squire-windows-policy-");
   try {
     assert.throws(() => windowsLaunch().persist(path.join(root, "material", "capture.json"), root, "bytes"), /outside repository/);
-    await assert.rejects(capturePromptSet({ version: 1, id: "custom", root: path.join(root, "missing"), plan: [] }, root), /ENOENT/);
-    assert.ok((await capturePromptSet({ version: 1, id: "default", plan: [] }, root)).phases.plan);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -188,12 +185,13 @@ test("Windows failed phase copy cleans protected captured input, but never delet
     const input = {
       runId: "aidev-1-0123456789", ticket: { id: "AIDEV-1", title: "fixture", description: "data" },
       repository: "example/repo", baseBranch: "main", branch: "squire/fixture", sandbox: "fixture",
-      phase: "plan" as const, attempt: 1, expectedHead: "a".repeat(40), originalTicketBaseSha: "a".repeat(40), previousCumulative: [],
+      phase: "implement" as const, attempt: 1, expectedHead: "a".repeat(40), originalTicketBaseSha: "a".repeat(40), contractDigest: "a".repeat(64), testCommands: ["npm test"],
       profile: { provider: "provider", model: "model", thinking: "medium" as const }, previous: {}, feedback: [],
     };
-    const file = path.join(root, input.runId, "phase-inputs", "plan-1.json");
+    const file = path.join(root, input.runId, "phase-inputs", "implement-1.json");
     let copies = 0;
-    const runner = new SandboxPiPhaseRunner({ stagingRoot: root, testCommands: [], launchMaterial: TEST_MATERIAL, commands: { async run(request) {
+    const runner = new SandboxPiPhaseRunner({ stagingRoot: root, testCommands: ["npm test"], launchMaterial: TEST_MATERIAL, commands: { async run(request) {
+      if (request.args[0] !== "cp") return { stdout: "", stderr: "" };
       copies++;
       assert.equal(request.args[1], file); assertProtectedAcl(file);
       assert.equal(JSON.parse(await readFile(file, "utf8")).launchDigest, TEST_MATERIAL.digest);
@@ -316,7 +314,7 @@ test("Windows rejects actual alternate file ownership when fixture-owner privile
 test("Windows test transport shim roundtrips argv, std handles and exit status without a shell", windows, async () => {
   const root = await launchTestRoot("squire-shim-argv-");
   try {
-    const executable = await createPlanSbx(root, path.join(root, "unused-record"));
+    const executable = await createPhaseSbx(root, path.join(root, "unused-record"));
     const args = ["", "with spaces", 'a"quote', "trailing\\", "space and trailing\\", "\\\\", "line\nbreak", "Ω"];
     const { spawnSync } = await import("node:child_process");
     const result = spawnSync(executable, ["--argv-probe", ...args], { encoding: "utf8", timeout: 10_000, shell: false });
@@ -360,199 +358,4 @@ test("Windows ACL probes ignore conflicting inherited PowerShell module and exec
     }
     await rm(root, { recursive: true, force: true });
   }
-});
-
-async function sourceFixture() {
-  const base = await launchTestRoot("squire-custom-prompts-");
-  const root = path.join(base, "prompts"), repository = path.join(base, "repo");
-  await fsPromises.mkdir(root); await fsPromises.mkdir(repository);
-  const manifest = { version: 1, id: "custom", phases: { plan: "shared.md", implement: "shared.md", review: "shared.md", test: "shared.md", retro: "shared.md" }, subphases: { requirements: "requirements.md", "implementation-design": "design.md" } };
-  await writeFile(path.join(root, "manifest.json"), JSON.stringify(manifest));
-  for (const file of ["shared.md", "requirements.md", "design.md"]) await writeFile(path.join(root, file), `CUSTOM ${file}`);
-  return { base, root, repository, manifest, selection: { version: 1 as const, id: "custom", root, plan: ["requirements" as const, "implementation-design" as const] } };
-}
-type SourceHook = (stage: string, name: string) => void;
-const sourceNative = () => windowsLaunch() as ReturnType<typeof windowsLaunch> & {
-  openSource(root: string, repository: string, hook?: SourceHook): object;
-  readSource(lease: object, name: string, hook?: SourceHook): Buffer;
-};
-
-test("Windows custom source readers are not authors or private-material readers", windows, async () => {
-  const f = await sourceFixture();
-  try {
-    grant(f.root, sandboxSid, "ReadAndExecute", true);
-    assert.ok(acl(path.join(f.root, "shared.md")).rules.some(r => r.sid === sandboxSid && r.inherited));
-    const captured = await capturePromptSet(f.selection, f.repository);
-    assert.equal(Buffer.from(captured.phases.plan, "base64").toString(), "CUSTOM shared.md");
-    assert.equal(Buffer.from(captured.subphases.requirements!, "base64").toString(), "CUSTOM requirements.md");
-    assert.equal(Buffer.from(captured.subphases["implementation-design"]!, "base64").toString(), "CUSTOM design.md");
-    assert.throws(() => { (captured.phases as { plan: string }).plan = "mutated"; });
-    await rm(f.root, { recursive: true });
-    assert.equal(Buffer.from(captured.phases.retro, "base64").toString(), "CUSTOM shared.md");
-    // Reading an operator-provided source never widens private persisted ACLs.
-    const material = path.join(f.base, "material", "bytes.json");
-    windowsLaunch().persist(material, "", "private"); grant(material, sandboxSid, "Read");
-    assert.throws(() => windowsLaunch().read(material, ""), /unexpected protected-object principal/);
-  } finally { await rm(f.base, { recursive: true, force: true }); }
-});
-
-for (const target of ["root", "file"] as const) test(`Windows source ${target} rejects outsider mutation and TrustedInstaller authority`, windows, async () => {
-  for (const rights of ["WriteData", "AppendData", "Delete", "DeleteSubdirectoriesAndFiles", "WriteAttributes", "WriteExtendedAttributes", "ChangePermissions", "TakeOwnership"]) {
-    const f = await sourceFixture();
-    try {
-      grant(target === "root" ? f.root : path.join(f.root, "shared.md"), sandboxSid, rights);
-      await assert.rejects(capturePromptSet(f.selection, f.repository), /unsafe source mutation principal/);
-    } finally { await rm(f.base, { recursive: true, force: true }); }
-  }
-  const f = await sourceFixture();
-  try {
-    grant(target === "root" ? f.root : path.join(f.root, "shared.md"), installerSid, "FullControl");
-    await assert.rejects(capturePromptSet(f.selection, f.repository), /unsafe source mutation principal/);
-  } finally { await rm(f.base, { recursive: true, force: true }); }
-});
-
-test("Windows source rejects unsafe ancestors, reparse/hardlink aliases and canonical repository containment", windows, async () => {
-  for (const kind of ["ancestor", "hardlink", "file-junction", "root-junction", "repository-alias"]) {
-    const f = await sourceFixture();
-    try {
-      let root = f.root, repository = f.repository;
-      if (kind === "ancestor") grant(f.base, sandboxSid, "DeleteSubdirectoriesAndFiles");
-      if (kind === "hardlink") await link(path.join(f.root, "shared.md"), path.join(f.repository, "alias.md"));
-      if (kind === "file-junction") { await rm(path.join(f.root, "shared.md")); await symlink(f.repository, path.join(f.root, "shared.md"), "junction"); }
-      if (kind === "root-junction") { root = path.join(f.base, "alias"); await symlink(f.root, root, "junction"); }
-      if (kind === "repository-alias") { repository = path.join(f.base, "alias"); await symlink(f.base, repository, "junction"); }
-      await assert.rejects(capturePromptSet({ ...f.selection, root }, repository), /mutation|reparse|hardlinked|open rejected|outside repository/);
-    } finally { await rm(f.base, { recursive: true, force: true }); }
-  }
-});
-
-test("Windows source manifest filename/text/size validation releases leases on every failure", windows, async () => {
-  const f = await sourceFixture();
-  try {
-    for (const name of ["../shared.md", "shared.md:stream", "CON", "nul.txt", "com1.md", "shared.md.", "sub/file.md", "missing.md"]) {
-      await writeFile(path.join(f.root, "manifest.json"), JSON.stringify({ ...f.manifest, phases: { ...f.manifest.phases, plan: name } }));
-      await assert.rejects(capturePromptSet(f.selection, f.repository));
-    }
-    await writeFile(path.join(f.root, "manifest.json"), JSON.stringify({ ...f.manifest, subphases: { requirements: "CON" } }));
-    await assert.rejects(capturePromptSet({ ...f.selection, plan: [] }, f.repository), /invalid subphase/);
-    for (const invalid of ["{}", "{", " ", "\0", Buffer.from([0xff]), Buffer.alloc(262145, 65)]) {
-      await writeFile(path.join(f.root, "manifest.json"), invalid);
-      await assert.rejects(capturePromptSet(f.selection, f.repository));
-    }
-    await writeFile(path.join(f.root, "manifest.json"), JSON.stringify(f.manifest));
-    for (const invalid of ["", " \n", "bad\0text", Buffer.from([0xc3, 0x28]), Buffer.alloc(262145, 65)]) {
-      await writeFile(path.join(f.root, "shared.md"), invalid);
-      await assert.rejects(capturePromptSet(f.selection, f.repository));
-    }
-    await writeFile(path.join(f.root, "shared.md"), Buffer.alloc(262144, 65));
-    assert.equal(Buffer.from((await capturePromptSet(f.selection, f.repository)).phases.plan, "base64").length, 262144);
-    await rename(f.root, `${f.root}-released`);
-  } finally { await rm(f.base, { recursive: true, force: true }); }
-});
-
-test("Windows source leases prevent replacement/restore and in-place mutation throughout all reads", windows, async () => {
-  const f = await sourceFixture(), native = sourceNative();
-  try {
-    let directoryPins = 0;
-    const lease = native.openSource(f.root, f.repository, (stage, name) => {
-      if (stage === "pinnedDirectory" && name.toLowerCase().endsWith("\\prompts")) {
-        directoryPins++;
-        for (const directory of [f.root, f.base]) assert.throws(() => renameSync(directory, `${directory}-replacement`), /EPERM|EBUSY|EACCES/);
-      }
-    });
-    try {
-      let reads = 0;
-      for (const file of ["manifest.json", "shared.md", "requirements.md", "design.md"]) {
-        native.readSource(lease, file, stage => {
-          if (!["pinnedFile", "duringRead"].includes(stage)) return;
-          reads++;
-          for (const pinned of ["manifest.json", file]) {
-            const full = path.join(f.root, pinned);
-            assert.throws(() => renameSync(full, `${full}-replacement`), /EPERM|EBUSY|EACCES/);
-            assert.throws(() => writeFileSync(full, "substitution"), /EPERM|EBUSY|EACCES/);
-            assert.throws(() => truncateSync(full, 0), /EPERM|EBUSY|EACCES/);
-          }
-          assert.throws(() => native.closeSource(lease), /busy/);
-        });
-      }
-      assert.equal(directoryPins, 1); assert.equal(reads, 8);
-    } finally { native.closeSource(lease); }
-    assert.throws(() => native.readSource(lease, "shared.md"), /closed/);
-    assert.throws(() => native.closeSource({}), /invalid source lease/);
-    const writer = await open(path.join(f.root, "shared.md"), "r+");
-    try { await assert.rejects(capturePromptSet(f.selection, f.repository), /open rejected/); }
-    finally { await writer.close(); }
-    await capturePromptSet(f.selection, f.repository);
-  } finally { await rm(f.base, { recursive: true, force: true }); }
-});
-
-test("Windows source revalidates ACLs on retained files through final lease close", windows, async () => {
-  const f = await sourceFixture(), native = sourceNative();
-  try {
-    const lease = native.openSource(f.root, f.repository);
-    native.readSource(lease, "manifest.json");
-    grant(path.join(f.root, "manifest.json"), sandboxSid, "TakeOwnership");
-    assert.throws(() => native.readSource(lease, "shared.md"), /unsafe source mutation/);
-    assert.throws(() => native.closeSource(lease), /unsafe source mutation/);
-    await rename(f.root, `${f.root}-released`);
-  } finally { await rm(f.base, { recursive: true, force: true }); }
-});
-
-test("Windows source rejects actual outsider ownership when fixture privilege is available", windows, async t => {
-  const f = await sourceFixture();
-  try {
-    const file = path.join(f.root, "shared.md");
-    const changed = powershell(`try { $a=Get-Acl -LiteralPath $p[0]; $a.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')); Set-Acl -LiteralPath $p[0] -AclObject $a; 'changed' } catch [System.UnauthorizedAccessException] { 'unavailable' }`, file);
-    if (changed === "unavailable") { t.skip("fixture owner reassignment privilege unavailable"); return; }
-    assert.equal(acl(file).owner, "S-1-5-32-545");
-    await assert.rejects(capturePromptSet(f.selection, f.repository), /unsafe owner/);
-  } finally { await rm(f.base, { recursive: true, force: true }); }
-});
-
-test("Windows source rejects pre-open unsafe root/file substitutions before consuming bytes", windows, async () => {
-  for (const kind of ["root-junction", "file-hardlink", "file-ACL"]) {
-    const f = await sourceFixture(), native = sourceNative();
-    try {
-      if (kind === "root-junction") {
-        assert.throws(() => native.openSource(f.root, f.repository, (stage, name) => {
-          if (stage === "beforeDirectoryOpen" && name === "prompts") {
-            renameSync(f.root, `${f.root}-old`); symlinkSync(`${f.root}-old`, f.root, "junction");
-          }
-        }), /reparse|open rejected/);
-      } else {
-        const file = path.join(f.root, "shared.md");
-        // Establish an actual hardlink before root pinning; no-write sharing on
-        // the pinned root may prevent even a later child rename from starting.
-        if (kind === "file-hardlink") linkSync(file, path.join(f.repository, "alias.md"));
-        const lease = native.openSource(f.root, f.repository);
-        let consumed = false;
-        try {
-          assert.throws(() => native.readSource(lease, "shared.md", stage => {
-            if (stage === "beforeFileOpen") {
-              if (kind === "file-ACL") grant(file, sandboxSid, "WriteData");
-              else assert.throws(() => renameSync(file, `${file}-old`), /EPERM|EBUSY|EACCES/);
-            }
-            if (stage === "duringRead") consumed = true;
-          }), /hardlinked|unsafe source mutation/);
-          assert.equal(consumed, false);
-        } finally { native.closeSource(lease); }
-      }
-    } finally { await rm(f.base, { recursive: true, force: true }); }
-  }
-});
-
-test("Windows source rejects a surviving writable mapping after its original file handle closes", windows, async () => {
-  const f = await sourceFixture(), native = sourceNative();
-  try {
-    const file = path.join(f.root, "shared.md"); await writeFile(file, "A".repeat(64));
-    await withWritableSourceMapping(file, f.base, async () => {
-      const lease = native.openSource(f.root, f.repository);
-      let consumed = false;
-      try {
-        assert.throws(() => native.readSource(lease, "shared.md", stage => { if (stage !== "beforeFileOpen") consumed = true; }), /open rejected.*Win32 32/);
-        assert.equal(consumed, false, "neither file pin nor read may be reached");
-      } finally { native.closeSource(lease); }
-      await assert.rejects(capturePromptSet(f.selection, f.repository), /open rejected.*Win32 32/);
-    });
-  } finally { await rm(f.base, { recursive: true, force: true }); }
 });

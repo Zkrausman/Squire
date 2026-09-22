@@ -1,119 +1,43 @@
-import { validatePlanEvidence } from "./plan-artifacts.js";
-import { PERSONAL_PHASES, type PersonalPhase, type PhaseResult, type PhaseStatus, type ProjectWikiDisposition, type TestCommandEvidence } from "./types.js";
-import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
-
-const RESULT_KEYS = ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "outputHead", "status", "summary", "details"] as const;
-const PAYLOAD_KEYS = ["outputHead", "status", "summary", "details"] as const;
-const TRUSTED_ECHO_KEYS = ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "profile"] as const;
-const STATUSES = ["passed", "remediation_required", "failed"] as const;
+import { PERSONAL_PHASES, type PersonalPhase, type PhaseResult, type PhaseStatus, type ProjectWikiDisposition } from "./types.js";
+import { validatePhaseProfile } from "./model-policy.js";
 const PROJECT_WIKI_PATH_PREFIX = ".llm-wiki/";
-const MAX_PROJECT_WIKI_PATHS = 1_000;
+const MAX_PROJECT_WIKI_PATHS = 1000;
 const MAX_PROJECT_WIKI_PATH_LENGTH = 512;
-const MAX_PROJECT_WIKI_EVIDENCE_LENGTH = 2_000;
-
-/** Pi-supplied fields plus optional compatibility echoes of adapter-owned fields. */
-export interface PhaseResultPayload {
-  readonly outputHead: string;
-  readonly status: PhaseStatus;
-  readonly summary: string;
-  readonly details: PhaseResult["details"];
-  readonly runId?: string;
-  readonly phase?: PersonalPhase;
-  readonly attempt?: number;
-  readonly sessionId?: string;
-  readonly sessionFile?: string;
-  readonly inputHead?: string;
-  readonly profile?: PhaseProfile;
+const MAX_PROJECT_WIKI_EVIDENCE_LENGTH = 2000;
+export interface PhaseResultPayload { readonly version: 1; readonly outputHead: string; readonly status: PhaseStatus; readonly summary: string; readonly details: PhaseResult["details"]; }
+export function validatePhaseResultPayloadShape(value: unknown, phase: PersonalPhase): asserts value is PhaseResultPayload {
+  const v = exactObject(value, ["version", "outputHead", "status", "summary", "details"], "phase report");
+  if (v["version"] !== 1) throw new Error("invalid phase report version");
+  fields(v, phase);
 }
-
-export interface PhaseResultValidationOptions {
-  /** Published v1 state files may contain an older Implement result. */
-  readonly allowLegacyImplementProjectWiki?: boolean;
+export function validatePhaseResultShape(value: unknown, phase?: PersonalPhase): asserts value is PhaseResult {
+  const v = exactObject(value, ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "outputHead", "status", "summary", "details", "profile"], "phase envelope");
+  if (!PERSONAL_PHASES.includes(v["phase"] as PersonalPhase) || (phase && phase !== v["phase"]) || v["attempt"] !== 1 || !sha(v["inputHead"]) || !nonempty(v["runId"],128) || !nonempty(v["sessionId"],128) || !nonempty(v["sessionFile"],512)) throw new Error("invalid phase envelope identity");
+  validatePhaseProfile(v["profile"]);
+  fields(v, v["phase"] as PersonalPhase);
 }
-
-export function validatePhaseResultShape(value: unknown, expectedPhase?: PersonalPhase, options: PhaseResultValidationOptions = {}): asserts value is PhaseResult {
-  const result = optionalProfileObject(value, "phase result");
-  const phase = result["phase"];
-  if (typeof phase !== "string" || !PERSONAL_PHASES.includes(phase as PersonalPhase) || (expectedPhase !== undefined && phase !== expectedPhase)) throw new Error("phase result phase is invalid");
-  if (!nonempty(result["runId"], 128) || !Number.isInteger(result["attempt"]) || (result["attempt"] as number) < 1) throw new Error("phase result identity is invalid");
-  if (!nonempty(result["sessionId"], 128) || !nonempty(result["sessionFile"], 512)) throw new Error("phase result session identity is invalid");
-  if (!sha(result["inputHead"])) throw new Error("phase result Git identity is invalid");
-  validateUntrustedResultFields(result, phase as PersonalPhase, options);
-  if (result["profile"] !== undefined) validatePhaseProfile(result["profile"], `${phase} result profile`);
-}
-
-/** Validate only model-owned output while allowing exact trusted-envelope echoes. */
-export function validatePhaseResultPayloadShape(value: unknown, expectedPhase: PersonalPhase): asserts value is PhaseResultPayload {
-  const result = requiredWithOptionalObject(value, PAYLOAD_KEYS, TRUSTED_ECHO_KEYS, "phase result payload");
-  // Nested supervision is deterministic evidence, never model-owned output.
-  if (expectedPhase === "plan") exactObject(result["details"], ["steps"], "legacy Plan payload details");
-  validateUntrustedResultFields(result, expectedPhase);
-  if (result["profile"] !== undefined) validatePhaseProfile(result["profile"], `${expectedPhase} result profile`);
-}
-
-function validateUntrustedResultFields(result: Record<string, unknown>, phase: PersonalPhase, options: PhaseResultValidationOptions = {}): void {
-  if (!sha(result["outputHead"])) throw new Error("phase result Git identity is invalid");
-  if (typeof result["status"] !== "string" || !STATUSES.includes(result["status"] as (typeof STATUSES)[number])) throw new Error("phase result status is invalid");
-  if (!nonempty(result["summary"], 8_000)) throw new Error("phase result summary is invalid");
-
-  const details = phase === "plan"
-    ? requiredWithOptionalObject(result["details"], ["steps"], ["supervision"], "plan details")
-    : phase === "implement" && options.allowLegacyImplementProjectWiki
-    ? implementDetailsAllowingLegacyProjectWiki(result["details"])
-    : exactObject(
-      result["details"],
-      phase === "implement" ? ["changes", "projectWiki"] : phase === "review" ? ["findings"] : phase === "test" ? ["commands"] : ["lessons", "followUps"],
-      `${phase} details`,
-    );
-  if (phase === "plan") {
-    stringList(details["steps"], "Plan steps", true);
-    if (details["supervision"] !== undefined) validatePlanEvidence(details["supervision"], { sessionId: result["sessionId"], inputHead: result["inputHead"], profile: result["profile"], status: result["status"], attempt: result["attempt"] }, details["steps"]);
-    if (result["status"] === "remediation_required") throw new Error("Plan cannot request remediation");
-  } else if (phase === "implement") {
-    stringList(details["changes"], "Implement changes", true);
-    if (!options.allowLegacyImplementProjectWiki || Object.prototype.hasOwnProperty.call(details, "projectWiki")) {
-      validateProjectWikiDisposition(details["projectWiki"]);
+function fields(v: Record<string, unknown>, phase: PersonalPhase): void {
+  if (!sha(v["outputHead"]) || !["passed", "failed"].includes(v["status"] as string) || !nonempty(v["summary"], 2000)) throw new Error("invalid phase disposition");
+  const d = exactObject(v["details"], phase === "implement" ? ["changes", "projectWiki"] : ["findings", "commands"], "phase details");
+  if (phase === "implement") { stringList(d["changes"]); validateProjectWikiDisposition(d["projectWiki"]); }
+  else {
+    stringList(d["findings"]);
+    if (!Array.isArray(d["commands"]) || d["commands"].length > 100) throw new Error("invalid command evidence");
+    const seen = new Set();
+    for (const item of d["commands"]) {
+      const c = exactObject(item, ["command", "exitCode", "summary"], "command evidence");
+      if (!nonempty(c["command"],2000) || !Number.isInteger(c["exitCode"]) || (c["exitCode"] as number) < 0 || (c["exitCode"] as number) > 255 || !nonempty(c["summary"],2000) || seen.has(c["command"])) throw new Error("invalid command evidence");
+      seen.add(c["command"]);
+      if (v["status"] === "passed" && c["exitCode"] !== 0) throw new Error("passing Verify contains failed command");
     }
-    if (result["status"] === "remediation_required") throw new Error("Implement cannot request remediation");
-  } else if (phase === "review") {
-    const findings = stringList(details["findings"], "Review findings", false);
-    if (result["status"] === "passed" && findings.length !== 0) throw new Error("passing Review must have no findings");
-    if (result["status"] === "remediation_required" && findings.length === 0) throw new Error("Review remediation requires findings");
-  } else if (phase === "test") {
-    const commands = details["commands"];
-    if (!Array.isArray(commands) || commands.length === 0 || commands.length > 100) throw new Error("Test commands are invalid");
-    const evidence = commands.map((item, index) => validateTestCommand(item, index));
-    if (result["status"] === "passed" && evidence.some(item => item.exitCode !== 0)) throw new Error("passing Test contains a failed command");
-    if (result["status"] === "remediation_required" && evidence.every(item => item.exitCode === 0)) throw new Error("Test remediation requires a failed command");
-  } else {
-    stringList(details["lessons"], "Retro lessons", true);
-    stringList(details["followUps"], "Retro follow-ups", false);
-    if (result["status"] === "remediation_required") throw new Error("Retro cannot request remediation");
+    if (v["status"] === "passed" && (d["findings"] as string[]).length) throw new Error("passing Verify contains findings");
   }
 }
-
-function implementDetailsAllowingLegacyProjectWiki(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("implement details must be an object");
-  const object = value as Record<string, unknown>;
-  const actual = Object.keys(object);
-  const current = actual.length === 2 && actual.includes("changes") && actual.includes("projectWiki");
-  const legacy = actual.length === 1 && actual[0] === "changes";
-  if (!current && !legacy) throw new Error("implement details fields are invalid");
-  if (current) validateProjectWikiDisposition(object["projectWiki"]);
-  return object;
+export function validateVerifyCommands(result: PhaseResult, commands: readonly string[]): void {
+  if (result.phase !== "verify") throw new Error("expected Verify");
+  if (result.status === "passed" && (result.details.commands.length !== commands.length || commands.some((command, i) => result.details.commands[i]?.command !== command))) throw new Error("Verify must execute every configured command in order");
 }
-
-function validateTestCommand(value: unknown, index: number): TestCommandEvidence {
-  const command = exactObject(value, ["command", "exitCode", "summary"], `Test command ${index}`);
-  if (!nonempty(command["command"], 2_000) || !Number.isInteger(command["exitCode"]) || (command["exitCode"] as number) < 0 || (command["exitCode"] as number) > 255 || !nonempty(command["summary"], 8_000)) throw new Error(`Test command ${index} is invalid`);
-  return command as unknown as TestCommandEvidence;
-}
-
-function stringList(value: unknown, label: string, required: boolean): readonly string[] {
-  if (!Array.isArray(value) || value.length > 100 || (required && value.length === 0) || value.some(item => !nonempty(item, 8_000))) throw new Error(`${label} are invalid`);
-  return value as string[];
-}
-
+function stringList(v: unknown): void { if (!Array.isArray(v) || v.length > 100 || v.some(x => !nonempty(x,2000))) throw new Error("invalid bounded findings/evidence"); }
 /** Validate the closed project-wiki evidence union used by Implement. */
 export function validateProjectWikiDisposition(value: unknown): asserts value is ProjectWikiDisposition {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("project-wiki disposition must be an object");
@@ -177,24 +101,10 @@ function exactObject(value: unknown, keys: readonly string[], label: string): Re
   return object;
 }
 
-function optionalProfileObject(value: unknown, label: string): Record<string, unknown> {
-  return requiredWithOptionalObject(value, RESULT_KEYS, ["profile"], label);
-}
-
-function requiredWithOptionalObject(value: unknown, requiredKeys: readonly string[], optionalKeys: readonly string[], label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
-  const object = value as Record<string, unknown>;
-  const required = new Set(requiredKeys);
-  const allowed = new Set([...requiredKeys, ...optionalKeys]);
-  const actual = Object.keys(object);
-  if (actual.some(key => !allowed.has(key)) || [...required].some(key => !actual.includes(key))) throw new PhaseShapeError(label, actual, requiredKeys, [...allowed]);
-  return object;
-}
-
 function nonempty(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= maximum;
 }
 
 function sha(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
+  return typeof value === "string" && /^[a-f0-9]{40}$/u.test(value);
 }
