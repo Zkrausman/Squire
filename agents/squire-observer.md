@@ -1,7 +1,7 @@
 ---
 name: squire-observer
 description: Observe one existing Squire run to its public terminal status without workflow authority.
-model: openai-codex/gpt-5.6-luna
+model: openai-codex/gpt-6-luna
 thinking: minimal
 tools: bash
 async: true

@@ -82,7 +82,7 @@ test("status without timing still displays its bound model profiles", async () =
   };
   const output = formatRunStatus(state, new Date("2026-09-11T00:00:00.000Z"));
   assert.match(output, /Elapsed: unavailable/);
-  assert.match(output, /Model: gpt-5.6-luna/);
+  assert.match(output, /Model: gpt-6-luna/);
   assert.match(output, /Current HEAD: unavailable/);
 });
 
@@ -124,7 +124,7 @@ test("status renders persisted phase, timing, model, head, error, PR, and log ev
   assert.match(output, /Phase: verify/);
   assert.match(output, /Attempt: 0/);
   assert.match(output, /Provider: openai-codex/);
-  assert.match(output, /Model: gpt-5\.6-sol/);
+  assert.match(output, /Model: gpt-6-sol/);
   assert.match(output, /Thinking: medium/);
   assert.match(output, /Elapsed: 1h 1m 1s \(3661000 ms\)/);
   assert.match(output, new RegExp(`Current HEAD: ${"c".repeat(40)}`));
@@ -744,7 +744,7 @@ test("launcher rejects a pre-handoff OS error and interruption closes the reserv
   }
 });
 
-test("CLI SIGINT and SIGTERM before child handoff persist interrupted evidence", async () => {
+test("CLI rejects new launches without a running-Pi identity before reservation", async () => {
   const root = await launchTestRoot("squire-cli-interrupt-");
   const originalLaunch = NodeBackgroundLauncher.prototype.launch;
   try {
@@ -767,24 +767,12 @@ test("CLI SIGINT and SIGTERM before child handoff persist interrupted evidence",
       testCommands: ["npm test"],
     }), "utf8");
 
-    for (const [signal, ticket] of [["SIGINT", "AIDEV-1"], ["SIGTERM", "AIDEV-2"]] as const) {
-      let entered!: () => void;
-      const launchEntered = new Promise<void>(resolve => { entered = resolve; });
-      NodeBackgroundLauncher.prototype.launch = async function(request): Promise<never> {
-        entered();
-        if (request.signal!.aborted) throw request.signal!.reason;
-        return await new Promise((_, reject) => request.signal!.addEventListener("abort", () => reject(request.signal!.reason), { once: true }));
-      };
-      const running = main(["run", ticket, "--background", "--config", configPath]);
-      await launchEntered;
-      process.emit(signal, signal);
-      assert.equal(await running, 1);
-      const states = new JsonRunStateStore(path.join(root, "state"));
-      const persisted = (await states.findByTicket(ticket))[0]!;
-      assert.equal(persisted.status, "interrupted");
-      assert.equal(persisted.launchState, "failed");
-      assert.match(persisted.lastError ?? "", /operator interrupted background startup/);
-    }
+    NodeBackgroundLauncher.prototype.launch = async function(): Promise<never> {
+      throw new Error("launcher must not be reached without Pi identity");
+    };
+    assert.equal(await main(["run", "AIDEV-1", "--background", "--config", configPath]), 1);
+    const states = new JsonRunStateStore(path.join(root, "state"));
+    assert.equal((await states.findByTicket("AIDEV-1")).length, 0);
   } finally {
     NodeBackgroundLauncher.prototype.launch = originalLaunch;
     await rm(root, { recursive: true, force: true });

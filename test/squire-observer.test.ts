@@ -22,7 +22,7 @@ test("squire-observer advertises the exact bounded runtime", async () => {
   const fields = frontmatter(source);
   assert.equal(fields.get("name"), "squire-observer");
   assert.ok((fields.get("description") ?? "").length > 0);
-  assert.equal(fields.get("model"), "openai-codex/gpt-5.6-luna");
+  assert.equal(fields.get("model"), "openai-codex/gpt-6-luna");
   assert.equal(fields.get("thinking"), "minimal");
   assert.equal(fields.get("tools"), "bash");
   assert.equal(fields.get("async"), "true");

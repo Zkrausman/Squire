@@ -460,6 +460,7 @@ export class PersonalMvpController {
     try {
       for (let generation = 0; ; generation++) {
         signal.throwIfAborted();
+        await this.#workspaces.assertRuntimeParity?.(input.sandbox, signal);
         const identity = generationIdentity(phase, 1, generation as 0 | 1, randomUUID());
         input = { ...input, launchGeneration: identity };
         const record = async (kind: LaunchRecord["kind"], rule: LaunchRecord["rule"] = null, errorCode: LaunchRecord["errorCode"] = null) => {

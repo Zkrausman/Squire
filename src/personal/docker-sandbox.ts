@@ -5,6 +5,8 @@ import { validateSourceRef } from "./identity.js";
 import type { CommandPort } from "./command.js";
 import { validateProjectWikiPaths } from "./phase-result.js";
 import type { CandidateBundle, PreparedWorkspace, ProjectWikiDiffInput, WorkspacePort } from "./types.js";
+import { type OwnerPiIdentity } from "./runtime-parity.js";
+import type { PersonalModelPolicy } from "./model-policy.js";
 
 export interface DockerSandboxWorkspaceOptions {
   readonly commands: CommandPort;
@@ -16,6 +18,8 @@ export interface DockerSandboxWorkspaceOptions {
   readonly piAuthFile?: string;
   readonly sbxExecutable?: string;
   readonly gitExecutable?: string;
+  readonly ownerPi?: OwnerPiIdentity;
+  readonly modelPolicy?: PersonalModelPolicy;
 }
 
 export class DockerSandboxWorkspace implements WorkspacePort {
@@ -28,6 +32,8 @@ export class DockerSandboxWorkspace implements WorkspacePort {
   readonly #piAuthFile: string | undefined;
   readonly #sbx: string;
   readonly #git: string;
+  readonly #ownerPi: OwnerPiIdentity | undefined;
+  readonly #modelPolicy: PersonalModelPolicy | undefined;
 
   constructor(options: DockerSandboxWorkspaceOptions) {
     this.#commands = options.commands;
@@ -39,6 +45,9 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     this.#piAuthFile = options.piAuthFile ? path.resolve(options.piAuthFile) : undefined;
     this.#sbx = options.sbxExecutable ?? "sbx";
     this.#git = options.gitExecutable ?? "git";
+    this.#ownerPi = options.ownerPi;
+    this.#modelPolicy = options.modelPolicy;
+    if (this.#ownerPi && !this.#modelPolicy) throw new Error("model policy required for sandbox Pi parity");
   }
 
   async resolveSource(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string> {
@@ -135,14 +144,53 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "  node /ticket/workspace/.github/validate-ticket-runtime.mjs",
       "fi",
     ].join("\n");
-    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, input.sandbox, "sh", "-lc", runtimeSetup], timeoutMs: 180_000 }, signal);
+    if (this.#ownerPi) await this.#installPi(input.sandbox, signal);
+    else await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, input.sandbox, "sh", "-lc", runtimeSetup], timeoutMs: 180_000 }, signal);
     if (this.#piAuthFile) {
       await this.#commands.run({ command: this.#sbx, args: ["cp", this.#piAuthFile, `${input.sandbox}:${this.#piAgentDirectory}/auth.json`] }, signal);
       const secureAuth = `chown ${sh(this.#roleUser)} ${sh(`${this.#piAgentDirectory}/auth.json`)}; chmod 0600 ${sh(`${this.#piAgentDirectory}/auth.json`)}`;
       await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", secureAuth] }, signal);
     }
+    if (this.#ownerPi) {
+      await this.#commands.run({ command: this.#sbx, args: ["cp", this.#ownerPi.modelStorePath, `${input.sandbox}:${this.#piAgentDirectory}/models-store.json`] }, signal);
+      await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", `chown ${sh(this.#roleUser)} ${sh(`${this.#piAgentDirectory}/models-store.json`)}; chmod 0600 ${sh(`${this.#piAgentDirectory}/models-store.json`)}`] }, signal);
+      await this.#checkPi(input.sandbox, signal);
+    }
     const head = await this.currentHead(input.sandbox, signal);
     return { sandbox: input.sandbox, baseSha, head };
+  }
+
+  async #installPi(sandbox: string, signal?: AbortSignal): Promise<void> {
+    const identity = this.#ownerPi!;
+    // npm's exact-version install runs as the unprivileged role user. Never
+    // execute package lifecycle scripts or copy Windows node_modules to Linux.
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, sandbox, "npm", "install", "--prefix", "/ticket/runtime", "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact", `@earendil-works/pi-coding-agent@${identity.version}`], timeoutMs: 180_000 }, signal);
+  }
+
+  async assertRuntimeParity(sandbox: string, signal?: AbortSignal): Promise<void> {
+    if (!this.#ownerPi) return;
+    return this.#checkPi(sandbox, signal);
+  }
+
+  async #checkPi(sandbox: string, signal?: AbortSignal): Promise<void> {
+    const identity = this.#ownerPi!;
+    const inspect = [
+      "const fs=require('node:fs');const crypto=require('node:crypto');",
+      "const root='/ticket/runtime/node_modules/@earendil-works/pi-coding-agent';",
+      "const manifest=fs.readFileSync(root+'/package.json');const pkg=JSON.parse(manifest);",
+      "const cli=fs.readFileSync(root+'/'+(typeof pkg.bin==='string'?pkg.bin:pkg.bin.pi));",
+      "const sha=b=>crypto.createHash('sha256').update(b).digest('hex');",
+      `const store=fs.readFileSync(${JSON.stringify(`${this.#piAgentDirectory}/models-store.json`)});`,
+      "console.log(JSON.stringify({name:pkg.name,version:pkg.version,manifestSha256:sha(manifest),cliSha256:sha(cli),modelStoreSha256:sha(store)}));",
+    ].join("");
+    const result = await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, sandbox, "node", "-e", inspect], timeoutMs: 30_000, maxOutputBytes: 4096 }, signal);
+    const value = JSON.parse(result.stdout) as { name: string; version: string; manifestSha256: string; cliSha256: string; modelStoreSha256: string };
+    if (value.name !== "@earendil-works/pi-coding-agent" || value.version !== identity.version || value.manifestSha256 !== identity.manifestSha256 || value.cliSha256 !== identity.cliSha256 || value.modelStoreSha256 !== identity.modelStoreSha256) throw new Error("sandbox Pi package differs from owner-facing Pi");
+    const catalog = await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, sandbox, "/usr/bin/env", `PI_CODING_AGENT_DIR=${this.#piAgentDirectory}`, "/ticket/runtime/node_modules/.bin/pi", "--no-extensions", "--no-skills", "--list-models", "openai-codex"], timeoutMs: 60_000, maxOutputBytes: 64 * 1024 }, signal);
+    for (const profile of [this.#modelPolicy!.implement, this.#modelPolicy!.verify]) {
+      const row = new RegExp(`^${profile.provider}\\s+${profile.model}\\s+`, "m");
+      if (!row.test(catalog.stdout)) throw new Error(`sandbox Pi lacks ${profile.provider}/${profile.model}`);
+    }
   }
 
   async assertDescendant(sandbox: string, base: string, head: string, signal?: AbortSignal): Promise<void> {
