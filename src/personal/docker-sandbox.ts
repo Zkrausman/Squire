@@ -144,7 +144,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "  node /ticket/workspace/.github/validate-ticket-runtime.mjs",
       "fi",
     ].join("\n");
-    if (this.#ownerPi) await this.#installPi(input.sandbox, signal);
+    if (this.#ownerPi) { await this.#installPi(input.sandbox, signal); await this.#sealPi(input.sandbox, signal); }
     else await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, input.sandbox, "sh", "-lc", runtimeSetup], timeoutMs: 180_000 }, signal);
     if (this.#piAuthFile) {
       await this.#commands.run({ command: this.#sbx, args: ["cp", this.#piAuthFile, `${input.sandbox}:${this.#piAgentDirectory}/auth.json`] }, signal);
@@ -167,6 +167,13 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, sandbox, "npm", "install", "--prefix", "/ticket/runtime", "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact", `@earendil-works/pi-coding-agent@${identity.version}`], timeoutMs: 180_000 }, signal);
   }
 
+  async #sealPi(sandbox: string, signal?: AbortSignal): Promise<void> {
+    // The phase user owns the worktree but must never be able to replace the
+    // executable runtime or rename its ancestors between Implement and Verify.
+    const seal = "set -eu; test -d /ticket/runtime/node_modules; test ! -L /ticket/runtime/node_modules; chown -R root:root /ticket/runtime/node_modules; chmod -R a-w /ticket/runtime/node_modules; chown root:root /ticket /ticket/runtime; chmod 755 /ticket /ticket/runtime; for file in /ticket/runtime/package.json /ticket/runtime/package-lock.json; do if test -e \"$file\"; then chown root:root \"$file\"; chmod a-w \"$file\"; fi; done";
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", sandbox, "sh", "-lc", seal], timeoutMs: 120_000 }, signal);
+  }
+
   async assertRuntimeParity(sandbox: string, signal?: AbortSignal): Promise<void> {
     if (!this.#ownerPi) return;
     return this.#checkPi(sandbox, signal);
@@ -180,6 +187,10 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "const manifest=fs.readFileSync(root+'/package.json');const pkg=JSON.parse(manifest);",
       "const cli=fs.readFileSync(root+'/'+(typeof pkg.bin==='string'?pkg.bin:pkg.bin.pi));",
       "const sha=b=>crypto.createHash('sha256').update(b).digest('hex');",
+      "const owned=p=>{const s=fs.lstatSync(p);if(s.uid!==0||(s.mode&0o022)!==0||s.isSymbolicLink())throw Error('Pi runtime is writable or redirected');};",
+      "owned('/ticket');owned('/ticket/runtime');owned('/ticket/runtime/node_modules');",
+      "const tree='/ticket/runtime/node_modules';const visit=p=>{for(const entry of fs.readdirSync(p)){const child=p+'/'+entry;const s=fs.lstatSync(child);if(s.isSymbolicLink()){const target=fs.realpathSync(child);if(!target.startsWith(tree+'/'))throw Error('Pi runtime symlink escapes sealed tree');continue;}if(s.uid!==0||(s.mode&0o222)!==0)throw Error('Pi runtime is writable');if(s.isDirectory())visit(child);}};visit(tree);",
+      "for(const p of ['/ticket/runtime/package.json','/ticket/runtime/package-lock.json'])if(fs.existsSync(p))owned(p);",
       `const store=fs.readFileSync(${JSON.stringify(`${this.#piAgentDirectory}/models-store.json`)});`,
       "console.log(JSON.stringify({name:pkg.name,version:pkg.version,manifestSha256:sha(manifest),cliSha256:sha(cli),modelStoreSha256:sha(store)}));",
     ].join("");
