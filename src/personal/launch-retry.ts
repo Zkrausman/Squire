@@ -28,6 +28,7 @@ export function classifyLaunchFailure(error: unknown): LaunchRule | undefined {
 /** Pi JSON is the process protocol, not assistant report text. Require a complete
  * single failed provider turn, empty content and zero usage. No stderr matching,
  * partial streams, tool events, successful messages or unknown event extensions.
+ * Pi 0.87 completes the turn with exactly one trailing agent_settled.
  * The original protected stream remains telemetry evidence, never public text. */
 export function providerLaunchFailure(bytes: Buffer | undefined, input: Pick<PhaseInput, "profile" | "launchGeneration">): TransientLaunchFailure | undefined {
   if (!input.launchGeneration || !bytes || bytes.length > 65536 || input.profile.provider !== "openai-codex") return;
@@ -44,10 +45,10 @@ export function providerLaunchFailure(bytes: Buffer | undefined, input: Pick<Pha
       user = events[3].message;
       events.splice(2, 2);
     }
-    const permittedKeys = [["type"], ["type"], ["type", "message"], ["type", "message"], ["type", "message", "toolResults"], ["type", "messages", "willRetry"]];
+    const permittedKeys = [["type"], ["type"], ["type", "message"], ["type", "message"], ["type", "message", "toolResults"], ["type", "messages", "willRetry"], ["type"]];
     if (events.length !== permittedKeys.length || events.some((e, i) => !e || Object.keys(e).some(k => !permittedKeys[i]!.includes(k)))) return;
     const types = events.map(e => e.type).join();
-    if (types !== "agent_start,turn_start,message_start,message_end,turn_end,agent_end" || events[5].willRetry !== false) return;
+    if (types !== "agent_start,turn_start,message_start,message_end,turn_end,agent_end,agent_settled" || events[5].willRetry !== false) return;
     const message = events[3]?.message;
     if (!message || message.role !== "assistant" || message.provider !== input.profile.provider || message.model !== input.profile.model || message.api !== "openai-codex-responses" || message.stopReason !== "error" || message.errorMessage !== DAYBREAK_BLUE || !Array.isArray(message.content) || message.content.length) return;
     if (Object.keys(message).some(k => !["role", "content", "api", "provider", "model", "usage", "stopReason", "errorMessage", "timestamp"].includes(k)) || !Number.isSafeInteger(message.timestamp) || message.timestamp < 0) return;
