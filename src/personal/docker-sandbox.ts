@@ -48,6 +48,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     this.#ownerPi = options.ownerPi;
     this.#modelPolicy = options.modelPolicy;
     if (this.#ownerPi && !this.#modelPolicy) throw new Error("model policy required for sandbox Pi parity");
+    if (this.#ownerPi && this.#piAgentDirectory !== "/ticket/runtime/pi-agent") throw new Error("per-run Pi requires the protected sandbox agent directory");
   }
 
   async resolveSource(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string> {
@@ -144,16 +145,26 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "  node /ticket/workspace/.github/validate-ticket-runtime.mjs",
       "fi",
     ].join("\n");
-    if (this.#ownerPi) { await this.#installPi(input.sandbox, signal); await this.#sealPi(input.sandbox, signal); }
+    if (this.#ownerPi) {
+      if (!this.#piAuthFile) throw new Error("per-run Pi requires model-only auth before sandbox setup");
+      await this.#installPi(input.sandbox, signal); await this.#sealPi(input.sandbox, signal);
+    }
     else await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, input.sandbox, "sh", "-lc", runtimeSetup], timeoutMs: 180_000 }, signal);
     if (this.#piAuthFile) {
       await this.#commands.run({ command: this.#sbx, args: ["cp", this.#piAuthFile, `${input.sandbox}:${this.#piAgentDirectory}/auth.json`] }, signal);
-      const secureAuth = `chown ${sh(this.#roleUser)} ${sh(`${this.#piAgentDirectory}/auth.json`)}; chmod 0600 ${sh(`${this.#piAgentDirectory}/auth.json`)}`;
-      await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", secureAuth] }, signal);
+      if (!this.#ownerPi) {
+        const secureAuth = `chown ${sh(this.#roleUser)} ${sh(`${this.#piAgentDirectory}/auth.json`)}; chmod 0600 ${sh(`${this.#piAgentDirectory}/auth.json`)}`;
+        await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", secureAuth] }, signal);
+      }
     }
     if (this.#ownerPi) {
       await this.#commands.run({ command: this.#sbx, args: ["cp", this.#ownerPi.modelStorePath, `${input.sandbox}:${this.#piAgentDirectory}/models-store.json`] }, signal);
-      await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", `chown ${sh(this.#roleUser)} ${sh(`${this.#piAgentDirectory}/models-store.json`)}; chmod 0600 ${sh(`${this.#piAgentDirectory}/models-store.json`)}`] }, signal);
+      const agent = sh(this.#piAgentDirectory), auth = sh(`${this.#piAgentDirectory}/auth.json`), store = sh(`${this.#piAgentDirectory}/models-store.json`);
+      // Pi creates auth.json.lock alongside auth.json even in offline mode.
+      // A root-owned sticky directory permits locks without allowing the phase
+      // user to unlink root-owned model/auth/config files or their names.
+      const sealAgent = `set -eu; for name in models.json settings.json; do (set -C; printf '{}' > ${agent}/"$name"); chown root:root ${agent}/"$name"; chmod 0444 ${agent}/"$name"; done; chown root:root ${agent} ${store}; chmod 0444 ${store}; chown ${sh(this.#roleUser)} ${auth}; chmod 0600 ${auth}; chmod 1777 ${agent}`;
+      await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", sealAgent] }, signal);
       await this.#checkPi(input.sandbox, signal);
     }
     const head = await this.currentHead(input.sandbox, signal);
@@ -191,6 +202,9 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "owned('/ticket');owned('/ticket/runtime');owned('/ticket/runtime/node_modules');",
       "const tree='/ticket/runtime/node_modules';const visit=p=>{for(const entry of fs.readdirSync(p)){const child=p+'/'+entry;const s=fs.lstatSync(child);if(s.isSymbolicLink()){const target=fs.realpathSync(child);if(!target.startsWith(tree+'/'))throw Error('Pi runtime symlink escapes sealed tree');continue;}if(s.uid!==0||(s.mode&0o222)!==0)throw Error('Pi runtime is writable');if(s.isDirectory())visit(child);}};visit(tree);",
       "for(const p of ['/ticket/runtime/package.json','/ticket/runtime/package-lock.json'])if(fs.existsSync(p))owned(p);",
+      `const agent=fs.lstatSync(${JSON.stringify(this.#piAgentDirectory)});if(agent.uid!==0||(agent.mode&0o1777)!==0o1777||agent.isSymbolicLink())throw Error('Pi agent directory not sticky-root');`,
+      `for(const name of ['models-store.json','models.json','settings.json']){const p=${JSON.stringify(this.#piAgentDirectory)}+'/'+name;const s=fs.lstatSync(p);if(s.uid!==0||(s.mode&0o777)!==0o444||s.isSymbolicLink())throw Error('Pi model/config file is replaceable');}`,
+      `const auth=fs.lstatSync(${JSON.stringify(`${this.#piAgentDirectory}/auth.json`)});if(auth.uid!==${Number(this.#roleUser.split(":")[0])}||auth.gid!==${Number(this.#roleUser.split(":")[1])}||(auth.mode&0o777)!==0o600||auth.isSymbolicLink())throw Error('Pi auth permissions changed');`,
       `const store=fs.readFileSync(${JSON.stringify(`${this.#piAgentDirectory}/models-store.json`)});`,
       "console.log(JSON.stringify({name:pkg.name,version:pkg.version,manifestSha256:sha(manifest),cliSha256:sha(cli),modelStoreSha256:sha(store)}));",
     ].join("");

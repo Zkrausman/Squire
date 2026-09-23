@@ -41,6 +41,17 @@ test("runtime install is sealed by root before model auth and before paid phases
   assert.match(source, /chown -R root:root \/ticket\/runtime\/node_modules; chmod -R a-w/u);
   assert.match(source, /chown root:root \/ticket \/ticket\/runtime; chmod 755/u);
   assert.match(source, /async assertRuntimeParity\(sandbox:/u);
+  assert.match(source, /chown root:root \$\{agent\} \$\{store\}; chmod 0444 \$\{store\}/u);
+  assert.match(source, /chmod 1777 \$\{agent\}/u);
+  assert.match(source, /\['models-store\.json','models\.json','settings\.json'\]/u);
+  const phase = await readFile(path.resolve("src/personal/pi-phase-runner.ts"), "utf8");
+  assert.match(phase, /legacyAgentOwnership = this\.#material\?\.ownerPi \? ""/u);
+  assert.match(phase, /agentSetup = this\.#material\?\.ownerPi \? `test -d/u);
+});
+
+test("per-run Pi refuses an unprotected agent directory", () => {
+  const commands = new ParityCommands({}, allModels);
+  assert.throws(() => new DockerSandboxWorkspace({ commands, bridgeRoot: "/private/bridge", stagingRoot: "/private/staging", ownerPi: identity, modelPolicy: APPROVED_PERSONAL_MODEL_POLICY, piAgentDirectory: "/ticket/workspace/agent" }), /protected sandbox agent directory/);
 });
 
 test("sandbox parity rejects differing executable hash and missing phase model before paid phases", async () => {
