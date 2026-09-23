@@ -44,10 +44,10 @@ export function providerLaunchFailure(bytes: Buffer | undefined, input: Pick<Pha
       user = events[3].message;
       events.splice(2, 2);
     }
-    const permittedKeys = [["type"], ["type"], ["type", "message"], ["type", "message"], ["type", "message", "toolResults"], ["type", "messages"]];
+    const permittedKeys = [["type"], ["type"], ["type", "message"], ["type", "message"], ["type", "message", "toolResults"], ["type", "messages", "willRetry"]];
     if (events.length !== permittedKeys.length || events.some((e, i) => !e || Object.keys(e).some(k => !permittedKeys[i]!.includes(k)))) return;
     const types = events.map(e => e.type).join();
-    if (types !== "agent_start,turn_start,message_start,message_end,turn_end,agent_end") return;
+    if (types !== "agent_start,turn_start,message_start,message_end,turn_end,agent_end" || events[5].willRetry !== false) return;
     const message = events[3]?.message;
     if (!message || message.role !== "assistant" || message.provider !== input.profile.provider || message.model !== input.profile.model || message.api !== "openai-codex-responses" || message.stopReason !== "error" || message.errorMessage !== DAYBREAK_BLUE || !Array.isArray(message.content) || message.content.length) return;
     if (Object.keys(message).some(k => !["role", "content", "api", "provider", "model", "usage", "stopReason", "errorMessage", "timestamp"].includes(k)) || !Number.isSafeInteger(message.timestamp) || message.timestamp < 0) return;

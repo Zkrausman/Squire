@@ -5,12 +5,14 @@ import { piEvents, fixtureProfile, fixtureSession, jsonLines } from "./helpers/p
 test("provider retry retains its typed no-effects allowlist, rejects ordinary model errors and tool turns",()=>{
  assert.equal(classifyLaunchFailure(Error(DAYBREAK_BLUE)),undefined);
  assert.equal(classifyLaunchFailure(new TransientLaunchFailure("process-spawn-unavailable")),"process-spawn-unavailable");
- const events=piEvents("",fixtureSession,fixtureProfile);const m=(events[6] as any).message;
+ const events=piEvents("",fixtureSession,fixtureProfile);events.pop();const m=(events[6] as any).message;
  m.content=[];m.stopReason="error";m.errorMessage=DAYBREAK_BLUE;delete m.responseId;
  m.usage={input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}};
  events[5].message={...m,stopReason:"pending"};
  const input={profile:fixtureProfile,launchGeneration:generationIdentity("implement",1,0,fixtureSession)};
  assert.ok(providerLaunchFailure(jsonLines(events),input));
+ const missingMarker=structuredClone(events);delete missingMarker[8].willRetry;
+ assert.equal(providerLaunchFailure(jsonLines(missingMarker),input),undefined);
  m.content=[{type:"text",text:"accepted result"}];assert.equal(providerLaunchFailure(jsonLines(events),input),undefined);
  m.content=[];m.usage.input=1;assert.equal(providerLaunchFailure(jsonLines(events),input),undefined);
 });
