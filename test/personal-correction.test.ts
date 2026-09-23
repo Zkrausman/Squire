@@ -3,18 +3,19 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { PersonalMvpController } from "../src/personal/controller.js";
+import { eligibleCorrection } from "../src/personal/correction.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { synthesizeCurrentRunEvents } from "../src/personal/run-events.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 import { BASE, REQUEST } from "./helpers/workflow.js";
-import type { PhaseInput, PhaseResult, PublicationInput, HostCommandEvidence } from "../src/personal/types.js";
+import type { PhaseInput, PhaseResult, PublicationInput, HostCommandEvidence, VerifyPhaseResult } from "../src/personal/types.js";
 import type { ReportCapture } from "../src/personal/report-capture.js";
 import type { ReportEvidence } from "../src/personal/report-evidence.js";
 
 const A = "b".repeat(40), B = "c".repeat(40);
 function evidence(bytes: Buffer, n: number): ReportEvidence { return { path: `/private/evidence/${n}.json`, identity: "1:2:3", byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }; }
 
-async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean } = {}) {
+async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean; overCost?: boolean; unknownCost?: boolean } = {}) {
   const root = await launchTestRoot("squire-correction-");
   const states = new JsonRunStateStore(root);
   const calls: PhaseInput[] = [], published: PublicationInput[] = [], captures = new WeakMap<PhaseResult, ReportCapture>(), commandRefs = new WeakMap<PhaseResult, readonly HostCommandEvidence[]>();
@@ -35,6 +36,7 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
     phases: {
       reportEvidence: store,
       reportCapture(result) { return captures.get(result); },
+      async cumulativeRecordedCost() { if(options.unknownCost) throw Error("cost evidence unavailable"); return options.overCost ? "11" : "0.1"; },
       commandEvidence(result) { return commandRefs.get(result); },
       async archiveCorrectionSessions(i) {
         archived++; assert.equal(i.implement.outputHead,A); assert.equal(i.verify.status,"failed");
@@ -49,7 +51,7 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
         const exitCode = options.testFailure && input.phase === "verify" && attempt === 1 ? 1 : 0;
         const details = input.phase==="implement"
           ? { changes: ["changed code"], projectWiki: { status:"not_required", reason:"no durable wiki change" } }
-          : { findings: status==="failed" ? [options.ambiguous ? "Ask the owner to approve a contract change before implementation" : "Fix this implementation defect within ticket scope"] : [], commands: [{ command:"npm test", exitCode, summary:"executed" }], ...(status === "failed" && !options.noRecommendation ? { correction: { kind: "code_only", reason: "bounded implementation change only" } } : {}) };
+          : { findings: status==="failed" ? [options.ambiguous ? "Owner approval is necessary for a contract amendment" : "Fix this implementation defect in the module"] : [], commands: [{ command:"npm test", exitCode, summary:"executed" }], ...(status === "failed" && !options.noRecommendation ? { correction: { kind: "code_only", reason: "bounded implementation change only" } } : {}) };
         const raw=JSON.stringify({version:1,outputHead:head,status,summary:options.malformedReport && input.phase === "verify" && attempt === 1 ? "contradictory report" : "bounded result",details});
         const ref=await store.write(raw);
         const result={runId:input.runId,phase:input.phase,attempt,sessionId:input.launchGeneration!.sessionId,sessionFile:input.launchGeneration!.sessionFile,inputHead:input.expectedHead,outputHead:head,status,summary:"bounded result",details,profile:input.profile} as PhaseResult;
@@ -63,12 +65,21 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
   return { root, states, controller, calls, published, get archived() { return archived; }, get prepared() { return prepared; }, async cleanup() { await rm(root,{recursive:true,force:true}); } };
 }
 
+test("explicit owner requests stop even under a mislabeled code-only recommendation",()=>{
+ const base={runId:"aidev-1-test1234",phase:"verify",attempt:1,sessionId:"22222222-2222-4222-8222-222222222222",sessionFile:"/ticket/sessions/verify/1.jsonl",inputHead:A,outputHead:A,status:"failed",summary:"defect",details:{findings:["Fix module code"],commands:[{command:"npm test",exitCode:0,summary:"passed"}],correction:{kind:"code_only",reason:"bounded code fix"}}} as const satisfies VerifyPhaseResult;
+ assert.equal(eligibleCorrection(base),true);
+ for(const finding of ["Ask the owner to approve a contract change before implementation","Owner approval is necessary for a contract amendment","Need host permission to proceed"]){
+  assert.equal(eligibleCorrection({...base,details:{...base.details,findings:[finding]}}),false,finding);
+ }
+ assert.equal(eligibleCorrection({...base,details:{...base.details,correction:{kind:"requires_owner",reason:"owner decision"}}}),false);
+});
+
 test("failed Verify(A) archives both sessions, corrects B in same run, and only B publishes", async () => {
   const f=await correctionFixture();try {
     const state=await f.controller.run(REQUEST);
     assert.equal(state.status,"completed");assert.equal(state.candidate,B);assert.equal(state.results.verify?.inputHead,B);
     assert.deepEqual(f.calls.map(i=>`${i.phase}:${i.attempt}`),["implement:1","verify:1","implement:2","verify:2"]);
-    assert.equal(f.calls[2]?.expectedHead,A);assert.deepEqual(f.calls[2]?.correctionFeedback?.findings,["Fix this implementation defect within ticket scope"]);
+    assert.equal(f.calls[2]?.expectedHead,A);assert.deepEqual(f.calls[2]?.correctionFeedback?.findings,["Fix this implementation defect in the module"]);
     assert.equal(f.calls[3]?.originalTicketBaseSha,BASE);assert.notEqual(f.calls[1]?.launchGeneration?.sessionId,f.calls[3]?.launchGeneration?.sessionId);
     assert.equal(state.correction?.prior.length,1);assert.equal(state.correction?.prior[0]?.candidate,A);
     assert.equal(state.correction?.prior[0]?.verify.status,"failed");assert.equal(f.archived,1);assert.equal(f.prepared,1);
@@ -99,13 +110,13 @@ test("host-observed failed test output remains bound to A without approving A",a
  }finally{await f.cleanup();}
 });
 
-for (const mode of ["exhausted","custody","head-drift","ambiguous","unclassified","malformed"] as const) test(`correction ${mode} fails closed without publishing`,async()=>{
-  const f=await correctionFixture({failAgain:mode==="exhausted",noCustody:mode==="custody",changedHead:mode==="head-drift",ambiguous:mode==="ambiguous",noRecommendation:mode==="unclassified",malformedReport:mode==="malformed"});try{
+for (const mode of ["exhausted","custody","head-drift","ambiguous","unclassified","malformed","over-cost","unknown-cost"] as const) test(`correction ${mode} fails closed without publishing`,async()=>{
+  const f=await correctionFixture({failAgain:mode==="exhausted",noCustody:mode==="custody",changedHead:mode==="head-drift",ambiguous:mode==="ambiguous",noRecommendation:mode==="unclassified",malformedReport:mode==="malformed",overCost:mode==="over-cost",unknownCost:mode==="unknown-cost"});try{
     await assert.rejects(f.controller.run(REQUEST));
     const state=(await f.states.findByTicket(REQUEST.ticketId))[0]!;
     assert.equal(state.status,"failed");assert.equal(f.published.length,0);
     if(mode==="exhausted") { assert.equal(state.correction?.prior.length,1);assert.equal(state.results.verify?.status,"failed");assert.equal(state.candidate,B); }
-    if(mode==="custody" || mode==="ambiguous" || mode==="unclassified" || mode==="malformed") { assert.equal(state.correction?.prior.length,0);assert.equal(f.prepared,0); }
+    if(mode==="custody" || mode==="ambiguous" || mode==="unclassified" || mode==="malformed" || mode==="over-cost" || mode==="unknown-cost") { assert.equal(state.correction?.prior.length,0);assert.equal(f.prepared,0); }
     if(mode==="head-drift") { assert.equal(state.correction?.transition,"archived");assert.equal(f.calls.length,2); }
   }finally{await f.cleanup();}
 });

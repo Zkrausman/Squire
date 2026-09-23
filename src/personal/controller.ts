@@ -1,5 +1,6 @@
 import { InvalidPhaseHandoff, ReportExecutionFailure } from "./report-capture.js";
 import { validateCorrectionPolicy, eligibleCorrection, feedbackDigest, type CorrectionCycle, type CorrectionPolicy } from "./correction.js";
+import { decimalUnits } from "./telemetry-stream.js";
 import { setTimeout as retryDelay } from "node:timers/promises";
 import { classifyLaunchFailure, generationIdentity, launchInputDigest, validateLaunchRetryPolicy, LAUNCH_BACKOFF_MS, LAUNCH_CLASSIFIER, type LaunchRetryPolicy, type LaunchRecord } from "./launch-retry.js";
 import { parsePhaseResult } from "./phase-payload.js";
@@ -413,14 +414,16 @@ export class PersonalMvpController {
       for (;;) {
         await this.#executePhase(context, ticket, request, "implement", signal, totalDeadline);
         if (context.state.correction?.prior.length) {
+          await this.#assertCorrectionCost(context.state);
           if (!this.#workspaces.isolateVerifyOutputs) throw new Error("workspace lacks fresh Verify output isolation");
           await this.#workspaces.isolateVerifyOutputs(context.state.sandbox, requireHead(context.state), signal);
         }
         const verify = await this.#executePhase(context, ticket, request, "verify", signal, totalDeadline);
         if (verify.phase !== "verify") throw new Error("Verify phase identity mismatch");
-        if (verify.status === "passed") break;
+        if (verify.status === "passed") { if (context.state.correction?.prior.length) await this.#assertCorrectionCost(context.state); break; }
         if (this.#monotonicNow() >= totalDeadline) throw new Error("total correction run deadline exhausted");
         if (!context.state.correction || context.state.correction.prior.length >= context.state.correction.policy.maxCorrections || !eligibleCorrection(verify)) throw new Error(`verify failed: ${verify.summary}`);
+        await this.#assertCorrectionCost(context.state);
         const implement = context.state.results.implement as ImplementPhaseResult;
         const candidate = requireHead(context.state);
         const reports = context.state.reports;
@@ -471,6 +474,12 @@ export class PersonalMvpController {
       this.#contexts.delete(context.state.runId);
       throw error;
     }
+  }
+
+  async #assertCorrectionCost(state: PersonalRunState): Promise<void> {
+    if (!state.correction || !this.#phases.cumulativeRecordedCost) throw new Error("correction cost evidence unavailable");
+    const cost = await this.#phases.cumulativeRecordedCost(state);
+    if (decimalUnits(cost) > decimalUnits(state.correction.policy.maxRecordedCostUsd)) throw new Error("correction recorded cost ceiling exhausted");
   }
 
   async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, signal?: AbortSignal, totalDeadline = Infinity): Promise<PhaseResult> {

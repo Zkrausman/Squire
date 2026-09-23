@@ -1,23 +1,27 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { validatePhaseResultShape } from "./phase-result.js";
+import { decimalText, decimalUnits } from "./telemetry-stream.js";
 import { validateEvidenceRef, type ReportEvidence } from "./report-evidence.js";
 import type { ImplementPhaseResult, VerifyPhaseResult, HostCommandEvidence } from "./types.js";
 
 /** Feedback authorizes only another unprivileged Implement, never acceptance. */
-export interface CorrectionPolicy { readonly version: 1; readonly maxCorrections: 0 | 1 }
-export function correctionPolicy(maxCorrections: unknown = 1): CorrectionPolicy {
+export interface CorrectionPolicy { readonly version: 1; readonly maxCorrections: 0 | 1; readonly maxRecordedCostUsd: string }
+export function correctionPolicy(maxCorrections: unknown = 1, maxRecordedCostUsd: unknown = "10"): CorrectionPolicy {
   if (maxCorrections !== 0 && maxCorrections !== 1) throw new Error("maxCorrections must be 0 or 1");
-  return Object.freeze({ version: 1, maxCorrections });
+  if (typeof maxRecordedCostUsd !== "string") throw new Error("maxRecordedCostUsd must be a decimal string");
+  const cost = decimalUnits(maxRecordedCostUsd);
+  if (cost <= 0n || cost > decimalUnits("1000") || decimalText(cost) !== maxRecordedCostUsd) throw new Error("invalid correction cost ceiling");
+  return Object.freeze({ version: 1, maxCorrections, maxRecordedCostUsd });
 }
 export function validateCorrectionPolicy(value: unknown): CorrectionPolicy {
   if (value === undefined) return correctionPolicy();
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid correction policy");
   const keys = Object.keys(value).sort().join();
-  if (keys !== "maxCorrections" && keys !== "maxCorrections,version") throw new Error("invalid correction policy fields");
+  if (!["maxCorrections","maxCorrections,maxRecordedCostUsd","maxCorrections,maxRecordedCostUsd,version","maxCorrections,version"].includes(keys)) throw new Error("invalid correction policy fields");
   const v = value as Record<string, unknown>;
   if (v["version"] !== undefined && v["version"] !== 1) throw new Error("invalid correction policy version");
-  return correctionPolicy(v["maxCorrections"]);
+  return correctionPolicy(v["maxCorrections"],v["maxRecordedCostUsd"] ?? "10");
 }
 export interface SessionCustody { readonly chunks: readonly ReportEvidence[]; readonly sha256: string; readonly byteLength: number }
 export interface CorrectionCycle {
@@ -46,7 +50,7 @@ export function eligibleCorrection(result: VerifyPhaseResult): boolean {
   if (feedback.length > 16_000) return false;
   // A positive model label is never proof of safety. Reject explicit requests
   // for another authority even if the model mislabeled them as code-only.
-  return !/\b(?:authority ambiguity|security ambiguity|requires? (?:owner|human|host) (?:approval|decision|authorization)|(?:ask|request|need|require|obtain|seek|await|wait for|get)\b[^.!?\n]{0,100}\b(?:owner|human|host)\b[^.!?\n]{0,100}\b(?:approv\w*|authoriz\w*|decision|consent|permission|signoff|contract|policy|scope)|(?:change|expand|weaken) (?:the )?(?:ticket|contract|policy|scope)|(?:grant|expose|retrieve) (?:host )?(?:credentials?|secrets?|permissions?))\b/iu.test(feedback);
+  return !/\b(?:owner|approv\w*|authoriz\w*|consent|signoff|amend\w*|contract|policy|scope|authority ambiguity|security ambiguity|requires? (?:owner|human|host) (?:approval|decision|authorization)|(?:ask|request|need|require|obtain|seek|await|wait for|get)\b[^.!?\n]{0,100}\b(?:owner|human|host)\b[^.!?\n]{0,100}\b(?:approv\w*|authoriz\w*|decision|consent|permission|signoff|contract|policy|scope)|(?:change|expand|weaken) (?:the )?(?:ticket|contract|policy|scope)|(?:grant|expose|retrieve) (?:host )?(?:credentials?|secrets?|permissions?))\b/iu.test(feedback);
 }
 export function feedbackDigest(result: VerifyPhaseResult): string {
   return createHash("sha256").update(JSON.stringify({ candidate: result.inputHead, findings: result.details.findings, commands: result.details.commands, correction: result.details.correction })).digest("hex");
@@ -54,7 +58,7 @@ export function feedbackDigest(result: VerifyPhaseResult): string {
 export function validateCorrectionLedger(value: unknown, runId: string, baseSha: string | null): asserts value is CorrectionLedger {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid correction ledger");
   const v = value as CorrectionLedger;
-  if (Object.keys(v).sort().join() !== "policy,prior,transition" || !v.policy || Object.keys(v.policy).sort().join() !== "maxCorrections,version" || v.policy.version !== 1 || ![0,1].includes(v.policy.maxCorrections)) throw new Error("invalid correction policy");
+  if (Object.keys(v).sort().join() !== "policy,prior,transition" || !v.policy || Object.keys(v.policy).sort().join() !== "maxCorrections,maxRecordedCostUsd,version" || !isDeepStrictEqual(validateCorrectionPolicy(v.policy),v.policy)) throw new Error("invalid correction policy");
   if (!Array.isArray(v.prior) || v.prior.length > v.policy.maxCorrections || !["none", "archived", "prepared"].includes(v.transition)) throw new Error("invalid correction transition");
   let parent = baseSha;
   for (const c of v.prior) {

@@ -216,6 +216,7 @@ chmod -R a-w .git`;
     }
     return out;
   }
+  async cumulativeRecordedCost(state: PersonalRunState): Promise<string> { return this.telemetry.cumulativeRecordedCost(state); }
   async telemetryTerminal(state: PersonalRunState): Promise<{ complete: boolean }> { return { complete: (await this.telemetry.finalize(state)).complete }; }
   async telemetrySettled(result: PhaseResult): Promise<void> { await this.telemetry.acceptPhase(result.runId, result.sessionId, result.status); }
   reportCapture(result: PhaseResult): ReportCapture | undefined { return this.#captures.get(result); }

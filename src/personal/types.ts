@@ -245,6 +245,8 @@ export interface WorkspacePort {
 export interface PhasePort {
   telemetryTerminal?(state: PersonalRunState): Promise<void | { readonly complete: boolean }>;
   telemetrySettled?(result: PhaseResult): Promise<void>;
+  /** Preterminal authenticated Pi-recorded cost or error; no model attestation. */
+  cumulativeRecordedCost?(state: PersonalRunState): Promise<string>;
   readonly reportEvidence?: ReportEvidencePort;
   /** Internal transport envelope, never a model-authored result field. */
   reportCapture?(result: PhaseResult): ReportCapture | undefined;

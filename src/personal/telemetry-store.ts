@@ -54,7 +54,7 @@ function validateInvocation(v: TelemetryInvocation) {
   assert(v.launchGeneration === undefined || v.launchGeneration === 0 || v.launchGeneration === 1);
   validateTelemetryRunId(v.runId);
   assert(PERSONAL_PHASES.includes(v.phase));
-  assert(v.attempt === 1);
+  assert(v.attempt === 1 || v.attempt === 2);
   assert(UUID.test(v.sessionId) && HASH.test(v.sessionArtifactDigest) && /^[a-f0-9]{40}$/u.test(v.inputHead));
   validatePhaseProfile(v.profile);
   assert(/^[a-z0-9][a-z0-9-]{0,63}$/u.test(v.profile.provider) && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u.test(v.profile.model));
@@ -180,6 +180,33 @@ export class TelemetryStore {
   async acceptPhase(runId: string, sessionId: string, outcome: NonNullable<TelemetrySession["phaseOutcome"]>): Promise<void> {
     assert(UUID.test(sessionId));
     await publish(path.join(this.directory(runId), `${sessionId}.phase-outcome.json`), { outcome });
+  }
+  /** Trusted preterminal spend gate. Missing/ambiguous Pi-recorded usage fails
+   * closed; this is a post-phase limit, not a provider invoice or mid-call cap. */
+  async cumulativeRecordedCost(state: PersonalRunState): Promise<string> {
+    const launches = state.launchGenerations?.filter(r => r.kind === "dispatched") ?? [];
+    if (!launches.length || launches.length !== (state.launchGenerations?.filter(r => r.kind === "returned" || r.kind === "failed").length ?? 0)) throw new Error("correction cost inventory incomplete");
+    let total = 0n;
+    for (const launch of launches) {
+      const dir = this.directory(state.runId);
+      const start = await readPrivate(path.join(dir, `${launch.sessionId}.start.json`)) as TelemetryInvocation;
+      validateInvocation(start);
+      if (start.runId !== state.runId || start.phase !== launch.phase || start.attempt !== launch.attempt || start.sessionId !== launch.sessionId || start.launchGeneration !== launch.generation || start.inputHead !== launch.expectedHead || start.sessionArtifactDigest !== hash(launch.sessionFile)) throw new Error("correction cost launch identity mismatch");
+      const end = await readPrivate(path.join(dir, `${launch.sessionId}.end.json`)) as End;
+      exact(end,["endedAt","exited","streams"]);
+      if (typeof end.exited !== "boolean" || !timestamp(end.endedAt) || !Array.isArray(end.streams) || !end.streams.length || end.streams.length > 32 || duration(start.startedAt,end.endedAt) === null) throw new Error("correction cost endpoint incomplete");
+      const evidence = createReportEvidence(path.join(dir,"streams"));
+      try {
+        const bytes = Buffer.concat(await Promise.all(end.streams.map(ref => verifyReportEvidence(evidence,ref))));
+        const zeroEffect = launch.kind === "dispatched" && state.launchGenerations?.some(r => r.sessionId === launch.sessionId && r.kind === "failed" && r.rule !== null) && providerLaunchFailure(bytes,{profile:start.profile,launchGeneration:generationIdentity(start.phase,start.attempt,start.launchGeneration!,start.sessionId)});
+        if (zeroEffect) continue;
+        if (!end.exited) throw new Error("correction cost failed process is ambiguous");
+        const usage = parseUsageStream(bytes,start.sessionId,start.profile,end.exited);
+        if (usage.costSource !== "pi-recorded" || usage.recordedCost === null || usage.diagnostics.length) throw new Error("correction recorded cost unavailable");
+        total += decimalUnits(usage.recordedCost);
+      } finally { await evidence.release?.(); }
+    }
+    return decimalText(total);
   }
   /** Current-run only. Requires terminal state; repeat calls never rewrite evidence. */
   async finalize(state: PersonalRunState): Promise<RunTelemetry> {
