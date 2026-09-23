@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { rm } from "node:fs/promises";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { eligibleCorrection } from "../src/personal/correction.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
+import { persistLaunchMaterial } from "../src/personal/launch-material.js";
+import { findRunState } from "../src/personal/status.js";
+import { TEST_CONFIG_DIGEST, TEST_MATERIAL } from "./helpers/personal-launch.js";
 import { synthesizeCurrentRunEvents } from "../src/personal/run-events.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 import { BASE, REQUEST } from "./helpers/workflow.js";
@@ -15,15 +21,16 @@ import type { ReportEvidence } from "../src/personal/report-evidence.js";
 const A = "b".repeat(40), B = "c".repeat(40);
 function evidence(bytes: Buffer, n: number): ReportEvidence { return { path: `/private/evidence/${n}.json`, identity: "1:2:3", byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }; }
 
-async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean; overCost?: boolean; unknownCost?: boolean; crashAtBoundary?: boolean } = {}) {
-  const root = await launchTestRoot("squire-correction-");
+async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean; overCost?: boolean; unknownCost?: boolean; crashAtBoundary?: boolean; killAtBoundary?: boolean; abortAtBoundary?: boolean; root?: string } = {}) {
+  const root = options.root ?? await launchTestRoot("squire-correction-");
   const states = new JsonRunStateStore(root);
+  const aborter = new AbortController();
   const calls: PhaseInput[] = [], published: PublicationInput[] = [], captures = new WeakMap<PhaseResult, ReportCapture>(), commandRefs = new WeakMap<PhaseResult, readonly HostCommandEvidence[]>();
   const bytes = new Map<string, Buffer>();
   let head = BASE, archived = 0, prepared = 0, serial = 0;
   let archivedSnapshot: Awaited<ReturnType<JsonRunStateStore["read"]>>;
   const store = { async write(value: string | Buffer) { const buffer=Buffer.from(value);const ref=evidence(buffer,++serial);bytes.set(ref.path,buffer);return ref; }, async read(ref: ReportEvidence) { return bytes.get(ref.path)!; } };
-  const controller = new PersonalMvpController({ states, newId: () => "0123456789", testCommands: ["npm test"], launchRetryPolicy: { maxRetries: 0 },
+  const controller = new PersonalMvpController({ states, launchMaterial: TEST_MATERIAL, newId: () => "0123456789", testCommands: ["npm test"], launchRetryPolicy: { maxRetries: 0 },
     tickets: { async get() { return { id: REQUEST.ticketId, title: "owner contract", description: "correct a bounded defect" }; } },
     workspaces: {
       async prepare(i) { return { sandbox: i.sandbox, baseSha: BASE, head: BASE }; },
@@ -31,7 +38,7 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
       async assertDescendant(_sandbox, base, descendant) { if (![[BASE,A],[BASE,B],[A,B]].some(([b,d]) => b === base && d === descendant)) throw Error("ancestry mismatch"); },
       async committedProjectWikiPaths() { return []; },
       async isolateVerifyOutputs(_sandbox, candidate) { assert.equal(candidate,B); },
-      async prepareCorrection(i) { prepared++; assert.equal(i.candidate,A); if(options.concurrent) await assert.rejects(controller.run(REQUEST)); if(options.crashAtBoundary) { archivedSnapshot=await states.read(`${REQUEST.ticketId.toLowerCase()}-0123456789`); throw Error("controller lost at archived boundary"); } if(options.changedHead) head=B; },
+      async prepareCorrection(i) { prepared++; assert.equal(i.candidate,A); if(options.concurrent) await assert.rejects(controller.run(REQUEST)); if(options.crashAtBoundary || options.killAtBoundary) { archivedSnapshot=await states.read(`${REQUEST.ticketId.toLowerCase()}-0123456789`); if(options.killAtBoundary) { assert.equal(archivedSnapshot?.correction?.transition,"archived"); process.stdout.write("archived boundary persisted\n"); process.exit(57); } throw Error("controller lost at archived boundary"); } if(options.abortAtBoundary) { aborter.abort(Error("boundary timeout")); throw Error("correction boundary deadline elapsed"); } if(options.changedHead) head=B; },
       async exportBundle(i) { return { path: "/private/bundle", sha256: "d".repeat(64), byteLength: 10, baseSha: i.baseSha, head: i.head, branch: i.branch }; },
     },
     phases: {
@@ -63,7 +70,17 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
     },
     publication: { async publish(input) { published.push(input); return { url:"https://github.com/example/repo/pull/10", reused:false }; } },
   });
-  return { root, states, controller, calls, published, get archived() { return archived; }, get prepared() { return prepared; }, get archivedSnapshot() { return archivedSnapshot; }, async cleanup() { await rm(root,{recursive:true,force:true}); } };
+  return { root, states, controller, aborter, calls, published, get archived() { return archived; }, get prepared() { return prepared; }, get archivedSnapshot() { return archivedSnapshot; }, async cleanup() { await rm(root,{recursive:true,force:true}); } };
+}
+
+// Run this module as a dedicated process to test an uncatchable termination at the
+// exact archived boundary. The parent owns the scratch root and retains it.
+if (process.env["SQUIRE_CORRECTION_KILL_ROOT"]) {
+  const f = await correctionFixture({root:process.env["SQUIRE_CORRECTION_KILL_ROOT"],killAtBoundary:true});
+  const reserved=await f.controller.reserve(REQUEST,{executionMode:"background",launchConfigDigest:TEST_CONFIG_DIGEST,launchConfigPath:path.join(f.root,"canary-config.json"),controllerPid:null});
+  await persistLaunchMaterial(TEST_MATERIAL,reserved,f.root);
+  await f.controller.runReserved(REQUEST,reserved.runId,TEST_CONFIG_DIGEST,undefined,path.join(f.root,"canary-config.json"));
+  process.exit(58); // Reaching here means the kill injection missed its boundary.
 }
 
 test("explicit owner requests stop even under a mislabeled code-only recommendation",()=>{
@@ -101,7 +118,7 @@ test("concurrent controller cannot reserve while a correction holds the run",asy
  }finally{await f.cleanup();}
 });
 
-test("boundary crash terminalizes with immutable archived evidence; stale controller cannot replay",async()=>{
+test("caught boundary failure terminalizes with immutable archived evidence",async()=>{
  const f=await correctionFixture({crashAtBoundary:true});try{
   await assert.rejects(f.controller.run(REQUEST),/controller lost at archived boundary/);
   const state=(await f.states.findByTicket(REQUEST.ticketId))[0]!;
@@ -109,10 +126,43 @@ test("boundary crash terminalizes with immutable archived evidence; stale contro
   assert.equal(state.status,"failed");assert.equal(state.correction?.transition,"archived");assert.equal(state.correction.prior[0]?.candidate,A);
   assert.equal(state.correction.prior[0]?.verify.status,"failed");assert.ok(state.correction.prior[0]?.sessions.implement.chunks.length);
   assert.ok(state.correction.prior[0]?.sessions.verify.chunks.length);assert.equal(f.calls.length,2);assert.equal(f.published.length,0);
-  await assert.rejects(f.controller.runReserved(REQUEST,state.runId,"a".repeat(64)));
   await assert.rejects(f.states.save({...f.archivedSnapshot!,version:state.version+1}),/immutable|version|stale/);
   assert.equal(await f.states.reservationOwner(REQUEST.ticketId),undefined);
  }finally{await f.cleanup();}
+});
+
+test("abort at archived boundary retains evidence and terminalizes without dispatch",async()=>{
+ const f=await correctionFixture({abortAtBoundary:true});try{
+  await assert.rejects(f.controller.run(REQUEST,f.aborter.signal),/boundary deadline elapsed/);
+  const state=(await f.states.findByTicket(REQUEST.ticketId))[0]!;
+  assert.equal(state.status,"interrupted");assert.equal(state.correction?.transition,"archived");
+  assert.equal(state.correction.prior[0]?.candidate,A);assert.ok(state.correction.prior[0]?.sessions.verify.chunks.length);
+  assert.equal(f.calls.length,2);assert.equal(f.published.length,0);
+  assert.equal(await f.states.reservationOwner(REQUEST.ticketId),undefined);
+ }finally{await f.cleanup();}
+});
+
+test("OS kill at archived boundary retains custody and blocks restarted dispatch",async()=>{
+ const root=await launchTestRoot("squire-correction-killed-");try{
+  const child=spawnSync(process.execPath,[fileURLToPath(import.meta.url)],{env:{...process.env,SQUIRE_CORRECTION_KILL_ROOT:root},encoding:"utf8",timeout:30000});
+  assert.equal(child.status,57,child.stderr);assert.match(child.stdout,/archived boundary persisted/);
+  const f=await correctionFixture({root});
+  const state=(await f.states.findByTicket(REQUEST.ticketId))[0]!;
+  assert.equal(state.status,"running");assert.equal(state.correction?.transition,"archived");
+  assert.equal(state.correction.prior[0]?.candidate,A);assert.equal(state.correction.prior[0]?.verify.status,"failed");
+  assert.ok(state.correction.prior[0]?.sessions.implement.chunks.length);assert.ok(state.correction.prior[0]?.sessions.verify.chunks.length);
+  assert.equal(state.attempts.implement,1);assert.equal(state.attempts.verify,1);assert.equal(state.prUrl,null);
+  assert.equal(await f.states.reservationOwner(REQUEST.ticketId),state.runId);
+  await assert.rejects(f.controller.runReserved(REQUEST,state.runId,TEST_CONFIG_DIGEST,undefined,path.join(f.root,"canary-config.json")),/exact reserved launch state/);
+  await assert.rejects(f.controller.run(REQUEST),/active or ambiguous reservation/);
+  assert.equal(f.calls.length,0);assert.equal(f.published.length,0);
+  assert.equal((await f.states.read(state.runId))?.version,state.version);
+  // Status may identify the run as running or report ambiguous dead-owner evidence,
+  // but must never invent a terminal success or remove the reservation.
+  try { const observed=await findRunState(f.states,REQUEST.ticketId);assert.equal(observed.status,"running"); }
+  catch(error) { assert.match(String(error),/ambiguous|owner evidence/); }
+  assert.equal(await f.states.reservationOwner(REQUEST.ticketId),state.runId);
+ }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test("host-observed failed test output remains bound to A without approving A",async()=>{
