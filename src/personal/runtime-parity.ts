@@ -11,7 +11,8 @@ import type { PersonalModelPolicy } from "./model-policy.js";
 const PACKAGE = "@earendil-works/pi-coding-agent";
 const SHA = /^[a-f0-9]{64}$/u;
 const VERSION = /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/u;
-const MAX_BYTES = 64 * 1024;
+const MAX_BYTES = 1024 * 1024;
+const MAX_STORE_BYTES = 512 * 1024;
 
 /** Evidence produced in the running Pi process, never by a model or CLI flag. */
 export interface OwnerPiIdentity {
@@ -27,6 +28,7 @@ export interface OwnerPiIdentity {
   readonly phaseModelsSha256: string;
   readonly modelStorePath: string;
   readonly modelStoreSha256: string;
+  readonly modelStoreSnapshotBase64: string;
   readonly models: readonly string[];
   readonly extensions: readonly []; // Ticket phases execute with --no-extensions.
 }
@@ -70,8 +72,12 @@ export function phaseModelsDigest(models: readonly { provider: string; id: strin
 export function validateOwnerPiIdentity(value: unknown): asserts value is OwnerPiIdentity {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("missing owner Pi identity");
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).sort().join() !== "cliPath,cliSha256,codeTreeSha256,extensions,manifestSha256,modelConfigPath,modelConfigSha256,modelStorePath,modelStoreSha256,models,phaseModelsSha256,pid,schema,version" || v["schema"] !== 1 || typeof v["cliPath"] !== "string" || !path.isAbsolute(v["cliPath"]) || v["cliPath"].includes("\0") || !Number.isSafeInteger(v["pid"])  || (v["pid"] as number) <= 0 || typeof v["version"] !== "string" || !VERSION.test(v["version"]) || typeof v["manifestSha256"] !== "string" || !SHA.test(v["manifestSha256"]) || typeof v["cliSha256"] !== "string" || !SHA.test(v["cliSha256"]) || typeof v["codeTreeSha256"] !== "string" || !SHA.test(v["codeTreeSha256"]) || typeof v["phaseModelsSha256"] !== "string" || !SHA.test(v["phaseModelsSha256"]) || typeof v["modelConfigPath"] !== "string" || !path.isAbsolute(v["modelConfigPath"]) || path.basename(v["modelConfigPath"]) !== "models.json" || (v["modelConfigSha256"] !== null && (typeof v["modelConfigSha256"] !== "string" || !SHA.test(v["modelConfigSha256"]))) || typeof v["modelStorePath"] !== "string" || !path.isAbsolute(v["modelStorePath"]) || path.basename(v["modelStorePath"]) !== "models-store.json" || typeof v["modelStoreSha256"] !== "string" || !SHA.test(v["modelStoreSha256"]) || !Array.isArray(v["extensions"]) || v["extensions"].length !== 0 || !Array.isArray(v["models"]) || v["models"].length < 2 || v["models"].length > 10000 || v["models"].some(model => typeof model !== "string" || model.length > 300 || !/^[a-z0-9-]+\/[A-Za-z0-9._-]+$/u.test(model))) throw new Error("invalid owner Pi identity");
+  if (Object.keys(v).sort().join() !== "cliPath,cliSha256,codeTreeSha256,extensions,manifestSha256,modelConfigPath,modelConfigSha256,modelStorePath,modelStoreSha256,modelStoreSnapshotBase64,models,phaseModelsSha256,pid,schema,version" || v["schema"] !== 1 || typeof v["cliPath"] !== "string" || !path.isAbsolute(v["cliPath"]) || v["cliPath"].includes("\0") || !Number.isSafeInteger(v["pid"])  || (v["pid"] as number) <= 0 || typeof v["version"] !== "string" || !VERSION.test(v["version"]) || typeof v["manifestSha256"] !== "string" || !SHA.test(v["manifestSha256"]) || typeof v["cliSha256"] !== "string" || !SHA.test(v["cliSha256"]) || typeof v["codeTreeSha256"] !== "string" || !SHA.test(v["codeTreeSha256"]) || typeof v["phaseModelsSha256"] !== "string" || !SHA.test(v["phaseModelsSha256"]) || typeof v["modelConfigPath"] !== "string" || !path.isAbsolute(v["modelConfigPath"]) || path.basename(v["modelConfigPath"]) !== "models.json" || (v["modelConfigSha256"] !== null && (typeof v["modelConfigSha256"] !== "string" || !SHA.test(v["modelConfigSha256"]))) || typeof v["modelStorePath"] !== "string" || !path.isAbsolute(v["modelStorePath"]) || path.basename(v["modelStorePath"]) !== "models-store.json" || typeof v["modelStoreSha256"] !== "string" || !SHA.test(v["modelStoreSha256"]) || !Array.isArray(v["extensions"]) || v["extensions"].length !== 0 || !Array.isArray(v["models"]) || v["models"].length < 2 || v["models"].length > 10000 || v["models"].some(model => typeof model !== "string" || model.length > 300 || !/^[a-z0-9-]+\/[A-Za-z0-9._-]+$/u.test(model))) throw new Error("invalid owner Pi identity");
   if (new Set(v["models"]).size !== v["models"].length) throw new Error("duplicate owner Pi model");
+  const snapshot = v["modelStoreSnapshotBase64"];
+  if (typeof snapshot !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(snapshot)) throw new Error("invalid owner Pi model-store snapshot");
+  const bytes = Buffer.from(snapshot, "base64");
+  if (!bytes.length || bytes.length > MAX_STORE_BYTES || bytes.toString("base64") !== snapshot || hash(bytes) !== v["modelStoreSha256"]) throw new Error("owner Pi model-store snapshot mismatch");
 }
 
 export function requireOwnerModels(identity: OwnerPiIdentity, policy: PersonalModelPolicy): void {
@@ -101,8 +107,10 @@ export async function captureOwnerPiIdentity(cliArgument: string | undefined, re
         const modelStorePath = path.join(agentDir, "models-store.json");
         const modelConfigPath = path.join(agentDir, "models.json");
         const modelConfigSha256 = await modelConfigDigest(modelConfigPath);
-        const modelStoreSha256 = hash(await readFile(modelStorePath));
-        const identity: OwnerPiIdentity = { schema: 1, pid: process.pid, cliPath: cli, version: manifest["version"] as string, manifestSha256: hash(bytes), cliSha256: hash(await readFile(cli)), codeTreeSha256: executableCodeDigest(directory), modelConfigPath, modelConfigSha256, phaseModelsSha256: phaseModelsDigest(available, policy), modelStorePath, modelStoreSha256, models, extensions: [] };
+        const modelStoreBytes = await readFile(modelStorePath);
+        if (modelStoreBytes.length > MAX_STORE_BYTES) throw new Error("owner Pi model store exceeds snapshot bound");
+        const modelStoreSha256 = hash(modelStoreBytes);
+        const identity: OwnerPiIdentity = { schema: 1, pid: process.pid, cliPath: cli, version: manifest["version"] as string, manifestSha256: hash(bytes), cliSha256: hash(await readFile(cli)), codeTreeSha256: executableCodeDigest(directory), modelConfigPath, modelConfigSha256, phaseModelsSha256: phaseModelsDigest(available, policy), modelStorePath, modelStoreSha256, modelStoreSnapshotBase64: modelStoreBytes.toString("base64"), models, extensions: [] };
         validateOwnerPiIdentity(identity);
         return identity;
       }
@@ -119,9 +127,9 @@ export async function captureOwnerPiIdentity(cliArgument: string | undefined, re
 export async function launchFromPi(executable: string, args: readonly string[], cwd: string, identity: OwnerPiIdentity): Promise<number> {
   validateOwnerPiIdentity(identity);
   if (!path.isAbsolute(executable) || !path.isAbsolute(cwd) || identity.pid !== process.pid) throw new Error("Pi bridge process mismatch");
-  const child = spawn(executable, [...args], { cwd, shell: false, env: { ...process.env, SQUIRE_OWNER_PI_CHANNEL: "fd3-v1" }, stdio: ["inherit", "inherit", "inherit", "pipe"] });
   const payload = Buffer.from(JSON.stringify(identity), "utf8");
-  if (payload.byteLength > MAX_BYTES) { child.kill(); throw new Error("Pi identity exceeds bound"); }
+  if (payload.byteLength > MAX_BYTES) throw new Error("Pi identity exceeds bound");
+  const child = spawn(executable, [...args], { cwd, shell: false, env: { ...process.env, SQUIRE_OWNER_PI_CHANNEL: "fd3-v1" }, stdio: ["inherit", "inherit", "inherit", "pipe"] });
   const pipe = child.stdio[3];
   if (!pipe) { child.kill(); throw new Error("Pi identity pipe unavailable"); }
   (pipe as Writable).end(payload);

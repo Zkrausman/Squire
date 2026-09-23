@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { validateSourceRef } from "./identity.js";
 import type { CommandPort } from "./command.js";
 import { validateProjectWikiPaths } from "./phase-result.js";
 import type { CandidateBundle, PreparedWorkspace, ProjectWikiDiffInput, WorkspacePort } from "./types.js";
-import { executableCodeDigest, phaseModelsDigest, type OwnerPiIdentity } from "./runtime-parity.js";
+import { executableCodeDigest, phaseModelsDigest, validateOwnerPiIdentity, type OwnerPiIdentity } from "./runtime-parity.js";
 import type { PersonalModelPolicy } from "./model-policy.js";
 
 export interface DockerSandboxWorkspaceOptions {
@@ -158,7 +158,16 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       }
     }
     if (this.#ownerPi) {
-      await this.#commands.run({ command: this.#sbx, args: ["cp", this.#ownerPi.modelStorePath, `${input.sandbox}:${this.#piAgentDirectory}/models-store.json`] }, signal);
+      // Pi can refresh its live model store after the bridge captures identity.
+      // Transfer the exact protected launch snapshot, never reread the live path.
+      validateOwnerPiIdentity(this.#ownerPi);
+      const snapshot = path.join(runStaging, "owner-models-store.snapshot");
+      const handle = await open(snapshot, "wx", 0o600);
+      try {
+        try { await handle.writeFile(Buffer.from(this.#ownerPi.modelStoreSnapshotBase64, "base64")); await handle.sync(); }
+        finally { await handle.close(); }
+        await this.#commands.run({ command: this.#sbx, args: ["cp", snapshot, `${input.sandbox}:${this.#piAgentDirectory}/models-store.json`] }, signal);
+      } finally { await rm(snapshot, { force: true }); }
       const agent = sh(this.#piAgentDirectory), auth = sh(`${this.#piAgentDirectory}/auth.json`), store = sh(`${this.#piAgentDirectory}/models-store.json`);
       // Pi creates auth.json.lock alongside auth.json even in offline mode.
       // A root-owned sticky directory permits locks without allowing the phase
