@@ -42,12 +42,18 @@ test("installed operator guide requires the active Pi bridge and same-version sa
   assert.doesNotMatch(guide, /sandbox and host versions can differ/u);
 });
 
-test("operator skill keeps async observation optional and non-authoritative", async () => {
-  const text = `${await read("skills/squire-operator/SKILL.md")}\n${await operations()}`;
-  assert.match(text, /async `squire-observer` child is optional/u);
-  assert.match(text, /only to preserve owner[-\s]conversation availability/u);
-  assert.match(text, /direct native non-model `squire watch` remains preferred/u);
-  assert.match(text, /watcher receipt is observation only/u);
+test("operator skill defaults to async observer without granting workflow authority", async () => {
+  const skill = await read("skills/squire-operator/SKILL.md");
+  const ops = await operations();
+  const text = `${skill}\n${ops}`;
+  assert.match(skill, /default to the dedicated async `squire-observer` child/u);
+  assert.match(ops, /exact trusted Squire executable entrypoint, cwd, run ID and config/u);
+  assert.match(ops, /one event-driven non-model `watch`, then one public status/u);
+  assert.match(text, /open watch tool call is expected|open bash call or long-running\s+attention notice/u);
+  assert.match(text, /Never silently switch to a\s+parent-blocking watch|never silently block the orchestrator/u);
+  assert.match(text, /owner explicitly.*blocking conversation|owner explicitly wants to block the conversation/su);
+  assert.match(text, /observer infrastructure failure is not run completion/u);
+  assert.match(text, /receipt is\s+observation only/u);
   assert.match(text, /no workflow.*retry.*publication.*merge authority/su);
 });
 
