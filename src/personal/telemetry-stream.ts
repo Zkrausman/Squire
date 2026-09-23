@@ -2,7 +2,7 @@ import { rejectAmbiguousJson } from "./report-capture.js";
 import { createHash } from "node:crypto";
 import type { PhaseProfile } from "./model-policy.js";
 
-/** Pinned Pi 0.84.4 JSON mode. Never accepts session JSONL or terminal text. */
+/** Bounded Pi JSON mode. Unknown lifecycle events remain incomplete; never parse session JSONL or terminal text. */
 export const MAX_STREAM_BYTES = 64 * 1024 * 1024;
 export const TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 export type TokenField = typeof TOKEN_FIELDS[number];
