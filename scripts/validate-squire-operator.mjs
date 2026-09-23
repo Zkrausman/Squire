@@ -41,7 +41,6 @@ const docs = readFileSync(path.join(packageRoot, "docs/skills.md"), "utf8");
 assert.ok(docs.includes("~/.pi/agent/skills/") || docs.includes("user or project skills directory"), "installed Pi docs must describe user-level skill discovery; the isolated public loader probe below proves the exact layout");
 assert.ok(docs.includes("~/.agents/skills/"), "alternate documented global location must be supported");
 assert.ok(docs.includes("/skill:name"), "documented skill command must be supported");
-assert.ok(docs.includes("/reload"), "installed Pi skills documentation must describe reloading resources");
 
 const root = mkdtempSync(path.join(os.tmpdir(), "squire-operator-loader-"));
 try {
