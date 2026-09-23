@@ -1,4 +1,5 @@
 import { validateLaunchRetryPolicy, type LaunchRetryPolicy } from "./launch-retry.js";
+import { validateCorrectionPolicy, type CorrectionPolicy } from "./correction.js";
 import { createHash } from "node:crypto";
 import { access, open, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -54,6 +55,7 @@ export interface PersonalMvpConfig {
   /** Exactly two independently resolved model profiles. */
   readonly modelPolicy: PersonalModelPolicy;
   readonly launchRetryPolicy?: LaunchRetryPolicy;
+  readonly correctionPolicy?: CorrectionPolicy;
   readonly testCommands: readonly string[];
   /** Maximum Pi phase runtime; omitted means the runner's one-hour default. */
   readonly phaseTimeoutMs?: number;
@@ -165,7 +167,7 @@ export async function loadBoundPersonalMvpConfig(file?: string, options: ConfigP
 export function validateCapturedRawConfig(raw: unknown): void {
   const value = object(raw, "captured raw configuration");
   rejectRetiredConfig(value);
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "correctionPolicy", "testCommands", "phaseTimeoutMs"], "captured raw configuration");
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
   for (const key of ["slug", "path", "baseBranch"]) text(repository[key], `repository.${key}`);
@@ -189,6 +191,7 @@ export function validateCapturedRawConfig(raw: unknown): void {
   for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key], `sandbox.${key}`);
   for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key], `sandbox.${key}`);
   validateLaunchRetryPolicy(value["launchRetryPolicy"]);
+  validateCorrectionPolicy(value["correctionPolicy"]);
   if (value["modelPolicy"] !== undefined) parseModelPolicy(value["modelPolicy"]);
   if (value["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(value["phaseTimeoutMs"]);
 }
@@ -207,7 +210,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
   for (const alias of legacyAliases) {
     if (Object.prototype.hasOwnProperty.call(value, alias)) throw new Error(`${alias} is not supported; use ${alias === "profiles" ? "modelPolicy" : "dataDirectory"}`);
   }
-  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
+  rejectUnknownKeys(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "correctionPolicy", "testCommands", "phaseTimeoutMs"], "configuration");
 
   const repository = object(value["repository"], "repository");
   rejectUnknownKeys(repository, ["slug", "path", "sourceRef", "baseBranch"], "repository");
@@ -291,6 +294,7 @@ async function parsePersonalMvpConfig(bytes: Buffer, absolute: string, options: 
     },
     modelPolicy,
     launchRetryPolicy: validateLaunchRetryPolicy(value["launchRetryPolicy"]),
+    correctionPolicy: validateCorrectionPolicy(value["correctionPolicy"]),
     testCommands: [...testCommands] as string[],
     ...(phaseTimeoutMs === undefined ? {} : { phaseTimeoutMs }),
   };

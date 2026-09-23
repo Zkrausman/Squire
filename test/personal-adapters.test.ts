@@ -24,7 +24,7 @@ for(const failing of [false,true])test(`fresh runner seals Verify source and det
   }}});
   for(const phase of ["implement","verify"] as const){
    const i:PhaseInput={runId:"aidev-1-adapter123",ticket:{id:"AIDEV-1",title:"contract",description:"do it"},repository:"example/repo",baseBranch:"main",branch:"feature",sandbox:"fixture",phase,attempt:1,expectedHead:phase==="implement"?"a".repeat(40):"b".repeat(40),originalTicketBaseSha:"a".repeat(40),profile:APPROVED_PERSONAL_MODEL_POLICY[phase],contractDigest:"a".repeat(64),testCommands:["npm test"],launchGeneration:generationIdentity(phase,1,0,phase==="implement"?"11111111-1111-4111-8111-111111111111":"22222222-2222-4222-8222-222222222222")};
-   if(failing&&phase==="verify")await assert.rejects(runner.run(i),/command failed/);else assert.equal((await runner.run(i)).phase,phase);
+   if(failing&&phase==="verify")await assert.rejects(runner.run(i),/command disagrees/);else assert.equal((await runner.run(i)).phase,phase);
   }
   const models=calls.filter(r=>r.args.includes("--print"));assert.equal(models.length,2);
   assert.equal(models[0]!.args[models[0]!.args.indexOf("--tools")+1],"read,grep,find,ls,bash,edit,write");

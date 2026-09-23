@@ -1,4 +1,5 @@
 import { validateLaunchRetryPolicy } from "./launch-retry.js";
+import { validateCorrectionPolicy } from "./correction.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, link, unlink, rm } from "node:fs/promises";
@@ -54,6 +55,7 @@ export function validateLaunchMaterial(value: unknown): LaunchMaterial {
   if (v["ownerPi"] !== undefined) { validateOwnerPiIdentity(v["ownerPi"]); requireOwnerModels(v["ownerPi"], config.modelPolicy); }
   if (canonical(validateModelPolicy(raw.modelPolicy ?? APPROVED_PERSONAL_MODEL_POLICY)) !== canonical(config.modelPolicy) || canonical(raw.testCommands) !== canonical(config.testCommands)) throw new Error("captured model/test configuration mismatch");
   if (canonical(validateLaunchRetryPolicy(raw.launchRetryPolicy)) !== canonical(validateLaunchRetryPolicy(config.launchRetryPolicy))) throw new Error("captured retry policy mismatch");
+  if (canonical(validateCorrectionPolicy(raw.correctionPolicy)) !== canonical(validateCorrectionPolicy(config.correctionPolicy))) throw new Error("captured correction policy mismatch");
   const { digest, ...body } = v;
   if (typeof digest !== "string" || digest !== hash(body)) throw new Error("launch material digest mismatch");
   // JSON-copy means callers retain no mutable aliases. Strings, not Buffers,
@@ -142,11 +144,12 @@ function assertMaterialState(material: LaunchMaterial, state: PersonalRunState):
   const c = material.config;
   if (canonical(c.modelPolicy) !== canonical(state.profiles)) throw new Error("captured profiles mismatch");
   if (canonical(validateLaunchRetryPolicy(c.launchRetryPolicy)) !== canonical(validateLaunchRetryPolicy(state.launchRetryPolicy))) throw new Error("launch retry policy mismatch");
+  if (canonical(validateCorrectionPolicy(c.correctionPolicy)) !== canonical(state.correction?.policy)) throw new Error("captured correction policy mismatch");
   if (canonical(launchEvidence(material)) !== canonical(state.launchEvidence) || createHash("sha256").update(Buffer.from(material.rawConfig, "base64")).digest("hex") !== state.launchConfigDigest || c.repository.slug !== state.repository || c.repository.path !== state.repositoryPath || c.repository.sourceRef !== state.sourceRef || c.repository.baseBranch !== state.baseBranch) throw new Error("launch material state identity mismatch");
 }
 /** Validate normalized data without filesystem reads or environment resolution. */
 function validateCapturedConfig(value: unknown): PersonalMvpConfig {
-  const c = record(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "testCommands", "phaseTimeoutMs"], "captured configuration");
+  const c = record(value, ["repository", "dataDirectory", "paths", "linear", "github", "sandbox", "modelPolicy", "launchRetryPolicy", "correctionPolicy", "testCommands", "phaseTimeoutMs"], "captured configuration");
   const text = (v: unknown) => { if (typeof v !== "string" || !v.trim() || v.includes("\0")) throw new Error("invalid captured configuration string"); };
   const absolute = (v: unknown) => { text(v); if (!path.isAbsolute(v as string)) throw new Error("captured path is not absolute"); };
   const repo = record(c["repository"], ["slug", "path", "sourceRef", "baseBranch"], "captured repository");
@@ -159,6 +162,7 @@ function validateCapturedConfig(value: unknown): PersonalMvpConfig {
   for (const key of ["roleUser", "piExecutable", "piAgentDirectory"]) text(sandbox[key]);
   for (const key of ["template", "piAuthFile"]) if (sandbox[key] !== undefined) text(sandbox[key]);
   validateLaunchRetryPolicy(c["launchRetryPolicy"]);
+  validateCorrectionPolicy(c["correctionPolicy"]);
   validateModelPolicy(c["modelPolicy"]);
   if (c["phaseTimeoutMs"] !== undefined) validatePhaseTimeoutMs(c["phaseTimeoutMs"]);
   return c as unknown as PersonalMvpConfig;

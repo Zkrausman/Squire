@@ -262,6 +262,38 @@ export class DockerSandboxWorkspace implements WorkspacePort {
     return head;
   }
 
+  /** Remove all ignored/untracked products before a corrective fresh Verify. */
+  async isolateVerifyOutputs(sandbox: string, head: string, signal?: AbortSignal): Promise<void> {
+    validateName(sandbox, "sandbox"); assertSha(head);
+    await this.assertClean(sandbox, signal);
+    if (await this.currentHead(sandbox, signal) !== head) throw new Error("Verify candidate changed before output isolation");
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "clean", "-ffdx"], timeoutMs: 120_000 }, signal);
+    await this.assertClean(sandbox, signal);
+    if (await this.currentHead(sandbox, signal) !== head) throw new Error("Verify candidate changed during output isolation");
+  }
+
+  /** Trusted host transition. An interrupted reset leaves the run failed, never resumable. */
+  async prepareCorrection(input: { readonly sandbox: string; readonly baseSha: string; readonly candidate: string }, signal?: AbortSignal): Promise<void> {
+    validateName(input.sandbox, "sandbox"); assertSha(input.baseSha); assertSha(input.candidate);
+    await this.assertClean(input.sandbox, signal);
+    if (await this.currentHead(input.sandbox, signal) !== input.candidate) throw new Error("correction candidate changed");
+    await this.assertDescendant(input.sandbox, input.baseSha, input.candidate, signal);
+    const root = "/ticket/workspace";
+    const uid = Number(this.#roleUser.split(":")[0]), gid = Number(this.#roleUser.split(":")[1]);
+    const script = `const fs=require('fs'),p=require('path'),cp=require('child_process');const root=${JSON.stringify(root)},uid=${uid},gid=${gid};
+const git=root+'/.git';if(!fs.lstatSync(git).isDirectory()||fs.lstatSync(git).isSymbolicLink())throw Error('Git database is not a real directory');
+const walk=d=>{for(const name of fs.readdirSync(d)){const f=p.join(d,name),st=fs.lstatSync(f);if(st.isSymbolicLink())throw Error('Git database contains symlink');fs.chownSync(f,uid,gid);if(st.isDirectory()){fs.chmodSync(f,0o755);walk(f)}else if(st.isFile())fs.chmodSync(f,st.mode|0o600);else throw Error('Git database contains special file')}};
+const names=cp.execFileSync('git',['-c','safe.directory='+root,'-c','core.fsmonitor=false','ls-files','-z'],{cwd:root,encoding:'utf8'}).split('\\0').filter(Boolean);
+const dirs=new Set([root]);for(const name of names){const f=p.join(root,name);if(!f.startsWith(root+'/')||!(fs.realpathSync(p.dirname(f))===root||fs.realpathSync(p.dirname(f)).startsWith(root+'/')))throw Error('tracked path escapes worktree');const st=fs.lstatSync(f);fs.lchownSync(f,uid,gid);if(st.isFile())fs.chmodSync(f,st.mode|0o200);else if(!st.isSymbolicLink())throw Error('unsupported tracked path');let d=p.dirname(f);while(d.startsWith(root)){dirs.add(d);if(d===root)break;d=p.dirname(d)}}
+for(const d of dirs){if(fs.lstatSync(d).isSymbolicLink())throw Error('tracked ancestor symlink');fs.chownSync(d,uid,gid);fs.chmodSync(d,0o755)}fs.chownSync(git,uid,gid);fs.chmodSync(git,0o755);walk(git);`;
+    // Ignored build products from Verify(A) are removed while the source is still sealed.
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "git", "-c", `safe.directory=${root}`, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", root, "clean", "-ffdx"], timeoutMs: 120_000 }, signal);
+    await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "node", "-e", script], timeoutMs: 120_000 }, signal);
+    await this.assertClean(input.sandbox, signal);
+    if (await this.currentHead(input.sandbox, signal) !== input.candidate) throw new Error("correction reset changed HEAD");
+    await this.assertDescendant(input.sandbox, input.baseSha, input.candidate, signal);
+  }
+
   async assertClean(sandbox: string, signal?: AbortSignal): Promise<void> {
     validateName(sandbox, "sandbox");
     const status = await this.#commands.run({ command: this.#sbx, args: ["exec", sandbox, "git", "-c", "safe.directory=/ticket/workspace", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", "/ticket/workspace", "status", "--porcelain"] }, signal);

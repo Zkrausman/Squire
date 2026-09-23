@@ -1,4 +1,5 @@
 import type { LaunchRetryPolicy, LaunchRecord, LaunchGeneration } from "./launch-retry.js";
+import type { CorrectionLedger, SessionCustody } from "./correction.js";
 import type { ReportCapture } from "./report-capture.js";
 import type { ReportEvidencePort } from "./report-evidence.js";
 import type { PersonalModelPolicy, PhaseProfile, ResolvedPhaseProfiles } from "./model-policy.js";
@@ -63,6 +64,12 @@ export interface TestCommandEvidence {
   readonly exitCode: number;
   readonly summary: string;
 }
+/** Host-observed deterministic command output, distinct from model attestation. */
+export interface HostCommandEvidence {
+  readonly command: string;
+  readonly exitCode: number;
+  readonly output: import("./report-evidence.js").ReportEvidence;
+}
 
 export interface VerifyPhaseResult extends PhaseResultBase {
   readonly phase: "verify";
@@ -92,6 +99,8 @@ export interface PhaseInput {
   readonly profile: PhaseProfile;
   readonly contractDigest: string;
   readonly implementationEvidence?: ImplementPhaseResult["details"];
+  /** Failed Verify feedback is untrusted task data, never an approval. */
+  readonly correctionFeedback?: { readonly candidate: string; readonly findings: readonly string[]; readonly digest: string };
   readonly testCommands: readonly string[];
 }
 
@@ -131,6 +140,8 @@ export interface PublicationResult {
 export interface PersonalRunState {
   readonly launchRetryPolicy?: LaunchRetryPolicy;
   readonly launchGenerations?: readonly LaunchRecord[];
+  readonly correction?: CorrectionLedger;
+  readonly verifyCommands?: readonly HostCommandEvidence[];
   readonly reports?: Readonly<Partial<Record<PersonalPhase, import("./report-evidence.js").ReportEvidence>>>;
   readonly schemaVersion: 2;
   readonly contract: { readonly ticket: Ticket; readonly digest: string } | null;
@@ -212,6 +223,10 @@ export interface WorkspacePort {
   assertDescendant?(sandbox: string, base: string, head: string, signal?: AbortSignal): Promise<void>;
   currentHead(sandbox: string, signal?: AbortSignal): Promise<string>;
   assertClean(sandbox: string, signal?: AbortSignal): Promise<void>;
+  /** Trusted, single-use transition from a sealed Verify workspace to an editable next attempt. */
+  prepareCorrection?(input: { readonly sandbox: string; readonly baseSha: string; readonly candidate: string }, signal?: AbortSignal): Promise<void>;
+  /** Remove ignored build products between corrective Implement and its fresh Verify. */
+  isolateVerifyOutputs?(sandbox: string, head: string, signal?: AbortSignal): Promise<void>;
   /**
    * Return the committed `.llm-wiki` files changed from the run base to a
    * candidate HEAD. Implementations must inspect only the target worktree.
@@ -230,6 +245,9 @@ export interface PhasePort {
   readonly reportEvidence?: ReportEvidencePort;
   /** Internal transport envelope, never a model-authored result field. */
   reportCapture?(result: PhaseResult): ReportCapture | undefined;
+  commandEvidence?(result: PhaseResult): readonly HostCommandEvidence[] | undefined;
+  /** Move both model-writable sessions into bounded, private host custody before unsealing. */
+  archiveCorrectionSessions?(input: { readonly runId: string; readonly sandbox: string; readonly implement: ImplementPhaseResult; readonly verify: VerifyPhaseResult }, signal?: AbortSignal): Promise<{ readonly implement: SessionCustody; readonly verify: SessionCustody }>;
   run(input: PhaseInput, signal?: AbortSignal): Promise<PhaseResult>;
 }
 

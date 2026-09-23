@@ -1,4 +1,5 @@
 import { validateEvidenceRef } from "./report-evidence.js";
+import { validateCorrectionLedger, validateHostCommands, assertCorrectionTransition } from "./correction.js";
 import { validateLaunchRetryState, assertLaunchRetryUnchanged } from "./launch-retry.js";
 import { observeOwnerFile, ownerProcessIdentity, parseOperation, type OperationEvidence } from "./owner-observation.js";
 import { access, lstat, mkdir, open, readFile, readdir, rm, link, unlink, rmdir, writeFile, type FileHandle } from "node:fs/promises";
@@ -17,7 +18,7 @@ import { JsonRunEventOutbox } from "./run-events.js";
 
 const REQUIRED_STATE_KEYS = ["schemaVersion", "version", "runId", "ticketId", "ticketTitle", "status", "step", "sandbox", "repository", "baseBranch", "baseSha", "branch", "head", "sessions", "attempts", "results", "contract", "candidate", "verifyDisposition", "publicationState", "ciDisposition", "mergeDisposition", "terminalReason", "prUrl", "lastError", "updatedAt"] as const;
 const OPTIONAL_STATE_KEYS = [
-  "launchRetryPolicy", "launchGenerations", "reports",
+  "launchRetryPolicy", "launchGenerations", "reports", "correction", "verifyCommands",
   "profiles",
   "lifecycle",
   "launchState",
@@ -775,25 +776,36 @@ export function validateState(value: unknown): asserts value is PersonalRunState
   }
   if (!["not_run","passed","failed"].includes(s.verifyDisposition) || !["not_started","publishing","published","failed"].includes(s.publicationState) || s.ciDisposition !== "pending" || s.mergeDisposition !== "not_merged") throw new Error("invalid independent dispositions");
   exactObject(s.attempts,PERSONAL_PHASES,"attempts"); subsetObject(s.results,PERSONAL_PHASES,"results"); subsetObject(s.sessions,PERSONAL_PHASES,"sessions");
+  if (s.correction) validateCorrectionLedger(s.correction, s.runId, s.baseSha);
+  const cycle = s.correction?.prior.length ?? 0;
+  if (s.correction?.transition === "prepared" && s.attempts.verify === cycle && (s.results.verify || s.sessions.verify || s.reports?.verify || s.verifyDisposition !== "not_run")) throw new Error("prepared correction retains prior Verify in active slot");
   for(const phase of PERSONAL_PHASES) {
-    if (![0,1].includes(s.attempts[phase])) throw new Error("one attempt per phase");
+    if (!Number.isInteger(s.attempts[phase]) || s.attempts[phase] < 0 || s.attempts[phase] > cycle + 1 || (!s.correction && s.attempts[phase] > 1)) throw new Error("attempt exceeds correction budget");
     const r=s.results[phase];
     if(r) {
       validatePhaseResultShape(r,phase);
-      if(r.runId !== s.runId || s.attempts[phase] !== 1 || s.sessions[phase] !== r.sessionId || !isDeepStrictEqual(r.profile,s.profiles![phase])) throw new Error("result envelope mismatch");
+      if(r.runId !== s.runId || s.attempts[phase] !== r.attempt || s.sessions[phase] !== r.sessionId || !isDeepStrictEqual(r.profile,s.profiles![phase])) throw new Error("result envelope mismatch");
       if (phase === "implement" ? r.outputHead !== s.candidate : r.inputHead !== s.candidate || r.outputHead !== s.candidate || s.verifyDisposition !== r.status) throw new Error("candidate evidence mismatch");
     }
   }
-  if (s.attempts.verify && (!s.candidate || s.results.implement?.status !== "passed")) throw new Error("Verify requires accepted Implement candidate");
+  if (s.attempts.verify > cycle && (!s.candidate || s.results.implement?.status !== "passed")) throw new Error("Verify requires accepted Implement candidate");
+  if (cycle && (s.attempts.implement < cycle || s.attempts.verify < cycle || (s.correction!.transition === "none" && s.attempts.implement !== cycle + 1))) throw new Error("correction attempt order invalid");
+  if (s.correction && s.attempts.verify > s.attempts.implement) throw new Error("Verify cannot precede Implement");
   if (s.candidate && s.head !== s.candidate) throw new Error("candidate identity changed");
   if (s.lastError !== null && !text(s.lastError,2000)) throw new Error("invalid terminal diagnostic");
   if (s.prUrl !== null && (!text(s.prUrl,2000) || !/^https:\/\/[^\s]+$/u.test(s.prUrl))) throw new Error("invalid publication URL");
-  if (s.results.implement && s.results.implement.inputHead !== s.baseSha) throw new Error("Implement baseline mismatch");
+  const activeCycle = s.correction?.transition === "archived" ? cycle - 1 : cycle;
+  if (s.results.implement && s.results.implement.inputHead !== (activeCycle ? s.correction!.prior[activeCycle - 1]!.candidate : s.baseSha)) throw new Error("Implement baseline mismatch");
   if (s.sessions.implement && s.sessions.implement === s.sessions.verify) throw new Error("sessions must be independent");
   if (s.status === "running" ? s.terminalReason !== null || s.lastError !== null : !text(s.terminalReason,2000)) throw new Error("invalid terminal reason");
   if (s.status === "completed" && (s.step !== "complete" || s.publicationState !== "published" || !s.prUrl || s.verifyDisposition !== "passed" || s.results.verify?.status !== "passed")) throw new Error("completion requires verified publication");
   if (s.publicationState === "publishing" || s.publicationState === "published") if(s.verifyDisposition !== "passed" || s.results.verify?.status !== "passed") throw new Error("publication requires Verify");
   if (s.reports) { subsetObject(s.reports, PERSONAL_PHASES, "reports"); for (const r of Object.values(s.reports)) validateEvidenceRef(r); }
+  if (s.verifyCommands !== undefined) {
+    if (!Array.isArray(s.verifyCommands) || s.verifyCommands.length > 100) throw new Error("invalid host Verify command ledger");
+    for (const entry of s.verifyCommands) { if (!entry || Object.keys(entry).sort().join() !== "command,exitCode,output" || !text(entry.command,2000) || !Number.isInteger(entry.exitCode) || entry.exitCode < 0 || entry.exitCode > 255) throw new Error("invalid host Verify command evidence"); validateEvidenceRef(entry.output); }
+    if (s.results.verify) { if (s.results.verify.phase !== "verify") throw new Error("Verify result identity mismatch"); validateHostCommands(s.verifyCommands,s.results.verify); }
+  }
   validateLaunchRetryState(s);
 }
 
@@ -919,18 +931,26 @@ async function acquireUpdateLock(directory: string, runId: string): Promise<() =
 function assertResolvedProfilesUnchanged(current: PersonalRunState, next: PersonalRunState): void {
   if (current.schemaVersion !== 2 || current.status !== "running") throw new Error("terminal and historical state is immutable");
   assertLaunchRetryUnchanged(current,next);
+  assertCorrectionTransition(current.correction,next.correction);
+  const completingCycle = (next.correction?.prior.length ?? 0) === (current.correction?.prior.length ?? 0) + 1;
+  const preparingCorrection = current.correction?.transition === "archived" && next.correction?.transition === "prepared";
+  if (completingCycle && (current.step !== "verify" || current.results.verify?.status !== "failed" || !isDeepStrictEqual(next.correction!.prior.at(-1)!.verify,current.results.verify) || !isDeepStrictEqual(next.correction!.prior.at(-1)!.implement,current.results.implement) || !isDeepStrictEqual(next.correction!.prior.at(-1)!.reports,current.reports) || !isDeepStrictEqual(next.correction!.prior.at(-1)!.commands,current.verifyCommands) || next.correction!.prior.at(-1)!.candidate !== current.candidate)) throw new Error("only accepted failed Verify can enter correction history");
   const order = ["launching","preparing","implement","verify","publishing","complete"];
-  if (order.indexOf(next.step) < order.indexOf(current.step)) throw new Error("workflow cannot move backwards");
-  if (current.head !== null && current.head !== next.head && (next.step !== "implement" || current.candidate !== null)) throw new Error("only Implement can bind candidate identity");
+  if (order.indexOf(next.step) < order.indexOf(current.step) && !(preparingCorrection && current.step === "verify" && next.step === "implement")) throw new Error("workflow cannot move backwards");
+  if (current.head !== null && current.head !== next.head && (next.step !== "implement" || (current.candidate !== null && current.correction?.transition !== "prepared"))) throw new Error("only Implement can bind candidate identity");
   for (const phase of PERSONAL_PHASES) if (next.attempts[phase] !== current.attempts[phase] && next.step !== phase) throw new Error("attempt must belong to active phase");
   if (current.publicationState !== next.publicationState && !({not_started:["publishing"],publishing:["published","failed"],published:[],failed:[]} as Record<string,string[]>)[current.publicationState]!.includes(next.publicationState)) throw new Error("publication cannot replay");
 
   for (const key of ["profiles","runId","ticketId","branch","sandbox"] as const) if(!isDeepStrictEqual(current[key],next[key])) throw new Error(`${key} is immutable`);
-  for (const key of ["contract","baseSha","candidate"] as const) if(current[key] !== null && !isDeepStrictEqual(current[key],next[key])) throw new Error(`${key} is immutable`);
+  for (const key of ["contract","baseSha"] as const) if(current[key] !== null && !isDeepStrictEqual(current[key],next[key])) throw new Error(`${key} is immutable`);
+  if (current.candidate !== null && current.candidate !== next.candidate && !(current.correction?.transition === "prepared" && next.step === "implement" && next.candidate !== null && current.correction.prior.at(-1)?.candidate === current.candidate)) throw new Error("candidate identity is immutable outside correction");
   for(const phase of PERSONAL_PHASES) {
-    if(current.reports?.[phase] && !isDeepStrictEqual(current.reports[phase],next.reports?.[phase])) throw new Error("report identity immutable");
-    if(current.results[phase] && !isDeepStrictEqual(current.results[phase],next.results[phase])) throw new Error("accepted evidence is immutable");
+    if(current.reports?.[phase] && !isDeepStrictEqual(current.reports[phase],next.reports?.[phase]) && !preparingCorrection) throw new Error("report identity immutable");
+    if(current.results[phase] && !isDeepStrictEqual(current.results[phase],next.results[phase]) && !preparingCorrection) throw new Error("accepted evidence is immutable");
+    if (preparingCorrection && (next.results[phase] || next.sessions[phase] || next.reports?.[phase])) throw new Error("correction must clear archived active evidence");
     if(next.attempts[phase] < current.attempts[phase]) throw new Error("attempt cannot replay");
   }
-  if (current.verifyDisposition !== "not_run" && current.verifyDisposition !== next.verifyDisposition) throw new Error("Verify disposition immutable");
+  if (current.verifyCommands?.length && !isDeepStrictEqual(current.verifyCommands,next.verifyCommands) && !preparingCorrection) throw new Error("host Verify command evidence immutable");
+  if (preparingCorrection && next.verifyCommands?.length) throw new Error("correction must clear prior host commands");
+  if (current.verifyDisposition !== "not_run" && current.verifyDisposition !== next.verifyDisposition && !preparingCorrection) throw new Error("Verify disposition immutable");
 }
