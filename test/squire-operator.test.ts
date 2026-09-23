@@ -69,7 +69,7 @@ test("only observation examples parse as CLI commands; launching requires the Pi
   }
   const bridge = await read("src/personal/pi-launch-bridge.ts");
   assert.match(bridge, /registerCommand\("squire-run"/u);
-  assert.match(bridge, /captureOwnerPiIdentity\(process\.argv\[1\], ctx\.modelRegistry\)/u);
+  assert.match(bridge, /captureOwnerPiIdentity\(process\.argv\[1\], ctx\.modelRegistry, config\.modelPolicy\)/u);
   for (const command of ["resume", "recover", "recovery", "health", "version"]) {
     assert.equal(parseArguments([command, "DEMO-123"]), undefined);
   }

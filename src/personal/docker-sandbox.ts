@@ -5,7 +5,7 @@ import { validateSourceRef } from "./identity.js";
 import type { CommandPort } from "./command.js";
 import { validateProjectWikiPaths } from "./phase-result.js";
 import type { CandidateBundle, PreparedWorkspace, ProjectWikiDiffInput, WorkspacePort } from "./types.js";
-import { type OwnerPiIdentity } from "./runtime-parity.js";
+import { executableCodeDigest, phaseModelsDigest, type OwnerPiIdentity } from "./runtime-parity.js";
 import type { PersonalModelPolicy } from "./model-policy.js";
 
 export interface DockerSandboxWorkspaceOptions {
@@ -163,7 +163,7 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       // Pi creates auth.json.lock alongside auth.json even in offline mode.
       // A root-owned sticky directory permits locks without allowing the phase
       // user to unlink root-owned model/auth/config files or their names.
-      const sealAgent = `set -eu; for name in models.json settings.json; do (set -C; printf '{}' > ${agent}/"$name"); chown root:root ${agent}/"$name"; chmod 0444 ${agent}/"$name"; done; chown root:root ${agent} ${store}; chmod 0444 ${store}; chown ${sh(this.#roleUser)} ${auth}; chmod 0600 ${auth}; chmod 1777 ${agent}`;
+      const sealAgent = `set -eu; for name in models.json settings.json; do (set -C; if [ "$name" = models.json ]; then printf '{"providers":{}}' > ${agent}/"$name"; else printf '{}' > ${agent}/"$name"; fi); chown root:root ${agent}/"$name"; chmod 0444 ${agent}/"$name"; done; chown root:root ${agent} ${store}; chmod 0444 ${store}; chown ${sh(this.#roleUser)} ${auth}; chmod 0600 ${auth}; chmod 1777 ${agent}`;
       await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", sealAgent] }, signal);
       await this.#checkPi(input.sandbox, signal);
     }
@@ -198,6 +198,8 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       "const manifest=fs.readFileSync(root+'/package.json');const pkg=JSON.parse(manifest);",
       "const cli=fs.readFileSync(root+'/'+(typeof pkg.bin==='string'?pkg.bin:pkg.bin.pi));",
       "const sha=b=>crypto.createHash('sha256').update(b).digest('hex');",
+      "const createHash=crypto.createHash,readdirSync=fs.readdirSync,readFileSync=fs.readFileSync,lstatSync=fs.lstatSync;",
+      `const executableCodeDigest=${executableCodeDigest.toString()};`,
       "const owned=p=>{const s=fs.lstatSync(p);if(s.uid!==0||(s.mode&0o022)!==0||s.isSymbolicLink())throw Error('Pi runtime is writable or redirected');};",
       "owned('/ticket');owned('/ticket/runtime');owned('/ticket/runtime/node_modules');",
       "const tree='/ticket/runtime/node_modules';const visit=p=>{for(const entry of fs.readdirSync(p)){const child=p+'/'+entry;const s=fs.lstatSync(child);if(s.isSymbolicLink()){const target=fs.realpathSync(child);if(!target.startsWith(tree+'/'))throw Error('Pi runtime symlink escapes sealed tree');continue;}if(s.uid!==0||(s.mode&0o222)!==0)throw Error('Pi runtime is writable');if(s.isDirectory())visit(child);}};visit(tree);",
@@ -206,11 +208,20 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       `for(const name of ['models-store.json','models.json','settings.json']){const p=${JSON.stringify(this.#piAgentDirectory)}+'/'+name;const s=fs.lstatSync(p);if(s.uid!==0||(s.mode&0o777)!==0o444||s.isSymbolicLink())throw Error('Pi model/config file is replaceable');}`,
       `const auth=fs.lstatSync(${JSON.stringify(`${this.#piAgentDirectory}/auth.json`)});if(auth.uid!==${Number(this.#roleUser.split(":")[0])}||auth.gid!==${Number(this.#roleUser.split(":")[1])}||(auth.mode&0o777)!==0o600||auth.isSymbolicLink())throw Error('Pi auth permissions changed');`,
       `const store=fs.readFileSync(${JSON.stringify(`${this.#piAgentDirectory}/models-store.json`)});`,
-      "console.log(JSON.stringify({name:pkg.name,version:pkg.version,manifestSha256:sha(manifest),cliSha256:sha(cli),modelStoreSha256:sha(store)}));",
+      "console.log(JSON.stringify({name:pkg.name,version:pkg.version,manifestSha256:sha(manifest),cliSha256:sha(cli),modelStoreSha256:sha(store),codeTreeSha256:executableCodeDigest(root)}));",
     ].join("");
     const result = await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, sandbox, "node", "-e", inspect], timeoutMs: 30_000, maxOutputBytes: 4096 }, signal);
-    const value = JSON.parse(result.stdout) as { name: string; version: string; manifestSha256: string; cliSha256: string; modelStoreSha256: string };
-    if (value.name !== "@earendil-works/pi-coding-agent" || value.version !== identity.version || value.manifestSha256 !== identity.manifestSha256 || value.cliSha256 !== identity.cliSha256 || value.modelStoreSha256 !== identity.modelStoreSha256) throw new Error("sandbox Pi package differs from owner-facing Pi");
+    const value = JSON.parse(result.stdout) as { name: string; version: string; manifestSha256: string; cliSha256: string; modelStoreSha256: string; codeTreeSha256: string };
+    if (value.name !== "@earendil-works/pi-coding-agent" || value.version !== identity.version || value.manifestSha256 !== identity.manifestSha256 || value.cliSha256 !== identity.cliSha256 || value.modelStoreSha256 !== identity.modelStoreSha256 || value.codeTreeSha256 !== identity.codeTreeSha256) throw new Error("sandbox Pi package differs from owner-facing Pi");
+    const inspectModels = [
+      "import crypto from 'node:crypto';const hash=b=>crypto.createHash('sha256').update(b).digest('hex');",
+      `const phaseModelsDigest=${phaseModelsDigest.toString()};`,
+      "const {ModelRuntime}=await import('/ticket/runtime/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.js');",
+      `const runtime=await ModelRuntime.create({modelsPath:${JSON.stringify(`${this.#piAgentDirectory}/models.json`)},modelsStorePath:${JSON.stringify(`${this.#piAgentDirectory}/models-store.json`)},authPath:${JSON.stringify(`${this.#piAgentDirectory}/auth.json`)},allowModelNetwork:false});`,
+      `console.log(phaseModelsDigest(runtime.getAvailableSnapshot(),${JSON.stringify(this.#modelPolicy)}));`,
+    ].join("");
+    const models = await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, sandbox, "/usr/bin/env", "PI_OFFLINE=1", `PI_CODING_AGENT_DIR=${this.#piAgentDirectory}`, "node", "--input-type=module", "-e", inspectModels], timeoutMs: 60_000, maxOutputBytes: 4096 }, signal);
+    if (models.stdout.trim() !== identity.phaseModelsSha256) throw new Error("sandbox Pi effective phase models differ from owner-facing Pi");
     const catalog = await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", this.#roleUser, sandbox, "/usr/bin/env", `PI_CODING_AGENT_DIR=${this.#piAgentDirectory}`, "/ticket/runtime/node_modules/.bin/pi", "--no-extensions", "--no-skills", "--list-models", "openai-codex"], timeoutMs: 60_000, maxOutputBytes: 64 * 1024 }, signal);
     for (const profile of [this.#modelPolicy!.implement, this.#modelPolicy!.verify]) {
       const row = new RegExp(`^${profile.provider}\\s+${profile.model}\\s+`, "m");
