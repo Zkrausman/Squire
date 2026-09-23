@@ -60,8 +60,14 @@ auth-file contents, environment dumps or whole secret-bearing configurations.
   manifests, CI and instructions rather than copying another project's tests.
   For the Squire source package the normal Linux command is `npm test`; this is
   not a default for other projects. Require visible prerequisite completion and
-  owner run/publication approval before paid phases. Invisible conversation
-  approvals, missing release/dependency gates and unresolved stops block launch.
+  an existing owner-approved ticket contract before paid phases. The direct owner
+  request `use Squire to orchestrate ticket XYZ-123` is the authority for trusted
+  cold-start preflight, launch of exactly one initial Squire run, and its normal
+  configured App publication/exact-head CI; do not request a second mechanical
+  run/publication confirmation. It does not approve a new or broadened contract or
+  waive any preflight stop. Without the direct request or other visible applicable
+  run authority, or if release/dependency gates are missing or unresolved stops
+  remain, block launch.
 
 ## Native sandbox boundary
 
@@ -98,20 +104,24 @@ before launch; do not claim Linux sandbox tests establish host availability.
 
 ## Authorized normal run and observation
 
-Launch **from the running trusted owner-facing Pi session**, after its verified
-Squire launch extension is installed and loaded, with:
+For the owner request `use Squire to orchestrate ticket XYZ-123`, launch exactly
+one initial run **from the running trusted owner-facing Pi session**, after its
+verified Squire launch extension is installed and loaded, with:
 
 ```text
 /squire-run TICKET-ID --config ABSOLUTE_PATH
 ```
 
-`TICKET-ID` is the existing approved Linear identifier. The command captures the
-actual session's Pi package, CLI and model-store identity and starts one
-background run through a private parent-owned channel. It rejects missing model
-IDs or a runtime it cannot authenticate. Direct `squire run` is **not** a
-supported operator launch: it fails without the bridge; never invent an identity
-from an environment variable, caller-authored JSON or a CLI flag. Reopening a
-fresh Pi session after an upgrade binds only *later* runs to the new runtime.
+`TICKET-ID` is the existing owner-approved Linear contract. The command captures
+the actual session's Pi package, CLI and model-store identity and starts the
+bounded Contract → Implement → fresh independent read-only Verify workflow
+through a private parent-owned channel. Normal delivery uses configured App
+publication, then verifies required external CI at the exact PR head. It rejects
+missing model IDs or a runtime it cannot authenticate. Direct `squire run` is **not**
+a supported operator launch: it fails without the bridge; never invent an identity
+from an environment variable, caller-authored JSON or a CLI flag.
+Reopening a fresh Pi session after an upgrade binds only *later* runs to the new
+runtime.
 
 Use the trusted Squire executable for observation only. `RUN-ID` is the exact
 returned launch ID; `CONFIG` is the same verified absolute config path:
@@ -128,18 +138,34 @@ path selection consistent when observing; retain the launch-time effective paths
 if current configuration later changes.
 
 Use one event-driven non-model `watch`; it exits at terminal state, but its exit
-code is not the run's success verdict. Alternatively authorize a bounded host
-non-model observer with a deadline, maximum checks and escalation on expiry.
-An async `squire-observer` child is optional and exists only to preserve owner-
-conversation availability; when blocking is acceptable, direct native
-non-model `squire watch` remains preferred. Its one watcher receipt is
-observation only and grants no workflow, retry, publication or merge authority.
-A child/tool timeout is observer timeout, never run completion. No model status
-polling, unbounded watchdog loops or silent paid reruns. If watch fails or the
-deadline expires, preserve evidence and escalate, not relaunch.
+code is not the run's success verdict. When blocking the owner conversation is
+acceptable, direct native non-model `squire watch` is preferred. Use the installed
+`squire-observer` only when preserving the owner conversation is useful. Its one
+watcher receipt is observation only and grants no workflow, retry, publication or
+merge authority. A child/tool timeout is observer timeout, never run completion.
+No model status polling or unbounded watchdog loops.
 
-The controller owns the immutable Contract, one Implement and one independent Verify. Failure is terminal; only the owner can authorize a separate new run. Do not bypass gates
-or mutate a candidate after its checks. Before reporting clean normal success:
+A deterministic mechanical contract-conformance defect that has one obvious
+correction inside the approved scope does not require interrupting the owner for
+a mechanical choice. Preserve the failed candidate immutably; privately record
+the measured defect and evidence. Make only a narrow, auditable amendment to the
+contract/source condition, then launch a fresh replacement candidate under the
+original bounded orchestration authority and run fresh independent Verify. This
+is not a repair, resume, relabel, promotion or retry of the failed candidate, and
+never repeat an unchanged condition. Escalate only for genuine scope expansion, product/architecture tradeoffs,
+missing authority, security/credential ambiguity, repeated failure without
+materially new evidence, or activation outside the request. Other failures remain
+terminal: preserve and report them without an unauthorized retry. Do not silently
+broaden the ticket. Keep detailed failure evidence private; report concise
+sanitized public facts and leave unknown evidence unknown.
+
+For any candidate, Verify is fresh, independent and read-only: its input and
+output must both equal the Implement candidate SHA, it must pass, and every
+configured test command must be represented. Publish only that verified SHA via
+the configured App path; required hosted CI must pass at the exact published PR
+head, which must equal the candidate SHA. A changed/mismatched head or missing,
+failed or inconclusive gate is not success. Do not merge or bypass gates. Before
+reporting clean normal success:
 
 1. Read persisted `<state>/<run-id>.json` and phase evidence, not just an outbox,
    PR link, transcript or all-green phase summary. Verify run/ticket/repository,
@@ -164,12 +190,15 @@ or mutate a candidate after its checks. Before reporting clean normal success:
 
 Preserve original state, logs, phase outputs, sandbox and candidate. Classify as
 preflight/authority, infrastructure/auth, phase/contract, test/product, or terminal
-publication/persistence failure. Give the owner sanitized evidence and a bounded
-next decision. Do not repair phase JSON/state, invent resume, manually publish
-failed candidates or silently substitute personal credentials. Additional paid
-launches require explicit approval. There is no recovery or promotion of this run; only an explicitly authorized new run may produce another candidate. Preserve the failed run unchanged. Ambiguous reservations require external owner investigation
-of controller ownership/liveness before separately authorized cleanup, never an
-automatic retry or kill by guessed PID.
+publication/persistence failure. Give the owner concise sanitized facts and a
+bounded next decision. Do not repair phase JSON/state, resume, relabel or promote a
+failed candidate; invent evidence; manually publish a failed candidate; silently
+substitute personal credentials; or retry an unchanged condition. A fresh
+replacement is covered by the original request only for the narrowly defined
+mechanical correction above. Other new runs need separate applicable authority.
+Ambiguous reservations require external owner investigation of controller
+ownership/liveness before separately authorized cleanup, never an automatic
+retry or kill by guessed PID.
 
 These offline scenarios are checklist contracts, not live push or recovery proof:
 
