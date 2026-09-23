@@ -18,9 +18,16 @@ export function validatePhaseResultShape(value: unknown, phase?: PersonalPhase):
 }
 function fields(v: Record<string, unknown>, phase: PersonalPhase): void {
   if (!sha(v["outputHead"]) || !["passed", "failed"].includes(v["status"] as string) || !nonempty(v["summary"], 2000)) throw new Error("invalid phase disposition");
-  const d = exactObject(v["details"], phase === "implement" ? ["changes", "projectWiki"] : ["findings", "commands"], "phase details");
+  const details = v["details"] as Record<string, unknown>;
+  const correction = phase === "verify" && details && typeof details === "object" && Object.prototype.hasOwnProperty.call(details,"correction");
+  const d = exactObject(v["details"], phase === "implement" ? ["changes", "projectWiki"] : correction ? ["findings", "commands", "correction"] : ["findings", "commands"], "phase details");
   if (phase === "implement") { stringList(d["changes"]); validateProjectWikiDisposition(d["projectWiki"]); }
   else {
+    if (correction) {
+      if (v["status"] !== "failed") throw new Error("passing Verify cannot request correction");
+      const recommendation = exactObject(d["correction"],["kind","reason"],"correction recommendation");
+      if (!["code_only","requires_owner","security_ambiguity","unknown"].includes(recommendation["kind"] as string) || !nonempty(recommendation["reason"],2000)) throw new Error("invalid correction recommendation");
+    }
     stringList(d["findings"]);
     if (!Array.isArray(d["commands"]) || d["commands"].length > 100) throw new Error("invalid command evidence");
     const seen = new Set();

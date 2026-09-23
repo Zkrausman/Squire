@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
+import { synthesizeCurrentRunEvents } from "../src/personal/run-events.js";
 import { launchTestRoot } from "./helpers/windows-launch.js";
 import { BASE, REQUEST } from "./helpers/workflow.js";
 import type { PhaseInput, PhaseResult, PublicationInput, HostCommandEvidence } from "../src/personal/types.js";
@@ -13,7 +14,7 @@ import type { ReportEvidence } from "../src/personal/report-evidence.js";
 const A = "b".repeat(40), B = "c".repeat(40);
 function evidence(bytes: Buffer, n: number): ReportEvidence { return { path: `/private/evidence/${n}.json`, identity: "1:2:3", byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }; }
 
-async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean } = {}) {
+async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean } = {}) {
   const root = await launchTestRoot("squire-correction-");
   const states = new JsonRunStateStore(root);
   const calls: PhaseInput[] = [], published: PublicationInput[] = [], captures = new WeakMap<PhaseResult, ReportCapture>(), commandRefs = new WeakMap<PhaseResult, readonly HostCommandEvidence[]>();
@@ -28,7 +29,7 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
       async assertDescendant(_sandbox, base, descendant) { if (![[BASE,A],[BASE,B],[A,B]].some(([b,d]) => b === base && d === descendant)) throw Error("ancestry mismatch"); },
       async committedProjectWikiPaths() { return []; },
       async isolateVerifyOutputs(_sandbox, candidate) { assert.equal(candidate,B); },
-      async prepareCorrection(i) { prepared++; assert.equal(i.candidate,A); if(options.changedHead) head=B; },
+      async prepareCorrection(i) { prepared++; assert.equal(i.candidate,A); if(options.concurrent) await assert.rejects(controller.run(REQUEST)); if(options.changedHead) head=B; },
       async exportBundle(i) { return { path: "/private/bundle", sha256: "d".repeat(64), byteLength: 10, baseSha: i.baseSha, head: i.head, branch: i.branch }; },
     },
     phases: {
@@ -48,8 +49,8 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
         const exitCode = options.testFailure && input.phase === "verify" && attempt === 1 ? 1 : 0;
         const details = input.phase==="implement"
           ? { changes: ["changed code"], projectWiki: { status:"not_required", reason:"no durable wiki change" } }
-          : { findings: status==="failed" ? [options.ambiguous ? "Requires owner approval for a scope change" : "Fix this implementation defect within ticket scope"] : [], commands: [{ command:"npm test", exitCode, summary:"executed" }] };
-        const raw=JSON.stringify({version:1,outputHead:head,status,summary:"bounded result",details});
+          : { findings: status==="failed" ? [options.ambiguous ? "Ask the owner to approve a contract change before implementation" : "Fix this implementation defect within ticket scope"] : [], commands: [{ command:"npm test", exitCode, summary:"executed" }], ...(status === "failed" && !options.noRecommendation ? { correction: { kind: "code_only", reason: "bounded implementation change only" } } : {}) };
+        const raw=JSON.stringify({version:1,outputHead:head,status,summary:options.malformedReport && input.phase === "verify" && attempt === 1 ? "contradictory report" : "bounded result",details});
         const ref=await store.write(raw);
         const result={runId:input.runId,phase:input.phase,attempt,sessionId:input.launchGeneration!.sessionId,sessionFile:input.launchGeneration!.sessionFile,inputHead:input.expectedHead,outputHead:head,status,summary:"bounded result",details,profile:input.profile} as PhaseResult;
         captures.set(result,{ raw, evidence:ref, timestamp:new Date().toISOString(), sessionId:result.sessionId, sessionFile:result.sessionFile });
@@ -72,7 +73,20 @@ test("failed Verify(A) archives both sessions, corrects B in same run, and only 
     assert.equal(state.correction?.prior.length,1);assert.equal(state.correction?.prior[0]?.candidate,A);
     assert.equal(state.correction?.prior[0]?.verify.status,"failed");assert.equal(f.archived,1);assert.equal(f.prepared,1);
     assert.equal(f.published.length,1);assert.equal(f.published[0]?.head,B);
+    const actual=await f.states.readEvents(state.runId), reconstructed=synthesizeCurrentRunEvents(state);
+    for (const phase of ["implement","verify"] as const) for (const attempt of [1,2]) {
+      assert.ok(actual.some(e=>e.type==="phase_completed"&&e.phase===phase&&e.attempt===attempt));
+      assert.ok(reconstructed.some(e=>e.type==="phase_completed"&&e.phase===phase&&e.attempt===attempt));
+    }
+    assert.ok(actual.some(e=>e.type==="terminal_succeeded"));
   }finally{await f.cleanup();}
+});
+
+test("concurrent controller cannot reserve while a correction holds the run",async()=>{
+ const f=await correctionFixture({concurrent:true});try{
+  const state=await f.controller.run(REQUEST);
+  assert.equal(state.status,"completed");assert.equal(f.calls.length,4);assert.equal(f.published.length,1);
+ }finally{await f.cleanup();}
 });
 
 test("host-observed failed test output remains bound to A without approving A",async()=>{
@@ -85,13 +99,13 @@ test("host-observed failed test output remains bound to A without approving A",a
  }finally{await f.cleanup();}
 });
 
-for (const mode of ["exhausted","custody","head-drift","ambiguous"] as const) test(`correction ${mode} fails closed without publishing`,async()=>{
-  const f=await correctionFixture({failAgain:mode==="exhausted",noCustody:mode==="custody",changedHead:mode==="head-drift",ambiguous:mode==="ambiguous"});try{
+for (const mode of ["exhausted","custody","head-drift","ambiguous","unclassified","malformed"] as const) test(`correction ${mode} fails closed without publishing`,async()=>{
+  const f=await correctionFixture({failAgain:mode==="exhausted",noCustody:mode==="custody",changedHead:mode==="head-drift",ambiguous:mode==="ambiguous",noRecommendation:mode==="unclassified",malformedReport:mode==="malformed"});try{
     await assert.rejects(f.controller.run(REQUEST));
     const state=(await f.states.findByTicket(REQUEST.ticketId))[0]!;
     assert.equal(state.status,"failed");assert.equal(f.published.length,0);
     if(mode==="exhausted") { assert.equal(state.correction?.prior.length,1);assert.equal(state.results.verify?.status,"failed");assert.equal(state.candidate,B); }
-    if(mode==="custody" || mode==="ambiguous") { assert.equal(state.correction?.prior.length,0);assert.equal(f.prepared,0); }
+    if(mode==="custody" || mode==="ambiguous" || mode==="unclassified" || mode==="malformed") { assert.equal(state.correction?.prior.length,0);assert.equal(f.prepared,0); }
     if(mode==="head-drift") { assert.equal(state.correction?.transition,"archived");assert.equal(f.calls.length,2); }
   }finally{await f.cleanup();}
 });

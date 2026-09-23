@@ -121,7 +121,7 @@ export function validateRunEvent(value: unknown): asserts value is RunEvent {
   if (typeof object["timestamp"] !== "string" || object["timestamp"].length > 64 || !validTimestamp(object["timestamp"])) throw new Error("run event timestamp is invalid");
   if (typeof object["type"] !== "string" || !RUN_EVENT_TYPES.includes(object["type"] as RunEventType)) throw new Error("run event type is invalid");
   if (object["phase"] !== undefined && (typeof object["phase"] !== "string" || !PERSONAL_PHASES.includes(object["phase"] as PersonalPhase))) throw new Error("run event phase is invalid");
-  if (object["attempt"] !== undefined && (!Number.isSafeInteger(object["attempt"]) || (object["attempt"] as number) < 1 || (object["attempt"] as number) > 1)) throw new Error("run event attempt is invalid");
+  if (object["attempt"] !== undefined && (!Number.isSafeInteger(object["attempt"]) || (object["attempt"] as number) < 1 || (object["attempt"] as number) > 2)) throw new Error("run event attempt is invalid");
   if (object["outcome"] !== undefined && (typeof object["outcome"] !== "string" || !RUN_EVENT_OUTCOMES.includes(object["outcome"] as RunEventOutcome))) throw new Error("run event outcome is invalid");
   const typed = object["type"] as RunEventType;
   if (typed.startsWith("launch_")) {
@@ -152,9 +152,15 @@ export function synthesizeCurrentRunEvents(state: PersonalRunState): readonly Ru
   const add = (type: RunEventType, extra: Partial<Pick<EventFields,"phase"|"attempt"|"outcome">> = {}) => events.push(createRunEvent({ runId: state.runId, ticketId: state.ticketId, stateRevision: state.version, timestamp: state.updatedAt, type, ...extra }));
   if(state.executionMode === "background") add("run_reserved");
   if(state.launchState === "started" || state.executionMode !== "background") add("run_started");
+  for (const cycle of state.correction?.prior ?? []) {
+    for (const result of [cycle.implement, cycle.verify]) {
+      add("phase_started",{phase:result.phase,attempt:result.attempt});
+      add("phase_completed",{phase:result.phase,attempt:result.attempt,outcome:result.status});
+    }
+  }
   for(const phase of PERSONAL_PHASES) {
-    if(state.attempts[phase]) add("phase_started",{phase,attempt:1});
-    const r=state.results[phase]; if(r) add("phase_completed",{phase,attempt:1,outcome:r.status});
+    if(state.attempts[phase]) add("phase_started",{phase,attempt:state.attempts[phase]});
+    const r=state.results[phase]; if(r) add("phase_completed",{phase,attempt:r.attempt,outcome:r.status});
   }
   if(state.publicationState !== "not_started") add("publication_started");
   if(state.publicationState === "published") add("publication_completed",{outcome:"completed"});

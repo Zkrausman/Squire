@@ -41,13 +41,15 @@ const DIGEST = /^[a-f0-9]{64}$/u;
 /** Only a sandbox-code retry is authorized. Text cannot prove safety; explicit
  * owner/host authority requests are conservatively ineligible. */
 export function eligibleCorrection(result: VerifyPhaseResult): boolean {
-  if (result.status !== "failed" || !result.details.findings.length || result.details.findings.length > 10) return false;
-  const feedback = [result.summary, ...result.details.findings].join("\n");
+  if (result.status !== "failed" || result.details.correction?.kind !== "code_only" || !result.details.findings.length || result.details.findings.length > 10) return false;
+  const feedback = [result.summary, result.details.correction.reason, ...result.details.findings].join("\n");
   if (feedback.length > 16_000) return false;
-  return !/\b(?:authority ambiguity|security ambiguity|requires? (?:owner|human) (?:approval|decision)|(?:change|expand|weaken) (?:the )?(?:ticket|contract|policy|scope)|(?:grant|expose|retrieve) (?:host )?(?:credentials?|secrets?|permissions?))\b/iu.test(feedback);
+  // A positive model label is never proof of safety. Reject explicit requests
+  // for another authority even if the model mislabeled them as code-only.
+  return !/\b(?:authority ambiguity|security ambiguity|requires? (?:owner|human|host) (?:approval|decision|authorization)|(?:ask|request|need|require|obtain|seek|await|wait for|get)\b[^.!?\n]{0,100}\b(?:owner|human|host)\b[^.!?\n]{0,100}\b(?:approv\w*|authoriz\w*|decision|consent|permission|signoff|contract|policy|scope)|(?:change|expand|weaken) (?:the )?(?:ticket|contract|policy|scope)|(?:grant|expose|retrieve) (?:host )?(?:credentials?|secrets?|permissions?))\b/iu.test(feedback);
 }
 export function feedbackDigest(result: VerifyPhaseResult): string {
-  return createHash("sha256").update(JSON.stringify({ candidate: result.inputHead, findings: result.details.findings, commands: result.details.commands })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ candidate: result.inputHead, findings: result.details.findings, commands: result.details.commands, correction: result.details.correction })).digest("hex");
 }
 export function validateCorrectionLedger(value: unknown, runId: string, baseSha: string | null): asserts value is CorrectionLedger {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid correction ledger");
@@ -58,7 +60,7 @@ export function validateCorrectionLedger(value: unknown, runId: string, baseSha:
   for (const c of v.prior) {
     if (!c || Object.keys(c).sort().join() !== "candidate,commands,feedbackDigest,implement,reports,sessions,verify" || !SHA.test(c.candidate) || !DIGEST.test(c.feedbackDigest)) throw new Error("invalid correction cycle");
     validatePhaseResultShape(c.implement,"implement"); validatePhaseResultShape(c.verify,"verify");
-    if (c.implement.runId !== runId || c.verify.runId !== runId || c.implement.status !== "passed" || c.verify.status !== "failed" || c.implement.inputHead !== parent || c.implement.outputHead !== c.candidate || c.verify.inputHead !== c.candidate || c.verify.outputHead !== c.candidate || c.implement.attempt !== c.verify.attempt || c.feedbackDigest !== feedbackDigest(c.verify) || c.verify.details.findings.length === 0) throw new Error("invalid correction cycle identity");
+    if (c.implement.runId !== runId || c.verify.runId !== runId || c.implement.status !== "passed" || c.verify.status !== "failed" || c.implement.inputHead !== parent || c.implement.outputHead !== c.candidate || c.verify.inputHead !== c.candidate || c.verify.outputHead !== c.candidate || c.implement.attempt !== c.verify.attempt || c.feedbackDigest !== feedbackDigest(c.verify) || !eligibleCorrection(c.verify)) throw new Error("invalid correction cycle identity");
     validateHostCommands(c.commands, c.verify);
     if (!c.reports || Object.keys(c.reports).sort().join() !== "implement,verify" || !c.sessions || Object.keys(c.sessions).sort().join() !== "implement,verify") throw new Error("incomplete correction custody");
     for (const phase of ["implement", "verify"] as const) {

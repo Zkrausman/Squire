@@ -73,7 +73,10 @@ export interface HostCommandEvidence {
 
 export interface VerifyPhaseResult extends PhaseResultBase {
   readonly phase: "verify";
-  readonly details: { readonly findings: readonly string[]; readonly commands: readonly TestCommandEvidence[] };
+  readonly details: { readonly findings: readonly string[]; readonly commands: readonly TestCommandEvidence[];
+    /** Model recommendation is untrusted; controller alone decides whether to dispatch. */
+    readonly correction?: { readonly kind: "code_only" | "requires_owner" | "security_ambiguity" | "unknown"; readonly reason: string };
+  };
 }
 export type PhaseResult = ImplementPhaseResult | VerifyPhaseResult;
 
