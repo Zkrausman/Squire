@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { eligibleCorrection } from "../src/personal/correction.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
@@ -19,17 +19,25 @@ import type { ReportCapture } from "../src/personal/report-capture.js";
 import type { ReportEvidence } from "../src/personal/report-evidence.js";
 
 const A = "b".repeat(40), B = "c".repeat(40);
-function evidence(bytes: Buffer, n: number): ReportEvidence { return { path: `/private/evidence/${n}.json`, identity: "1:2:3", byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }; }
+function evidence(bytes: Buffer, n: number, root: string): ReportEvidence { return { path: path.join(root,"evidence",`${n}.json`), identity: "1:2:3", byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }; }
+async function assertArchivedBytes(session: { chunks: readonly ReportEvidence[]; sha256: string; byteLength: number }) {
+  const total=createHash("sha256");let size=0;
+  for(const ref of session.chunks){
+    const bytes=await readFile(ref.path);
+    assert.equal(bytes.length,ref.byteLength);assert.equal(createHash("sha256").update(bytes).digest("hex"),ref.sha256);
+    total.update(bytes);size+=bytes.length;
+  }
+  assert.ok(session.chunks.length);assert.equal(size,session.byteLength);assert.equal(total.digest("hex"),session.sha256);
+}
 
 async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean; overCost?: boolean; unknownCost?: boolean; crashAtBoundary?: boolean; killAtBoundary?: boolean; abortAtBoundary?: boolean; root?: string } = {}) {
   const root = options.root ?? await launchTestRoot("squire-correction-");
   const states = new JsonRunStateStore(root);
   const aborter = new AbortController();
   const calls: PhaseInput[] = [], published: PublicationInput[] = [], captures = new WeakMap<PhaseResult, ReportCapture>(), commandRefs = new WeakMap<PhaseResult, readonly HostCommandEvidence[]>();
-  const bytes = new Map<string, Buffer>();
   let head = BASE, archived = 0, prepared = 0, serial = 0;
   let archivedSnapshot: Awaited<ReturnType<JsonRunStateStore["read"]>>;
-  const store = { async write(value: string | Buffer) { const buffer=Buffer.from(value);const ref=evidence(buffer,++serial);bytes.set(ref.path,buffer);return ref; }, async read(ref: ReportEvidence) { return bytes.get(ref.path)!; } };
+  const store = { async write(value: string | Buffer) { const buffer=Buffer.from(value);const ref=evidence(buffer,++serial,root);await mkdir(path.dirname(ref.path),{recursive:true});await writeFile(ref.path,buffer,{flag:"wx"});return ref; }, async read(ref: ReportEvidence) { return readFile(ref.path); } };
   const controller = new PersonalMvpController({ states, launchMaterial: TEST_MATERIAL, newId: () => "0123456789", testCommands: ["npm test"], launchRetryPolicy: { maxRetries: 0 },
     tickets: { async get() { return { id: REQUEST.ticketId, title: "owner contract", description: "correct a bounded defect" }; } },
     workspaces: {
@@ -150,7 +158,8 @@ test("OS kill at archived boundary retains custody and blocks restarted dispatch
   const state=(await f.states.findByTicket(REQUEST.ticketId))[0]!;
   assert.equal(state.status,"running");assert.equal(state.correction?.transition,"archived");
   assert.equal(state.correction.prior[0]?.candidate,A);assert.equal(state.correction.prior[0]?.verify.status,"failed");
-  assert.ok(state.correction.prior[0]?.sessions.implement.chunks.length);assert.ok(state.correction.prior[0]?.sessions.verify.chunks.length);
+  await assertArchivedBytes(state.correction.prior[0]!.sessions.implement);
+  await assertArchivedBytes(state.correction.prior[0]!.sessions.verify);
   assert.equal(state.attempts.implement,1);assert.equal(state.attempts.verify,1);assert.equal(state.prUrl,null);
   assert.equal(await f.states.reservationOwner(REQUEST.ticketId),state.runId);
   await assert.rejects(f.controller.runReserved(REQUEST,state.runId,TEST_CONFIG_DIGEST,undefined,path.join(f.root,"canary-config.json")),/exact reserved launch state/);
