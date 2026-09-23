@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -6,8 +7,10 @@ import { test } from "node:test";
 import { captureOwnerPiIdentity, requireOwnerModels, validateOwnerPiIdentity, verifyRunningParentPi, assertSandboxPiIdentity, executableCodeDigest, phaseModelsDigest, modelConfigDigest, type OwnerPiIdentity } from "../src/personal/runtime-parity.js";
 import { APPROVED_PERSONAL_MODEL_POLICY } from "../src/personal/model-policy.js";
 
+const snapshot = Buffer.from('{"providers":{}}');
+const snapshotHash = createHash("sha256").update(snapshot).digest("hex");
 const identity: OwnerPiIdentity = {
-  schema: 1, pid: process.pid, cliPath: process.execPath, version: "0.87.0", manifestSha256: "a".repeat(64), cliSha256: "b".repeat(64), codeTreeSha256: "d".repeat(64), modelConfigPath: path.resolve("models.json"), modelConfigSha256: null, phaseModelsSha256: "e".repeat(64), modelStorePath: path.resolve("models-store.json"), modelStoreSha256: "c".repeat(64),
+  schema: 1, pid: process.pid, cliPath: process.execPath, version: "0.87.0", manifestSha256: "a".repeat(64), cliSha256: "b".repeat(64), codeTreeSha256: "d".repeat(64), modelConfigPath: path.resolve("models.json"), modelConfigSha256: null, phaseModelsSha256: "e".repeat(64), modelStorePath: path.resolve("models-store.json"), modelStoreSha256: snapshotHash, modelStoreSnapshotBase64: snapshot.toString("base64"),
   models: ["openai-codex/gpt-6-luna", "openai-codex/gpt-6-sol"], extensions: [],
 };
 
@@ -15,6 +18,8 @@ test("owner Pi catalog must include both configured phase models", () => {
   requireOwnerModels(identity, APPROVED_PERSONAL_MODEL_POLICY);
   assert.throws(() => requireOwnerModels({ ...identity, models: ["openai-codex/gpt-6-luna", "openai-codex/other"] }, APPROVED_PERSONAL_MODEL_POLICY), /lacks.*gpt-6-sol/);
   assert.throws(() => validateOwnerPiIdentity({ ...identity, extensions: [{ name: "host-extension" }] }), /invalid owner Pi identity/);
+  assert.throws(() => validateOwnerPiIdentity({ ...identity, modelStoreSnapshotBase64: Buffer.from("changed").toString("base64") }), /snapshot mismatch/);
+  assert.throws(() => validateOwnerPiIdentity({ ...identity, modelStoreSnapshotBase64: identity.modelStoreSnapshotBase64.slice(0, -2) }), /invalid owner Pi model-store snapshot|snapshot mismatch/);
 });
 
 test("running Pi acquisition rejects an unbound CLI instead of trusting an environment alias", async () => {

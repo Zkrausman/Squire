@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fsPromises from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { link, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { readdirSync, renameSync, writeFileSync, truncateSync, symlinkSync, linkSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { persistLaunchMaterial, readLaunchMaterial, materialPath } from "../src/personal/launch-material.js";
-import { windowsLaunch } from "../src/personal/windows-launch.js";
+import { persistWindowsPhaseInput, windowsLaunch } from "../src/personal/windows-launch.js";
 import { PersonalMvpController } from "../src/personal/controller.js";
 import { JsonRunStateStore } from "../src/personal/json-run-state.js";
 import { NodeBackgroundLauncher } from "../src/personal/background-launcher.js";
@@ -49,6 +49,23 @@ test("Windows builtin material has exact protected native DACLs and is immutable
     await assert.rejects(persistLaunchMaterial(TEST_MATERIAL, f.state, f.root), /publish immutable bytes/);
     assert.deepEqual(await readFile(f.file), original);
   } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("Windows captured model-store staging has native private directory and file ACLs", windows, async () => {
+  const root = await launchTestRoot("squire-model-store-snapshot-");
+  const runStaging = path.join(root, "staging", "aidev-322-snapshot");
+  const snapshot = path.join(runStaging, "private-model-store", "models-store.json");
+  try {
+    await mkdir(runStaging, { recursive: true, mode: 0o700 });
+    const bytes = '{"providers":{}}';
+    persistWindowsPhaseInput(snapshot, bytes);
+    assertProtectedAcl(path.dirname(snapshot));
+    assertProtectedAcl(snapshot);
+    assert.equal(windowsLaunch().read(snapshot, ""), bytes);
+    assert.throws(() => persistWindowsPhaseInput(snapshot, bytes), /publish immutable bytes/);
+    grant(snapshot, sandboxSid, "Read");
+    assert.throws(() => windowsLaunch().read(snapshot, ""), /protected-object principal/u);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("Windows unexpected read/write/delete/DACL/owner ACEs fail before detached claim", windows, async () => {
