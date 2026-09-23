@@ -6,6 +6,7 @@ import type { CommandPort } from "./command.js";
 import { validateProjectWikiPaths } from "./phase-result.js";
 import type { CandidateBundle, PreparedWorkspace, ProjectWikiDiffInput, WorkspacePort } from "./types.js";
 import { executableCodeDigest, phaseModelsDigest, validateOwnerPiIdentity, type OwnerPiIdentity } from "./runtime-parity.js";
+import { persistWindowsPhaseInput } from "./windows-launch.js";
 import type { PersonalModelPolicy } from "./model-policy.js";
 
 export interface DockerSandboxWorkspaceOptions {
@@ -161,11 +162,21 @@ export class DockerSandboxWorkspace implements WorkspacePort {
       // Pi can refresh its live model store after the bridge captures identity.
       // Transfer the exact protected launch snapshot, never reread the live path.
       validateOwnerPiIdentity(this.#ownerPi);
-      const snapshot = path.join(runStaging, "owner-models-store.snapshot");
-      const handle = await open(snapshot, "wx", 0o600);
-      try {
-        try { await handle.writeFile(Buffer.from(this.#ownerPi.modelStoreSnapshotBase64, "base64")); await handle.sync(); }
+      const snapshot = path.join(runStaging, "private-model-store", "models-store.json");
+      const bytes = Buffer.from(this.#ownerPi.modelStoreSnapshotBase64, "base64");
+      if (process.platform === "win32") {
+        // Node mode bits do not protect secrets on Windows. The native boundary
+        // creates and checks the dedicated directory and file's protected DACL.
+        const text = bytes.toString("utf8");
+        if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("owner Pi model store is not UTF-8");
+        persistWindowsPhaseInput(snapshot, text);
+      } else {
+        await mkdir(path.dirname(snapshot), { mode: 0o700 });
+        const handle = await open(snapshot, "wx", 0o600);
+        try { await handle.writeFile(bytes); await handle.sync(); }
         finally { await handle.close(); }
+      }
+      try {
         await this.#commands.run({ command: this.#sbx, args: ["cp", snapshot, `${input.sandbox}:${this.#piAgentDirectory}/models-store.json`] }, signal);
       } finally { await rm(snapshot, { force: true }); }
       const agent = sh(this.#piAgentDirectory), auth = sh(`${this.#piAgentDirectory}/auth.json`), store = sh(`${this.#piAgentDirectory}/models-store.json`);

@@ -8,6 +8,7 @@ import type { CommandPort, CommandRequest, CommandResult } from "../src/personal
 import { DockerSandboxWorkspace } from "../src/personal/docker-sandbox.js";
 import { APPROVED_PERSONAL_MODEL_POLICY } from "../src/personal/model-policy.js";
 import type { OwnerPiIdentity } from "../src/personal/runtime-parity.js";
+import { launchTestRoot } from "./helpers/windows-launch.js";
 
 const snapshot = Buffer.from('{"providers":{}}');
 const snapshotHash = createHash("sha256").update(snapshot).digest("hex");
@@ -41,7 +42,7 @@ test("sandbox parity checks package hashes and the actual extension-free Pi cata
 });
 
 test("sandbox receives the captured model-store bytes, not a later live rewrite", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "squire-model-store-race-"));
+  const root = process.platform === "win32" ? await launchTestRoot("squire-model-store-race-") : await mkdtemp(path.join(os.tmpdir(), "squire-model-store-race-"));
   const live = path.join(root, "models-store.json");
   const auth = path.join(root, "auth.json");
   await writeFile(live, "later Pi refresh changed the live store");
