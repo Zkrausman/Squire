@@ -98,22 +98,32 @@ before launch; do not claim Linux sandbox tests establish host availability.
 
 ## Authorized normal run and observation
 
-The following public command forms are checked against the shipped CLI. Replace
-uppercase placeholders with verified values; `TICKET-ID` means a real Linear
-identifier, and `RUN-ID` is the exact ID returned at launch. Use the trusted
-executable; do not issue both foreground and background runs for one ticket.
+Launch **from the running trusted owner-facing Pi session**, after its verified
+Squire launch extension is installed and loaded, with:
+
+```text
+/squire-run TICKET-ID --config ABSOLUTE_PATH
+```
+
+`TICKET-ID` is the existing approved Linear identifier. The command captures the
+actual session's Pi package, CLI and model-store identity and starts one
+background run through a private parent-owned channel. It rejects missing model
+IDs or a runtime it cannot authenticate. Direct `squire run` is **not** a
+supported operator launch: it fails without the bridge; never invent an identity
+from an environment variable, caller-authored JSON or a CLI flag. Reopening a
+fresh Pi session after an upgrade binds only *later* runs to the new runtime.
+
+Use the trusted Squire executable for observation only. `RUN-ID` is the exact
+returned launch ID; `CONFIG` is the same verified absolute config path:
 
 ```sh
-squire run TICKET-ID --config CONFIG
-squire run TICKET-ID --background --config CONFIG
 squire watch RUN-ID --config CONFIG
 squire status RUN-ID --config CONFIG
 squire status TICKET-ID --config CONFIG
 ```
 
-Only `run`, `status`, `watch`, `--config`, and run-only `--background` are public
-here. No resume/recovery command or invented flags. A background launch returning
-an ID is reservation/spawn evidence, not success. Keep configuration/environment
+No resume/recovery command or invented flags. A background launch returning an
+ID is reservation/spawn evidence, not success. Keep configuration/environment
 path selection consistent when observing; retain the launch-time effective paths
 if current configuration later changes.
 

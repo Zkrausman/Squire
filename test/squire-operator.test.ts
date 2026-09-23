@@ -34,6 +34,14 @@ test("operator skill frontmatter and all packaged references are portable", asyn
   assert.equal(links, 2);
 });
 
+test("installed operator guide requires the active Pi bridge and same-version sandbox", async () => {
+  const guide = await read("skills/squire-operator/references/install-and-handoff.md");
+  assert.match(guide, /install the reviewed launch\s+extension from the same verified merged build/u);
+  assert.match(guide, /install-skills` does \*\*not\*\* install the\s+extension/u);
+  assert.match(guide, /Each new ticket sandbox must instead match the\s+authenticated owner-facing Pi package and model-store identity/u);
+  assert.doesNotMatch(guide, /sandbox and host versions can differ/u);
+});
+
 test("operator skill keeps async observation optional and non-authoritative", async () => {
   const text = `${await read("skills/squire-operator/SKILL.md")}\n${await operations()}`;
   assert.match(text, /async `squire-observer` child is optional/u);
@@ -43,10 +51,13 @@ test("operator skill keeps async observation optional and non-authoritative", as
   assert.match(text, /no workflow.*retry.*publication.*merge authority/su);
 });
 
-test("every public Squire example parses with the shipped CLI; invented interfaces fail", async () => {
+test("only observation examples parse as CLI commands; launching requires the Pi bridge", async () => {
   const text = await operations();
   const examples = text.split("\n").filter(line => line.startsWith("squire "));
-  assert.equal(examples.length, 5);
+  assert.equal(examples.length, 3);
+  assert.match(text, /^\/squire-run TICKET-ID --config ABSOLUTE_PATH$/mu);
+  assert.doesNotMatch(text, /^squire run /mu);
+  assert.match(text, /Direct `squire run` is \*\*not\*\* a\s+supported operator launch/u);
   for (const example of examples) {
     const argv = example.trim().split(" ").slice(1).map(value => ({
       "TICKET-ID": "DEMO-123", "RUN-ID": "demo-123-1234567890", CONFIG: "operator-config.json",
@@ -56,6 +67,9 @@ test("every public Squire example parses with the shipped CLI; invented interfac
     assert.equal(parsed.command, argv[0]);
     assert.equal(parsed.config, path.resolve("operator-config.json"));
   }
+  const bridge = await read("src/personal/pi-launch-bridge.ts");
+  assert.match(bridge, /registerCommand\("squire-run"/u);
+  assert.match(bridge, /captureOwnerPiIdentity\(process\.argv\[1\], ctx\.modelRegistry\)/u);
   for (const command of ["resume", "recover", "recovery", "health", "version"]) {
     assert.equal(parseArguments([command, "DEMO-123"]), undefined);
   }
