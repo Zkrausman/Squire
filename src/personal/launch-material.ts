@@ -16,11 +16,13 @@ function decode(value: string): string { return new TextDecoder("utf-8", { fatal
 function deepFreeze<T>(v: T): T { if (v && typeof v === "object") { Object.freeze(v); for (const x of Object.values(v)) deepFreeze(x); } return v; }
 import { PERSONAL_PHASES, type PersonalPhase, type PersonalRunState } from "./types.js";
 import { windowsLaunch } from "./windows-launch.js";
+import { validateOwnerPiIdentity, requireOwnerModels, type OwnerPiIdentity } from "./runtime-parity.js";
 
 export interface LaunchMaterial {
   readonly version: 2;
   readonly rawConfig: string;
   readonly config: PersonalMvpConfig;
+  readonly ownerPi?: OwnerPiIdentity;
   readonly coreDigest: string;
   readonly digest: string;
 }
@@ -32,22 +34,24 @@ export function canonical(value: unknown): string {
 }
 function hash(value: unknown): string { return createHash("sha256").update("squire-launch-material-v2\0").update(canonical(value)).digest("hex"); }
 export function coreDigest(): string { return hash(PERSONAL_PHASES.map(buildCorePrompt)); }
-export async function captureLaunchMaterial(loaded: LoadedPersonalMvpConfig): Promise<LaunchMaterial> {
+export async function captureLaunchMaterial(loaded: LoadedPersonalMvpConfig, ownerPi?: OwnerPiIdentity): Promise<LaunchMaterial> {
   const { rawConfig, digest } = loaded;
   base64(rawConfig);
   if (createHash("sha256").update(Buffer.from(rawConfig, "base64")).digest("hex") !== digest) throw new Error("captured configuration digest mismatch");
   const clone = structuredClone(loaded.config);
   const config = deepFreeze(clone);
-  const body = { version: 2 as const, rawConfig, config, coreDigest: coreDigest() };
+  if (ownerPi !== undefined) { validateOwnerPiIdentity(ownerPi); requireOwnerModels(ownerPi, config.modelPolicy); }
+  const body = { version: 2 as const, rawConfig, config, ...(ownerPi === undefined ? {} : { ownerPi: structuredClone(ownerPi) }), coreDigest: coreDigest() };
   return validateLaunchMaterial({ ...body, digest: hash(body) });
 }
 export function validateLaunchMaterial(value: unknown): LaunchMaterial {
-  const v = record(value, ["version", "rawConfig", "config", "coreDigest", "digest"], "launch material");
+  const v = record(value, ["version", "rawConfig", "config", "ownerPi", "coreDigest", "digest"], "launch material");
   if (v["version"] !== 2 || v["coreDigest"] !== coreDigest()) throw new Error("launch material core/version mismatch");
   base64(v["rawConfig"]);
   const raw = JSON.parse(decode(v["rawConfig"] as string));
   validateCapturedRawConfig(raw);
   const config = validateCapturedConfig(v["config"]);
+  if (v["ownerPi"] !== undefined) { validateOwnerPiIdentity(v["ownerPi"]); requireOwnerModels(v["ownerPi"], config.modelPolicy); }
   if (canonical(validateModelPolicy(raw.modelPolicy ?? APPROVED_PERSONAL_MODEL_POLICY)) !== canonical(config.modelPolicy) || canonical(raw.testCommands) !== canonical(config.testCommands)) throw new Error("captured model/test configuration mismatch");
   if (canonical(validateLaunchRetryPolicy(raw.launchRetryPolicy)) !== canonical(validateLaunchRetryPolicy(config.launchRetryPolicy))) throw new Error("captured retry policy mismatch");
   const { digest, ...body } = v;

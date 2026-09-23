@@ -11,6 +11,10 @@ test("provider retry retains its typed no-effects allowlist, rejects ordinary mo
  events[5].message={...m,stopReason:"pending"};
  const input={profile:fixtureProfile,launchGeneration:generationIdentity("implement",1,0,fixtureSession)};
  assert.ok(providerLaunchFailure(jsonLines(events),input));
+ assert.equal(providerLaunchFailure(jsonLines(events.slice(0,-1)),input),undefined);
+ assert.equal(providerLaunchFailure(jsonLines([...events,{type:"agent_settled"}]),input),undefined);
+ const missingMarker=structuredClone(events);delete missingMarker[8].willRetry;
+ assert.equal(providerLaunchFailure(jsonLines(missingMarker),input),undefined);
  m.content=[{type:"text",text:"accepted result"}];assert.equal(providerLaunchFailure(jsonLines(events),input),undefined);
  m.content=[];m.usage.input=1;assert.equal(providerLaunchFailure(jsonLines(events),input),undefined);
 });

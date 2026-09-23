@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { decimalUnits, decimalText, parseUsageStream, terminalReport, MAX_STREAM_BYTES } from "../src/personal/telemetry-stream.js";
 import { piEvents, piJson, jsonLines, fixtureProfile as profile, fixtureSession as id } from "./helpers/pi-json.js";
@@ -13,10 +15,22 @@ test("pinned Pi assistant message_end accounting, cache classes and exact decima
   assert.equal(terminalReport(piJson("report")), "report");
   assert.equal(decimalText(decimalUnits("0.1") + decimalUnits("0.2")), "0.3");
 });
+test("Pi 0.87 JSON serializer synthetic no-provider protocol fixture parses, but unsupported events remain unknown", async () => {
+  const bytes = await readFile(path.resolve("test/fixtures/pi-087-synthetic-jsonl.txt"));
+  const profile087 = { ...profile, model: "gpt-6-sol" };
+  const parsed = parseUsageStream(bytes, id, profile087, true);
+  assert.deepEqual(parsed.tokens, { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 });
+  assert.equal(parsed.recordedCost, "0.1");
+  assert.deepEqual(parsed.diagnostics, []);
+  const events = bytes.toString("utf8").trim().split("\n").map(line => JSON.parse(line));
+  events.splice(-1, 0, { type: "compaction_end", result: { usage: { input: 7 } } });
+  const unknown = parseUsageStream(jsonLines(events), id, profile087, true);
+  assert.equal(unknown.recordedCost, null);
+  assert.equal(unknown.tokens.input, null);
+});
+
 test("current Pi agent_end plus agent_settled retains authoritative usage", () => {
   const events = piEvents("report");
-  Object.assign(events.at(-1), { willRetry: false });
-  events.push({ type: "agent_settled" });
   const parsed = parse(events);
   assert.deepEqual(parsed.tokens, { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 });
   assert.equal(parsed.messages, 1);
@@ -29,7 +43,8 @@ test("current Pi automatic provider retry accounts both cycles without treating 
   const second = structuredClone(first);
   first.stopReason = "error";
   first.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-  events.at(-1).willRetry = true;
+  events[8].willRetry = true;
+  events.pop(); // A retry has no final settlement until its last cycle.
   second.stopReason = "stop";
   second.responseId = "response-after-retry";
   second.timestamp += 1;
@@ -50,6 +65,38 @@ test("current Pi automatic provider retry accounts both cycles without treating 
   assert.equal(parsed.recordedCost, "0.1");
   assert.equal(parsed.messages, 2);
   assert.deepEqual(parsed.diagnostics, []);
+});
+
+test("empty-content successful assistant cannot claim authoritative all-zero usage", () => {
+  const events = piEvents("");
+  events[6].message.content = [];
+  events[6].message.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  events[7].message = events[6].message;
+  events[8].messages[1] = events[6].message;
+  const parsed = parse(events);
+  assert.equal(parsed.tokens.input, null);
+  assert.equal(parsed.recordedCost, null);
+  assert.deepEqual(parsed.diagnostics, ["invalid_usage"]);
+});
+
+test("missing required terminal markers remain incomplete rather than authoritative", () => {
+  const noSettlement = piEvents("report"); noSettlement.pop();
+  const noRetryField = piEvents("report"); delete noRetryField[8].willRetry;
+  for (const events of [noSettlement, noRetryField]) {
+    const parsed = parse(events);
+    assert.equal(parsed.tokens.input, null);
+    assert.equal(parsed.recordedCost, null);
+    assert.deepEqual(parsed.diagnostics, ["partial_stream"]);
+  }
+});
+
+test("unsupported compaction usage cannot be reported complete or authoritative zero", () => {
+  const events = piEvents("report");
+  events.splice(8, 0, { type: "compaction_end", result: { usage: { input: 7, output: 2, cost: { total: 0.1 } } } });
+  const parsed = parse(events);
+  assert.equal(parsed.tokens.input, null);
+  assert.equal(parsed.recordedCost, null);
+  assert.ok(parsed.diagnostics.length);
 });
 
 test("absent/invalid cost and missing token dimensions are unknown, never zero/guessed", () => {
@@ -89,13 +136,13 @@ for (const [label, mutate] of Object.entries<Record<string, (e: any[]) => void>[
 test("duplicate message identity across valid turns cannot double charge", () => {
   const e = piEvents("report"); const message = e[6].message;
   e.splice(8, 0, { type: "turn_start" }, { type: "message_start", message }, { type: "message_end", message }, { type: "turn_end", message, toolResults: [] });
-  e.at(-1).messages.push(message);
+  e.find(event => event.type === "agent_end").messages.push(message);
   assert.deepEqual(parse(e).diagnostics, ["duplicate_message"]);
 });
 test("tool-loop repeats in turn_end/agent_end and streaming updates are not extra usage records", () => {
   const e = piEvents("report"); const first = { ...structuredClone(e[6].message), stopReason: "toolUse", responseId: "response-tool" };
   e.splice(5, 0, { type: "message_start", message: { ...first, usage: {} } }, { type: "message_update", usage: { input: 999999 }, assistantMessageEvent: { type: "text_delta", delta: "SECRET" } }, { type: "message_end", message: first }, { type: "turn_end", message: first, toolResults: [] }, { type: "turn_start" });
-  e.at(-1).messages.splice(1, 0, first);
+  e.find(event => event.type === "agent_end").messages.splice(1, 0, first);
   const parsed = parse(e); assert.equal(parsed.tokens.input, 20); assert.equal(parsed.messages, 2); assert.equal(parsed.recordedCost, "0.2");
 });
 test("malformed, unsupported, oversized, partial bytes and transcript-shaped input are never accounting", () => {

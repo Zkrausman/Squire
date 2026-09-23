@@ -208,6 +208,7 @@ export interface WorkspacePort {
   /** Resolve a mutable source ref before detached handoff when supported. */
   resolveSource?(input: { readonly repositoryPath: string; readonly sourceRef: string }, signal?: AbortSignal): Promise<string>;
   prepare(input: { readonly runId: string; readonly ticketId: string; readonly sandbox: string; readonly branch: string; readonly repositoryPath: string; readonly sourceRef: string; readonly expectedBaseSha?: string }, signal?: AbortSignal): Promise<PreparedWorkspace>;
+  assertRuntimeParity?(sandbox: string, signal?: AbortSignal): Promise<void>;
   assertDescendant?(sandbox: string, base: string, head: string, signal?: AbortSignal): Promise<void>;
   currentHead(sandbox: string, signal?: AbortSignal): Promise<string>;
   assertClean(sandbox: string, signal?: AbortSignal): Promise<void>;

@@ -91,7 +91,9 @@ export class SandboxPiPhaseRunner implements PhasePort {
       await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
       const home = `/ticket/runtime/home/${input.phase}`;
       const temporary = `/ticket/runtime/tmp/${input.phase}`;
-      const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)}; ${sessionSeed(sessionId, sessionFile)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)} ${sh(this.#agentDirectory)}; chown root:root ${sh(inputPath)}; chmod 444 ${sh(inputPath)}`;
+      const agentSetup = this.#material?.ownerPi ? `test -d ${sh(this.#agentDirectory)}` : `mkdir -p ${sh(this.#agentDirectory)}`;
+      const legacyAgentOwnership = this.#material?.ownerPi ? "" : ` ${sh(this.#agentDirectory)}`;
+      const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)}; ${agentSetup}; ${sessionSeed(sessionId, sessionFile)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)}${legacyAgentOwnership}; chown root:root ${sh(inputPath)}; chmod 444 ${sh(inputPath)}`;
       await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", prepare] }, signal);
 
       if (input.phase === "verify") {

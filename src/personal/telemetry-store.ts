@@ -36,7 +36,7 @@ export interface TelemetryTotals {
   durationMs: { known: number; complete: boolean };
 }
 export interface RunTelemetry {
-  schemaVersion: 2; authority: "pi-0.84.4-controller-json-v2";
+  schemaVersion: 2; authority: "pi-0.84.4-controller-json-v2" | "pi-controller-json-v2";
   runId: string; outcome: "completed" | "failed" | "interrupted";
   startedAt: string | null; endedAt: string | null; wallDurationMs: number | null;
   stateVersion: number; inventoryComplete: boolean; sessions: TelemetrySession[];
@@ -233,7 +233,7 @@ export class TelemetryStore {
       const receipt = sessions.find(s => s.phase === phase && s.attempt === attempt)?.phaseOutcome;
       return [phase, attempt === 0 ? "not_run" : result?.attempt === attempt ? result.status : receipt ?? "unknown"];
     })) as RunTelemetry["phaseOutcomes"];
-    const artifact = buildTelemetry({ terminalReason: state.terminalReason, candidate: state.candidate, verifyDisposition: state.verifyDisposition, publicationState: state.publicationState, ciDisposition: state.ciDisposition, mergeDisposition: state.mergeDisposition, phaseOutcomes, schemaVersion: 2, authority: "pi-0.84.4-controller-json-v2", runId: state.runId, outcome: state.status as RunTelemetry["outcome"], startedAt: state.startedAt ?? null, endedAt: state.endedAt ?? null, wallDurationMs: duration(state.startedAt ?? null, state.endedAt ?? null), stateVersion: state.version, inventoryComplete, sessions });
+    const artifact = buildTelemetry({ terminalReason: state.terminalReason, candidate: state.candidate, verifyDisposition: state.verifyDisposition, publicationState: state.publicationState, ciDisposition: state.ciDisposition, mergeDisposition: state.mergeDisposition, phaseOutcomes, schemaVersion: 2, authority: "pi-controller-json-v2", runId: state.runId, outcome: state.status as RunTelemetry["outcome"], startedAt: state.startedAt ?? null, endedAt: state.endedAt ?? null, wallDurationMs: duration(state.startedAt ?? null, state.endedAt ?? null), stateVersion: state.version, inventoryComplete, sessions });
     validateRunTelemetry(artifact, state.runId);
     await publish(path.join(directory, "summary.json"), artifact); return artifact;
   }
@@ -278,7 +278,7 @@ export function buildTelemetry(base: Base): RunTelemetry {
 export function validateRunTelemetry(value: unknown, runId: string): asserts value is RunTelemetry {
   const v = value as RunTelemetry;
   exact(v, ["schemaVersion", "authority", "runId", "outcome", "startedAt", "endedAt", "wallDurationMs", "stateVersion", "inventoryComplete", "sessions", "phases", "phaseOutcomes", "totals", "complete", "terminalReason", "candidate", "verifyDisposition", "publicationState", "ciDisposition", "mergeDisposition"]);
-  validateTelemetryRunId(runId); assert(v.runId === runId && v.schemaVersion === 2 && v.authority === "pi-0.84.4-controller-json-v2" && ["completed", "failed", "interrupted"].includes(v.outcome));
+  validateTelemetryRunId(runId); assert(v.runId === runId && v.schemaVersion === 2 && ["pi-0.84.4-controller-json-v2", "pi-controller-json-v2"].includes(v.authority) && ["completed", "failed", "interrupted"].includes(v.outcome));
   assert((v.startedAt === null || timestamp(v.startedAt)) && (v.endedAt === null || timestamp(v.endedAt)) && v.wallDurationMs === duration(v.startedAt, v.endedAt));
   assert(Number.isSafeInteger(v.stateVersion) && v.stateVersion > 0 && typeof v.inventoryComplete === "boolean" && Array.isArray(v.sessions) && v.sessions.length <= 1000);
   exact(v.phaseOutcomes, [...PERSONAL_PHASES]);

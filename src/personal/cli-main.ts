@@ -4,6 +4,7 @@ import { isSupportedNodeVersion, unsupportedRuntimeMessage } from "./runtime-ver
 import { TelemetryStore, formatTelemetry } from "./telemetry-store.js";
 import path from "node:path";
 import { captureLaunchMaterial, readLaunchMaterial, type LaunchMaterial } from "./launch-material.js";
+import { receiveOwnerPiIdentity, requireOwnerModels } from "./runtime-parity.js";
 import { fileURLToPath } from "node:url";
 import { PersonalMvpController, type StartBackgroundOptions } from "./controller.js";
 import { NodeCommandRunner } from "./command.js";
@@ -83,7 +84,13 @@ async function runCommand(parsed: ParsedRunArguments, cliPath = fileURLToPath(ne
     });
     if (!loaded) return 1;
     const { digest: configDigest } = loaded;
-    const material = await captureLaunchMaterial(loaded).catch(error => { writeError(error); return undefined; });
+    // Only the extension in the running owner-facing Pi process can launch a
+    // new GPT-6 run. A CLI flag or environment catalog is not identity proof.
+    const identity = await receiveOwnerPiIdentity().catch(error => { writeError(error); return undefined; });
+    if (!identity) return 1;
+    try { requireOwnerModels(identity, loaded.config.modelPolicy); }
+    catch (error) { writeError(error); return 1; }
+    const material = await captureLaunchMaterial(loaded, identity).catch(error => { writeError(error); return undefined; });
     if (!material) return 1;
     const config = material.config;
     const controller = createController(config, material);
@@ -296,6 +303,7 @@ function createController(config: PersonalMvpConfig, material: LaunchMaterial, s
       piAgentDirectory: config.sandbox.piAgentDirectory,
       ...(config.sandbox.piAuthFile ? { piAuthFile: config.sandbox.piAuthFile } : {}),
       ...(config.sandbox.template ? { template: config.sandbox.template } : {}),
+      ...(material.ownerPi ? { ownerPi: material.ownerPi, modelPolicy: config.modelPolicy } : {}),
     }),
     phases: new SandboxPiPhaseRunner({
       launchMaterial: material,
@@ -303,7 +311,7 @@ function createController(config: PersonalMvpConfig, material: LaunchMaterial, s
       stagingRoot: config.paths.staging,
       testCommands: config.testCommands,
       roleUser: config.sandbox.roleUser,
-      piExecutable: config.sandbox.piExecutable,
+      piExecutable: material.ownerPi ? "/ticket/runtime/node_modules/.bin/pi" : config.sandbox.piExecutable,
       piAgentDirectory: config.sandbox.piAgentDirectory,
       ...(config.phaseTimeoutMs === undefined ? {} : { timeoutMs: config.phaseTimeoutMs }),
     }),

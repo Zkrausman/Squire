@@ -12,8 +12,8 @@ export interface PhaseProfile {
 export interface PersonalModelPolicy { readonly implement: PhaseProfile; readonly verify: PhaseProfile; }
 export type ResolvedPhaseProfiles = PersonalModelPolicy;
 export const APPROVED_PERSONAL_MODEL_POLICY: PersonalModelPolicy = Object.freeze({
-  implement: Object.freeze({ provider: "openai-codex", model: "gpt-5.6-luna", thinking: "max" }),
-  verify: Object.freeze({ provider: "openai-codex", model: "gpt-5.6-sol", thinking: "medium" }),
+  implement: Object.freeze({ provider: "openai-codex", model: "gpt-6-luna", thinking: "max" }),
+  verify: Object.freeze({ provider: "openai-codex", model: "gpt-6-sol", thinking: "medium" }),
 });
 export function validateModelPolicy(value: unknown, label = "modelPolicy"): PersonalModelPolicy {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "implement,verify") throw new Error(`${label}: migrate to exactly implement and verify profiles; retired phase profiles are not supported`);

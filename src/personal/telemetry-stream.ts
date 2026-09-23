@@ -2,7 +2,7 @@ import { rejectAmbiguousJson } from "./report-capture.js";
 import { createHash } from "node:crypto";
 import type { PhaseProfile } from "./model-policy.js";
 
-/** Pinned Pi 0.84.4 JSON mode. Never accepts session JSONL or terminal text. */
+/** Bounded Pi JSON mode. Unknown lifecycle events remain incomplete; never parse session JSONL or terminal text. */
 export const MAX_STREAM_BYTES = 64 * 1024 * 1024;
 export const TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 export type TokenField = typeof TOKEN_FIELDS[number];
@@ -123,7 +123,7 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
         seen.add(identity);
         const u: unknown = m["usage"];
         if (!object(u) || !keys(u, [...TOKEN_FIELDS, "totalTokens", "cost", "reasoning", "cacheWrite1h"])) return emptyUsage("invalid_usage");
-        if (TOKEN_FIELDS.every(f => u[f] === 0) && m["content"].length && m["stopReason"] !== "error") return emptyUsage("invalid_usage");
+        if (TOKEN_FIELDS.every(f => u[f] === 0) && m["stopReason"] !== "error") return emptyUsage("invalid_usage");
         for (const field of TOKEN_FIELDS) {
           const n = u[field];
           if (n === undefined) { tokens[field] = null; diagnostic = "invalid_usage"; }
@@ -150,7 +150,7 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
       }
       case "turn_end": if (!keys(e, ["type", "message", "toolResults"]) || !Array.isArray(e["toolResults"]) || !turnMessage || digest(e["message"]) !== digest(turnMessage) || !turn || message) return emptyUsage("invalid_stream"); turn = false; break;
       case "agent_end": {
-        if (!keys(e, ["type", "messages", "willRetry"]) || !active || turn || message || !Array.isArray(e["messages"]) || (e["willRetry"] !== undefined && typeof e["willRetry"] !== "boolean")) return emptyUsage("partial_stream");
+        if (!keys(e, ["type", "messages", "willRetry"]) || !active || turn || message || !Array.isArray(e["messages"]) || typeof e["willRetry"] !== "boolean") return emptyUsage("partial_stream");
         const assistants = e["messages"].filter((m: unknown) => object(m) && m["role"] === "assistant");
         if (digest(assistants) !== digest(cycleMessages)) return emptyUsage("identity_mismatch");
         const finalReason = cycleMessages.at(-1)?.["stopReason"];
@@ -180,6 +180,6 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
       default: return emptyUsage("invalid_stream");
     }
   }
-  if (!ended || retryPending || autoRetry || !exited || !messages.length || !["stop", "length"].includes(messages.at(-1)!["stopReason"])) return emptyUsage("partial_stream");
+  if (!ended || !settled || retryPending || autoRetry || !exited || !messages.length || !["stop", "length"].includes(messages.at(-1)!["stopReason"])) return emptyUsage("partial_stream");
   return { tokens, recordedCost: recordedCost === null ? null : decimalText(recordedCost), costSource: recordedCost === null ? "unknown" : "pi-recorded", messages: messages.length, diagnostics: diagnostic ? [diagnostic] : [] };
 }

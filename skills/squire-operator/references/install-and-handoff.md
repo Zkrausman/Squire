@@ -10,7 +10,12 @@ install or activate it. Only after review/merge **and owner install approval**:
    discovery for that actual version, not an assumed match with another machine's
    Pi.
 2. With owner approval, invoke the built Squire executable's
-   `squire install-skills` command. It resolves `PI_CODING_AGENT_DIR` when
+   `squire install-skills` command. Separately install the reviewed launch
+   extension from the same verified merged build in Pi's global `extensions/`
+   directory, then use a fresh Pi session or `/reload` and verify that
+   `/squire-run` is registered. `install-skills` does **not** install the
+   extension. Do not point it at a mutable, unreviewed checkout.
+   It resolves `PI_CODING_AGENT_DIR` when
    explicitly set, otherwise `%USERPROFILE%\.pi\agent` on Windows or
    `$HOME/.pi/agent` on POSIX, and installs beneath its `skills/` and `agents/`
    directories. The command owns exactly the `squire-operator` and
@@ -55,7 +60,9 @@ this loader proof. `npm test` includes the proof and targeted offline checks.
 
 This proof is not final activation. After owner-approved real installation,
 repeat the fresh-session discovery/read checks on the destination machine and
-record its actual Pi version; sandbox and host versions can differ. Native host
+record its actual Pi version. Each new ticket sandbox must instead match the
+   authenticated owner-facing Pi package and model-store identity for that run;
+   differing runtime/catalog evidence fails closed before paid phases. Native host
 sbx availability, App access and future push success are not established by the
 offline proof.
 
