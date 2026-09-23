@@ -43,9 +43,9 @@ immutable-correction policy below.
 
 ## Optional async observation
 
-An async `squire-observer` child is optional and exists only to preserve owner-conversation availability while one existing run is watched. When blocking the owner conversation is acceptable, direct native non-model `squire watch` remains preferred. The child receives the exact trusted executable, working directory, existing run ID and config path; it performs one blocking watch followed by one status and returns one bounded receipt.
+For a background run, default to the dedicated async `squire-observer` child so the owner-facing orchestrator conversation remains usable. Supply the exact trusted executable, working directory, existing run ID and config path. The child performs one native blocking watch followed by one public status and returns one bounded receipt; do not poll with a model. An open watch tool call is expected and is not by itself grounds to nudge or interrupt the observer. Use direct native `squire watch` in the parent only when the owner explicitly requests a blocking conversation, or after observer infrastructure fails and the owner approves that fallback; never silently block the orchestrator.
 
-A watcher receipt is observation only. It grants no workflow authority and cannot authorize a retry, recovery, publication, merge, or any other action. A timeout is observer evidence, never run completion; use persisted Squire status for workflow decisions.
+A watcher receipt is observation only. It grants no workflow authority and cannot authorize a retry, recovery, publication, merge, or any other action. A timeout or observer failure is not run completion; consult persisted Squire status for workflow decisions.
 
 Honor repository safety instructions and owner stop gates. The direct request
 covers only the normal configured App publication and exact-head CI for the

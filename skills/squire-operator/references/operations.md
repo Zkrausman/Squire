@@ -137,13 +137,18 @@ ID is reservation/spawn evidence, not success. Keep configuration/environment
 path selection consistent when observing; retain the launch-time effective paths
 if current configuration later changes.
 
-Use one event-driven non-model `watch`; it exits at terminal state, but its exit
-code is not the run's success verdict. When blocking the owner conversation is
-acceptable, direct native non-model `squire watch` is preferred. Use the installed
-`squire-observer` only when preserving the owner conversation is useful. Its one
-watcher receipt is observation only and grants no workflow, retry, publication or
-merge authority. A child/tool timeout is observer timeout, never run completion.
-No model status polling or unbounded watchdog loops.
+Use the dedicated async `squire-observer` by default for an existing background
+run. Supply the exact trusted Squire executable entrypoint, cwd, run ID and config;
+it invokes one event-driven non-model `watch`, then one public status. A watch
+can remain open for hours while the run is active: an open bash call or long-running
+attention notice alone is not a reason to nudge, interrupt, retry, or infer failure.
+The observer's watch exit code is not the run's success verdict. Its receipt is
+observation only and grants no workflow, retry, publication or merge authority.
+A child/tool timeout or observer infrastructure failure is not run completion;
+consult persisted Squire status for decisions. Never silently switch to a
+parent-blocking watch. Use direct native `squire watch` in the parent only when
+the owner explicitly wants to block the conversation or approves fallback after
+observer failure. No model status polling or unbounded watchdog loops.
 
 A deterministic mechanical contract-conformance defect that has one obvious
 correction inside the approved scope does not require interrupting the owner for
