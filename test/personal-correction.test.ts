@@ -15,12 +15,13 @@ import type { ReportEvidence } from "../src/personal/report-evidence.js";
 const A = "b".repeat(40), B = "c".repeat(40);
 function evidence(bytes: Buffer, n: number): ReportEvidence { return { path: `/private/evidence/${n}.json`, identity: "1:2:3", byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }; }
 
-async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean; overCost?: boolean; unknownCost?: boolean } = {}) {
+async function correctionFixture(options: { failAgain?: boolean; noCustody?: boolean; changedHead?: boolean; testFailure?: boolean; ambiguous?: boolean; noRecommendation?: boolean; concurrent?: boolean; malformedReport?: boolean; overCost?: boolean; unknownCost?: boolean; crashAtBoundary?: boolean } = {}) {
   const root = await launchTestRoot("squire-correction-");
   const states = new JsonRunStateStore(root);
   const calls: PhaseInput[] = [], published: PublicationInput[] = [], captures = new WeakMap<PhaseResult, ReportCapture>(), commandRefs = new WeakMap<PhaseResult, readonly HostCommandEvidence[]>();
   const bytes = new Map<string, Buffer>();
   let head = BASE, archived = 0, prepared = 0, serial = 0;
+  let archivedSnapshot: Awaited<ReturnType<JsonRunStateStore["read"]>>;
   const store = { async write(value: string | Buffer) { const buffer=Buffer.from(value);const ref=evidence(buffer,++serial);bytes.set(ref.path,buffer);return ref; }, async read(ref: ReportEvidence) { return bytes.get(ref.path)!; } };
   const controller = new PersonalMvpController({ states, newId: () => "0123456789", testCommands: ["npm test"], launchRetryPolicy: { maxRetries: 0 },
     tickets: { async get() { return { id: REQUEST.ticketId, title: "owner contract", description: "correct a bounded defect" }; } },
@@ -30,7 +31,7 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
       async assertDescendant(_sandbox, base, descendant) { if (![[BASE,A],[BASE,B],[A,B]].some(([b,d]) => b === base && d === descendant)) throw Error("ancestry mismatch"); },
       async committedProjectWikiPaths() { return []; },
       async isolateVerifyOutputs(_sandbox, candidate) { assert.equal(candidate,B); },
-      async prepareCorrection(i) { prepared++; assert.equal(i.candidate,A); if(options.concurrent) await assert.rejects(controller.run(REQUEST)); if(options.changedHead) head=B; },
+      async prepareCorrection(i) { prepared++; assert.equal(i.candidate,A); if(options.concurrent) await assert.rejects(controller.run(REQUEST)); if(options.crashAtBoundary) { archivedSnapshot=await states.read(`${REQUEST.ticketId.toLowerCase()}-0123456789`); throw Error("controller lost at archived boundary"); } if(options.changedHead) head=B; },
       async exportBundle(i) { return { path: "/private/bundle", sha256: "d".repeat(64), byteLength: 10, baseSha: i.baseSha, head: i.head, branch: i.branch }; },
     },
     phases: {
@@ -62,7 +63,7 @@ async function correctionFixture(options: { failAgain?: boolean; noCustody?: boo
     },
     publication: { async publish(input) { published.push(input); return { url:"https://github.com/example/repo/pull/10", reused:false }; } },
   });
-  return { root, states, controller, calls, published, get archived() { return archived; }, get prepared() { return prepared; }, async cleanup() { await rm(root,{recursive:true,force:true}); } };
+  return { root, states, controller, calls, published, get archived() { return archived; }, get prepared() { return prepared; }, get archivedSnapshot() { return archivedSnapshot; }, async cleanup() { await rm(root,{recursive:true,force:true}); } };
 }
 
 test("explicit owner requests stop even under a mislabeled code-only recommendation",()=>{
@@ -97,6 +98,20 @@ test("concurrent controller cannot reserve while a correction holds the run",asy
  const f=await correctionFixture({concurrent:true});try{
   const state=await f.controller.run(REQUEST);
   assert.equal(state.status,"completed");assert.equal(f.calls.length,4);assert.equal(f.published.length,1);
+ }finally{await f.cleanup();}
+});
+
+test("boundary crash terminalizes with immutable archived evidence; stale controller cannot replay",async()=>{
+ const f=await correctionFixture({crashAtBoundary:true});try{
+  await assert.rejects(f.controller.run(REQUEST),/controller lost at archived boundary/);
+  const state=(await f.states.findByTicket(REQUEST.ticketId))[0]!;
+  assert.equal(f.archivedSnapshot?.status,"running");assert.equal(f.archivedSnapshot?.correction?.transition,"archived");
+  assert.equal(state.status,"failed");assert.equal(state.correction?.transition,"archived");assert.equal(state.correction.prior[0]?.candidate,A);
+  assert.equal(state.correction.prior[0]?.verify.status,"failed");assert.ok(state.correction.prior[0]?.sessions.implement.chunks.length);
+  assert.ok(state.correction.prior[0]?.sessions.verify.chunks.length);assert.equal(f.calls.length,2);assert.equal(f.published.length,0);
+  await assert.rejects(f.controller.runReserved(REQUEST,state.runId,"a".repeat(64)));
+  await assert.rejects(f.states.save({...f.archivedSnapshot!,version:state.version+1}),/immutable|version|stale/);
+  assert.equal(await f.states.reservationOwner(REQUEST.ticketId),undefined);
  }finally{await f.cleanup();}
 });
 
