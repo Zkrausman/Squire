@@ -1,30 +1,31 @@
-# Squire — minimal delivery experiment
+# Squire — two-session local MVP
 
-This branch **replaces** the former personal runtime with one ticket-to-unmerged-PR path. The original history, prior runs, and the tracked `.llm-wiki` are retained as historical evidence, not executable workflow components. The CLI is not a queue, repair engine, merge agent or production service.
+Squire runs exactly one ticket per invocation. It creates a separate local clone at a pinned commit, asks the current host Pi for a plan, then starts a fresh Pi session to implement that plan. A changed checkout is retained with a patch labeled **UNVERIFIED**. Squire does not publish or validate the candidate.
 
-## Hypothesis
+## What a run does
 
-A small, bounded wrapper around ordinary current Pi may deliver independently reviewed, CI-passing PRs unattended with less owner supervision than a direct Pi session. That is a hypothesis until a crossed trial proves it; automation alone is not a win. No speed or price-parity threshold is assumed.
+1. Validate a trusted local config, a clean Git checkout whose `HEAD` equals `baseSha`, and a bounded ticket. `resultRoot` must be outside the source checkout. The source checkout is not used as the worktree.
+2. Clone the local repository into a unique run directory and check out the pinned commit. Save a ticket snapshot and a run journal.
+3. Launch current host Pi headlessly in JSON mode for Plan, with only `read`, `grep`, `find`, and `ls`. Start a fresh session for Implement with the exact captured plan and ticket, allowing only Pi's native `read`, `bash`, `edit`, and `write` tools. Both sessions disable extensions, skills, templates, and themes and pass `--no-approve`; `--no-context-files` is intentionally omitted. Pi's normal AGENTS/CLAUDE context discovery remains enabled, and each prompt directly asks the model to read applicable `AGENTS.md` instructions.
+4. Require each Pi process to exit successfully and emit an authoritative final assistant `stopReason: "stop"` followed by `agent_settled`. Retain JSONL, Pi session files, stderr, and run state. Before Implement, write `evidence-manifest.json` with hashes of retained pre-implementation evidence. After Implement—also when it exits nonzero or throws—verify the manifest, ticket/plan snapshots, and original evidence inventory; restore ticket and plan from in-memory copies where possible and fail closed on persistent changes. `plan.md` is captured once as bounded, non-empty Markdown; the model need not follow a response schema.
+5. If the worktree differs from the pinned base, retain it and write `candidate.patch`, including untracked files. Do not commit. The outcome is **UNVERIFIED**, regardless of model claims. If there are no changes, the outcome is `no-candidate` (exit code 2), not success.
 
-## Single path
-
-1. Require a trusted local configuration and ticket file, a clean repository at a pinned exact commit, and a fresh branch. Make a source bundle and create a new Docker Sandbox containing only a clone of that source and the ticket.
-2. Run the **host's current Pi** with normal model authentication but no builtin tools, discovered extensions, project context, or skills. Its *only* explicitly loaded tool runs shell commands in the disposable sandbox. The sandbox receives **no model, GitHub, or Linear credentials**. Implementation output is the Git tree, not a fragile JSON final report.
-3. Freeze a candidate commit and export its Git bundle to an isolated host clone. Run configured tests **inside the credential-free Linux sandbox**; the exact-head hosted Windows check is mandatory for Windows validation. A fresh no-tools Pi session independently reviews the bounded patch and ticket. A non-PASS verdict fails closed; no automatic correction or retry.
-4. Only after those gates, host Git/GitHub credentials push the exact commit and create an **unmerged** PR. Hosted checks must pass at the same PR head; a moved head, missing check, or failed check is not success. Preserve the sandbox (stopped), run state, session files, bundle, candidate, and logs even on failure.
-
-Model text is not an authorization to publish, a substitute for tests, or a Git identity. Tests and the reviewer are necessary but cannot prove correctness. The approved target repository and configured test commands are trusted inputs, but target tests run in the sandbox, **never on the credentialed Windows host**. The sandbox may have network access and a sandbox-scoped Docker daemon; do not place credentials in its bridge. The host Pi process itself runs with host permissions, but the run disables every other tool and extension. Reviewers have no tools and only receive ticket, repository instructions, and patch text.
+Squire itself runs no tests, reviewer, CI, GitHub/Linear action, PR workflow, queue, Docker Sandbox, or automatic repair. The implementation session has ordinary host-Pi permissions and may choose to run commands through its native bash tool; Squire does not treat those results as a gate.
 
 ## Requirements and invocation
 
-Node.js 24, the owner's current global Pi CLI, Git, GitHub CLI authentication, Docker Desktop + `sbx`, and an approved target repository. `npm test` runs pure unit tests; the fixture integration requires a running sandbox and live model authorization. The CLI does not install or pin Pi. Its default CLI location follows the current Node installation; `PI_CLI_PATH` may explicitly identify a trusted current CLI.
+Requires Node.js 24, Git, the current host Pi CLI, and working Pi authentication for the configured owner-approved models. No dependencies are installed by this project. The default Pi CLI entrypoint is the package adjacent to the running Node installation. Set `PI_CLI_PATH` only when that installation is elsewhere; it must name the trusted JavaScript CLI entrypoint. Tests use a fake CLI through this variable.
 
-Create a config from `mvp/config.example.json` outside the repository. Keep `resultRoot` private and existing. Pin `baseSha`, set a never-before-used `squire/trial-*` branch, list exact expected CI check names including Windows validation, and configure isolated Linux test commands. Run:
+Copy `mvp/config.example.json` to a trusted private location and set absolute paths, a full pinned commit SHA, and a ticket file. `planModel` and `implementationModel` are optional and, if specified, must remain exactly `openai-codex/gpt-6-sol` and `openai-codex/gpt-6-luna`; thinking levels are fixed to `medium` and `max` respectively.
 
 ```sh
-node mvp/run.mjs C:/private/run-config.json
+node mvp/run.mjs C:/private/squire-config.json
+# or: npm run squire -- C:/private/squire-config.json
+npm test
 ```
 
-`dryRun: true` exercises through independent review without pushing or publishing and records `validated-local`, **not** delivery. On any failure, inspect `resultRoot/mvp-*/state.json` and artifacts; do not rerun unchanged or promote its candidate. `passed` means open PR, unchanged exact head, independent review, sandbox tests and configured hosted gates passed — never merge/release/install. Both arms of any value trial must start from the same pinned source on independent branches, remain blind to each other's candidate until frozen, and account for all attempts and supervision.
+A candidate run exits 0 and reports its run directory; a no-candidate run exits 2; a failed Pi/preflight/artifact run exits 1. Inspect the reported directory: `state.json`, `evidence-manifest.json`, `ticket.md`, `plan.md`, `implementation-response.txt`, `plan.jsonl`, `implementation.jsonl`, the two session directories, process stderr, Git command logs, and (when present) `candidate.patch` and `candidate/`. Failures are retained for inspection and never trigger automatic retry or promotion. Output/session files can contain repository data and model/tool output; keep `resultRoot` private.
 
-The old code and CI were removed rather than hidden behind a feature flag. Historical wiki records remain; old operating skills/configurations do **not** apply to this runtime. See `mvp/architecture.md` for limitations and research rationale.
+## Limitations
+
+This is ordinary host Pi, not a sandbox or credential boundary. Pi inherits the current user's filesystem, network, and available credentials; `--no-extensions`, `--no-approve`, and the tool allowlists do not isolate its process. `--no-approve` disables trust-gated project-local configuration/resources; in the installed Pi implementation it does not disable AGENTS/CLAUDE context discovery, which is controlled separately by `--no-context-files`. The runner's hash/inventory checks detect persistent evidence changes but cannot defend against a malicious same-user model that changes and restores files or tampers with state between checks. Retained evidence remains sensitive. The candidate is not reviewed, tested by Squire, CI-checked, published, committed, or approved as safe. Review the patch and run appropriate validation manually before using it.

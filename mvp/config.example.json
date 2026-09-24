@@ -1,20 +1,8 @@
 {
-  "sourceRepo": "C:/private/clean-pinned-pith-checkout",
+  "sourceRepo": "C:/private/clean-local-checkout",
   "baseSha": "0000000000000000000000000000000000000000",
-  "repository": "Zkrausman/pith",
-  "branch": "squire/trial-unique-ticket-name",
-  "baseBranch": "main",
   "ticketFile": "C:/private/approved-ticket.md",
-  "tests": [
-    "go test -count=1 ./...",
-    "go vet ./...",
-    "go build -o /tmp/pith-squire-trial .",
-    "python3 -B -m unittest discover -s .github/tests -v"
-  ],
-  "requiredChecks": ["test", "windows-link-check", "Analyze (go)", "Analyze (actions)", "Analyze (c-cpp)", "CodeQL"],
-  "model": "gpt-6-sol",
-  "reviewModel": "gpt-6-sol",
-  "resultRoot": "C:/private/squire-mvp-results",
-  "title": "Pith: scoped ticket title",
-  "dryRun": false
+  "resultRoot": "C:/private/squire-results",
+  "planModel": "openai-codex/gpt-6-sol",
+  "implementationModel": "openai-codex/gpt-6-luna"
 }
