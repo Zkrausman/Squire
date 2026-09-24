@@ -104,7 +104,7 @@ export function parseUsageStream(bytes: Buffer | undefined, sessionId: string, p
         break;
       case "turn_start": if (!keys(e, ["type"]) || !active || turn) return emptyUsage("invalid_stream"); turn = true; turnMessage = undefined; break;
       case "message_start":
-        if (!keys(e, ["type", "message"]) || !active || !turn || message || !object(e["message"]) || !["user", "assistant", "toolResult"].includes(e["message"]["role"])) return emptyUsage("invalid_stream");
+        if (!keys(e, ["type", "message"]) || !active || !turn || message || !object(e["message"]) || !["system", "user", "assistant", "toolResult"].includes(e["message"]["role"])) return emptyUsage("invalid_stream");
         message = e["message"]["role"]; break;
       case "message_update": if (message !== "assistant" || !keys(e, ["type", "usage", "assistantMessageEvent"])) return emptyUsage("invalid_stream"); break;
       case "message_end": {

@@ -29,6 +29,16 @@ test("Pi 0.87 JSON serializer synthetic no-provider protocol fixture parses, but
   assert.equal(unknown.tokens.input, null);
 });
 
+test("current Pi system message in first turn preserves authoritative usage", () => {
+  const events = piEvents("report");
+  const system = { role: "system", content: "private system instructions", timestamp: 0 };
+  events.splice(3, 0, { type: "message_start", message: system }, { type: "message_end", message: system });
+  events.at(-2).messages.unshift(system);
+  const parsed = parse(events);
+  assert.equal(parsed.recordedCost, "0.1");
+  assert.deepEqual(parsed.diagnostics, []);
+});
+
 test("current Pi agent_end plus agent_settled retains authoritative usage", () => {
   const events = piEvents("report");
   const parsed = parse(events);

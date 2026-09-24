@@ -1,4 +1,6 @@
 import { InvalidPhaseHandoff, ReportExecutionFailure } from "./report-capture.js";
+import { validateCorrectionPolicy, eligibleCorrection, feedbackDigest, type CorrectionCycle, type CorrectionPolicy } from "./correction.js";
+import { decimalUnits } from "./telemetry-stream.js";
 import { setTimeout as retryDelay } from "node:timers/promises";
 import { classifyLaunchFailure, generationIdentity, launchInputDigest, validateLaunchRetryPolicy, LAUNCH_BACKOFF_MS, LAUNCH_CLASSIFIER, type LaunchRetryPolicy, type LaunchRecord } from "./launch-retry.js";
 import { parsePhaseResult } from "./phase-payload.js";
@@ -72,6 +74,7 @@ export interface PersonalMvpControllerOptions {
   /** Controller-level policy used unless a request supplies one. */
   readonly modelPolicy?: PersonalModelPolicy;
   readonly launchRetryPolicy?: LaunchRetryPolicy;
+  readonly correctionPolicy?: CorrectionPolicy;
   readonly phaseTimeoutMs?: number;
   readonly testCommands?: readonly string[];
   /** Optional process identity for persisted foreground/background evidence. */
@@ -133,6 +136,7 @@ export class PersonalMvpController {
   readonly #newId: () => string;
   readonly #modelPolicy: PersonalModelPolicy;
   readonly #retryPolicy: LaunchRetryPolicy;
+  readonly #correctionPolicy: CorrectionPolicy;
   readonly #phaseTimeoutMs: number;
   readonly #testCommands: readonly string[];
   readonly #controllerPid: number | undefined;
@@ -144,6 +148,7 @@ export class PersonalMvpController {
     for (const key of ["escalationPolicy", "reportCorrectionPolicy", "promptPolicy", "remediationPolicy"]) if (Object.hasOwn(options,key)) throw new Error(`${key} is retired; remove it and configure only implement/verify`);
     this.#material = options.launchMaterial === undefined ? undefined : validateLaunchMaterial(options.launchMaterial);
     this.#retryPolicy = validateLaunchRetryPolicy(this.#material ? this.#material.config.launchRetryPolicy : options.launchRetryPolicy);
+    this.#correctionPolicy = validateCorrectionPolicy(this.#material ? this.#material.config.correctionPolicy : options.correctionPolicy);
     this.#phaseTimeoutMs = this.#material?.config.phaseTimeoutMs ?? options.phaseTimeoutMs ?? 3600000;
     if (!Number.isSafeInteger(this.#phaseTimeoutMs) || this.#phaseTimeoutMs <= 0 || this.#phaseTimeoutMs > 14400000) throw new Error("invalid controller phase timeout");
     this.#testCommands = this.#material?.config.testCommands ?? options.testCommands ?? [];
@@ -187,7 +192,7 @@ export class PersonalMvpController {
       ...(this.#material ? { launchEvidence: launchEvidence(this.#material), launchConfigDigest: createHash("sha256").update(Buffer.from(this.#material.rawConfig, "base64")).digest("hex") } : {}),
     });
 
-    const state: PersonalRunState = { ...baseline, launchRetryPolicy: this.#retryPolicy, launchGenerations: [] };
+    const state: PersonalRunState = { ...baseline, launchRetryPolicy: this.#retryPolicy, launchGenerations: [], correction: { policy: this.#correctionPolicy, prior: [], transition: "none" } };
     if (this.#states.reserve) {
       if (!this.#states.release) throw new Error("reservation-capable state store must provide release");
       await this.#states.reserve(state);
@@ -379,6 +384,7 @@ export class PersonalMvpController {
   }
 
   async #executeReserved(context: RunContext, request: RunRequest, signal?: AbortSignal): Promise<PersonalRunState> {
+    const totalDeadline = this.#monotonicNow() + (2 + 2 * this.#correctionPolicy.maxCorrections) * this.#phaseTimeoutMs + 120_000;
     try {
       const ticket = await this.#tickets.get(request.ticketId, signal);
       if (ticket.id !== request.ticketId) throw new Error("Linear returned a different ticket");
@@ -405,9 +411,42 @@ export class PersonalMvpController {
       if (workspace.head !== workspace.baseSha) throw new Error("prepared workspace did not start at the base SHA");
       await context.persist({ baseSha: workspace.baseSha, head: workspace.head, preparationState: "ready", lifecycle: "running" });
 
-      await this.#executePhase(context, ticket, request, "implement", signal);
-      await this.#executePhase(context, ticket, request, "verify", signal);
+      for (;;) {
+        await this.#executePhase(context, ticket, request, "implement", signal, totalDeadline);
+        if (context.state.correction?.prior.length) {
+          await this.#assertCorrectionCost(context.state);
+          if (!this.#workspaces.isolateVerifyOutputs) throw new Error("workspace lacks fresh Verify output isolation");
+          await this.#workspaces.isolateVerifyOutputs(context.state.sandbox, requireHead(context.state), signal);
+        }
+        const verify = await this.#executePhase(context, ticket, request, "verify", signal, totalDeadline);
+        if (verify.phase !== "verify") throw new Error("Verify phase identity mismatch");
+        if (verify.status === "passed") { if (context.state.correction?.prior.length) await this.#assertCorrectionCost(context.state); break; }
+        if (this.#monotonicNow() >= totalDeadline) throw new Error("total correction run deadline exhausted");
+        if (!context.state.correction || context.state.correction.prior.length >= context.state.correction.policy.maxCorrections || !eligibleCorrection(verify)) throw new Error(`verify failed: ${verify.summary}`);
+        await this.#assertCorrectionCost(context.state);
+        const implement = context.state.results.implement as ImplementPhaseResult;
+        const candidate = requireHead(context.state);
+        const reports = context.state.reports;
+        const commands = context.state.verifyCommands;
+        if (!reports?.implement || !reports.verify || !commands?.length || !this.#phases.archiveCorrectionSessions || !this.#workspaces.prepareCorrection) throw new Error("correction evidence or trusted transition unavailable");
+        await this.#workspaces.assertClean(context.state.sandbox, signal);
+        if (await this.#workspaces.currentHead(context.state.sandbox, signal) !== candidate) throw new Error("correction candidate changed");
+        const sessions = await this.#phases.archiveCorrectionSessions({ runId: context.state.runId, sandbox: context.state.sandbox, implement, verify }, signal);
+        for (const archived of [sessions.implement, sessions.verify]) {
+          const hash = createHash("sha256"); let size = 0;
+          for (const ref of archived.chunks) { const chunk = await verifyReportEvidence(this.#phases.reportEvidence!, ref); hash.update(chunk); size += chunk.length; }
+          if (size !== archived.byteLength || hash.digest("hex") !== archived.sha256) throw new Error("correction session custody mismatch");
+        }
+        const cycle: CorrectionCycle = { candidate, implement, verify, reports: { implement: reports.implement, verify: reports.verify }, commands, sessions, feedbackDigest: feedbackDigest(verify) };
+        await context.persist({ correction: { ...context.state.correction, prior: [...context.state.correction.prior, cycle], transition: "archived" } });
+        await this.#workspaces.prepareCorrection({ sandbox: context.state.sandbox, baseSha: requireBase(context.state), candidate }, signal);
+        await this.#workspaces.assertClean(context.state.sandbox, signal);
+        if (await this.#workspaces.currentHead(context.state.sandbox, signal) !== candidate) throw new Error("correction reset changed candidate");
+        await this.#workspaces.assertDescendant?.(context.state.sandbox, requireBase(context.state), candidate, signal);
+        await context.persist({ step: "implement", correction: { ...context.state.correction!, transition: "prepared" }, results: {}, reports: {}, sessions: {}, verifyCommands: [], verifyDisposition: "not_run" });
+      }
 
+      if (this.#monotonicNow() >= totalDeadline) throw new Error("total correction run deadline exhausted");
       const completeResults = requirePassingResults(context.state);
       const head = requireHead(context.state);
       await context.persist({ step: "publishing", lifecycle: "publishing", publicationState: "publishing" });
@@ -437,34 +476,46 @@ export class PersonalMvpController {
     }
   }
 
-  async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, signal?: AbortSignal): Promise<PhaseResult> {
-    if (context.state.schemaVersion !== 2 || context.state.status !== "running" || context.state.attempts[phase] !== 0) throw new Error("phase cannot replay");
+  async #assertCorrectionCost(state: PersonalRunState): Promise<void> {
+    if (!state.correction || !this.#phases.cumulativeRecordedCost) throw new Error("correction cost evidence unavailable");
+    const cost = await this.#phases.cumulativeRecordedCost(state);
+    if (decimalUnits(cost) > decimalUnits(state.correction.policy.maxRecordedCostUsd)) throw new Error("correction recorded cost ceiling exhausted");
+  }
+
+  async #executePhase(context: RunContext, ticket: Ticket, request: RunRequest, phase: PersonalPhase, signal?: AbortSignal, totalDeadline = Infinity): Promise<PhaseResult> {
+    const attempt = context.state.attempts[phase] + 1;
+    if (context.state.schemaVersion !== 2 || context.state.status !== "running" || attempt > (context.state.correction?.policy.maxCorrections ?? 0) + 1 || (attempt > 1 && (context.state.correction?.transition !== "prepared" || context.state.correction.prior.length !== attempt - 1))) throw new Error("phase cannot replay");
+    if (phase === "implement" && context.state.results.implement || phase === "verify" && (context.state.results.verify || context.state.results.implement?.status !== "passed")) throw new Error("phase cannot replay");
     const expectedHead = requireHead(context.state);
     await this.#workspaces.assertClean(context.state.sandbox, signal);
     if (await this.#workspaces.currentHead(context.state.sandbox, signal) !== expectedHead) throw new Error("phase baseline changed");
-    await context.persist({ step: phase, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: 1 } });
-    const deadline = this.#monotonicNow() + this.#phaseTimeoutMs;
-    const timeout = AbortSignal.timeout(this.#phaseTimeoutMs);
+    await context.persist({ step: phase, lifecycle: "running", attempts: { ...context.state.attempts, [phase]: attempt } });
+    const remainingRun = Math.floor(totalDeadline - this.#monotonicNow());
+    if (remainingRun <= 0) throw new Error("total correction run deadline exhausted");
+    const allowedMs = Math.min(this.#phaseTimeoutMs, remainingRun);
+    const deadline = this.#monotonicNow() + allowedMs;
+    const timeout = AbortSignal.timeout(allowedMs);
     signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     let input: PhaseInput = {
       telemetryAttribution: { trigger: "initial" }, deadline,
       runId: context.state.runId, ticket: structuredClone(ticket), contractDigest: context.state.contract!.digest,
       ...(phase === "verify" ? { implementationEvidence: (context.state.results.implement as ImplementPhaseResult).details } : {}),
+      ...(phase === "implement" && attempt > 1 ? { correctionFeedback: { candidate: expectedHead, findings: context.state.correction!.prior.at(-1)!.verify.details.findings, digest: context.state.correction!.prior.at(-1)!.feedbackDigest } } : {}),
       testCommands: this.#testCommands, repository: request.repository, baseBranch: request.baseBranch,
-      sandbox: context.state.sandbox, branch: context.state.branch, phase, attempt: 1,
+      sandbox: context.state.sandbox, branch: context.state.branch, phase, attempt,
       expectedHead, originalTicketBaseSha: requireBase(context.state), profile: resolvedProfile(context.state, phase),
     };
     const inputDigest = launchInputDigest(input);
-    const deadlineAt = new Date(this.#now().getTime() + this.#phaseTimeoutMs).toISOString();
+    const deadlineAt = new Date(this.#now().getTime() + allowedMs).toISOString();
     let result: PhaseResult;
     try {
       for (let generation = 0; ; generation++) {
         signal.throwIfAborted();
         await this.#workspaces.assertRuntimeParity?.(input.sandbox, signal);
-        const identity = generationIdentity(phase, 1, generation as 0 | 1, randomUUID());
+        const identity = generationIdentity(phase, attempt, generation as 0 | 1, randomUUID());
         input = { ...input, launchGeneration: identity };
         const record = async (kind: LaunchRecord["kind"], rule: LaunchRecord["rule"] = null, errorCode: LaunchRecord["errorCode"] = null) => {
-          await context.persist({ launchGenerations: [...context.state.launchGenerations!, { ...identity, phase, attempt: 1, expectedHead, inputDigest, deadlineAt, kind, timestamp: this.#timestamp(), delayMs: generation ? LAUNCH_BACKOFF_MS : 0, classifier: LAUNCH_CLASSIFIER, rule, errorCode }] });
+          await context.persist({ launchGenerations: [...context.state.launchGenerations!, { ...identity, phase, attempt, expectedHead, inputDigest, deadlineAt, kind, timestamp: this.#timestamp(), delayMs: generation ? LAUNCH_BACKOFF_MS : 0, classifier: LAUNCH_CLASSIFIER, rule, errorCode }] });
         };
         await record("reserved"); await record("dispatched");
         try { result = await this.#phases.run(structuredClone(input), signal); await record("returned"); break; }
@@ -496,19 +547,26 @@ export class PersonalMvpController {
       if (phase === "implement") await context.persist({ head, candidate: head });
       await this.#workspaces.assertClean(input.sandbox, signal);
       validatePhaseResult(result, input, head);
-      if (result.sessionId !== input.launchGeneration!.sessionId || Object.values(context.state.sessions).includes(result.sessionId)) throw new Error("phase session identity reused or mismatched");
+      if (result.sessionId !== input.launchGeneration!.sessionId || Object.values(context.state.sessions).includes(result.sessionId) || context.state.correction?.prior.some(c => c.implement.sessionId === result.sessionId || c.verify.sessionId === result.sessionId)) throw new Error("phase session identity reused or mismatched");
       if (phase === "verify") {
         if (head !== expectedHead || head !== context.state.candidate) throw new Error("Verify changed candidate identity");
         validateVerifyCommands(result, this.#testCommands);
+        const commands = this.#phases.commandEvidence?.(result);
+        if (commands) {
+          if (commands.length !== this.#testCommands.length || commands.some((entry, index) => entry.command !== this.#testCommands[index] || entry.exitCode !== (result as Extract<PhaseResult, { phase: "verify" }>).details.commands[index]?.exitCode)) throw new Error("host Verify command evidence disagrees with report");
+          for (const entry of commands) await verifyReportEvidence(this.#phases.reportEvidence!, entry.output);
+          await context.persist({ verifyCommands: structuredClone(commands) });
+        } else if (result.status === "failed") throw new Error("failed Verify lacks host command evidence");
       } else if (result.status === "passed") {
-        if (head === requireBase(context.state)) throw new Error("Implement produced no candidate commit");
+        if (head === expectedHead) throw new Error("Implement produced no distinct candidate commit");
         if (!this.#workspaces.assertDescendant) throw new Error("workspace lacks ancestry check");
+        await this.#workspaces.assertDescendant(input.sandbox, expectedHead, head, signal);
         await this.#workspaces.assertDescendant(input.sandbox, requireBase(context.state), head, signal);
         await this.#reconcileProjectWikiDisposition(context, result as ImplementPhaseResult, head, signal);
       }
       await context.persist({ results: { ...context.state.results, [phase]: result }, sessions: { ...context.state.sessions, [phase]: result.sessionId }, ...(phase === "verify" ? { verifyDisposition: result.status } : {}) });
       await this.#phases.telemetrySettled?.(result).catch(() => undefined);
-      if (result.status !== "passed") throw new Error(`${phase} failed: ${result.summary}`);
+      if (result.status !== "passed" && phase !== "verify") throw new Error(`${phase} failed: ${result.summary}`);
       return result;
     } catch (error) {
       if ((error instanceof InvalidPhaseHandoff || error instanceof ReportExecutionFailure) && !context.state.reports?.[phase]) await context.persist({ reports: { ...context.state.reports, [phase]: error.capture.evidence } });

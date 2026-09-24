@@ -12,15 +12,22 @@ export function validatePhaseResultPayloadShape(value: unknown, phase: PersonalP
 }
 export function validatePhaseResultShape(value: unknown, phase?: PersonalPhase): asserts value is PhaseResult {
   const v = exactObject(value, ["runId", "phase", "attempt", "sessionId", "sessionFile", "inputHead", "outputHead", "status", "summary", "details", "profile"], "phase envelope");
-  if (!PERSONAL_PHASES.includes(v["phase"] as PersonalPhase) || (phase && phase !== v["phase"]) || v["attempt"] !== 1 || !sha(v["inputHead"]) || !nonempty(v["runId"],128) || !nonempty(v["sessionId"],128) || !nonempty(v["sessionFile"],512)) throw new Error("invalid phase envelope identity");
+  if (!PERSONAL_PHASES.includes(v["phase"] as PersonalPhase) || (phase && phase !== v["phase"]) || (!Number.isInteger(v["attempt"]) || (v["attempt"] as number) < 1 || (v["attempt"] as number) > 2) || !sha(v["inputHead"]) || !nonempty(v["runId"],128) || !nonempty(v["sessionId"],128) || !nonempty(v["sessionFile"],512)) throw new Error("invalid phase envelope identity");
   validatePhaseProfile(v["profile"]);
   fields(v, v["phase"] as PersonalPhase);
 }
 function fields(v: Record<string, unknown>, phase: PersonalPhase): void {
   if (!sha(v["outputHead"]) || !["passed", "failed"].includes(v["status"] as string) || !nonempty(v["summary"], 2000)) throw new Error("invalid phase disposition");
-  const d = exactObject(v["details"], phase === "implement" ? ["changes", "projectWiki"] : ["findings", "commands"], "phase details");
+  const details = v["details"] as Record<string, unknown>;
+  const correction = phase === "verify" && details && typeof details === "object" && Object.prototype.hasOwnProperty.call(details,"correction");
+  const d = exactObject(v["details"], phase === "implement" ? ["changes", "projectWiki"] : correction ? ["findings", "commands", "correction"] : ["findings", "commands"], "phase details");
   if (phase === "implement") { stringList(d["changes"]); validateProjectWikiDisposition(d["projectWiki"]); }
   else {
+    if (correction) {
+      if (v["status"] !== "failed") throw new Error("passing Verify cannot request correction");
+      const recommendation = exactObject(d["correction"],["kind","reason"],"correction recommendation");
+      if (!["code_only","requires_owner","security_ambiguity","unknown"].includes(recommendation["kind"] as string) || !nonempty(recommendation["reason"],2000)) throw new Error("invalid correction recommendation");
+    }
     stringList(d["findings"]);
     if (!Array.isArray(d["commands"]) || d["commands"].length > 100) throw new Error("invalid command evidence");
     const seen = new Set();
@@ -35,7 +42,7 @@ function fields(v: Record<string, unknown>, phase: PersonalPhase): void {
 }
 export function validateVerifyCommands(result: PhaseResult, commands: readonly string[]): void {
   if (result.phase !== "verify") throw new Error("expected Verify");
-  if (result.status === "passed" && (result.details.commands.length !== commands.length || commands.some((command, i) => result.details.commands[i]?.command !== command))) throw new Error("Verify must execute every configured command in order");
+  if (result.details.commands.length !== commands.length || commands.some((command, i) => result.details.commands[i]?.command !== command)) throw new Error("Verify must represent every configured command in order");
 }
 function stringList(v: unknown): void { if (!Array.isArray(v) || v.length > 100 || v.some(x => !nonempty(x,2000))) throw new Error("invalid bounded findings/evidence"); }
 /** Validate the closed project-wiki evidence union used by Implement. */

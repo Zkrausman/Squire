@@ -1,4 +1,5 @@
-import { providerLaunchFailure, TransientLaunchFailure } from "./launch-retry.js";
+import { providerLaunchFailure, TransientLaunchFailure, generationIdentity } from "./launch-retry.js";
+import type { SessionCustody } from "./correction.js";
 import { captureInvocation, sessionSeed } from "./telemetry-capture.js";
 import { invocation, TelemetryStore } from "./telemetry-store.js";
 import { MAX_STREAM_BYTES, terminalReport } from "./telemetry-stream.js";
@@ -13,8 +14,9 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CommandExecutionError, ProcessLaunchError, type CommandPort } from "./command.js";
 import { parsePhaseResult } from "./phase-payload.js";
+import { validateVerifyCommands } from "./phase-result.js";
 import { validatePhaseProfile, type PhaseProfile } from "./model-policy.js";
-import type { PersonalRunState, PhaseInput, PhasePort, PhaseResult } from "./types.js";
+import type { PersonalRunState, PhaseInput, PhasePort, PhaseResult, ImplementPhaseResult, VerifyPhaseResult, HostCommandEvidence } from "./types.js";
 
 export type { PhaseProfile } from "./model-policy.js";
 
@@ -34,6 +36,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
   readonly reportEvidence: ReportEvidencePort;
   readonly telemetry: TelemetryStore;
   readonly #captures = new WeakMap<PhaseResult, ReportCapture>();
+  readonly #commandEvidence = new WeakMap<PhaseResult, readonly HostCommandEvidence[]>();
   readonly #commands: CommandPort;
   readonly #stagingRoot: string;
   readonly #testCommands: readonly string[];
@@ -63,7 +66,7 @@ export class SandboxPiPhaseRunner implements PhasePort {
     // Validate the controller-bound profile before creating any staging or
     // sandbox artifacts. A malformed profile must not partially launch a
     // phase with an ambiguous model identity.
-    if (!["implement", "verify"].includes(input.phase) || input.attempt !== 1) throw new Error("unsupported phase");
+    if (!["implement", "verify"].includes(input.phase) || ![1, 2].includes(input.attempt)) throw new Error("unsupported phase");
     if (JSON.stringify(input.testCommands) !== JSON.stringify(this.#testCommands)) throw new Error("configured test commands differ from bound input");
     const deadline = input.deadline ?? performance.now() + this.#timeoutMs;
     const profile = validatePhaseProfile(input.profile, `${input.phase} input profile`);
@@ -89,11 +92,12 @@ export class SandboxPiPhaseRunner implements PhasePort {
       // Reserve sandbox destinations before copying; never overwrite failed evidence.
       if (input.launchGeneration) await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", `set -eu; mkdir -p ${sh(phaseDirectory)} /ticket/artifacts/inputs; (set -C; : > ${sh(inputPath)}); test ! -e ${sh(sessionFile)}`] }, signal);
       await this.#commands.run({ command: this.#sbx, args: ["cp", localInput, `${input.sandbox}:${inputPath}`] }, signal);
-      const home = `/ticket/runtime/home/${input.phase}`;
-      const temporary = `/ticket/runtime/tmp/${input.phase}`;
+      // A fresh attempt must not inherit Pi caches or ignored outputs from a prior judge.
+      const home = `/ticket/runtime/home/${input.phase}-${input.attempt}`;
+      const temporary = `/ticket/runtime/tmp/${input.phase}-${input.attempt}`;
       const agentSetup = this.#material?.ownerPi ? `test -d ${sh(this.#agentDirectory)}` : `mkdir -p ${sh(this.#agentDirectory)}`;
       const legacyAgentOwnership = this.#material?.ownerPi ? "" : ` ${sh(this.#agentDirectory)}`;
-      const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)}; ${agentSetup}; ${sessionSeed(sessionId, sessionFile)}; chown -R ${sh(this.#roleUser)} ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)}${legacyAgentOwnership}; chown root:root ${sh(inputPath)}; chmod 444 ${sh(inputPath)}`;
+      const prepare = `set -eu; mkdir -p ${sh(phaseDirectory)} ${sh(home)} ${sh(temporary)}; ${agentSetup}; ${sessionSeed(sessionId, sessionFile)}; chown root:root ${sh(phaseDirectory)}; chmod 755 ${sh(phaseDirectory)}; chown ${sh(this.#roleUser)} ${sh(sessionFile)}; chmod 600 ${sh(sessionFile)}; chown -R ${sh(this.#roleUser)} ${sh(home)} ${sh(temporary)}${legacyAgentOwnership}; chown root:root ${sh(inputPath)}; chmod 444 ${sh(inputPath)}`;
       await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", prepare] }, signal);
 
       if (input.phase === "verify") {
@@ -162,7 +166,9 @@ chmod -R a-w .git`;
       const capture = await this.#capture(output.stdoutBytes, sessionId, sessionFile);
       try {
         const result = parsePhaseResult(capture.raw, input, sessionId, sessionFile, profile);
-        if (input.phase === "verify") {
+        if (result.phase === "verify") {
+          validateVerifyCommands(result, this.#testCommands);
+          const observed: HostCommandEvidence[] = [];
           // Independent deterministic execution: model attestation is not test evidence.
           // This is after the provider returned, so a test launch failure can never
           // enter the typed pre-result provider retry path.
@@ -172,10 +178,14 @@ chmod -R a-w .git`;
               "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=/ticket/workspace",
               "setpriv", "--no-new-privs", "sh", "-c", `set +e; ( ${command} ); code=$?; printf '\\nSQUIRE_TEST_EXIT=%s\\n' "$code"`], timeoutMs: remaining(deadline), maxOutputBytes: 128 * 1024, redactDiagnostics: true }, signal);
             if (!output.stdoutBytes) throw new Error("test command evidence requires exact bytes");
-            await this.reportEvidence.write(output.stdoutBytes);
+            const ref = await this.reportEvidence.write(output.stdoutBytes);
             const match = /\nSQUIRE_TEST_EXIT=(\d+)\n$/u.exec(output.stdout);
-            if (!match || match[1] !== "0") throw new Error("configured Verify command failed; inspect private evidence");
+            const exitCode = match ? Number(match[1]) : NaN;
+            if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) throw new Error("configured Verify command exit is ambiguous; inspect private evidence");
+            if (result.details.commands[observed.length]?.command !== command || result.details.commands[observed.length]?.exitCode !== exitCode || (result.status === "passed" && exitCode !== 0)) throw new Error("configured Verify command disagrees with report; inspect private evidence");
+            observed.push({ command, exitCode, output: ref });
           }
+          this.#commandEvidence.set(result, observed);
         }
         this.#captures.set(result, capture);
         return result;
@@ -190,9 +200,27 @@ chmod -R a-w .git`;
       if (localInputCreated) await rm(localInput, { force: true });
     }
   }
+  async archiveCorrectionSessions(input: { readonly runId: string; readonly sandbox: string; readonly implement: ImplementPhaseResult; readonly verify: VerifyPhaseResult }, signal?: AbortSignal): Promise<{ readonly implement: SessionCustody; readonly verify: SessionCustody }> {
+    const out = {} as Record<"implement" | "verify", SessionCustody>;
+    for (const phase of ["implement", "verify"] as const) {
+      const result = input[phase];
+      const expected = generationIdentity(phase, result.attempt, result.sessionFile.includes("-g1.jsonl") ? 1 : 0, result.sessionId).sessionFile;
+      if (result.runId !== input.runId || result.sessionFile !== expected) throw new Error("session custody identity mismatch");
+      await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "sh", "-lc", `set -eu; test ! -L ${sh(expected)}; test -f ${sh(expected)}; chown root:root ${sh(expected)}; chmod 400 ${sh(expected)}`] }, signal);
+      const output = await this.#commands.run({ command: this.#sbx, args: ["exec", "-u", "root", input.sandbox, "cat", expected], maxOutputBytes: 64 * 1024 * 1024, redactDiagnostics: true }, signal);
+      const bytes = output.stdoutBytes;
+      if (!bytes || bytes.length === 0 || bytes.length > 64 * 1024 * 1024) throw new Error("session exceeds custody bound or lacks exact bytes");
+      const chunks = [];
+      for (let offset = 0; offset < bytes.length; offset += MAX_REPORT_BYTES) chunks.push(await this.reportEvidence.write(bytes.subarray(offset, offset + MAX_REPORT_BYTES)));
+      out[phase] = { chunks, sha256: createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.length };
+    }
+    return out;
+  }
+  async cumulativeRecordedCost(state: PersonalRunState): Promise<string> { return this.telemetry.cumulativeRecordedCost(state); }
   async telemetryTerminal(state: PersonalRunState): Promise<{ complete: boolean }> { return { complete: (await this.telemetry.finalize(state)).complete }; }
   async telemetrySettled(result: PhaseResult): Promise<void> { await this.telemetry.acceptPhase(result.runId, result.sessionId, result.status); }
   reportCapture(result: PhaseResult): ReportCapture | undefined { return this.#captures.get(result); }
+  commandEvidence(result: PhaseResult): readonly HostCommandEvidence[] | undefined { return this.#commandEvidence.get(result); }
   async #capture(bytes: Buffer | undefined, sessionId: string, sessionFile: string): Promise<ReportCapture> {
     if (!Buffer.isBuffer(bytes)) throw new PhaseExecutionError("infrastructure", "Report evidence requires exact stdout bytes; configure byte-capable command transport (NodeCommandRunner)");
     const streams = [];

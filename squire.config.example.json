@@ -2,6 +2,10 @@
   "launchRetryPolicy": {
     "maxRetries": 1
   },
+  "correctionPolicy": {
+    "maxCorrections": 1,
+    "maxRecordedCostUsd": "10"
+  },
   "repository": {
     "slug": "OWNER/REPOSITORY",
     "path": "/absolute/path/to/your/repository/checkout",
