@@ -16,12 +16,18 @@ export function parsePi(raw) {
 }
 
 export function reviewPassed(text) {
-  return typeof text==='string' && /^PASS\r?\n/.test(text) && text.length < 16000;
+  return typeof text==='string' && /^PASS\r?\n/.test(text) && text.length < 16000
+    && !/\b(?:BLOCK|blocking|blocker|critical|fail|failed|failure|high\s+severity)\b/i.test(text.slice(text.indexOf('\n')+1));
 }
 
-export function exactHeadPassed({pr,expectedHead,expectedBase,checks,required}) {
+export function exactHeadPassed({pr,expectedHead,expectedBase,checks,checkRuns,required}) {
   if(pr?.state!=='OPEN' || pr?.headRefOid!==expectedHead || pr?.baseRefName!==expectedBase) return false;
-  if(!Array.isArray(checks) || !Array.isArray(required) || !required.length || new Set(required).size!==required.length) return false;
+  if(!Array.isArray(checks) || !Array.isArray(checkRuns) || !Array.isArray(required) || !required.length || new Set(required).size!==required.length) return false;
   if(checks.some(x=>x.bucket==='fail' || x.bucket==='pending' || x.bucket==='cancel')) return false;
-  return required.every(name=>checks.some(x=>x.name===name && x.bucket==='pass' && x.state==='SUCCESS'));
+  return required.every(name=>{
+    const statuses=checks.filter(x=>x.name===name);
+    const runs=checkRuns.filter(x=>x.name===name);
+    return statuses.length>0 && statuses.every(x=>x.bucket==='pass' && x.state==='SUCCESS')
+      && runs.length>0 && runs.every(x=>x.head_sha===expectedHead && x.status==='completed' && x.conclusion==='success');
+  });
 }

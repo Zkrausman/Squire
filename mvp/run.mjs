@@ -14,7 +14,6 @@ const sha = s => typeof s === 'string' && /^[a-f0-9]{40}$/.test(s);
 const branchName = s => typeof s === 'string' && /^squire\/trial-[a-z0-9][a-z0-9-]{2,60}$/.test(s);
 const slug = s => typeof s === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(s);
 const fail = m => { throw Error(m); };
-const testEnv = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:KEY|TOKEN|AUTH|CREDENTIAL|SECRET|GITHUB|LINEAR|OPENAI|ANTHROPIC|^PI_|^GH_)/i.test(key)));
 let state;
 async function persist() {
   const p = path.join(state.directory, 'state.json');
@@ -73,6 +72,8 @@ async function main() {
   if(!sha(baseSha)||!slug(repository)||!branchName(branch)||!Array.isArray(tests)||!tests.length||!tests.every(x=>typeof x==='string'&&x.length<300)||!Array.isArray(requiredChecks)||!requiredChecks.length||!requiredChecks.every(x=>typeof x==='string')||typeof title!=='string'||title.length>150||!/^[-.a-zA-Z0-9]+$/.test(baseBranch)||!/^gpt-[a-z0-9.-]+$/.test(model)||!/^gpt-[a-z0-9.-]+$/.test(reviewModel)) fail('Invalid trusted run config');
   const source=path.resolve(sourceRepo),root=path.resolve(resultRoot),ticket=path.resolve(ticketFile);
   if(!existsSync(ticket)||!existsSync(source)) fail('Missing source or ticket');
+  const contract=await readFile(ticket,'utf8');
+  if(contract.length===0 || contract.length>16000) fail('Ticket exceeds independent review bound');
   state={runId,directory:path.join(root,runId),phase:'starting',baseSha,branch,repository,events:[],startedAt:new Date().toISOString()};
   await mkdir(state.directory,{recursive:false,mode:0o700});
   await stage('preflight');
@@ -117,19 +118,19 @@ async function main() {
   if((await git(hostRepo,['status','--porcelain'])).stdout.trim()) fail('Imported candidate dirty');
   await stage('tests',{hostRepo});
   for(let i=0;i<tests.length;i++){
-    // Tests are trusted owner-configured commands; target repository is an approved test fixture.
-    await command('bash',['-lc',tests[i]],{cwd:hostRepo,env:testEnv(),timeoutMs:5*60*1000,output:path.join(state.directory,`test-${i}.log`)});
-    if((await git(hostRepo,['rev-parse','HEAD'])).stdout.trim()!==candidate || (await git(hostRepo,['status','--porcelain'])).stdout.trim()) fail('Test mutated candidate');
+    // Repository-controlled code runs only inside the credential-free sandbox.
+    await sandboxSh(sandbox,tests[i],{timeoutMs:5*60*1000,output:path.join(state.directory,`test-${i}.log`)});
+    if((await sandboxSh(sandbox,'git rev-parse HEAD')).stdout.trim()!==candidate || (await sandboxSh(sandbox,'git status --porcelain')).stdout.trim()) fail('Test mutated candidate');
+    if((await git(hostRepo,['rev-parse','HEAD'])).stdout.trim()!==candidate || (await git(hostRepo,['status','--porcelain'])).stdout.trim()) fail('Imported candidate mutated');
   }
   const diff=(await git(hostRepo,['show','--format=fuller','--no-ext-diff','--no-textconv','--stat',candidate])).stdout;
   const patch=(await git(hostRepo,['diff','--no-ext-diff','--no-textconv',`${baseSha}..${candidate}`],{timeoutMs:60000})).stdout;
   if(Buffer.byteLength(patch)>100000) fail('Review diff exceeds bound');
   await stage('review');
-  const contract=await readFile(ticket,'utf8');
-  const agentsPath=path.join(hostRepo,'AGENTS.md');
-  const agents=existsSync(agentsPath) ? (await readFile(agentsPath,'utf8')).slice(0,10000) : '(none)';
+  // Never follow a repository-controlled symlink on the credentialed host.
+  const agents=(await sandboxSh(sandbox,'if test -f AGENTS.md; then head -c 10000 AGENTS.md; fi')).stdout || '(none)';
   const review=await piRun({sandbox,mode:'review',model:reviewModel,dir:path.join(state.directory,'review-session'),timeoutMs:10*60*1000,
-    prompt:`You are an independent fresh read-only reviewer. No tools are available. Review against the contract and pinned base. Consider logic, regression tests, scope and unsafe side effects. Do not rely on implementer claims. Begin the final answer with PASS on its own line ONLY if no blocking issue; otherwise begin BLOCK and give concrete findings.\n\nTICKET:\n${contract.slice(0,16000)}\n\nREPOSITORY INSTRUCTIONS:\n${agents}\n\nCOMMIT:\n${diff.slice(0,6000)}\n\nPATCH:\n${patch}`});
+    prompt:`You are an independent fresh read-only reviewer. No tools are available. Review against the contract and pinned base. Consider logic, regression tests, scope and unsafe side effects. Do not rely on implementer claims. Begin the final answer with PASS on its own line ONLY if no blocking issue; otherwise begin BLOCK and give concrete findings.\n\nTICKET:\n${contract}\n\nREPOSITORY INSTRUCTIONS:\n${agents}\n\nCOMMIT:\n${diff.slice(0,6000)}\n\nPATCH:\n${patch}`});
   state.reviewUsage=review.usage;
   await writeFile(path.join(state.directory,'review.txt'),review.text,{flag:'wx',mode:0o600});
   await persist();
@@ -144,7 +145,7 @@ async function main() {
   await git(hostRepo,['remote','set-url','origin',`https://github.com/${repository}.git`]);
   await git(hostRepo,['push','-u','origin',`HEAD:refs/heads/${branch}`],{timeoutMs:180000});
   const body=path.join(state.directory,'pr-body.md');
-  await writeFile(body,`## Summary\nOne-ticket minimal Squire MVP: ${title}\n\n## Provenance and gates\nPinned base: \`${baseSha}\`. Frozen candidate: \`${candidate}\`. Fresh independent read-only review PASS; configured Windows tests passed. This PR remains unmerged during trial. Model text was never used as a publication credential or test authority.\n`,{flag:'wx',mode:0o600});
+  await writeFile(body,`## Summary\nOne-ticket minimal Squire MVP: ${title}\n\n## Provenance and gates\nPinned base: \`${baseSha}\`. Frozen candidate: \`${candidate}\`. Fresh independent read-only review PASS; configured isolated Linux tests passed. Windows validation requires exact-head hosted CI. This PR remains unmerged during trial. Model text was never used as a publication credential or test authority.\n`,{flag:'wx',mode:0o600});
   const pr=(await command('gh',['pr','create','--repo',repository,'--base',baseBranch,'--head',branch,'--title',title,'--body-file',body],{timeoutMs:60000})).stdout.trim();
   if(!new RegExp(`^https://github\\.com/${repository.replace('/','\\/')}/pull/[0-9]+$`).test(pr)) fail('Publication returned unexpected PR URL');
   state.prUrl=pr;await persist();
@@ -152,8 +153,9 @@ async function main() {
   await command('gh',['pr','checks',pr,'--repo',repository,'--watch','--interval','15'],{timeoutMs:20*60*1000,output:path.join(state.directory,'ci-watch.log')});
   const info=JSON.parse((await command('gh',['pr','view',pr,'--repo',repository,'--json','state,headRefOid,baseRefName'])).stdout);
   const checks=JSON.parse((await command('gh',['pr','checks',pr,'--repo',repository,'--json','name,bucket,state'])).stdout);
+  const checkRuns=JSON.parse((await command('gh',['api','-X','GET',`repos/${repository}/commits/${candidate}/check-runs?per_page=100`],{timeoutMs:60000})).stdout).check_runs;
   const finalInfo=JSON.parse((await command('gh',['pr','view',pr,'--repo',repository,'--json','state,headRefOid,baseRefName'])).stdout);
-  if(!exactHeadPassed({pr:info,expectedHead:candidate,expectedBase:baseBranch,checks,required:requiredChecks}) || !exactHeadPassed({pr:finalInfo,expectedHead:candidate,expectedBase:baseBranch,checks,required:requiredChecks})) fail('Exact-head hosted CI gate failed or PR moved');
+  if(!exactHeadPassed({pr:info,expectedHead:candidate,expectedBase:baseBranch,checks,checkRuns,required:requiredChecks}) || !exactHeadPassed({pr:finalInfo,expectedHead:candidate,expectedBase:baseBranch,checks,checkRuns,required:requiredChecks})) fail('Exact-head hosted CI gate failed or PR moved');
   await stage('passed',{completedAt:new Date().toISOString(),checks:requiredChecks});
   console.log(JSON.stringify({runId,phase:state.phase,prUrl:pr,candidate,recordedModelCost:implement.usage.cost+review.usage.cost}));
 }
