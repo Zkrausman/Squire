@@ -1,26 +1,11 @@
 {
-  "name": "squire-contracts",
+  "name": "squire",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": {
-    "squire": "./dist/src/personal/cli.js"
-  },
-  "engines": {
-    "node": ">=24 <25"
-  },
+  "bin": {"squire": "./mvp/run.mjs"},
+  "engines": {"node": ">=24 <25"},
   "scripts": {
-    "build": "node scripts/clean-build.mjs && node scripts/build-windows-launch.mjs && tsc -p tsconfig.json",
-    "install": "node scripts/build-windows-launch.mjs",
-    "validate:contracts": "node scripts/validate-contracts.mjs",
-    "squire": "node dist/src/personal/cli.js",
-    "test": "npm run build && node --test test/contracts.test.mjs dist/test/*.test.js"
-  },
-  "devDependencies": {
-    "@types/node": "^26.4.1",
-    "ajv": "8.20.0",
-    "ajv-formats": "3.0.1",
-    "node-gyp": "^12.4.0",
-    "typescript": "^7.0.2"
+    "test": "node --check mvp/run.mjs && node --check mvp/sandbox-tool.mjs && node --test mvp/test/*.test.mjs"
   }
 }
