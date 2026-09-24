@@ -95,7 +95,7 @@ test("explicit owner requests stop even under a mislabeled code-only recommendat
  const base={runId:"aidev-1-test1234",phase:"verify",attempt:1,sessionId:"22222222-2222-4222-8222-222222222222",sessionFile:"/ticket/sessions/verify/1.jsonl",inputHead:A,outputHead:A,status:"failed",summary:"defect",details:{findings:["Fix module code"],commands:[{command:"npm test",exitCode:0,summary:"passed"}],correction:{kind:"code_only",reason:"bounded code fix"}}} as const satisfies VerifyPhaseResult;
  assert.equal(eligibleCorrection(base),true);
  assert.equal(eligibleCorrection({...base,details:{...base.details,correction:{kind:"code_only",reason:"Fix within the ticket and sandbox scope; no new authority"}}}),true);
- for(const finding of ["Ask the owner to approve a contract change before implementation","Owner approval is necessary for a contract amendment","Need host permission to proceed","The change is beyond the ticket scope","Scope expansion is necessary"]){
+ for(const finding of ["Ask the owner to approve a contract change before implementation","Owner approval is necessary for a contract amendment","Need host permission to proceed","Owner must decide whether to alter acceptance criteria","The contract needs revision before implementation","Host permissions are required to proceed","The change is beyond the ticket scope","Scope expansion is necessary"]){
   assert.equal(eligibleCorrection({...base,details:{...base.details,findings:[finding]}}),false,finding);
  }
  assert.equal(eligibleCorrection({...base,details:{...base.details,correction:{kind:"requires_owner",reason:"owner decision"}}}),false);
