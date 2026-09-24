@@ -522,7 +522,9 @@ async function createRun(config) {
 async function main(configPath) {
   const config = await loadConfig(configPath);
   const { source, ticketText, ticketBytes } = await createRun(config);
-  const top = path.resolve((await gitAt(source, ['rev-parse', '--show-toplevel'], 'source-root')).trim());
+  const reportedTop = path.resolve((await gitAt(source, ['rev-parse', '--show-toplevel'], 'source-root')).trim());
+  let top;
+  try { top = await realpath(reportedTop); } catch { fail('sourceRepo must name the Git worktree root'); }
   if (path.relative(top, source) !== '') fail('sourceRepo must name the Git worktree root');
   const head = (await gitAt(source, ['rev-parse', 'HEAD'], 'source-head')).trim();
   if (head !== config.baseSha) fail('sourceRepo HEAD differs from pinned baseSha');

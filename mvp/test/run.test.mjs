@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, readFile, rm, writeFile, readdir, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile, readdir, stat, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -170,6 +170,54 @@ test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with
   for (const directory of ['plan-session', 'implementation-session']) {
     assert.ok((await readdir(path.join(report.stateDir, directory))).includes('fake-session.jsonl'));
   }
+});
+
+test('canonicalizes a Git-reported symlink alias before enforcing the source worktree root', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t);
+  const alias = path.join(f.directory, 'source-alias');
+  await symlink(f.sourceRepo, alias, 'dir');
+  const gitBin = path.join(f.directory, 'git-bin');
+  await mkdir(gitBin);
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  await writeFile(path.join(gitBin, 'git'), `#!/bin/sh
+case "$*" in
+  *'rev-parse --show-toplevel') printf '%s\\n' "$SQUIRE_GIT_ALIAS_TOP" ;;
+  *) exec "$SQUIRE_REAL_GIT" "$@" ;;
+esac
+`);
+  await chmod(path.join(gitBin, 'git'), 0o755);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.baseSha = '0'.repeat(40);
+  await writeFile(f.configFile, JSON.stringify(config));
+
+  const result = await invoke(f, {
+    PATH: `${gitBin}${path.delimiter}${process.env.PATH}`,
+    SQUIRE_GIT_ALIAS_TOP: alias,
+    SQUIRE_REAL_GIT: realGit,
+  });
+  assert.equal(result.code, 1);
+  const report = summary(result);
+  const state = await runState(report);
+  assert.equal(await readFile(path.join(report.stateDir, 'commands', '001-source-root.stdout.log'), 'utf8'), `${alias}\n`);
+  assert.equal(state.sourceRepo, await realpath(alias));
+  assert.match(state.error, /HEAD differs from pinned baseSha/);
+  await assert.rejects(stat(f.captureFile));
+});
+
+test('still rejects sourceRepo paths inside a Git worktree', async t => {
+  const f = await fixture(t);
+  const nested = path.join(f.sourceRepo, 'nested');
+  await mkdir(nested);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.sourceRepo = nested;
+  await writeFile(f.configFile, JSON.stringify(config));
+
+  const result = await invoke(f);
+  assert.equal(result.code, 1);
+  const report = summary(result);
+  const state = await runState(report);
+  assert.match(state.error, /sourceRepo must name the Git worktree root/);
+  await assert.rejects(stat(f.captureFile));
 });
 
 test('rejects a nominally successful Pi process without settled final-stop evidence and retains logs', async t => {
