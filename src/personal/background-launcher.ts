@@ -138,8 +138,8 @@ function validateRequest(request: BackgroundLaunchRequest): void {
   if (!path.isAbsolute(request.stdoutPath) || !path.isAbsolute(request.stderrPath)) throw new Error("background log paths must be absolute");
 }
 
-interface LogHandle { readonly fd: number; close(): Promise<void>; }
-async function openLog(file: string): Promise<LogHandle> {
+export interface LogHandle { readonly fd: number; close(): Promise<void>; }
+export async function openLog(file: string): Promise<LogHandle> {
   if (process.platform === "win32") {
     const native = windowsLaunch();
     const fd = native.openLog(file);

@@ -32,6 +32,10 @@ export async function main(argv = process.argv.slice(2), runtime: { nodeVersion?
     process.stderr.write(`${unsupportedRuntimeMessage(nodeVersion)}\n`);
     return 1;
   }
+  if (argv[0] === "queue" || argv[0] === "__queue_worker") {
+    const queue = await import("./simple-queue-cli.js");
+    return argv[0] === "queue" ? queue.simpleQueueCommand(argv, runtime.cliPath) : queue.simpleQueueWorker(argv);
+  }
   const reserved = parseReservedArguments(argv);
   if (reserved) return runReservedCommand(reserved);
 
@@ -284,7 +288,7 @@ function parseReservedArguments(argv: readonly string[]): ParsedReservedArgument
   return { ...parsed, reservedRunId, reservedConfigDigest };
 }
 
-function createController(config: PersonalMvpConfig, material: LaunchMaterial, stateDirectory = config.paths.state): PersonalMvpController {
+export function createController(config: PersonalMvpConfig, material: LaunchMaterial, stateDirectory = config.paths.state, expectedContractSha256?: string): PersonalMvpController {
   const commands = new NodeCommandRunner();
   const apiKey = process.env[config.linear.apiKeyEnv];
   const tickets: TicketPort = apiKey
@@ -292,6 +296,7 @@ function createController(config: PersonalMvpConfig, material: LaunchMaterial, s
     : { async get(): Promise<never> { throw new Error(`missing Linear credential environment variable: ${config.linear.apiKeyEnv}`); } };
   return new PersonalMvpController({
     launchMaterial: material,
+    ...(expectedContractSha256 ? { expectedContractSha256 } : {}),
     controllerPid: process.pid,
     modelPolicy: config.modelPolicy,
     tickets,
@@ -338,7 +343,7 @@ function childStateDirectoryOverride(): string | undefined {
   return path.resolve(value);
 }
 
-function requestFromConfig(config: PersonalMvpConfig, ticketId: string): RunRequest {
+export function requestFromConfig(config: PersonalMvpConfig, ticketId: string): RunRequest {
   return {
     ticketId,
     repository: config.repository.slug,

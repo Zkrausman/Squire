@@ -159,7 +159,7 @@ export async function receiveOwnerPiIdentity(fd = 3, parentPid = process.ppid): 
   return identity;
 }
 
-export async function verifyRunningParentPi(identity: OwnerPiIdentity): Promise<void> {
+export async function verifyDetachedPiRuntime(identity: OwnerPiIdentity): Promise<void> {
   validateOwnerPiIdentity(identity);
   const actualCli = await realpath(identity.cliPath);
   if (actualCli !== identity.cliPath || hash(await readFile(actualCli)) !== identity.cliSha256) throw new Error("parent Pi executable changed");
@@ -169,6 +169,10 @@ export async function verifyRunningParentPi(identity: OwnerPiIdentity): Promise<
   if (hash(await readFile(identity.modelStorePath)) !== identity.modelStoreSha256) throw new Error("parent Pi model store changed");
   if (await modelConfigDigest(identity.modelConfigPath) !== identity.modelConfigSha256) throw new Error("parent Pi model config changed");
   if (executableCodeDigest(path.dirname(path.dirname(path.dirname(actualCli)))) !== identity.codeTreeSha256) throw new Error("parent Pi executable code changed");
+}
+
+export async function verifyRunningParentPi(identity: OwnerPiIdentity): Promise<void> {
+  await verifyDetachedPiRuntime(identity);
   let firstScript: string | undefined;
   if (process.platform === "win32") {
     const command = `Get-CimInstance Win32_Process -Filter 'ProcessId=${identity.pid}' | Select-Object -ExpandProperty CommandLine`;
@@ -179,7 +183,7 @@ export async function verifyRunningParentPi(identity: OwnerPiIdentity): Promise<
     const arguments_ = (await readFile(`/proc/${identity.pid}/cmdline`)).toString("utf8").split("\0");
     firstScript = arguments_[1];
   }
-  if (!firstScript || await realpath(firstScript) !== actualCli) throw new Error("parent process is not running the asserted Pi CLI");
+  if (!firstScript || await realpath(firstScript) !== await realpath(identity.cliPath)) throw new Error("parent process is not running the asserted Pi CLI");
 }
 
 export async function modelConfigDigest(file: string): Promise<string | null> {
