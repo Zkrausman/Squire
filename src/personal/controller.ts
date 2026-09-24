@@ -63,6 +63,8 @@ export interface PersonalRunMetadata {
 export interface PersonalMvpControllerOptions {
   readonly launchMaterial?: LaunchMaterial;
   readonly tickets: TicketPort;
+  /** Optional queue-approved exact Linear contract digest. */
+  readonly expectedContractSha256?: string;
   readonly workspaces: WorkspacePort;
   readonly phases: PhasePort;
   readonly publication: PublicationPort;
@@ -141,10 +143,13 @@ export class PersonalMvpController {
   readonly #testCommands: readonly string[];
   readonly #controllerPid: number | undefined;
   readonly #onPersistenceError: (error: unknown) => void;
+  readonly #expectedContractSha256: string | undefined;
   readonly #contexts = new Map<string, RunContext>();
   readonly #reservedClaims = new Set<string>();
 
   constructor(options: PersonalMvpControllerOptions) {
+    if (options.expectedContractSha256 !== undefined && !/^[a-f0-9]{64}$/u.test(options.expectedContractSha256)) throw Error("queue approved contract digest invalid");
+    this.#expectedContractSha256 = options.expectedContractSha256;
     for (const key of ["escalationPolicy", "reportCorrectionPolicy", "promptPolicy", "remediationPolicy"]) if (Object.hasOwn(options,key)) throw new Error(`${key} is retired; remove it and configure only implement/verify`);
     this.#material = options.launchMaterial === undefined ? undefined : validateLaunchMaterial(options.launchMaterial);
     this.#retryPolicy = validateLaunchRetryPolicy(this.#material ? this.#material.config.launchRetryPolicy : options.launchRetryPolicy);
@@ -208,8 +213,12 @@ export class PersonalMvpController {
     return state;
   }
 
-  async run(request: RunRequest, signal?: AbortSignal): Promise<PersonalRunState> {
+  async run(request: RunRequest, signal?: AbortSignal, onReserved?: (runId: string) => Promise<void>): Promise<PersonalRunState> {
     const reserved = await this.reserve(request, { executionMode: "foreground" });
+    if (onReserved) {
+      try { await onReserved(reserved.runId); }
+      catch (error) { await this.failReserved(reserved.runId, error); throw error; }
+    }
     const context = this.#contexts.get(reserved.runId)!;
     return this.#executeReserved(context, request, signal);
   }
@@ -390,6 +399,7 @@ export class PersonalMvpController {
       if (ticket.id !== request.ticketId) throw new Error("Linear returned a different ticket");
       const contractBytes = JSON.stringify(ticket);
       if (Buffer.byteLength(contractBytes) > 128 * 1024) throw new Error("ticket contract exceeds bound");
+      if (this.#expectedContractSha256 && createHash("sha256").update(contractBytes).digest("hex") !== this.#expectedContractSha256) throw Error("queue approved Linear contract changed");
       await context.persist({
         contract: { ticket: structuredClone(ticket), digest: createHash("sha256").update(contractBytes).digest("hex") },
         ticketTitle: ticket.title,
