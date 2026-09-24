@@ -64,15 +64,14 @@ test("failure stops before the next ticket, preserves previous PR and terminal s
   assert.deepEqual(state.prs, ["https://github.com/acme/repo/pull/1"]);
   assert.match(state.error ?? "", /candidate failed/);
 }));
-test("cancellation stops after active ticket and cannot dispatch another", async () => fixture(async (store, id) => {
+test("interrupted active run blocks without dispatching another ticket", async () => fixture(async (store, id) => {
   const order: string[] = [];
-  const state = await runSimpleQueue({ store, seal: fakeSeal(id, ["AIDEV-1", "AIDEV-2"]), async run(ticket, _digest, signal, onReserved) {
+  const state = await runSimpleQueue({ store, seal: fakeSeal(id, ["AIDEV-1", "AIDEV-2"]), async run(ticket, _digest, _signal, onReserved) {
     order.push(ticket); await onReserved("run-1"); await store.cancel();
     assert.equal(await store.cancelled(), true);
-    if (signal.aborted) throw signal.reason;
-    return published(ticket, "1");
+    throw Error("active run stopped without publication");
   } });
-  assert.deepEqual(order, ["AIDEV-1"]); assert.equal(state.status, "cancelled");
+  assert.deepEqual(order, ["AIDEV-1"]); assert.equal(state.status, "blocked");
 }));
 test("cancellation racing a published PR retains the PR and stops the next ticket", async () => fixture(async (store, id) => {
   const order: string[] = [];

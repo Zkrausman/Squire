@@ -29,6 +29,10 @@ export function validateSimpleSeal(value: unknown): SimpleQueueSeal {
   return { version: 1, queueId: v["queueId"] as string, configPath: v["configPath"] as string, configSha256: v["configSha256"] as string, material, attestation };
 }
 export async function writeSimpleSeal(root: string, seal: SimpleQueueSeal): Promise<ReportEvidence> {
+  // Linux's fd-relative evidence backend requires its immediate parent to
+  // exist before it opens the protected seal directory. The backend verifies
+  // the resulting owner, mode and ancestor chain before writing any bytes.
+  if (process.platform !== "win32") await mkdir(root, { recursive: true, mode: 0o700 });
   const port = createReportEvidence(path.join(root, "seal"));
   try { return await port.write(JSON.stringify(validateSimpleSeal(seal))); }
   finally { await port.release?.(); }
