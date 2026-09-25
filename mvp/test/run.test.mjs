@@ -165,6 +165,17 @@ async function runState(summaryRecord) {
   return JSON.parse(await readFile(path.join(summaryRecord.stateDir, 'state.json'), 'utf8'));
 }
 
+async function headDiagnostic(f, result) {
+  const report = summary(result);
+  const state = await runState(report);
+  const commandDir = path.join(report.stateDir, 'commands');
+  const headLog = (await readdir(commandDir)).find(name => name.endsWith('-source-head.stdout.log'));
+  return JSON.stringify({ error: state.error, expected: f.baseSha,
+    configured: JSON.parse(await readFile(f.configFile, 'utf8')).baseSha,
+    sourceHeadLog: headLog ? (await readFile(path.join(commandDir, headLog), 'utf8')).trim() : null,
+    sourceHeadNow: git(f.sourceRepo, ['rev-parse', 'HEAD']) });
+}
+
 async function progressReports(stateDir) {
   const directory = path.join(stateDir, 'progress', 'reports');
   return Promise.all((await readdir(directory)).filter(name => name.endsWith('.json')).sort()
@@ -366,7 +377,7 @@ test('slow observers are bounded and cannot extend the primary hard deadline', {
   const stateDir = path.join(f.resultRoot, directories[0]);
   const state = JSON.parse(await readFile(path.join(stateDir, 'state.json'), 'utf8'));
   assert.equal(state.phase, 'failed');
-  assert.match(state.error, /implementation Pi timed out/);
+  assert.match(state.error, /implementation Pi timed out/, await headDiagnostic(f, result));
   const reports = await progressReports(stateDir);
   assert.ok(reports.some(report => report.status === 'unavailable'
     && /runtime bound|cancelled/.test(report.receipt.failure)));
@@ -387,7 +398,7 @@ test('terminal cancellation terminates an observer descendant and records cancel
     SQUIRE_FAKE_OBSERVER_DESCENDANT: '1',
     SQUIRE_FAKE_OBSERVER_PID_FILE: pidFile,
   }, 12_000);
-  assert.equal(result.code, 0, JSON.stringify({ stderr: result.stderr, state: await runState(summary(result)) }));
+  assert.equal(result.code, 0, result.code === 0 ? result.stderr : await headDiagnostic(f, result));
   const terminal = summary(result);
   assert.equal(terminal.phase, 'candidate');
   assert.ok(await stat(pidFile));
