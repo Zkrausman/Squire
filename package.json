@@ -7,6 +7,6 @@
   "engines": {"node": ">=24 <25"},
   "scripts": {
     "squire": "node mvp/run.mjs",
-    "test": "node --check mvp/run.mjs && node --test mvp/test/*.test.mjs"
+    "test": "node --check mvp/run.mjs && node --check mvp/window-web.mjs && node --check mvp/window-web.js && node --test mvp/test/*.test.mjs"
   }
 }

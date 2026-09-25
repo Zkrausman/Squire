@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Squire · Active tickets</title>
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true">S</span><div><strong>Squire</strong><span class="brand-sub">Active tickets</span></div></div>
+      <div class="live"><span class="live-dot" aria-hidden="true"></span><span id="connection">Connecting</span></div>
+    </header>
+    <main class="workspace">
+      <section class="list-panel" aria-label="Active ticket list">
+        <div class="panel-heading"><div><span class="eyebrow">OVERVIEW</span><h1>In progress <span id="count" class="count">0</span></h1></div></div>
+        <div id="tickets" class="tickets"></div>
+        <div id="empty" class="empty"><span class="empty-icon" aria-hidden="true">✦</span><strong>Nothing running right now</strong><span>Tickets appear here while Squire is active.</span></div>
+      </section>
+      <section class="detail-panel" aria-label="Selected ticket status report">
+        <span class="eyebrow">STATUS REPORT</span>
+        <div id="detail" class="detail"><div class="placeholder"><span class="placeholder-icon" aria-hidden="true">↗</span><h2>Select a ticket</h2><p>Choose a run to see its latest Luna observation.</p></div></div>
+      </section>
+    </main>
+    <footer><span>Read-only · Refreshes automatically</span><span>Observations are not verification or approval.</span></footer>
+  </div>
+</body>
+</html>

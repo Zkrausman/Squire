@@ -6,6 +6,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { WindowPresence, defaultWindowRoot, validateWindowConfig } from './window-state.mjs';
 
 const PLAN_MODEL = 'openai-codex/gpt-6-sol';
 const IMPLEMENTATION_MODEL = 'openai-codex/gpt-6-luna';
@@ -32,6 +33,7 @@ class RunFailure extends Error {}
 let state;
 let hooksPath;
 let progressReporter;
+let windowPresence;
 const runnerAbortController = new AbortController();
 let commandNumber = 0;
 
@@ -68,7 +70,7 @@ async function loadConfig(configPath) {
   let config;
   try { config = JSON.parse(bytes.toString('utf8')); } catch { fail('Config is not valid JSON'); }
   if (!config || Array.isArray(config) || typeof config !== 'object') fail('Invalid config');
-  const allowed = new Set(['sourceRepo', 'baseSha', 'ticketFile', 'resultRoot', 'planModel', 'implementationModel', 'progressIntervalMinutes']);
+  const allowed = new Set(['sourceRepo', 'baseSha', 'ticketFile', 'resultRoot', 'planModel', 'implementationModel', 'progressIntervalMinutes', 'window']);
   if (Object.keys(config).some(key => !allowed.has(key))) fail('Config contains unsupported fields');
   if (!validPath(config.sourceRepo) || !validPath(config.ticketFile) || !validPath(config.resultRoot)) fail('Config paths must be absolute, bounded paths');
   if (typeof config.baseSha !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(config.baseSha)) fail('Invalid pinned baseSha');
@@ -81,6 +83,10 @@ async function loadConfig(configPath) {
     || progressIntervalMinutes > MAX_PROGRESS_INTERVAL_MINUTES) {
     fail(`progressIntervalMinutes must be an integer from ${MIN_PROGRESS_INTERVAL_MINUTES} to ${MAX_PROGRESS_INTERVAL_MINUTES}`);
   }
+  if (config.window !== undefined && process.platform !== 'win32') fail('window is supported only on Windows');
+  let window;
+  try { if (config.window !== undefined) window = validateWindowConfig(config.window); }
+  catch { fail('window requires a bounded ticketId and ticketName'); }
   return {
     sourceRepo: config.sourceRepo,
     baseSha: config.baseSha,
@@ -89,6 +95,7 @@ async function loadConfig(configPath) {
     planModel: PLAN_MODEL,
     implementationModel: IMPLEMENTATION_MODEL,
     progressIntervalMinutes,
+    window,
   };
 }
 
@@ -104,6 +111,7 @@ async function stage(phase, values = {}) {
   Object.assign(state, values);
   state.events.push({ at: new Date().toISOString(), phase });
   await persist();
+  void windowPresence?.queue(phase).catch(() => {});
 }
 
 async function drain(stream, filename, limit, keepMemory, kill, onChunk = undefined) {
@@ -628,6 +636,8 @@ class ProgressReporter {
       await rename(temporary, filename);
       emit({ type: 'squire.progress', runId: state.runId, stateDir: state.directory,
         reportFile: `progress/reports/${String(number).padStart(3, '0')}.json`, report: record });
+      void windowPresence?.setReport({ phase: session.phase, status: outcome, number,
+        finishedAtMs: finishedAt, report: assessedReport }).catch(() => {});
     } catch {
       // Progress is best-effort and must never affect the primary run or candidate status.
     }
@@ -875,6 +885,16 @@ async function createRun(config) {
   await mkdir(hooksPath, { mode: 0o700 });
   await writeFile(path.join(directory, 'ticket.md'), ticketBytes, { flag: 'wx', mode: 0o600 });
   await stage('preflight');
+  if (config.window) {
+    windowPresence = new WindowPresence({ root: defaultWindowRoot(), runId,
+      ticketId: config.window.ticketId, ticketName: config.window.ticketName, phase: state.phase });
+    try { await windowPresence.start(); }
+    catch {
+      await windowPresence.stop().catch(() => {});
+      windowPresence = null;
+      console.error('Squire status window unavailable; primary run continues.');
+    }
+  }
   return { source, ticketText, ticketBytes };
 }
 
@@ -959,10 +979,12 @@ if (process.argv.length !== 3) {
   try {
     const result = await main(path.resolve(process.argv[2]));
     await progressReporter?.endSession();
+    await windowPresence?.stop();
     emit({ runId: state.runId, phase: result.phase, stateDir: state.directory, candidate: state.candidate ?? null });
     process.exitCode = result.exitCode;
   } catch (error) {
     await progressReporter?.endSession().catch(() => {});
+    await windowPresence?.stop().catch(() => {});
     if (state) {
       state.phase = 'failed';
       state.error = error instanceof RunFailure ? error.message : 'Unexpected host operation failure';

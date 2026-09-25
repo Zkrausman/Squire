@@ -5,5 +5,6 @@
   "resultRoot": "C:/private/squire-results",
   "planModel": "openai-codex/gpt-6-sol",
   "implementationModel": "openai-codex/gpt-6-luna",
-  "progressIntervalMinutes": 15
+  "progressIntervalMinutes": 15,
+  "window": { "ticketId": "AIDEV-335", "ticketName": "Active ticket window" }
 }
