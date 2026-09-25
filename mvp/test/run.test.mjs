@@ -251,6 +251,20 @@ test('rejects invalid progress intervals before launching any Pi process', async
   }
 });
 
+test('rejects malformed Windows window identity before any Pi launch', async t => {
+  const f = await fixture(t);
+  const original = JSON.parse(await readFile(f.configFile, 'utf8'));
+  for (const window of [{}, {ticketId:'zar-218',ticketName:'History'},
+    {ticketId:'ZAR-218',ticketName:'\nsecret'}, {ticketId:'ZAR-218',ticketName:'Name',extra:true}]) {
+    await writeFile(f.configFile, JSON.stringify({...original, window}));
+    const result = await invoke(f);
+    assert.equal(result.code, 1);
+    assert.match(summary(result).reason, /window/);
+    await assert.rejects(stat(f.captureFile));
+    await assert.rejects(stat(f.resultRoot));
+  }
+});
+
 test('schedules reports during Plan with read-only allowlisted activity', { timeout: 12_000 }, async t => {
   const f = await fixture(t);
   const config = JSON.parse(await readFile(f.configFile, 'utf8'));
