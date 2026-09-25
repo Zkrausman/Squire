@@ -387,7 +387,7 @@ test('terminal cancellation terminates an observer descendant and records cancel
     SQUIRE_FAKE_OBSERVER_DESCENDANT: '1',
     SQUIRE_FAKE_OBSERVER_PID_FILE: pidFile,
   }, 12_000);
-  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.code, 0, JSON.stringify({ stderr: result.stderr, state: await runState(summary(result)) }));
   const terminal = summary(result);
   assert.equal(terminal.phase, 'candidate');
   assert.ok(await stat(pidFile));
