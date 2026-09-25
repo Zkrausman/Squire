@@ -116,14 +116,12 @@ export class WindowPresence {
     await this.queue();
     this.timer = setInterval(() => { void this.queue().catch(() => {}); }, HEARTBEAT_MS);
     this.timer.unref();
-    const script = path.join(ownDir, 'windows-window-launch.ps1');
     try {
-      const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script,
-        '-Root', this.root, '-NodePath', process.execPath, '-SnapshotPath', path.join(ownDir, 'window-state.mjs')],
-      { stdio: 'ignore', windowsHide: true });
-      child.on('error', () => {}); // The window is optional; no effect on primary run.
+      const child = spawn(process.execPath, [path.join(ownDir, 'window-web.mjs'), '--serve', this.root],
+        { stdio: 'ignore', detached: true, windowsHide: true });
+      child.on('error', () => {}); // The display is optional; no effect on the primary run.
       child.unref();
-    } catch { /* Window launch is best-effort. */ }
+    } catch { /* Display launch is best-effort. */ }
   }
 
   async stop() {
@@ -140,7 +138,7 @@ export async function readWindowRecords(root) {
   try { names = await readdir(root); } catch { return []; }
   const records = [];
   for (const name of names.filter(name => RUN_ID.test(name.slice(0, -5)) && name.endsWith('.json'))
-    .sort().reverse().slice(0, MAX_FILES)) {
+    .sort().reverse()) {
     try {
       const file = path.join(root, name);
       const info = await lstat(file);
@@ -187,11 +185,14 @@ export async function windowsProcessStarts(ids) {
   } catch { return new Map(); }
 }
 
-async function snapshot(root) {
-  const records = await readWindowRecords(root);
+export async function snapshot(root) {
+  const now = Date.now();
+  const records = (await readWindowRecords(root))
+    .filter(item => item.updatedAtMs <= now + 2_000 && now - item.updatedAtMs <= STALE_MS)
+    .slice(0, MAX_FILES);
   if (!records.length) return [];
   const starts = await windowsProcessStarts([...new Set(records.map(item => item.pid))]);
-  return selectActive(records, starts);
+  return selectActive(records, starts, now);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

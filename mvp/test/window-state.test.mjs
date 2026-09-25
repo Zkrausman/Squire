@@ -4,9 +4,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WindowPresence, readWindowRecords, selectActive, validateWindowConfig, windowsProcessStarts } from '../window-state.mjs';
+import { createWindowWebServer } from '../window-web.mjs';
 
 const execFileAsync = promisify(execFile);
 const modulePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../window-state.mjs');
@@ -114,13 +116,41 @@ test('only a bounded Luna report is projected into the window, and phase changes
   await presence.stop();
 });
 
-test('Windows window and bootstrap scripts parse cleanly', {skip:process.platform !== 'win32'}, async () => {
-  const directory = path.dirname(modulePath);
-  for (const name of ['windows-window.ps1', 'windows-window-launch.ps1']) {
-    const file = path.join(directory, name).replaceAll("'", "''");
-    const script = `$tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors); if($errors.Count){$errors | Out-String | Write-Error; exit 1}`;
-    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {timeout:10_000});
+test('a local web view serves only token-scoped read-only assets and status', async t => {
+  const root = await fixture(t);
+  const token = 'a'.repeat(48);
+  const rows = [{runId:one,ticketId:'AIDEV-335',ticketName:'Window',phase:'plan',report:null}];
+  const {server,url} = await createWindowWebServer({root,token,getRows:async()=>rows});
+  await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const page = await fetch(url());
+  assert.equal(page.status,200);
+  assert.match(page.headers.get('content-security-policy'), /default-src 'none'/);
+  assert.match(await page.text(), /Squire · Active tickets/);
+  const script = await (await fetch(`${url()}app.js`)).text();
+  assert.match(script,/textContent/);
+  assert.doesNotMatch(script,/innerHTML/);
+  const response = await fetch(`${url()}api/runs`);
+  assert.deepEqual(await response.json(),rows);
+  assert.equal(response.headers.get('access-control-allow-origin'),null);
+  assert.equal((await fetch(`${url()}api/runs`,{method:'POST'})).status,404);
+  assert.equal((await fetch(`${url().replace(token,'b'.repeat(48))}api/runs`)).status,404);
+  assert.equal((await fetch(`${url()}unrelated`)).status,404);
+  const wrongHost = await new Promise((resolve,reject) => http.get(`${url()}api/runs`,
+    {headers:{Host:'other.local'}},response => { response.resume(); resolve(response.statusCode); }).on('error',reject));
+  assert.equal(wrongHost,404);
+});
+
+test('newer crashed records do not hide an older live run', async t => {
+  const root = await fixture(t);
+  const now = Date.now();
+  await put(root,record(one,{updatedAtMs:now,pid:24680,processStartMs:1_000_000}));
+  for(let n=0;n<129;n++) {
+    await put(root,record(`squire-1790368585736-${(0x8000000000+n).toString(16)}`,
+      {updatedAtMs:now-30_000,pid:24681,processStartMs:1_001_000}));
   }
+  const selected = selectActive(await readWindowRecords(root),new Map([[24680,1_000_000]]),now);
+  assert.deepEqual(selected.map(item=>item.runId),[one]);
 });
 
 test('Windows snapshot confirms current process start before showing the row', {skip:process.platform !== 'win32'}, async t => {

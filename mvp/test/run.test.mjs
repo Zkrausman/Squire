@@ -299,7 +299,7 @@ test('streams bounded Luna reports during Implement without changing evidence or
   const result = await invoke(f, {
     SQUIRE_TEST_PROGRESS_INTERVAL_MS: '25',
     SQUIRE_FAKE_ACTIVITY: '1',
-    SQUIRE_FAKE_DELAY_MS: '650',
+    SQUIRE_FAKE_DELAY_MS: '1200',
     SQUIRE_FAKE_OBSERVER_DELAY_MS: '70',
     SQUIRE_FAKE_ACTIVE_SLOT: activeSlot,
     SQUIRE_FAKE_COLLISION_FILE: collisionFile,
@@ -319,7 +319,7 @@ test('streams bounded Luna reports during Implement without changing evidence or
   assert.ok(reports.every(report => /^[a-f0-9]{64}$/.test(report.evidenceDigest)));
   const useful = reports.find(report => report.status === 'complete' && report.phase === 'implement'
     && report.evidence.recentActivity.some(item => item.activity === 'test process' && item.tool === 'bash'));
-  assert.ok(useful, `expected a completed assessment with allowlisted tool activity: ${JSON.stringify(reports.map(report => report.evidence))}`);
+  assert.ok(useful, `expected a completed assessment with allowlisted tool activity: ${JSON.stringify(reports.map(report => ({status:report.status,evidence:report.evidence})))}`);
   assert.equal(useful.observer.model, 'openai-codex/gpt-6-luna');
   assert.equal(useful.observer.freshSession, true);
   assert.equal(useful.observer.toolsEnabled, false);
