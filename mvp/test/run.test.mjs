@@ -90,8 +90,10 @@ const observerReport = JSON.stringify({currentAction:'Editing the candidate', ev
 const text = stage === 'plan' ? ${JSON.stringify(planText)} : stage === 'observer' ? observerReport : 'Implementation complete.\\n';
 const sensitiveText = 'SQUIRE_SECRET_SENTINEL_7f9b2d';
 const activityEvents = stage === 'implementation' && process.env.SQUIRE_FAKE_ACTIVITY === '1' ? [
-  {type:'tool_execution_start', toolName:'bash', args:{command:'npm test --token=SQUIRE_COMMAND_SENTINEL_1'}},
+  {type:'tool_execution_start', toolCallId:'test-call-1', toolName:'bash', args:{command:'npm test --token=SQUIRE_COMMAND_SENTINEL_1'}},
   {type:'bash_execution_update', output:sensitiveText, partialResult:{content:[{type:'text', text:sensitiveText}]}},
+  {type:'tool_execution_update', toolCallId:'test-call-1', toolName:'bash', partialResult:{content:[{type:'text', text:sensitiveText}]}},
+  {type:'tool_execution_end', toolCallId:'test-call-1', toolName:'bash', result:{content:[{type:'text', text:sensitiveText}]}},
 ] : stage === 'plan' && process.env.SQUIRE_FAKE_ACTIVITY === '1' ? [
   {type:'tool_execution_start', toolName:'read', args:{path:'must not be forwarded'}},
 ] : [];
@@ -297,6 +299,7 @@ test('streams bounded Luna reports during Implement without changing evidence or
   assert.equal(useful.observer.freshSession, true);
   assert.equal(useful.observer.toolsEnabled, false);
   assert.ok(useful.evidence.recentActivity.some(item => item.activity === 'shell process'));
+  assert.ok(useful.evidence.recentActivity.some(item => item.activity === 'test process' && item.status === 'completed'));
   assert.equal(useful.report.completionPercent, 'unknown');
   assert.equal(useful.report.eta, 'unknown');
   assert.equal(useful.report.disclaimer, 'Observation only; not verification, approval, or authority.');

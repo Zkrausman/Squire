@@ -359,6 +359,7 @@ class ActivityTracker {
     this.startedAt = startedAt;
     this.buffer = '';
     this.items = [];
+    this.toolActivities = new Map();
     this.lastActivityAt = null;
   }
 
@@ -388,7 +389,14 @@ class ActivityTracker {
     }
     if (['tool_execution_start', 'tool_execution_update', 'tool_execution_end'].includes(event.type)) {
       const tool = safeToolName(event.toolName);
-      const activity = activityLabel(tool, event.args);
+      const id = typeof event.toolCallId === 'string' && event.toolCallId.length <= 128 ? event.toolCallId : null;
+      const activity = id && this.toolActivities.has(id)
+        ? this.toolActivities.get(id) : activityLabel(tool, event.args);
+      if (event.type === 'tool_execution_start' && id) {
+        if (this.toolActivities.size >= MAX_ACTIVITY_ITEMS) this.toolActivities.delete(this.toolActivities.keys().next().value);
+        this.toolActivities.set(id, activity);
+      }
+      if (event.type === 'tool_execution_end' && id) this.toolActivities.delete(id);
       const status = event.type === 'tool_execution_start' ? 'started'
         : event.type === 'tool_execution_update' ? 'progress'
           : event.isError === true ? 'failed' : 'completed';
