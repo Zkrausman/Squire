@@ -181,7 +181,7 @@ export async function windowsProcessStarts(ids) {
   const script = '$ids=@(' + ids.join(',') + '); @($ids | ForEach-Object { try { $p=Get-Process -Id $_ -ErrorAction Stop; @{ pid=[int]$p.Id; startMs=[long]([DateTimeOffset]$p.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() } } catch {} }) | ConvertTo-Json -Compress';
   try {
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-      { timeout: 3_000, maxBuffer: 32_768, windowsHide: true });
+      { timeout: 6_000, maxBuffer: 32_768, windowsHide: true });
     const parsed = JSON.parse(stdout);
     return new Map((Array.isArray(parsed) ? parsed : [parsed]).filter(Boolean).map(item => [item.pid, item.startMs]));
   } catch { return new Map(); }

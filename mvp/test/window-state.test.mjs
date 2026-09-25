@@ -91,7 +91,7 @@ test('presence writes one bounded atomic per-run record and removes it on stop',
 test('only a bounded Luna report is projected into the window, and phase changes clear it', async t => {
   const root = await fixture(t);
   const presence = new WindowPresence({root, runId:one, ticketId:'AIDEV-335',ticketName:'Window',phase:'plan'});
-  if (process.platform === 'win32') presence.record.processStartMs = (await windowsProcessStarts([process.pid])).get(process.pid);
+  // Projection is independent of a slow OS process query; the snapshot identity path has its own test.
   const report = {phase:'plan',status:'complete',number:1,finishedAtMs:Date.now(),report:{
     currentAction:'Reading tests',evidence:['One read completed'],risks:[],stalls:[],confidence:'medium',
     secret:'SHOULD_NOT_APPEAR',completionPercent:'unknown',eta:'unknown'}};
@@ -108,12 +108,9 @@ test('only a bounded Luna report is projected into the window, and phase changes
   await presence.setReport({...report,phase:'implement',report:{...report.report,currentAction:'\nprivate command'}});
   assert.equal((await readWindowRecords(root))[0].report, null, 'invalid model text is not rendered');
   await presence.setReport({...report,phase:'implement',number:2,report:{...report.report,currentAction:'Testing fixture'}});
-  const {stdout} = await execFileAsync(process.execPath, [modulePath, '--snapshot', root], {timeout:10_000});
-  if (process.platform === 'win32') {
-    const projected = JSON.parse(stdout);
-    assert.equal(projected[0].report.currentAction, 'Testing fixture');
-    assert.equal(projected[0].report.number, 2);
-  }
+  const projected = selectActive(await readWindowRecords(root), new Map([[process.pid,presence.record.processStartMs]]));
+  assert.equal(projected[0].report.currentAction, 'Testing fixture');
+  assert.equal(projected[0].report.number, 2);
   await presence.stop();
 });
 
