@@ -38,13 +38,13 @@ async function fixture(t) {
   const configFile = path.join(directory, 'config.json');
   await writeFile(ticketFile, ticket);
   await writeFile(fakePi, `
-import { appendFile, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 const args = process.argv.slice(2);
 const toolIndex = args.indexOf('--tools');
 const tools = args[toolIndex + 1];
-const stage = tools === 'read,grep,find,ls' ? 'plan' : 'implementation';
+const stage = args.includes('--no-tools') ? 'observer' : tools === 'read,grep,find,ls' ? 'plan' : 'implementation';
 const sessionDir = args[args.indexOf('--session-dir') + 1];
 let prompt = '';
 for await (const chunk of process.stdin) prompt += chunk.toString('utf8');
@@ -53,6 +53,32 @@ const thinking = args[args.indexOf('--thinking') + 1];
 const context = args.includes('--no-context-files') ? '' : await readFile(path.join(process.cwd(), 'AGENTS.md'), 'utf8').catch(() => '');
 await appendFile(process.env.SQUIRE_FAKE_CAPTURE, JSON.stringify({stage, tools, model, thinking, args, prompt, context, cwd: process.cwd()}) + '\\n');
 await mkdir(sessionDir, {recursive: true});
+let ownsObserverSlot = false;
+if (stage === 'observer') {
+  if (process.env.SQUIRE_FAKE_ACTIVE_SLOT) {
+    try { await writeFile(process.env.SQUIRE_FAKE_ACTIVE_SLOT, String(process.pid), {flag:'wx'}); ownsObserverSlot = true; }
+    catch {
+      const owner = Number(await readFile(process.env.SQUIRE_FAKE_ACTIVE_SLOT, 'utf8').catch(() => '0'));
+      let ownerAlive = false;
+      try {
+        if (owner > 0) { process.kill(owner, 0); ownerAlive = true; }
+      } catch { /* stale owner */ }
+      if (!ownerAlive) {
+        await rm(process.env.SQUIRE_FAKE_ACTIVE_SLOT, {force:true});
+        try { await writeFile(process.env.SQUIRE_FAKE_ACTIVE_SLOT, String(process.pid), {flag:'wx'}); ownsObserverSlot = true; }
+        catch { await writeFile(process.env.SQUIRE_FAKE_COLLISION_FILE, 'overlap', {flag:'a'}); }
+      } else await writeFile(process.env.SQUIRE_FAKE_COLLISION_FILE, 'overlap', {flag:'a'});
+    }
+  }
+  if (process.env.SQUIRE_FAKE_OBSERVER_DESCENDANT === '1') {
+    const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:['ignore', 'ignore', 'ignore']});
+    await writeFile(process.env.SQUIRE_FAKE_OBSERVER_PID_FILE, String(descendant.pid));
+  }
+  if (process.env.SQUIRE_FAKE_OBSERVER_MODE === 'crash') process.exit(9);
+  if (process.env.SQUIRE_FAKE_OBSERVER_MODE === 'timeout') await new Promise(() => {});
+  const wait = Number(process.env.SQUIRE_FAKE_OBSERVER_DELAY_MS || 0);
+  if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+}
 if (stage === 'plan' && process.env.SQUIRE_FAKE_MODE === 'descendant') {
   process.stdout.write('{"partial":true}\\n');
   process.stderr.write('fake Pi stderr before timeout\\n');
@@ -60,9 +86,20 @@ if (stage === 'plan' && process.env.SQUIRE_FAKE_MODE === 'descendant') {
   await writeFile(process.env.SQUIRE_FAKE_DESCENDANT_PID, String(descendant.pid));
   await new Promise(() => {});
 }
-const text = stage === 'plan' ? ${JSON.stringify(planText)} : 'Implementation complete.\\n';
+const observerReport = JSON.stringify({currentAction:'Editing the candidate', evidence:['Bounded Pi activity was observed'], risks:[], stalls:[], confidence:'medium', completionPercent:'unknown', eta:'unknown'});
+const text = stage === 'plan' ? ${JSON.stringify(planText)} : stage === 'observer' ? observerReport : 'Implementation complete.\\n';
+const sensitiveText = 'SQUIRE_SECRET_SENTINEL_7f9b2d';
+const activityEvents = stage === 'implementation' && process.env.SQUIRE_FAKE_ACTIVITY === '1' ? [
+  {type:'tool_execution_start', toolCallId:'test-call-1', toolName:'bash', args:{command:'npm test --token=SQUIRE_COMMAND_SENTINEL_1'}},
+  {type:'bash_execution_update', output:sensitiveText, partialResult:{content:[{type:'text', text:sensitiveText}]}},
+  {type:'tool_execution_update', toolCallId:'test-call-1', toolName:'bash', partialResult:{content:[{type:'text', text:sensitiveText}]}},
+  {type:'tool_execution_end', toolCallId:'test-call-1', toolName:'bash', result:{content:[{type:'text', text:sensitiveText}]}},
+] : stage === 'plan' && process.env.SQUIRE_FAKE_ACTIVITY === '1' ? [
+  {type:'tool_execution_start', toolName:'read', args:{path:'must not be forwarded'}},
+] : [];
 const events = [
   {type:'session', version:3, id:'fake-session', timestamp:new Date().toISOString(), cwd:process.cwd()},
+  ...activityEvents,
   {type:'message_end', message:{role:'assistant', stopReason:'stop', content:[{type:'text', text}]}},
 ];
 if (process.env.SQUIRE_FAKE_MODE !== 'unsettled-plan' || stage !== 'plan') events.push({type:'agent_settled'});
@@ -87,7 +124,16 @@ if (stage === 'implementation' && process.env.SQUIRE_FAKE_NO_CHANGES !== '1') {
   await writeFile(path.join(process.cwd(), 'tracked.txt'), 'after\\n');
   await writeFile(path.join(process.cwd(), 'new-file.txt'), 'untracked artifact\\n');
 }
-process.stdout.write(jsonl);
+const delay = Number((stage === 'plan' ? process.env.SQUIRE_FAKE_PLAN_DELAY_MS : process.env.SQUIRE_FAKE_DELAY_MS) || 0);
+if ((stage === 'plan' || stage === 'implementation') && activityEvents.length && delay > 0) {
+  const prefixCount = 1 + activityEvents.length;
+  process.stdout.write(events.slice(0, prefixCount).map(event => JSON.stringify(event)).join('\\n') + '\\n');
+  await new Promise(resolve => setTimeout(resolve, delay));
+  process.stdout.write(events.slice(prefixCount).map(event => JSON.stringify(event)).join('\\n') + '\\n');
+} else {
+  process.stdout.write(jsonl);
+}
+if (ownsObserverSlot) await rm(process.env.SQUIRE_FAKE_ACTIVE_SLOT, {force:true});
 if ((process.env.SQUIRE_FAKE_MODE === 'nonzero-plan' && stage === 'plan')
   || (process.env.SQUIRE_FAKE_MODE === 'tamper-plan-nonzero' && stage === 'implementation')) process.exitCode = 7;
 `);
@@ -119,6 +165,23 @@ async function runState(summaryRecord) {
   return JSON.parse(await readFile(path.join(summaryRecord.stateDir, 'state.json'), 'utf8'));
 }
 
+async function headDiagnostic(f, result) {
+  const report = summary(result);
+  const state = await runState(report);
+  const commandDir = path.join(report.stateDir, 'commands');
+  const headLog = (await readdir(commandDir)).find(name => name.endsWith('-source-head.stdout.log'));
+  return JSON.stringify({ error: state.error, expected: f.baseSha,
+    configured: JSON.parse(await readFile(f.configFile, 'utf8')).baseSha,
+    sourceHeadLog: headLog ? (await readFile(path.join(commandDir, headLog), 'utf8')).trim() : null,
+    sourceHeadNow: git(f.sourceRepo, ['rev-parse', 'HEAD']) });
+}
+
+async function progressReports(stateDir) {
+  const directory = path.join(stateDir, 'progress', 'reports');
+  return Promise.all((await readdir(directory)).filter(name => name.endsWith('.json')).sort()
+    .map(async name => JSON.parse(await readFile(path.join(directory, name), 'utf8'))));
+}
+
 test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with untracked files', async t => {
   const f = await fixture(t);
   const result = await invoke(f);
@@ -130,6 +193,7 @@ test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with
   const state = await runState(report);
   assert.equal(state.phase, 'candidate');
   assert.equal(state.candidate.status, 'UNVERIFIED');
+  assert.equal(state.progressIntervalMinutes, 15);
   assert.equal(await readFile(path.join(report.stateDir, 'plan.md'), 'utf8'), planText);
   assert.equal(await readFile(path.join(report.stateDir, 'implementation-response.txt'), 'utf8'), 'Implementation complete.\n');
   const patch = await readFile(path.join(report.stateDir, 'candidate.patch'), 'utf8');
@@ -166,10 +230,191 @@ test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with
   assert.ok(manifest.entries.some(entry => entry.path === 'plan.md' && entry.sha256));
   assert.ok(manifest.entries.some(entry => entry.path === 'ticket.md' && entry.sha256));
   assert.ok(manifest.entries.some(entry => entry.path === 'plan.jsonl' && entry.sha256));
+  assert.equal(manifest.entries.some(entry => entry.path === 'progress' || entry.path.startsWith('progress/')), false);
   assert.equal((await readFile(path.join(report.stateDir, 'plan.jsonl'), 'utf8')).includes('agent_settled'), true);
   for (const directory of ['plan-session', 'implementation-session']) {
     assert.ok((await readdir(path.join(report.stateDir, directory))).includes('fake-session.jsonl'));
   }
+});
+
+test('rejects invalid progress intervals before launching any Pi process', async t => {
+  const f = await fixture(t);
+  for (const progressIntervalMinutes of [0, -1, 1.5, 121, '1', null]) {
+    await writeFile(f.configFile, JSON.stringify({
+      sourceRepo: f.sourceRepo, baseSha: f.baseSha, ticketFile: f.ticketFile, resultRoot: f.resultRoot, progressIntervalMinutes,
+    }));
+    const result = await invoke(f);
+    assert.equal(result.code, 1);
+    assert.match(summary(result).reason, /progressIntervalMinutes/);
+    await assert.rejects(stat(f.captureFile));
+    await assert.rejects(stat(f.resultRoot));
+  }
+});
+
+test('schedules reports during Plan with read-only allowlisted activity', { timeout: 12_000 }, async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.progressIntervalMinutes = 1;
+  await writeFile(f.configFile, JSON.stringify(config));
+  const result = await invoke(f, {
+    SQUIRE_TEST_PROGRESS_INTERVAL_MS: '200',
+    SQUIRE_FAKE_ACTIVITY: '1',
+    SQUIRE_FAKE_PLAN_DELAY_MS: '800',
+  }, 10_000);
+  assert.equal(result.code, 0, result.stderr);
+  const terminal = summary(result);
+  const captures = (await readFile(f.captureFile, 'utf8')).trim().split('\n').map(JSON.parse);
+  const observer = captures.find(item => item.stage === 'observer' && item.prompt.includes('"phase":"plan"'));
+  assert.ok(observer, 'expected a fresh Luna assessment of the active Plan phase');
+  assert.match(observer.prompt, /read tool/);
+  assert.doesNotMatch(observer.prompt, /must not be forwarded/);
+  const reports = await progressReports(terminal.stateDir);
+  assert.ok(reports.some(report => report.phase === 'plan' && report.status === 'complete'));
+  assert.equal((await runState(terminal)).candidate.status, 'UNVERIFIED');
+  const manifest = JSON.parse(await readFile(path.join(terminal.stateDir, 'evidence-manifest.json'), 'utf8'));
+  assert.equal(manifest.entries.some(entry => entry.path === 'progress' || entry.path.startsWith('progress/')), false);
+});
+
+test('streams bounded Luna reports during Implement without changing evidence or candidate status', { timeout: 15_000 }, async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.progressIntervalMinutes = 1;
+  await writeFile(f.configFile, JSON.stringify(config));
+  const activeSlot = path.join(f.directory, 'observer-active');
+  const collisionFile = path.join(f.directory, 'observer-overlap');
+  const result = await invoke(f, {
+    SQUIRE_TEST_PROGRESS_INTERVAL_MS: '25',
+    SQUIRE_FAKE_ACTIVITY: '1',
+    SQUIRE_FAKE_DELAY_MS: '650',
+    SQUIRE_FAKE_OBSERVER_DELAY_MS: '70',
+    SQUIRE_FAKE_ACTIVE_SLOT: activeSlot,
+    SQUIRE_FAKE_COLLISION_FILE: collisionFile,
+  }, 12_000);
+  assert.equal(result.code, 0, result.stderr);
+  const terminal = summary(result);
+  assert.equal(terminal.phase, 'candidate');
+  assert.equal(terminal.candidate.status, 'UNVERIFIED');
+  const state = await runState(terminal);
+  assert.equal(state.progressIntervalMinutes, 1);
+  const records = result.stdout.trim().split(/\r?\n/).map(JSON.parse);
+  const live = records.filter(item => item.type === 'squire.progress');
+  assert.ok(live.length >= 1, 'expected an owner-forwardable live progress event');
+  assert.ok(records.indexOf(live[0]) < records.findIndex(item => item.phase === 'candidate'));
+  const reports = await progressReports(terminal.stateDir);
+  assert.ok(reports.some(report => report.status === 'complete'));
+  assert.ok(reports.every(report => /^[a-f0-9]{64}$/.test(report.evidenceDigest)));
+  const useful = reports.find(report => report.status === 'complete' && report.phase === 'implement'
+    && report.evidence.recentActivity.some(item => item.activity === 'test process' && item.tool === 'bash'));
+  assert.ok(useful, `expected a completed assessment with allowlisted tool activity: ${JSON.stringify(reports.map(report => report.evidence))}`);
+  assert.equal(useful.observer.model, 'openai-codex/gpt-6-luna');
+  assert.equal(useful.observer.freshSession, true);
+  assert.equal(useful.observer.toolsEnabled, false);
+  assert.ok(useful.evidence.recentActivity.some(item => item.activity === 'shell process'));
+  assert.ok(useful.evidence.recentActivity.some(item => item.activity === 'test process' && item.status === 'completed'));
+  assert.equal(useful.report.completionPercent, 'unknown');
+  assert.equal(useful.report.eta, 'unknown');
+  assert.equal(useful.report.disclaimer, 'Observation only; not verification, approval, or authority.');
+
+  const captures = (await readFile(f.captureFile, 'utf8')).trim().split('\n').map(JSON.parse);
+  const observer = captures.find(item => item.stage === 'observer'
+    && item.prompt.includes('"phase":"implement"') && item.prompt.includes('shell process'));
+  assert.ok(observer);
+  assert.equal(observer.model, 'gpt-6-luna');
+  assert.equal(observer.tools, '');
+  assert.equal(observer.context, '');
+  assert.notEqual(path.resolve(observer.cwd), path.join(terminal.stateDir, 'candidate'));
+  for (const flag of ['--no-tools', '--no-extensions', '--no-approve', '--no-context-files']) {
+    assert.ok(observer.args.includes(flag), `observer missing ${flag}`);
+  }
+  assert.match(observer.args[observer.args.indexOf('--system-prompt') + 1], /read-only run observer/);
+  assert.match(observer.prompt, /shell process/);
+  assert.doesNotMatch(observer.prompt, /SQUIRE_SECRET_SENTINEL|SQUIRE_COMMAND_SENTINEL/);
+  assert.doesNotMatch(JSON.stringify(reports), /SQUIRE_SECRET_SENTINEL|SQUIRE_COMMAND_SENTINEL/);
+  assert.doesNotMatch(result.stdout, /SQUIRE_SECRET_SENTINEL/);
+  await assert.rejects(stat(collisionFile));
+  const manifest = JSON.parse(await readFile(path.join(terminal.stateDir, 'evidence-manifest.json'), 'utf8'));
+  assert.ok(manifest.entries.some(entry => entry.path === 'plan.jsonl'));
+  assert.equal(manifest.entries.some(entry => entry.path === 'progress' || entry.path.startsWith('progress/')), false);
+  assert.equal((await readFile(path.join(terminal.stateDir, 'candidate', 'tracked.txt'), 'utf8')), 'after\n');
+});
+
+test('observer crashes and authentication/provider failures become unavailable reports without failing Implement', { timeout: 12_000 }, async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.progressIntervalMinutes = 1;
+  await writeFile(f.configFile, JSON.stringify(config));
+  const result = await invoke(f, {
+    SQUIRE_TEST_PROGRESS_INTERVAL_MS: '20',
+    SQUIRE_FAKE_ACTIVITY: '1',
+    SQUIRE_FAKE_DELAY_MS: '320',
+    SQUIRE_FAKE_OBSERVER_MODE: 'crash',
+  }, 10_000);
+  assert.equal(result.code, 0, result.stderr);
+  const terminal = summary(result);
+  assert.equal(terminal.phase, 'candidate');
+  const reports = await progressReports(terminal.stateDir);
+  assert.ok(reports.some(report => report.status === 'unavailable'
+    && /authentication or provider/.test(report.receipt.failure)));
+  assert.equal((await runState(terminal)).candidate.status, 'UNVERIFIED');
+  assert.ok(await stat(path.join(terminal.stateDir, 'candidate.patch')));
+});
+
+test('slow observers are bounded and cannot extend the primary hard deadline', { timeout: 12_000 }, async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.progressIntervalMinutes = 1;
+  await writeFile(f.configFile, JSON.stringify(config));
+  const result = await invoke(f, {
+    SQUIRE_TEST_PROGRESS_INTERVAL_MS: '20',
+    SQUIRE_TEST_OBSERVER_TIMEOUT_MS: '60',
+    SQUIRE_TEST_TIMEOUT_MS: '1000',
+    SQUIRE_FAKE_ACTIVITY: '1',
+    SQUIRE_FAKE_DELAY_MS: '1500',
+    SQUIRE_FAKE_OBSERVER_MODE: 'timeout',
+  }, 8_000);
+  assert.equal(result.code, 1);
+  const directories = await readdir(f.resultRoot);
+  const stateDir = path.join(f.resultRoot, directories[0]);
+  const state = JSON.parse(await readFile(path.join(stateDir, 'state.json'), 'utf8'));
+  assert.equal(state.phase, 'failed');
+  assert.match(state.error, /implementation Pi timed out/, await headDiagnostic(f, result));
+  const reports = await progressReports(stateDir);
+  assert.ok(reports.some(report => report.status === 'unavailable'
+    && /runtime bound|cancelled/.test(report.receipt.failure)));
+  await assert.rejects(stat(path.join(stateDir, 'candidate.patch')));
+});
+
+test('terminal cancellation terminates an observer descendant and records cancellation', { timeout: 15_000 }, async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.progressIntervalMinutes = 1;
+  await writeFile(f.configFile, JSON.stringify(config));
+  const pidFile = path.join(f.directory, 'observer-descendant.pid');
+  const result = await invoke(f, {
+    SQUIRE_TEST_PROGRESS_INTERVAL_MS: '20',
+    SQUIRE_FAKE_ACTIVITY: '1',
+    SQUIRE_FAKE_DELAY_MS: '300',
+    SQUIRE_FAKE_OBSERVER_DELAY_MS: '10000',
+    SQUIRE_FAKE_OBSERVER_DESCENDANT: '1',
+    SQUIRE_FAKE_OBSERVER_PID_FILE: pidFile,
+  }, 12_000);
+  assert.equal(result.code, 0, result.code === 0 ? result.stderr : await headDiagnostic(f, result));
+  const terminal = summary(result);
+  assert.equal(terminal.phase, 'candidate');
+  assert.ok(await stat(pidFile));
+  const pid = Number(await readFile(pidFile, 'utf8'));
+  let running = true;
+  const deadline = Date.now() + 3_000;
+  while (running && Date.now() < deadline) {
+    try { process.kill(pid, 0); }
+    catch (error) { if (error.code === 'ESRCH') running = false; else throw error; }
+    if (running) await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal(running, false, `observer descendant ${pid} survived terminal cleanup`);
+  const reports = await progressReports(terminal.stateDir);
+  assert.ok(reports.some(report => report.status === 'unavailable'
+    && /cancelled when the active Pi session ended/.test(report.receipt.failure)));
+  assert.equal((await runState(terminal)).candidate.status, 'UNVERIFIED');
 });
 
 test('canonicalizes a Git-reported symlink alias before enforcing the source worktree root', { skip: process.platform === 'win32' }, async t => {

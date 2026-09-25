@@ -4,5 +4,6 @@
   "ticketFile": "C:/private/approved-ticket.md",
   "resultRoot": "C:/private/squire-results",
   "planModel": "openai-codex/gpt-6-sol",
-  "implementationModel": "openai-codex/gpt-6-luna"
+  "implementationModel": "openai-codex/gpt-6-luna",
+  "progressIntervalMinutes": 15
 }

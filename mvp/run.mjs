@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 
 const PLAN_MODEL = 'openai-codex/gpt-6-sol';
 const IMPLEMENTATION_MODEL = 'openai-codex/gpt-6-luna';
@@ -17,12 +18,21 @@ const MAX_STDERR_BYTES = 4 * 1024 * 1024;
 const MAX_PATCH_BYTES = 32 * 1024 * 1024;
 const MAX_EVIDENCE_FILES = 1024;
 const MAX_EVIDENCE_BYTES = 128 * 1024 * 1024;
+const MAX_OBSERVER_JSONL_BYTES = 128 * 1024;
+const MAX_OBSERVER_PROMPT_BYTES = 16 * 1024;
+const MAX_ACTIVITY_ITEMS = 12;
+const DEFAULT_PROGRESS_INTERVAL_MINUTES = 15;
+const MIN_PROGRESS_INTERVAL_MINUTES = 1;
+const MAX_PROGRESS_INTERVAL_MINUTES = 120;
+const OBSERVER_TIMEOUT_MS = 90 * 1000;
 const PLAN_TIMEOUT_MS = 20 * 60 * 1000;
 const IMPLEMENT_TIMEOUT_MS = 60 * 60 * 1000;
 const fail = message => { throw new RunFailure(message); };
 class RunFailure extends Error {}
 let state;
 let hooksPath;
+let progressReporter;
+const runnerAbortController = new AbortController();
 let commandNumber = 0;
 
 function hookConfig() { return `core.hooksPath=${hooksPath.replaceAll('\\', '/')}`; }
@@ -58,12 +68,19 @@ async function loadConfig(configPath) {
   let config;
   try { config = JSON.parse(bytes.toString('utf8')); } catch { fail('Config is not valid JSON'); }
   if (!config || Array.isArray(config) || typeof config !== 'object') fail('Invalid config');
-  const allowed = new Set(['sourceRepo', 'baseSha', 'ticketFile', 'resultRoot', 'planModel', 'implementationModel']);
+  const allowed = new Set(['sourceRepo', 'baseSha', 'ticketFile', 'resultRoot', 'planModel', 'implementationModel', 'progressIntervalMinutes']);
   if (Object.keys(config).some(key => !allowed.has(key))) fail('Config contains unsupported fields');
   if (!validPath(config.sourceRepo) || !validPath(config.ticketFile) || !validPath(config.resultRoot)) fail('Config paths must be absolute, bounded paths');
   if (typeof config.baseSha !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(config.baseSha)) fail('Invalid pinned baseSha');
   if (config.planModel !== undefined && config.planModel !== PLAN_MODEL) fail('planModel is fixed by owner policy');
   if (config.implementationModel !== undefined && config.implementationModel !== IMPLEMENTATION_MODEL) fail('implementationModel is fixed by owner policy');
+  const progressIntervalMinutes = config.progressIntervalMinutes === undefined
+    ? DEFAULT_PROGRESS_INTERVAL_MINUTES : config.progressIntervalMinutes;
+  if (!Number.isSafeInteger(progressIntervalMinutes)
+    || progressIntervalMinutes < MIN_PROGRESS_INTERVAL_MINUTES
+    || progressIntervalMinutes > MAX_PROGRESS_INTERVAL_MINUTES) {
+    fail(`progressIntervalMinutes must be an integer from ${MIN_PROGRESS_INTERVAL_MINUTES} to ${MAX_PROGRESS_INTERVAL_MINUTES}`);
+  }
   return {
     sourceRepo: config.sourceRepo,
     baseSha: config.baseSha,
@@ -71,6 +88,7 @@ async function loadConfig(configPath) {
     resultRoot: config.resultRoot,
     planModel: PLAN_MODEL,
     implementationModel: IMPLEMENTATION_MODEL,
+    progressIntervalMinutes,
   };
 }
 
@@ -88,8 +106,8 @@ async function stage(phase, values = {}) {
   await persist();
 }
 
-async function drain(stream, filename, limit, keepMemory, kill) {
-  const file = await open(filename, 'wx', 0o600);
+async function drain(stream, filename, limit, keepMemory, kill, onChunk = undefined) {
+  const file = filename ? await open(filename, 'wx', 0o600) : null;
   const chunks = [];
   let bytes = 0;
   let exceeded = false;
@@ -102,9 +120,12 @@ async function drain(stream, filename, limit, keepMemory, kill) {
         kill();
         continue;
       }
+      if (onChunk) {
+        try { onChunk(chunk); } catch { /* activity extraction must never interrupt the primary session */ }
+      }
       if (writeError) continue;
       try {
-        await file.write(chunk);
+        if (file) await file.write(chunk);
         if (keepMemory) chunks.push(chunk);
       } catch (error) {
         writeError = error;
@@ -112,32 +133,31 @@ async function drain(stream, filename, limit, keepMemory, kill) {
       }
     }
   } finally {
-    await file.close();
+    await file?.close();
   }
   return { bytes, exceeded, writeError, buffer: keepMemory ? Buffer.concat(chunks) : undefined };
 }
 
 function terminateProcessTree(child) {
-  if (!child.pid) return;
+  if (!child.pid) return Promise.resolve();
   if (process.platform === 'win32') {
-    let killer;
-    try {
-      killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-    } catch { /* use the direct-child fallback below */ }
-    if (killer) {
+    return new Promise(resolve => {
+      let killer;
+      let finished = false;
+      const finish = () => { if (!finished) { finished = true; clearTimeout(watchdog); resolve(); } };
       const fallback = () => { try { child.kill('SIGKILL'); } catch { /* already exited */ } };
-      const watchdog = setTimeout(() => {
+      let watchdog;
+      try { killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); }
+      catch { fallback(); finish(); return; }
+      watchdog = setTimeout(() => {
         try { killer.kill(); } catch { /* already exited */ }
         fallback();
+        finish();
       }, 1_000);
-      watchdog.unref();
-      killer.once('error', fallback);
-      killer.once('close', code => { clearTimeout(watchdog); if (code !== 0) fallback(); });
+      killer.once('error', () => { fallback(); finish(); });
+      killer.once('close', code => { if (code !== 0) fallback(); finish(); });
       killer.unref();
-      return;
-    }
-    try { child.kill('SIGKILL'); } catch { /* already exited */ }
-    return;
+    });
   }
 
   const signalGroup = signal => {
@@ -145,13 +165,15 @@ function terminateProcessTree(child) {
     catch { try { child.kill(signal); } catch { /* already exited */ } }
   };
   signalGroup('SIGTERM');
-  const forceTimer = setTimeout(() => signalGroup('SIGKILL'), 400);
-  forceTimer.unref();
+  return new Promise(resolve => {
+    setTimeout(() => { signalGroup('SIGKILL'); resolve(); }, 400);
+  });
 }
 
 async function runProcess(program, args, options) {
   const { cwd, env = process.env, input = null, timeoutMs, stdoutFile, stderrFile, stdoutLimit = 1024 * 1024,
-    stderrLimit = 1024 * 1024, keepStdout = true, label } = options;
+    stderrLimit = 1024 * 1024, keepStdout = true, onStdoutChunk, signal = runnerAbortController.signal, label } = options;
+  if (signal?.aborted) fail(`${label} cancelled`);
   let child;
   try {
     child = spawn(program, args, {
@@ -164,11 +186,10 @@ async function runProcess(program, args, options) {
   let spawnError;
   let inputError = false;
   let timedOut = false;
-  let terminationStarted = false;
+  let aborted = false;
+  let terminationPromise;
   const kill = () => {
-    if (terminationStarted) return;
-    terminationStarted = true;
-    terminateProcessTree(child);
+    if (!terminationPromise) terminationPromise = terminateProcessTree(child);
   };
   child.on('error', () => { spawnError = true; });
   if (input !== null) {
@@ -178,6 +199,18 @@ async function runProcess(program, args, options) {
   const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
   let timeoutResolve;
   const timeoutSignal = new Promise(resolve => { timeoutResolve = resolve; });
+  let abortResolve;
+  const abortSignal = new Promise(resolve => { abortResolve = resolve; });
+  const onAbort = () => {
+    if (aborted) return;
+    aborted = true;
+    kill();
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.stdin?.destroy();
+    abortResolve();
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(() => {
     timedOut = true;
     kill();
@@ -186,7 +219,7 @@ async function runProcess(program, args, options) {
     child.stdin?.destroy();
     timeoutResolve();
   }, timeoutMs);
-  const stdoutPromise = drain(child.stdout, stdoutFile, stdoutLimit, keepStdout, kill).catch(error => {
+  const stdoutPromise = drain(child.stdout, stdoutFile, stdoutLimit, keepStdout, kill, onStdoutChunk).catch(error => {
     kill(); return { writeError: error, buffer: undefined };
   });
   const stderrPromise = drain(child.stderr, stderrFile, stderrLimit, false, kill).catch(error => {
@@ -199,12 +232,16 @@ async function runProcess(program, args, options) {
     const result = await Promise.race([
       Promise.all([closed, stdoutPromise, stderrPromise]).then(values => ({ values })),
       timeoutSignal.then(() => ({ timedOut: true })),
+      abortSignal.then(() => ({ aborted: true })),
     ]);
-    if (!result.timedOut) [exit, stdout, stderr] = result.values;
+    if (!result.timedOut && !result.aborted) [exit, stdout, stderr] = result.values;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
+  await terminationPromise?.catch(() => {});
   if (timedOut) fail(`${label} timed out`);
+  if (aborted) fail(`${label} cancelled`);
   if (spawnError) fail(`Unable to start ${label}`);
   if (inputError) fail(`${label} input pipe failed`);
   if (stdout.writeError || stderr.writeError) fail(`Could not retain ${label} logs`);
@@ -288,6 +325,315 @@ function sessionTimeout(timeoutMs) {
   return Number.isSafeInteger(testOverride) && testOverride > 0 ? Math.min(timeoutMs, testOverride) : timeoutMs;
 }
 
+function progressIntervalMs(minutes) {
+  const testOverride = Number(process.env.SQUIRE_TEST_PROGRESS_INTERVAL_MS);
+  if (Number.isSafeInteger(testOverride) && testOverride > 0 && testOverride <= 60_000) {
+    return Math.min(minutes * 60_000, testOverride);
+  }
+  return minutes * 60_000;
+}
+
+function observerTimeoutMs() {
+  const testOverride = Number(process.env.SQUIRE_TEST_OBSERVER_TIMEOUT_MS);
+  return Number.isSafeInteger(testOverride) && testOverride > 0 ? Math.min(OBSERVER_TIMEOUT_MS, testOverride) : OBSERVER_TIMEOUT_MS;
+}
+
+const SAFE_TOOL_NAMES = new Set(['read', 'grep', 'find', 'ls', 'bash', 'edit', 'write']);
+
+function safeToolName(value) {
+  return typeof value === 'string' && SAFE_TOOL_NAMES.has(value) ? value : null;
+}
+
+function isRecognizedTestCommand(value) {
+  if (typeof value !== 'string' || value.length > 2_048) return false;
+  return /(?:^|[;&|]\s*|\s)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\s|$)|(?:^|[;&|]\s*|\s)(?:node\s+--test|pytest|python\s+-m\s+pytest|cargo\s+test|go\s+test|bun\s+test)(?:\s|$)/i.test(value);
+}
+
+function activityLabel(tool, args = undefined) {
+  if (tool === 'bash' && isRecognizedTestCommand(args?.command)) return 'test process';
+  return tool === 'bash' ? 'shell process' : tool ? `${tool} tool` : 'tool activity';
+}
+
+class ActivityTracker {
+  constructor(startedAt) {
+    this.startedAt = startedAt;
+    this.buffer = '';
+    this.items = [];
+    this.toolActivities = new Map();
+    this.lastActivityAt = null;
+  }
+
+  add(activity, status, tool = null) {
+    const item = { elapsedMs: Math.max(0, Date.now() - this.startedAt), activity, status };
+    if (tool) item.tool = tool;
+    this.items.push(item);
+    if (this.items.length > MAX_ACTIVITY_ITEMS) this.items.shift();
+    this.lastActivityAt = Date.now();
+  }
+
+  processLine(line) {
+    let event;
+    try { event = JSON.parse(line); } catch { return; }
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return;
+    if (event.type === 'agent_start' || event.type === 'turn_start') {
+      this.add('model turn', 'active');
+      return;
+    }
+    if (event.type === 'agent_end') {
+      this.add('model turn', 'ended');
+      return;
+    }
+    if (event.type === 'bash_execution_update') {
+      this.add('shell process', 'progress');
+      return;
+    }
+    if (['tool_execution_start', 'tool_execution_update', 'tool_execution_end'].includes(event.type)) {
+      const tool = safeToolName(event.toolName);
+      const id = typeof event.toolCallId === 'string' && event.toolCallId.length <= 128 ? event.toolCallId : null;
+      const activity = id && this.toolActivities.has(id)
+        ? this.toolActivities.get(id) : activityLabel(tool, event.args);
+      if (event.type === 'tool_execution_start' && id) {
+        if (this.toolActivities.size >= MAX_ACTIVITY_ITEMS) this.toolActivities.delete(this.toolActivities.keys().next().value);
+        this.toolActivities.set(id, activity);
+      }
+      if (event.type === 'tool_execution_end' && id) this.toolActivities.delete(id);
+      const status = event.type === 'tool_execution_start' ? 'started'
+        : event.type === 'tool_execution_update' ? 'progress'
+          : event.isError === true ? 'failed' : 'completed';
+      this.add(activity, status, tool);
+      return;
+    }
+    if (event.type === 'message_end' && event.message?.role === 'assistant' && Array.isArray(event.message.content)) {
+      for (const block of event.message.content) {
+        if (block?.type !== 'toolCall') continue;
+        const tool = safeToolName(block.name);
+        this.add(activityLabel(tool, block.arguments), 'requested', tool);
+      }
+    }
+  }
+
+  feed(chunk) {
+    this.buffer += chunk.toString('utf8');
+    if (this.buffer.length > 128 * 1024 && !this.buffer.includes('\n')) {
+      this.buffer = '';
+      return;
+    }
+    let newline;
+    while ((newline = this.buffer.indexOf('\n')) !== -1) {
+      const line = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      if (line.length <= 128 * 1024) this.processLine(line);
+    }
+  }
+
+  snapshot(now, session) {
+    const last = this.lastActivityAt === null ? null : Math.max(0, now - this.lastActivityAt);
+    const completedMilestones = session.phase === 'implement'
+      ? ['Plan captured', 'Pre-implementation evidence manifest captured'] : [];
+    const remainingMilestones = session.phase === 'plan'
+      ? ['Plan captured', 'Implementation session', 'Candidate and evidence assessment']
+      : ['Implementation response', 'Candidate and evidence integrity check', 'Candidate artifact capture'];
+    return {
+      phase: session.phase,
+      elapsedMinutes: Math.max(0, Math.round((now - session.startedAt) / 60_000 * 10) / 10),
+      deadlineRemainingMinutes: Math.max(0, Math.round((session.deadlineAt - now) / 60_000 * 10) / 10),
+      lastActivityMinutesAgo: last === null ? null : Math.round(last / 60_000 * 10) / 10,
+      recentActivity: this.items.slice(-MAX_ACTIVITY_ITEMS),
+      completedMilestones,
+      remainingMilestones,
+    };
+  }
+}
+
+function boundedObserverText(value, limit) {
+  if (typeof value !== 'string') throw new RunFailure('Observer report has invalid text fields');
+  const cleaned = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned || cleaned.length > limit) throw new RunFailure('Observer report has invalid text fields');
+  return cleaned;
+}
+
+function validateObserverReport(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RunFailure('Observer returned an invalid report');
+  const action = boundedObserverText(value.currentAction, 240);
+  const list = name => {
+    if (!Array.isArray(value[name]) || value[name].length > 4) throw new RunFailure('Observer returned an invalid report');
+    return value[name].map(item => boundedObserverText(item, 200));
+  };
+  if (!['low', 'medium', 'high', 'unknown'].includes(value.confidence)
+    || value.completionPercent !== 'unknown' || value.eta !== 'unknown') {
+    throw new RunFailure('Observer returned an invalid report');
+  }
+  return {
+    currentAction: action,
+    evidence: list('evidence'),
+    risks: list('risks'),
+    stalls: list('stalls'),
+    confidence: value.confidence,
+    completionPercent: 'unknown',
+    eta: 'unknown',
+    disclaimer: 'Observation only; not verification, approval, or authority.',
+  };
+}
+
+function observerUsage(jsonl) {
+  const usage = { inputTokens: null, outputTokens: null };
+  for (const line of jsonl.split('\n')) {
+    if (!line) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    const details = event?.message?.usage ?? event?.usage;
+    if (!details || typeof details !== 'object') continue;
+    const input = details.input ?? details.inputTokens;
+    const output = details.output ?? details.outputTokens;
+    if (Number.isSafeInteger(input) && input >= 0) usage.inputTokens = input;
+    if (Number.isSafeInteger(output) && output >= 0) usage.outputTokens = output;
+  }
+  return usage;
+}
+
+class ProgressReporter {
+  constructor(intervalMinutes) {
+    this.intervalMs = progressIntervalMs(intervalMinutes);
+    this.nextNumber = 1;
+    this.session = null;
+    this.timer = null;
+    this.active = null;
+  }
+
+  async startSession(phase, timeoutMs) {
+    await this.endSession();
+    const startedAt = Date.now();
+    this.session = {
+      phase,
+      startedAt,
+      deadlineAt: startedAt + timeoutMs,
+      activity: new ActivityTracker(startedAt),
+    };
+    this.timer = setInterval(() => { void this.requestReport(); }, this.intervalMs);
+    this.timer.unref();
+  }
+
+  async endSession() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.session = null;
+    if (this.active) {
+      this.active.controller.abort();
+      await this.active.promise;
+    }
+  }
+
+  async requestReport() {
+    const session = this.session;
+    if (!session || this.active || Date.now() >= session.deadlineAt) return;
+    const now = Date.now();
+    const snapshot = session.activity.snapshot(now, session);
+    const number = this.nextNumber++;
+    const controller = new AbortController();
+    const active = { controller, promise: null };
+    this.active = active;
+    active.promise = this.runObserver({ number, session, snapshot, scheduledAt: now, signal: controller.signal })
+      .catch(() => {})
+      .finally(() => { if (this.active === active) this.active = null; });
+    await active.promise;
+  }
+
+  async runObserver({ number, session, snapshot, scheduledAt, signal }) {
+    const startedAt = Date.now();
+    const reportDir = path.join(state.directory, 'progress', 'reports');
+    const sessionDir = path.join(state.directory, 'progress', 'sessions', `observer-${String(number).padStart(3, '0')}`);
+    const evidenceDigest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    let assessedReport;
+    let usage = { inputTokens: null, outputTokens: null };
+    let failure;
+    let outcome = 'complete';
+    try {
+      await mkdir(sessionDir, { recursive: false, mode: 0o700 });
+      const cli = cliPath();
+      try { await stat(cli); } catch { throw new RunFailure('observer CLI unavailable'); }
+      const snapshotText = JSON.stringify(snapshot);
+      const prompt = `Assess only this current Squire run summary. It is sanitized host-collected metadata, not source evidence. Do not infer details that are absent. Identify the current action, evidence, risks/stalls, and confidence. Do not verify or authorize anything. Completion percent and ETA must both be the string "unknown". Return only JSON with keys currentAction, evidence (array), risks (array), stalls (array), confidence (low|medium|high|unknown), completionPercent ("unknown"), eta ("unknown"). Do not request tools or other context.\n\nRUN SUMMARY JSON:\n${snapshotText}`;
+      if (Buffer.byteLength(prompt, 'utf8') > MAX_OBSERVER_PROMPT_BYTES) throw new RunFailure('observer prompt exceeded its bound');
+      const args = [cli, '--mode', 'json', '--session-dir', sessionDir, '--provider', 'openai-codex', '--model', 'gpt-6-luna',
+        '--thinking', 'medium', '--system-prompt', 'You are a read-only run observer. Use only the sanitized user summary; do not request or use tools, context, or authorization.',
+        '--tools', '', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates',
+        '--no-themes', '--no-approve', '--no-context-files', '--', 'Use the task supplied on standard input.'];
+      const result = await runProcess(process.execPath, args, {
+        cwd: os.tmpdir(),
+        env: process.env,
+        timeoutMs: observerTimeoutMs(),
+        stdoutFile: null,
+        stderrFile: null,
+        input: prompt,
+        stdoutLimit: MAX_OBSERVER_JSONL_BYTES,
+        stderrLimit: 256 * 1024,
+        keepStdout: true,
+        signal,
+        label: 'observer Luna Pi',
+      });
+      usage = observerUsage(result.stdout);
+      if (result.code !== 0) throw new RunFailure('observer Pi exited unsuccessfully');
+      const text = parseFinal(result.stdout);
+      if (Buffer.byteLength(text, 'utf8') > 8 * 1024) throw new RunFailure('observer report exceeded its bound');
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { throw new RunFailure('observer returned invalid JSON'); }
+      assessedReport = validateObserverReport(parsed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      outcome = 'unavailable';
+      if (message.includes('timed out')) failure = 'Observer exceeded its runtime bound';
+      else if (message.includes('cancelled')) failure = 'Observer cancelled when the active Pi session ended';
+      else if (message.includes('exited unsuccessfully')) failure = 'Observer process failed; authentication or provider availability may be the cause';
+      else if (message.includes('output exceeded')) failure = 'Observer output exceeded its bound';
+      else if (message.includes('invalid') || message.includes('report has') || message.includes('report exceeded')) failure = 'Observer did not return a valid bounded report';
+      else failure = 'Observer could not complete; primary run continues';
+      assessedReport = {
+        currentAction: 'Luna assessment unavailable',
+        evidence: ['The bounded host evidence snapshot was retained; no assessment completed.'],
+        risks: [failure],
+        stalls: [failure],
+        confidence: 'low',
+        completionPercent: 'unknown',
+        eta: 'unknown',
+        disclaimer: 'Observation only; not verification, approval, or authority.',
+      };
+    } finally {
+      await rm(sessionDir, { recursive: true, force: true }).catch(() => {});
+    }
+    const finishedAt = Date.now();
+    const record = {
+      schemaVersion: 1,
+      runId: state.runId,
+      number,
+      phase: session.phase,
+      status: outcome,
+      observer: { model: IMPLEMENTATION_MODEL, freshSession: true, toolsEnabled: false },
+      timing: {
+        scheduledAt: new Date(scheduledAt).toISOString(),
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: new Date(finishedAt).toISOString(),
+        durationMs: Math.max(0, finishedAt - startedAt),
+        deadlineRemainingMsAtStart: Math.max(0, session.deadlineAt - scheduledAt),
+      },
+      evidenceDigest,
+      evidence: snapshot,
+      report: assessedReport,
+      receipt: { outcome, failure: failure ?? null, usage },
+    };
+    try {
+      await mkdir(reportDir, { recursive: true, mode: 0o700 });
+      const filename = path.join(reportDir, `${String(number).padStart(3, '0')}.json`);
+      const temporary = `${filename}.${randomBytes(4).toString('hex')}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+      await rename(temporary, filename);
+      emit({ type: 'squire.progress', runId: state.runId, stateDir: state.directory,
+        reportFile: `progress/reports/${String(number).padStart(3, '0')}.json`, report: record });
+    } catch {
+      // Progress is best-effort and must never affect the primary run or candidate status.
+    }
+  }
+}
+
 function cliPath() {
   const selected = process.env.PI_CLI_PATH
     ? path.resolve(process.env.PI_CLI_PATH)
@@ -305,32 +651,41 @@ async function piSession({ kind, model, thinking, tools, prompt, cwd, timeoutMs 
   const args = [cli, '--mode', 'json', '--session-dir', sessionDir, '--provider', 'openai-codex', '--model', model,
     '--thinking', thinking, '--tools', tools, '--no-extensions', '--no-skills', '--no-prompt-templates',
     '--no-themes', '--no-approve', '--', 'Use the task supplied on standard input.' ];
-  const result = await runProcess(process.execPath, args, {
-    cwd,
-    env: process.env,
-    timeoutMs: sessionTimeout(timeoutMs),
-    stdoutFile: jsonlFile,
-    stderrFile,
-    input: prompt,
-    stdoutLimit: MAX_JSONL_BYTES,
-    stderrLimit: MAX_STDERR_BYTES,
-    keepStdout: false,
-    label: `${kind} Pi`,
-  });
-  if (result.code !== 0) fail(`${kind} Pi exited with code ${result.code ?? 'unknown'}`);
-  const jsonl = await readFile(jsonlFile, 'utf8');
-  const text = parseFinal(jsonl);
-  const textLimit = kind === 'plan' ? MAX_PLAN_BYTES : MAX_RESPONSE_BYTES;
-  if (Buffer.byteLength(text, 'utf8') > textLimit) fail(`${kind} final text exceeds its size limit`);
-  if (kind === 'plan' && !text.trim()) fail('Plan is empty');
-  const responseFile = path.join(state.directory, kind === 'plan' ? 'plan.md' : 'implementation-response.txt');
-  await writeFile(responseFile, text, { flag: 'wx', mode: kind === 'plan' ? 0o400 : 0o600 });
-  if (kind === 'plan') await chmod(responseFile, 0o400);
-  return { text, responseFile, jsonlFile, sessionDir };
+  const boundedTimeout = sessionTimeout(timeoutMs);
+  await progressReporter?.startSession(kind === 'implementation' ? 'implement' : 'plan', boundedTimeout);
+  const activity = progressReporter?.session?.activity;
+  try {
+    const result = await runProcess(process.execPath, args, {
+      cwd,
+      env: process.env,
+      timeoutMs: boundedTimeout,
+      stdoutFile: jsonlFile,
+      stderrFile,
+      input: prompt,
+      stdoutLimit: MAX_JSONL_BYTES,
+      stderrLimit: MAX_STDERR_BYTES,
+      keepStdout: false,
+      onStdoutChunk: chunk => activity?.feed(chunk),
+      label: `${kind} Pi`,
+    });
+    if (result.code !== 0) fail(`${kind} Pi exited with code ${result.code ?? 'unknown'}`);
+    const jsonl = await readFile(jsonlFile, 'utf8');
+    const text = parseFinal(jsonl);
+    const textLimit = kind === 'plan' ? MAX_PLAN_BYTES : MAX_RESPONSE_BYTES;
+    if (Buffer.byteLength(text, 'utf8') > textLimit) fail(`${kind} final text exceeds its size limit`);
+    if (kind === 'plan' && !text.trim()) fail('Plan is empty');
+    const responseFile = path.join(state.directory, kind === 'plan' ? 'plan.md' : 'implementation-response.txt');
+    await writeFile(responseFile, text, { flag: 'wx', mode: kind === 'plan' ? 0o400 : 0o600 });
+    if (kind === 'plan') await chmod(responseFile, 0o400);
+    return { text, responseFile, jsonlFile, sessionDir };
+  } finally {
+    await progressReporter?.endSession();
+  }
 }
 
 function excludedEvidencePath(relative, afterImplementation) {
   if (relative === 'candidate' || relative.startsWith(`candidate${path.sep}`)
+    || relative === 'progress' || relative.startsWith(`progress${path.sep}`)
     || relative === 'state.json' || relative === 'evidence-manifest.json') return true;
   return afterImplementation && (relative === 'implementation-session'
     || relative.startsWith(`implementation-session${path.sep}`)
@@ -507,11 +862,15 @@ async function createRun(config) {
     baseSha: config.baseSha,
     planModel: config.planModel,
     implementationModel: config.implementationModel,
+    progressIntervalMinutes: config.progressIntervalMinutes,
     startedAt: new Date().toISOString(),
     events: [],
   };
   await stage('starting');
   await mkdir(path.join(directory, 'commands'), { mode: 0o700 });
+  await mkdir(path.join(directory, 'progress', 'reports'), { recursive: true, mode: 0o700 });
+  await mkdir(path.join(directory, 'progress', 'sessions'), { recursive: true, mode: 0o700 });
+  progressReporter = new ProgressReporter(config.progressIntervalMinutes);
   hooksPath = path.join(directory, 'empty-hooks');
   await mkdir(hooksPath, { mode: 0o700 });
   await writeFile(path.join(directory, 'ticket.md'), ticketBytes, { flag: 'wx', mode: 0o600 });
@@ -594,11 +953,16 @@ if (process.argv.length !== 3) {
   emit({ phase: 'failed', reason: 'Usage: node mvp/run.mjs <trusted-config.json>' }, process.stderr);
   process.exitCode = 1;
 } else {
+  const onRunnerSignal = () => runnerAbortController.abort();
+  process.once('SIGINT', onRunnerSignal);
+  process.once('SIGTERM', onRunnerSignal);
   try {
     const result = await main(path.resolve(process.argv[2]));
+    await progressReporter?.endSession();
     emit({ runId: state.runId, phase: result.phase, stateDir: state.directory, candidate: state.candidate ?? null });
     process.exitCode = result.exitCode;
   } catch (error) {
+    await progressReporter?.endSession().catch(() => {});
     if (state) {
       state.phase = 'failed';
       state.error = error instanceof RunFailure ? error.message : 'Unexpected host operation failure';
@@ -611,5 +975,8 @@ if (process.argv.length !== 3) {
       emit({ phase: 'failed', reason }, process.stderr);
     }
     process.exitCode = 1;
+  } finally {
+    process.off('SIGINT', onRunnerSignal);
+    process.off('SIGTERM', onRunnerSignal);
   }
 }
