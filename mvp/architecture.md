@@ -10,6 +10,36 @@ Each primary phase launches the installed host Pi JavaScript CLI as a child proc
 
 Before Implement, Squire writes `evidence-manifest.json`, hashing the retained pre-implementation evidence inventory (including the ticket, plan, Plan JSONL/stderr/session files, and existing command logs). Progress files are stored in a separate `progress/` subtree and excluded from that inventory. After Implement returns or throws—including a nonzero exit—it checks the manifest and evidence inventory plus the ticket/plan against in-memory snapshots. It restores the ticket and plan where possible and fails closed on persistent changes. The manifest is a tamper detector, not a security boundary. After successful verification, Squire checks that `HEAD` is still the pinned base, includes untracked files in a bounded binary-capable Git patch, and retains the worktree. It does not commit. A non-empty candidate is labeled `UNVERIFIED`; an empty diff is `no-candidate`. `state.json` journals phase transitions. Session JSONL, Pi session files, stderr, command logs, prompt inputs, and artifacts remain in the run directory on failure.
 
+## Opt-in bounded implementation budget
+
+Existing configs keep the 60-minute Implement deadline. An operator may opt into
+`implementationBudget: { minutes: 120, reserveMinutes: 10, commands: [
+  { command: "npm --prefix v2 test", maxSeconds: 1200 }
+] }`. Minutes are bounded 20..240, reserve 1..30 (strictly less than half
+of the phase); at most 50 exact shell command strings are allowed, each capped at
+1..3600 seconds. Declare target-specific commands after a preflight of CI/toolchain;
+this example is not a default test command. Unknown bash commands are blocked in
+strict mode. Pi's built-in read/edit/write tools remain available. No alias, shell
+wrapper or alternate executable may be used to bypass the list.
+
+The trusted Squire build explicitly loads only its phase-budget Pi extension for
+Implement even though resource extension discovery remains disabled. The extension
+checks monotonic remaining time against each declared maximum plus the handoff
+reserve *before* the builtin bash tool runs, sets the builtin tool timeout to the
+declared maximum, and writes bounded `not_run` receipts under `progress/`. A
+blocked check is never a pass. The outer Implement process hard deadline remains
+independent and terminates the Pi tree. A successful unverified candidate includes
+`state.json.deferredCommands`; the external operator must run all required full
+verification, independent review and exact-head hosted CI before publication.
+
+This is scheduling policy, not OS command isolation: same-user Pi can access host
+resources and shell commands can spawn descendants or bypass naive command parsing.
+Strict exact strings fail closed for tool invocations; they cannot constrain
+other code paths, nested process trees or malicious shell content. Windows process
+cancellation and actual Pi-extension loading must be validated on the candidate
+before release. Never claim a deferred test passed, or install this draft before
+independent review and hosted gates.
+
 ## Live progress reports
 
 A non-model timer runs during each active Plan/Implement Pi process. On each configured interval, at most one fresh Luna observer is started; it runs from the OS temporary directory with `--no-tools`, no extensions/skills/templates/themes, `--no-approve`, and `--no-context-files`. Its fresh session and bounded JSONL output are removed after the assessment. The prompt includes only the active phase, elapsed/remaining deadline, runner-known milestones, time since last activity, and the last bounded set of safe activity categories/tool names/statuses extracted while streaming primary Pi JSONL. It never includes raw tool responses, commands, repository text, Pi context, or credential material. Luna's runtime is capped at 90 seconds and its JSONL output at 128 KiB. Timeout, process/provider/authentication failure, cancellation, or invalid output yields an explicit unavailable report and cannot fail or change the primary run.
