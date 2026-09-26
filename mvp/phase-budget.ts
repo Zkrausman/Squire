@@ -23,10 +23,17 @@ export default function (pi: ExtensionAPI) {
       event.input.timeout = decision.timeoutSeconds;
       return;
     }
-    if (++count <= 100) {
+    if (++count > 100) {
+      process.exitCode = 1;
+      throw new Error('Command deferral receipt capacity exceeded');
+    }
+    try {
       // No raw shell commands or tool output in receipts: these may contain secrets.
       appendFileSync(receipt, JSON.stringify({ status: 'not_run', reason: decision.reason,
         commandSha256: createHash('sha256').update(command).digest('hex'), at: new Date().toISOString() }) + '\n', { mode: 0o600 });
+    } catch {
+      process.exitCode = 1;
+      throw new Error('Could not persist command deferral; run must fail closed');
     }
     return { block: true, reason: `Squire command not run (${decision.reason}); preserve handoff. External verification is still required.` };
   });
