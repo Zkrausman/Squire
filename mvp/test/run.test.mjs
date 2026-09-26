@@ -52,6 +52,9 @@ const model = args[args.indexOf('--model') + 1];
 const thinking = args[args.indexOf('--thinking') + 1];
 const context = args.includes('--no-context-files') ? '' : await readFile(path.join(process.cwd(), 'AGENTS.md'), 'utf8').catch(() => '');
 await appendFile(process.env.SQUIRE_FAKE_CAPTURE, JSON.stringify({stage, tools, model, thinking, args, prompt, context, cwd: process.cwd(), budget: process.env.SQUIRE_BUDGET_POLICY ? JSON.parse(process.env.SQUIRE_BUDGET_POLICY) : null, deadline: process.env.SQUIRE_BUDGET_DEADLINE}) + '\\n');
+if (stage === 'implementation' && process.env.SQUIRE_BUDGET_READY && process.env.SQUIRE_FAKE_NO_GATE_ACK !== '1') {
+  await writeFile(process.env.SQUIRE_BUDGET_READY, JSON.stringify({version:1, nonce:process.env.SQUIRE_BUDGET_NONCE}), {flag:'wx'});
+}
 await mkdir(sessionDir, {recursive: true});
 let ownsObserverSlot = false;
 if (stage === 'observer') {
@@ -608,6 +611,22 @@ test('opt-in bounded Implement loads only trusted gate, retains hard deadline an
   assert.deepEqual(implement.budget, config.implementationBudget);
   assert.ok(Number(implement.deadline) > Date.now());
   assert.match(implement.prompt, /blocked command is NOT RUN/);
+  const ready = JSON.parse(await readFile(path.join(summary(result).stateDir, 'progress', 'budget-ready.json'), 'utf8'));
+  assert.equal(ready.version, 1);
+  assert.match(ready.nonce, /^[a-f0-9]{64}$/);
+});
+
+test('opt-in budget rejects a settled Pi session when the gate did not register', async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.implementationBudget = { minutes: 60, reserveMinutes: 10, commands: [{ command: 'npm test', maxSeconds: 1200 }] };
+  await writeFile(f.configFile, JSON.stringify(config));
+  const result = await invoke(f, { SQUIRE_FAKE_NO_GATE_ACK: '1' });
+  assert.equal(result.code, 1);
+  const state = await runState(summary(result));
+  assert.equal(state.phase, 'failed');
+  assert.match(state.error, /bash gate did not acknowledge registration/);
+  assert.equal(state.candidate, undefined);
 });
 
 test('invalid implementation budgets stop before model processes', async t => {

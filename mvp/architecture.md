@@ -24,12 +24,17 @@ strict mode. Pi's built-in read/edit/write tools remain available. No alias, she
 wrapper or alternate executable may be used to bypass the list.
 
 The trusted Squire build explicitly loads only its phase-budget Pi extension for
-Implement even though resource extension discovery remains disabled. The extension
-checks monotonic remaining time against each declared maximum plus the handoff
-reserve *before* the builtin bash tool runs, sets the builtin tool timeout to the
-declared maximum, and writes bounded `not_run` receipts under `progress/`. A
-blocked check is never a pass. The outer Implement process hard deadline remains
-independent and terminates the Pi tree. A successful unverified candidate includes
+Implement even though resource extension discovery remains disabled. The host
+requires a per-run nonce acknowledgement written after the extension registers its
+hook; a missing acknowledgement fails Implement even if Pi emits a settled response.
+This is a load check, not OS isolation or proof that the model obeyed the policy.
+The extension checks monotonic remaining time against each declared maximum plus
+handoff headroom *before* the builtin bash tool runs, sets the builtin tool timeout
+to the declared maximum, and writes bounded `not_run` receipts under `progress/`.
+A blocked check is never a pass. The reserve is **bash-admission headroom only**:
+non-bash tools and model turns may consume it, so it cannot guarantee a complete
+handoff. The outer Implement process hard deadline remains independent and
+terminates the Pi tree. A successful unverified candidate includes
 `state.json.deferredCommands`; the external operator must run all required full
 verification, independent review and exact-head hosted CI before publication.
 
