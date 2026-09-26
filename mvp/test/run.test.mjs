@@ -51,7 +51,10 @@ for await (const chunk of process.stdin) prompt += chunk.toString('utf8');
 const model = args[args.indexOf('--model') + 1];
 const thinking = args[args.indexOf('--thinking') + 1];
 const context = args.includes('--no-context-files') ? '' : await readFile(path.join(process.cwd(), 'AGENTS.md'), 'utf8').catch(() => '');
-await appendFile(process.env.SQUIRE_FAKE_CAPTURE, JSON.stringify({stage, tools, model, thinking, args, prompt, context, cwd: process.cwd()}) + '\\n');
+await appendFile(process.env.SQUIRE_FAKE_CAPTURE, JSON.stringify({stage, tools, model, thinking, args, prompt, context, cwd: process.cwd(), budget: process.env.SQUIRE_BUDGET_POLICY ? JSON.parse(process.env.SQUIRE_BUDGET_POLICY) : null, deadline: process.env.SQUIRE_BUDGET_DEADLINE}) + '\\n');
+if (stage === 'implementation' && process.env.SQUIRE_BUDGET_READY && process.env.SQUIRE_FAKE_NO_GATE_ACK !== '1') {
+  await writeFile(process.env.SQUIRE_BUDGET_READY, JSON.stringify({version:1, nonce:process.env.SQUIRE_BUDGET_NONCE}), {flag:'wx'});
+}
 await mkdir(sessionDir, {recursive: true});
 let ownsObserverSlot = false;
 if (stage === 'observer') {
@@ -185,7 +188,13 @@ async function progressReports(stateDir) {
 test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with untracked files', async t => {
   const f = await fixture(t);
   const result = await invoke(f);
-  assert.equal(result.code, 0, JSON.stringify(await runState(summary(result))));
+  if (result.code !== 0) {
+    const failed = summary(result);
+    const rootLog = path.join(failed.stateDir, 'commands', '001-source-root.stdout.log');
+    assert.equal(result.code, 0, JSON.stringify({ state: await runState(failed),
+      rootLog: await readFile(rootLog, 'utf8').catch(() => '<missing>'),
+      sourceRealpath: await realpath(f.sourceRepo) }));
+  }
   const report = summary(result);
   assert.equal(report.phase, 'candidate');
   assert.equal(report.candidate.status, 'UNVERIFIED');
@@ -578,4 +587,56 @@ test('reports no-candidate separately and does not call it success', async t => 
   assert.equal(state.candidate, null);
   await assert.rejects(stat(path.join(report.stateDir, 'candidate.patch')));
   assert.equal((await readFile(path.join(report.stateDir, 'candidate', 'tracked.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'before\n');
+});
+
+test('opt-in bounded Implement loads only trusted gate, retains hard deadline and explicit budget', async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.implementationBudget = { minutes: 120, reserveMinutes: 10, commands: [{ command: 'npm --prefix v2 test', maxSeconds: 1200 }] };
+  await writeFile(f.configFile, JSON.stringify(config));
+  const result = await invoke(f);
+  assert.equal(result.code, 0, result.stderr);
+  const state = await runState(summary(result));
+  assert.equal(state.implementationBudget.minutes, 120);
+  assert.equal(state.implementationBudget.reserveMinutes, 10);
+  assert.match(state.implementationBudget.policySha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(state.deferredCommands, []);
+  const sessions = (await readFile(f.captureFile, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(sessions[0].args.includes('--extension'), false);
+  assert.equal(sessions[0].budget, null);
+  const implement = sessions[1];
+  assert.equal(implement.args.includes('--extension'), true);
+  assert.match(implement.args[implement.args.indexOf('--extension') + 1], /mvp[\\/]phase-budget\.ts$/);
+  assert.equal(implement.args.includes('--no-extensions'), true);
+  assert.deepEqual(implement.budget, config.implementationBudget);
+  assert.ok(Number(implement.deadline) > Date.now());
+  assert.match(implement.prompt, /blocked command is NOT RUN/);
+  const ready = JSON.parse(await readFile(path.join(summary(result).stateDir, 'progress', 'budget-ready.json'), 'utf8'));
+  assert.equal(ready.version, 1);
+  assert.match(ready.nonce, /^[a-f0-9]{64}$/);
+});
+
+test('opt-in budget rejects a settled Pi session when the gate did not register', async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.implementationBudget = { minutes: 60, reserveMinutes: 10, commands: [{ command: 'npm test', maxSeconds: 1200 }] };
+  await writeFile(f.configFile, JSON.stringify(config));
+  const result = await invoke(f, { SQUIRE_FAKE_NO_GATE_ACK: '1' });
+  assert.equal(result.code, 1);
+  const state = await runState(summary(result));
+  assert.equal(state.phase, 'failed');
+  assert.match(state.error, /bash gate did not acknowledge registration/);
+  assert.equal(state.candidate, undefined);
+});
+
+test('invalid implementation budgets stop before model processes', async t => {
+  const f = await fixture(t);
+  const original = JSON.parse(await readFile(f.configFile, 'utf8'));
+  for (const value of [{ minutes: 60, reserveMinutes: 10, commands: [] }, { minutes: 500, reserveMinutes: 10, commands: [{ command: 'npm test', maxSeconds: 1200 }] }]) {
+    await writeFile(f.configFile, JSON.stringify({ ...original, implementationBudget: value }));
+    const result = await invoke(f);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /implementationBudget/);
+  }
+  await assert.rejects(stat(f.captureFile));
 });
