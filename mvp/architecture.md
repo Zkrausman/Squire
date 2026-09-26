@@ -17,8 +17,9 @@ Existing configs keep the 60-minute Implement deadline. An operator may opt into
   { command: "npm --prefix v2 test", maxSeconds: 1200 }
 ] }`. Minutes are bounded 20..240, reserve 1..30 (strictly less than half
 of the phase); at most 50 exact shell command strings are allowed, each capped at
-1..3600 seconds. Declare target-specific commands after a preflight of CI/toolchain;
-this example is not a default test command. Unknown bash commands are blocked in
+1..3600 seconds. Declare target-specific commands after a preflight of CI/toolchain. Never put
+secrets in command strings: the trusted budget is passed to Pi through its
+process environment. This example is not a default test command. Unknown bash commands are blocked in
 strict mode. Pi's built-in read/edit/write tools remain available. No alias, shell
 wrapper or alternate executable may be used to bypass the list.
 
