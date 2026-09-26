@@ -185,7 +185,13 @@ async function progressReports(stateDir) {
 test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with untracked files', async t => {
   const f = await fixture(t);
   const result = await invoke(f);
-  assert.equal(result.code, 0, JSON.stringify(await runState(summary(result))));
+  if (result.code !== 0) {
+    const failed = summary(result);
+    const rootLog = path.join(failed.stateDir, 'commands', '001-source-root.stdout.log');
+    assert.equal(result.code, 0, JSON.stringify({ state: await runState(failed),
+      rootLog: await readFile(rootLog, 'utf8').catch(() => '<missing>'),
+      sourceRealpath: await realpath(f.sourceRepo) }));
+  }
   const report = summary(result);
   assert.equal(report.phase, 'candidate');
   assert.equal(report.candidate.status, 'UNVERIFIED');
