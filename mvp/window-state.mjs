@@ -5,6 +5,7 @@ import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeCandidateOutcome } from './window-recent.mjs';
 
 const execFileAsync = promisify(execFile);
 const ownDir = path.dirname(fileURLToPath(import.meta.url));
@@ -122,6 +123,13 @@ export class WindowPresence {
       child.on('error', () => {}); // The display is optional; no effect on the primary run.
       child.unref();
     } catch { /* Display launch is best-effort. */ }
+  }
+
+  async recordCandidate(completedAtMs) {
+    if (this.stopped) return;
+    await this.pending;
+    await writeCandidateOutcome({root:this.root,runId:this.record.runId,
+      ticketId:this.record.ticketId,ticketName:this.record.ticketName,completedAtMs});
   }
 
   async stop() {

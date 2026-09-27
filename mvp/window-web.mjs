@@ -6,6 +6,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { snapshot } from './window-state.mjs';
+import { readRecentOutcomes } from './window-recent.mjs';
 
 const ownDir = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 41827;
@@ -16,7 +17,7 @@ const assets = new Map([
   ['window-view.mjs', ['window-view.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
-export async function createWindowWebServer({ root, token = randomBytes(24).toString('hex'), getRows = () => snapshot(root) }) {
+export async function createWindowWebServer({ root, token = randomBytes(24).toString('hex'), getRows = () => snapshot(root), getRecent = () => readRecentOutcomes(root) }) {
   if (!/^[a-f0-9]{48}$/.test(token)) throw new Error('Invalid window access token');
   const files = new Map(await Promise.all([...assets].map(async ([route, [name, type]]) =>
     [route, { bytes: await readFile(path.join(ownDir, name)), type }])));
@@ -35,9 +36,9 @@ export async function createWindowWebServer({ root, token = randomBytes(24).toSt
       'X-Frame-Options': 'DENY',
       'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
     };
-    if (route === 'api/runs') {
+    if (route === 'api/runs' || route === 'api/recent') {
       try {
-        const body = JSON.stringify(await getRows());
+        const body = JSON.stringify(await (route === 'api/runs' ? getRows() : getRecent()));
         res.writeHead(200, { ...headers, 'Content-Type': 'application/json; charset=utf-8' });
         res.end(req.method === 'HEAD' ? undefined : body);
       } catch {
