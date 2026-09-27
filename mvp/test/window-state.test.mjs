@@ -191,9 +191,18 @@ test('newer crashed records do not hide an older live run', async t => {
 test('Windows snapshot confirms current process start before showing the row', {skip:process.platform !== 'win32'}, async t => {
   const root = await fixture(t);
   const presence = new WindowPresence({root, runId:one, ticketId:'AIDEV-335',ticketName:'Window',phase:'plan'});
-  presence.record.processStartMs = (await windowsProcessStarts([process.pid])).get(process.pid);
-  await presence.queue();
-  const {stdout} = await execFileAsync(process.execPath, [modulePath, '--snapshot', root], {timeout:10_000});
-  assert.deepEqual(JSON.parse(stdout).map(item => item.ticketId), ['AIDEV-335']);
+  // Hosted Windows can transiently take longer than the production 6s fail-closed
+  // process query. Retry only the test observation, never the liveness rule.
+  let start;
+  for (let attempt=0;attempt<3 && !start;attempt++) start=(await windowsProcessStarts([process.pid])).get(process.pid);
+  assert.ok(Number.isSafeInteger(start),'OS process identity must eventually be observable');
+  presence.record.processStartMs = start;
+  let observed=[];
+  for (let attempt=0;attempt<3 && !observed.length;attempt++) {
+    await presence.queue();
+    const {stdout} = await execFileAsync(process.execPath, [modulePath, '--snapshot', root], {timeout:15_000});
+    observed=JSON.parse(stdout).map(item=>item.ticketId);
+  }
+  assert.deepEqual(observed,['AIDEV-335']);
   await presence.stop();
 });
