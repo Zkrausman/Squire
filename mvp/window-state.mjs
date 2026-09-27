@@ -150,8 +150,11 @@ export async function readWindowRecords(root) {
         || value.ticketName.length > 100 || /[\u0000-\u001f\u007f-\u009f]/.test(value.ticketName)
         || !Number.isSafeInteger(value.pid) || value.pid <= 0
         || !Number.isSafeInteger(value.processStartMs) || !Number.isSafeInteger(value.updatedAtMs)) continue;
+      const hadReport = Object.hasOwn(value, 'report');
+      const rawReport = value.report;
       value.report = value.report === null ? null : projectReport(value.report);
       if (value.report?.phase !== value.phase) value.report = null;
+      value.reportUnavailable = !hadReport || (rawReport !== null && value.report === null);
       records.push(value);
     } catch { /* Ignore malformed or racing records. */ }
   }
@@ -167,7 +170,8 @@ export function selectActive(records, starts, now = Date.now()) {
       || record.updatedAtMs > now + 2_000 || now - record.updatedAtMs > STALE_MS || seen.has(record.runId)) continue;
     seen.add(record.runId);
     rows.push({ ticketId: record.ticketId, ticketName: record.ticketName, phase: record.phase,
-      runId: record.runId, updatedAtMs: record.updatedAtMs, report: record.report });
+      runId: record.runId, processStartMs: record.processStartMs, updatedAtMs: record.updatedAtMs,
+      report: record.report, reportUnavailable: record.reportUnavailable });
   }
   return rows.sort((a, b) => a.ticketId.localeCompare(b.ticketId) || a.runId.localeCompare(b.runId));
 }

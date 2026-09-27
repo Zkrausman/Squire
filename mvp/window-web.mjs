@@ -13,6 +13,7 @@ const assets = new Map([
   ['', ['window-web.html', 'text/html; charset=utf-8']],
   ['app.css', ['window-web.css', 'text/css; charset=utf-8']],
   ['app.js', ['window-web.js', 'text/javascript; charset=utf-8']],
+  ['window-view.mjs', ['window-view.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
 export async function createWindowWebServer({ root, token = randomBytes(24).toString('hex'), getRows = () => snapshot(root) }) {
