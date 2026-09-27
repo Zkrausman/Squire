@@ -1,4 +1,4 @@
-import { projectDashboard, restoreSelection } from './window-view.mjs';
+import { projectDashboard, projectRecentOutcomes, restoreSelection } from './window-view.mjs';
 
 const phases = [
   ['starting', 'Starting'], ['preflight', 'Preflight'], ['clone', 'Preparing'],
@@ -16,6 +16,11 @@ const summaryHeartbeat = document.getElementById('summary-heartbeat');
 const connection = document.getElementById('connection');
 const connectionText = document.getElementById('connection-text');
 const clock = document.getElementById('clock');
+const recentContainer = document.getElementById('recent-outcomes');
+let recentRows = [];
+let recentState = 'loading';
+let recentSequence = 0;
+let recentRendered = '';
 let rows = [];
 let selected = readSelected();
 let snapshotState = 'connecting';
@@ -166,6 +171,7 @@ function renderDetail() {
 }
 
 function render() {
+  document.querySelector('main').classList.toggle('no-active', snapshotState === 'live' && rows.length === 0);
   const selectedRow = rows.find(item => item.runId === selected);
   const focusedRunId = document.activeElement?.dataset?.runId;
   count.textContent = snapshotState === 'live' ? String(rows.length) : '—';
@@ -212,6 +218,45 @@ function render() {
   renderDetail();
 }
 
+function renderRecent() {
+  const activeIds = new Set(rows.map(row => row.runId));
+  const visible = recentRows.filter(row => !activeIds.has(row.runId));
+  const signature = JSON.stringify({state:recentState,visible});
+  if (signature === recentRendered) return; // Do not re-announce unchanged aria-live content.
+  recentRendered = signature;
+  recentContainer.replaceChildren();
+  if (recentState === 'unavailable') {
+    recentContainer.append(node('p', '', 'Recent outcome receipts unavailable; no terminal state is inferred.'));
+    return;
+  }
+  if (!visible.length) {
+    recentContainer.append(node('p', '', recentState === 'loading'
+      ? 'Loading recent outcomes…' : 'No trusted recent terminal outcomes reported.'));
+    return;
+  }
+  for (const row of visible) {
+    const card = node('article', 'recent-card');
+    card.append(node('strong', '', `${row.ticketId} · ${row.ticketName} — ${row.status}`),
+      node('span', 'recent-run-id', `Run ${row.runId}`),
+      node('span', '', `Runner terminal receipt: ${formattedTime(row.completedAtMs)}. Not an independently verified result.`),
+      node('span', '', `Next external gate: ${row.nextGate}.`));
+    recentContainer.append(card);
+  }
+}
+
+async function refreshRecent() {
+  const sequence = ++recentSequence;
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const response = await fetch('api/recent', { cache: 'no-store', signal: controller.signal });
+    if (!response.ok) throw new Error('Recent receipts unavailable');
+    const projected = projectRecentOutcomes(await response.json(), rows.map(row => row.runId), Date.now());
+    if (sequence === recentSequence) { recentRows = projected; recentState = 'available'; }
+  } catch { if (sequence === recentSequence) { recentRows = []; recentState = 'unavailable'; } }
+  finally { clearTimeout(deadline); if (sequence === recentSequence) renderRecent(); }
+}
+
 function updateClock() {
   const now = new Date();
   clock.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -237,6 +282,8 @@ async function refresh() {
   } finally {
     clearTimeout(deadline);
     render();
+    renderRecent();
+    void refreshRecent();
     setTimeout(() => { void refresh(); }, 3_000);
   }
 }

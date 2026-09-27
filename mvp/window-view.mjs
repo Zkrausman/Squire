@@ -3,6 +3,9 @@ const TICKET_ID = /^[A-Z][A-Z0-9]{1,15}-[1-9][0-9]{0,8}$/;
 const PHASES = new Set(['starting', 'preflight', 'clone', 'plan', 'implement', 'artifact']);
 const MAX_TIMESTAMP = 4_102_444_800_000;
 const MAX_ROWS = 128;
+const MAX_RECENT = 8;
+const RECENT_MS = 24 * 60 * 60_000;
+const NEXT_GATE = 'Independent review and external tests/CI required';
 export const REPORT_STALE_MS = 5 * 60_000;
 const HEARTBEAT_STALE_MS = 16_000;
 
@@ -92,6 +95,28 @@ export function projectDashboard(value, now = Date.now()) {
     rows.push(row);
   }
   return { rows, invalidRows };
+}
+
+// Terminal receipts are a separate, short-lived source. No result here is Verified,
+// published, installed, or a completed Linear ticket.
+export function projectRecentOutcomes(value, activeRunIds = [], now = Date.now()) {
+  if (!Array.isArray(value) || value.length > MAX_RECENT) throw new Error('Invalid recent outcomes');
+  const active = new Set(activeRunIds);
+  const seen = new Set();
+  const rows = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+      || Object.keys(item).sort().join(',') !== 'completedAtMs,nextGate,runId,status,ticketId,ticketName'
+      || !RUN_ID.test(item.runId) || !TICKET_ID.test(item.ticketId)
+      || !safeText(item.ticketName, 100) || item.status !== 'UNVERIFIED'
+      || item.nextGate !== NEXT_GATE || !safeTimestamp(item.completedAtMs)
+      || item.completedAtMs > now + 2_000 || now-item.completedAtMs > RECENT_MS
+      || active.has(item.runId) || seen.has(item.runId)) continue;
+    seen.add(item.runId);
+    rows.push({runId:item.runId,ticketId:item.ticketId,ticketName:item.ticketName,
+      completedAtMs:item.completedAtMs,status:'UNVERIFIED',nextGate:NEXT_GATE});
+  }
+  return rows.sort((a,b)=>b.completedAtMs-a.completedAtMs || a.runId.localeCompare(b.runId));
 }
 
 export function restoreSelection(rows, requestedRunId) {

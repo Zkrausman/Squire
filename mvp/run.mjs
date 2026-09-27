@@ -1024,6 +1024,11 @@ if (process.argv.length !== 3) {
   try {
     const result = await main(path.resolve(process.argv[2]));
     await progressReporter?.endSession();
+    // Only a persisted terminal candidate yields a short-lived UNVERIFIED window receipt.
+    // Failure, process exit, and Luna text alone never imply a candidate or a passed gate.
+    if (result.phase === 'candidate' && state.phase === 'candidate' && state.candidate?.status === 'UNVERIFIED') {
+      await windowPresence?.recordCandidate(Date.parse(state.completedAt)).catch(() => {});
+    }
     await windowPresence?.stop();
     emit({ runId: state.runId, phase: result.phase, stateDir: state.directory, candidate: state.candidate ?? null });
     process.exitCode = result.exitCode;
