@@ -48,6 +48,7 @@ test('zero, one, and two distinct active runs and same-ticket concurrent runs', 
   const rows = selectActive(await readWindowRecords(root), starts, 2_001_000);
   assert.deepEqual(rows.map(item => item.ticketId), ['AIDEV-335', 'ZAR-218']);
   assert.equal(rows[0].phase, 'implement');
+  assert.equal(rows[0].processStartMs, 1_000_000, 'the bounded actual process start is projected');
   await put(root, record(two, { pid: 24681, processStartMs: 1_001_000 }));
   assert.equal(selectActive(await readWindowRecords(root), starts, 2_001_000).length, 2,
     'two distinct runs of the same ticket remain visible');
@@ -116,6 +117,19 @@ test('only a bounded Luna report is projected into the window, and phase changes
   await presence.stop();
 });
 
+test('malformed and missing Luna reports remain explicitly unavailable or not reported', async t => {
+  const root = await fixture(t);
+  await put(root, record(one, { report: { phase:'implement', currentAction:'unfinished' } }));
+  await put(root, record(two, { pid:24681, processStartMs:1_001_000, report:null }));
+  const records = await readWindowRecords(root);
+  const starts = new Map([[24680,1_000_000],[24681,1_001_000]]);
+  const rows = selectActive(records, starts, 2_001_000);
+  assert.equal(rows.find(row => row.runId === one).report, null);
+  assert.equal(rows.find(row => row.runId === one).reportUnavailable, true);
+  assert.equal(rows.find(row => row.runId === two).report, null);
+  assert.equal(rows.find(row => row.runId === two).reportUnavailable, false);
+});
+
 test('a local web view serves only token-scoped read-only assets and status', async t => {
   const root = await fixture(t);
   const token = 'a'.repeat(48);
@@ -126,13 +140,34 @@ test('a local web view serves only token-scoped read-only assets and status', as
   const page = await fetch(url());
   assert.equal(page.status,200);
   assert.match(page.headers.get('content-security-policy'), /default-src 'none'/);
-  assert.match(await page.text(), /Squire · Active tickets/);
-  const script = await (await fetch(`${url()}app.js`)).text();
+  assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
+  assert.match(page.headers.get('content-security-policy'), /style-src 'self'/);
+  assert.match(page.headers.get('content-security-policy'), /connect-src 'self'/);
+  assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+  assert.match(await page.text(), /Squire · Active runs/);
+  assert.match(page.headers.get('x-content-type-options'), /nosniff/);
+  assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(page.headers.get('x-frame-options'), 'DENY');
+  const scriptResponse = await fetch(`${url()}app.js`);
+  assert.equal(scriptResponse.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  const script = await scriptResponse.text();
   assert.match(script,/textContent/);
-  assert.doesNotMatch(script,/innerHTML/);
+  assert.match(script,/localStorage/);
+  assert.doesNotMatch(script,/innerHTML|outerHTML/);
+  const viewModule = await fetch(`${url()}window-view.mjs`);
+  assert.equal(viewModule.status,200);
+  assert.match(await viewModule.text(), /projectDashboard/);
+  const head = await fetch(`${url()}app.js`,{method:'HEAD'});
+  assert.equal(head.status,200);
+  assert.equal(await head.text(),'');
   const response = await fetch(`${url()}api/runs`);
   assert.deepEqual(await response.json(),rows);
+  assert.equal(response.headers.get('cache-control'),'no-store');
   assert.equal(response.headers.get('access-control-allow-origin'),null);
+  const apiHead = await fetch(`${url()}api/runs`,{method:'HEAD'});
+  assert.equal(apiHead.status,200);
+  assert.equal(await apiHead.text(),'');
+  assert.equal((await fetch(`${url()}api/runs?extra=1`)).status,404);
   assert.equal((await fetch(`${url()}api/runs`,{method:'POST'})).status,404);
   assert.equal((await fetch(`${url().replace(token,'b'.repeat(48))}api/runs`)).status,404);
   assert.equal((await fetch(`${url()}unrelated`)).status,404);
