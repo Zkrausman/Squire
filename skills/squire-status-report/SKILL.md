@@ -12,7 +12,7 @@ Use this skill for owner-requested status reports. It is a **read-only reporting
 1. State the **as-of time and timezone** and coverage window. Default to **since the last reliably dated status report, with at least the preceding 24 hours**. If the last report cannot be established, use the preceding 24 hours and say so. Do not guess a last-report time or silently omit a longer known gap.
 2. For **every service on the current hot path**, identify its active, next gated/queued, blocked, and **verified shipped within the window** tickets. Follow known serial dependencies and include all hot-path tickets even when no run is active. Ask or disclose incomplete scope if the ticket list cannot be verified. A dashboard's active-run/recent-receipt view is not a backlog, and direct-Pi work may not appear there. Historical tickets outside the hot path are included only if they shipped in the window or materially changed a current gate.
 3. Reconcile available **read-only** evidence: ticket status and dependencies; source/PR merge SHA and timestamp; exact-head review/CI; Squire run receipts; direct-Pi work; installed version when relevant. Give each source its observation time. If a source is inaccessible or stale, explicitly say what could not be checked and base claims only on verified evidence. Never claim a failed API read proves ticket/broker state, invent a receipt, expose credentials/private logs, or copy raw ticket bodies into the report.
-4. Distinguish **shipped** (verified merge and applicable delivery gates), **merged but not installed**, **candidate/draft PR**, **local tests**, **active work**, **queued**, and **blocked**. A process exit, model assertion, synthetic fixture, green local test, or draft PR is not shipment. Broker facts require broker evidence; report pending owner approval without interpreting it as authorization. If the ticket tracker and Git evidence disagree, show the disagreement, not a blended status.
+4. The **State** column uses exactly **Not Queued**, **Queued**, **In Progress**, or **Shipped**. Not Queued means not selected for the current delivery queue; Queued means selected but not started; In Progress means the ticket's complete gate remains open, even if a component merged; Shipped means the complete applicable delivery gate is verified. Put qualifiers—blocked, draft, waiting for approval, partially merged, merged but not installed, synthetic fixture, or tracker disagreement—in a short **State details** column, not in State. A process exit, model assertion, synthetic fixture, green local test, or draft PR is not shipment. Broker facts require broker evidence; report pending owner approval without interpreting it as authorization. If the ticket tracker and Git evidence disagree, show the disagreement, not a blended status.
 
 ## Required owner-facing format
 
@@ -24,9 +24,9 @@ Coverage: <since last reliable report timestamp through as-of; at least 24h, or 
 Evidence checked: <source(s) and observed times>; unavailable/stale: <source(s) or none>
 
 ## <Service name>
-| Ticket | State / gate | Change in window | Evidence / next gate |
-|---|---|---|---|
-| <linked ID> | Shipped <merge SHA/time> / Active / Draft / Queued / Blocked | <concrete delta or “No verified change”> | <linked receipt and immediate dependency> |
+| Ticket | State | State details | Change in window | Evidence / next gate |
+|---|---|---|---|---|
+| <linked ID> | Not Queued / Queued / In Progress / Shipped | <brief qualifier, or —> | <concrete delta or “No verified change”> | <linked receipt and immediate dependency> |
 
 **Blockers:** <what prevents progress, including missing evidence; or “None known”>
 **Owner asks:** <precise decision, consequence, and whether work on this service can continue; or “None”>
