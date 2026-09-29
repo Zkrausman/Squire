@@ -3,11 +3,12 @@
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { validateBudget } from './phase-budget-policy.mjs';
+import { drainProcessStream } from './process-drain.mjs';
 import { WindowPresence, defaultWindowRoot, validateWindowConfig } from './window-state.mjs';
 
 const PLAN_MODEL = 'openai-codex/gpt-6-sol';
@@ -120,38 +121,6 @@ async function stage(phase, values = {}) {
   void windowPresence?.queue(phase).catch(() => {});
 }
 
-async function drain(stream, filename, limit, keepMemory, kill, onChunk = undefined) {
-  const file = filename ? await open(filename, 'wx', 0o600) : null;
-  const chunks = [];
-  let bytes = 0;
-  let exceeded = false;
-  let writeError;
-  try {
-    for await (const chunk of stream) {
-      bytes += chunk.length;
-      if (bytes > limit) {
-        exceeded = true;
-        kill();
-        continue;
-      }
-      if (onChunk) {
-        try { onChunk(chunk); } catch { /* activity extraction must never interrupt the primary session */ }
-      }
-      if (writeError) continue;
-      try {
-        if (file) await file.write(chunk);
-        if (keepMemory) chunks.push(chunk);
-      } catch (error) {
-        writeError = error;
-        kill();
-      }
-    }
-  } finally {
-    await file?.close();
-  }
-  return { bytes, exceeded, writeError, buffer: keepMemory ? Buffer.concat(chunks) : undefined };
-}
-
 function terminateProcessTree(child) {
   if (!child.pid) return Promise.resolve();
   if (process.platform === 'win32') {
@@ -233,10 +202,10 @@ async function runProcess(program, args, options) {
     child.stdin?.destroy();
     timeoutResolve();
   }, timeoutMs);
-  const stdoutPromise = drain(child.stdout, stdoutFile, stdoutLimit, keepStdout, kill, onStdoutChunk).catch(error => {
+  const stdoutPromise = drainProcessStream(child.stdout, stdoutFile, stdoutLimit, keepStdout, kill, onStdoutChunk).catch(error => {
     kill(); return { writeError: error, buffer: undefined };
   });
-  const stderrPromise = drain(child.stderr, stderrFile, stderrLimit, false, kill).catch(error => {
+  const stderrPromise = drainProcessStream(child.stderr, stderrFile, stderrLimit, false, kill).catch(error => {
     kill(); return { writeError: error, buffer: undefined };
   });
   let exit;
