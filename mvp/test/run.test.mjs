@@ -224,10 +224,15 @@ async function headDiagnostic(f, result) {
   const report = summary(result);
   const state = await runState(report);
   const commandDir = path.join(report.stateDir, 'commands');
-  const headLog = (await readdir(commandDir)).find(name => name.endsWith('-source-head.stdout.log'));
+  const commandNames = await readdir(commandDir);
+  const headLog = commandNames.find(name => name.endsWith('-source-head.stdout.log'));
+  const stderrLog = commandNames.find(name => name.endsWith('-source-head.stderr.log'));
+  const headOutput = headLog ? await readFile(path.join(commandDir, headLog)) : null;
   return JSON.stringify({ error: state.error, expected: f.baseSha,
     configured: JSON.parse(await readFile(f.configFile, 'utf8')).baseSha,
-    sourceHeadLog: headLog ? (await readFile(path.join(commandDir, headLog), 'utf8')).trim() : null,
+    sourceHeadLog: headOutput?.toString('utf8') ?? null,
+    sourceHeadStdoutBytes: headOutput?.length ?? null,
+    sourceHeadStderr: stderrLog ? (await readFile(path.join(commandDir, stderrLog), 'utf8')).slice(0, 1024) : null,
     sourceHeadNow: git(f.sourceRepo, ['rev-parse', 'HEAD']) });
 }
 
@@ -614,7 +619,8 @@ test('checks and restores plan tampering even when Implement exits nonzero', asy
   assert.equal(result.code, 1);
   const report = summary(result);
   const state = await runState(report);
-  assert.match(state.error, /plan\.md changed/);
+  assert.match(state.error, /plan\.md changed/,
+    state.error.includes('sourceRepo HEAD differs') ? await headDiagnostic(f, result) : undefined);
   assert.equal(await readFile(path.join(report.stateDir, 'plan.md'), 'utf8'), planText);
   assert.ok((await readFile(path.join(report.stateDir, 'implementation.jsonl'), 'utf8')).includes('agent_settled'));
 });
@@ -661,7 +667,8 @@ test('times out without waiting for a descendant that inherited stdout and kills
 test('reports no-candidate separately and does not call it success', async t => {
   const f = await fixture(t);
   const result = await invoke(f, { SQUIRE_FAKE_NO_CHANGES: '1' });
-  assert.equal(result.code, 2, JSON.stringify(await runState(summary(result))));
+  assert.equal(result.code, 2,
+    result.code === 2 ? undefined : await headDiagnostic(f, result));
   const report = summary(result);
   assert.equal(report.phase, 'no-candidate');
   assert.equal(report.candidate, null);
