@@ -38,7 +38,8 @@ async function fixture(t) {
   const configFile = path.join(directory, 'config.json');
   await writeFile(ticketFile, ticket);
   await writeFile(fakePi, `
-import { appendFile, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { watch } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 const args = process.argv.slice(2);
@@ -46,6 +47,45 @@ const toolIndex = args.indexOf('--tools');
 const tools = args[toolIndex + 1];
 const stage = args.includes('--no-tools') ? 'observer' : tools === 'read,grep,find,ls' ? 'plan' : 'implementation';
 const sessionDir = args[args.indexOf('--session-dir') + 1];
+async function waitForPlanReport(predicate) {
+  const reportsDir = path.join(path.dirname(sessionDir), 'progress', 'reports');
+  const watcher = watch(reportsDir);
+  let generation = 0;
+  let wake = null;
+  let watcherError = null;
+  const deadline = Date.now() + 6000;
+  watcher.on('change', () => {
+    if (process.env.SQUIRE_FAKE_DROP_REPORT_WATCH === '1') return;
+    generation += 1; wake?.();
+  });
+  watcher.on('error', error => { watcherError = error; wake?.(); });
+  const matchingReport = async () => {
+    for (const name of (await readdir(reportsDir)).filter(name => name.endsWith('.json')).sort()) {
+      let report;
+      try { report = JSON.parse(await readFile(path.join(reportsDir, name), 'utf8')); } catch { continue; }
+      if (report.phase === 'plan' && report.status === 'complete' && predicate(report)) return report;
+    }
+    return null;
+  };
+  try {
+    while (true) {
+      const observed = generation;
+      const report = await matchingReport();
+      if (report) return report;
+      if (watcherError) throw watcherError;
+      if (generation !== observed) continue;
+      if (Date.now() >= deadline) throw new Error('plan report barrier deadline exceeded');
+      // fs.watch is only a wake hint: Windows/Linux may omit directory events.
+      // Rescan persisted reports on a bounded timer, not a model poll or sleep gate.
+      await new Promise(resolve => {
+        const timer = setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now())));
+        wake = () => { clearTimeout(timer); resolve(); };
+        if (generation !== observed || watcherError) wake();
+      });
+      wake = null;
+    }
+  } finally { watcher.close(); }
+}
 let prompt = '';
 for await (const chunk of process.stdin) prompt += chunk.toString('utf8');
 const model = args[args.indexOf('--model') + 1];
@@ -128,7 +168,15 @@ if (stage === 'implementation' && process.env.SQUIRE_FAKE_NO_CHANGES !== '1') {
   await writeFile(path.join(process.cwd(), 'new-file.txt'), 'untracked artifact\\n');
 }
 const delay = Number((stage === 'plan' ? process.env.SQUIRE_FAKE_PLAN_DELAY_MS : process.env.SQUIRE_FAKE_DELAY_MS) || 0);
-if ((stage === 'plan' || stage === 'implementation') && activityEvents.length && delay > 0) {
+// Hold the fake Plan open until persisted reports prove the before/after event ordering.
+if (stage === 'plan' && process.env.SQUIRE_FAKE_PLAN_REPORT_BARRIER === '1' && activityEvents.length) {
+  const prefixCount = 1 + activityEvents.length;
+  await waitForPlanReport(report => report.evidence.recentActivity.length === 0);
+  process.stdout.write(events.slice(0, prefixCount).map(event => JSON.stringify(event)).join('\\n') + '\\n');
+  await waitForPlanReport(report => report.evidence.recentActivity.some(item => item.activity === 'read tool'
+    && item.status === 'started' && item.tool === 'read'));
+  process.stdout.write(events.slice(prefixCount).map(event => JSON.stringify(event)).join('\\n') + '\\n');
+} else if ((stage === 'plan' || stage === 'implementation') && activityEvents.length && delay > 0) {
   const prefixCount = 1 + activityEvents.length;
   process.stdout.write(events.slice(0, prefixCount).map(event => JSON.stringify(event)).join('\\n') + '\\n');
   await new Promise(resolve => setTimeout(resolve, delay));
@@ -145,10 +193,14 @@ if ((process.env.SQUIRE_FAKE_MODE === 'nonzero-plan' && stage === 'plan')
 }
 
 async function invoke(f, extraEnv = {}, timeout = 30_000) {
+  const env = { ...process.env, PI_CLI_PATH: f.fakePi, SQUIRE_FAKE_CAPTURE: f.captureFile, ...extraEnv };
+  for (const name of ['SQUIRE_BUDGET_POLICY', 'SQUIRE_BUDGET_DEADLINE', 'SQUIRE_BUDGET_RECEIPT', 'SQUIRE_BUDGET_READY', 'SQUIRE_BUDGET_NONCE']) {
+    delete env[name];
+  }
   try {
     const result = await execFileAsync(process.execPath, [runner, f.configFile], {
       cwd: repoRoot,
-      env: { ...process.env, PI_CLI_PATH: f.fakePi, SQUIRE_FAKE_CAPTURE: f.captureFile, ...extraEnv },
+      env,
       timeout,
       maxBuffer: 2 * 1024 * 1024,
     });
@@ -172,10 +224,15 @@ async function headDiagnostic(f, result) {
   const report = summary(result);
   const state = await runState(report);
   const commandDir = path.join(report.stateDir, 'commands');
-  const headLog = (await readdir(commandDir)).find(name => name.endsWith('-source-head.stdout.log'));
+  const commandNames = await readdir(commandDir);
+  const headLog = commandNames.find(name => name.endsWith('-source-head.stdout.log'));
+  const stderrLog = commandNames.find(name => name.endsWith('-source-head.stderr.log'));
+  const headOutput = headLog ? await readFile(path.join(commandDir, headLog)) : null;
   return JSON.stringify({ error: state.error, expected: f.baseSha,
     configured: JSON.parse(await readFile(f.configFile, 'utf8')).baseSha,
-    sourceHeadLog: headLog ? (await readFile(path.join(commandDir, headLog), 'utf8')).trim() : null,
+    sourceHeadLog: headOutput?.toString('utf8') ?? null,
+    sourceHeadStdoutBytes: headOutput?.length ?? null,
+    sourceHeadStderr: stderrLog ? (await readFile(path.join(commandDir, stderrLog), 'utf8')).slice(0, 1024) : null,
     sourceHeadNow: git(f.sourceRepo, ['rev-parse', 'HEAD']) });
 }
 
@@ -193,6 +250,7 @@ test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with
     const rootLog = path.join(failed.stateDir, 'commands', '001-source-root.stdout.log');
     assert.equal(result.code, 0, JSON.stringify({ state: await runState(failed),
       rootLog: await readFile(rootLog, 'utf8').catch(() => '<missing>'),
+      sourceHeadDiagnostic: await headDiagnostic(f, result),
       sourceRealpath: await realpath(f.sourceRepo) }));
   }
   const report = summary(result);
@@ -205,6 +263,10 @@ test('runs distinct constrained Pi sessions and retains an UNVERIFIED patch with
   assert.equal(state.progressIntervalMinutes, 15);
   assert.equal(await readFile(path.join(report.stateDir, 'plan.md'), 'utf8'), planText);
   assert.equal(await readFile(path.join(report.stateDir, 'implementation-response.txt'), 'utf8'), 'Implementation complete.\n');
+  const sourceHeadLog = (await readdir(path.join(report.stateDir, 'commands')))
+    .find(name => name.endsWith('-source-head.stdout.log'));
+  assert.ok(sourceHeadLog, 'source-head stdout log should be retained');
+  assert.equal((await readFile(path.join(report.stateDir, 'commands', sourceHeadLog), 'utf8')).trim(), f.baseSha);
   const patch = await readFile(path.join(report.stateDir, 'candidate.patch'), 'utf8');
   assert.match(patch, /-before/);
   assert.match(patch, /\+after/);
@@ -282,20 +344,46 @@ test('schedules reports during Plan with read-only allowlisted activity', { time
   const result = await invoke(f, {
     SQUIRE_TEST_PROGRESS_INTERVAL_MS: '200',
     SQUIRE_FAKE_ACTIVITY: '1',
-    SQUIRE_FAKE_PLAN_DELAY_MS: '800',
+    SQUIRE_FAKE_PLAN_REPORT_BARRIER: '1',
   }, 10_000);
   assert.equal(result.code, 0, result.stderr);
   const terminal = summary(result);
   const captures = (await readFile(f.captureFile, 'utf8')).trim().split('\n').map(JSON.parse);
-  const observer = captures.find(item => item.stage === 'observer' && item.prompt.includes('"phase":"plan"'));
-  assert.ok(observer, 'expected a fresh Luna assessment of the active Plan phase');
-  assert.match(observer.prompt, /read tool/);
-  assert.doesNotMatch(observer.prompt, /must not be forwarded/);
+  const observers = captures.filter(item => item.stage === 'observer' && item.prompt.includes('"phase":"plan"'));
+  assert.ok(observers.length >= 2, 'expected assessments before and after Plan activity');
   const reports = await progressReports(terminal.stateDir);
-  assert.ok(reports.some(report => report.phase === 'plan' && report.status === 'complete'));
+  const planReports = reports.filter(report => report.phase === 'plan' && report.status === 'complete');
+  const empty = planReports.find(report => report.evidence.recentActivity.length === 0);
+  assert.ok(empty, 'the earlier report should preserve its honestly empty snapshot');
+  assert.equal(empty.evidence.lastActivityMinutesAgo, null);
+  const afterRead = planReports.find(report => report.evidence.recentActivity.some(item => item.activity === 'read tool'
+    && item.status === 'started' && item.tool === 'read'));
+  assert.ok(afterRead, 'expected a completed report whose snapshot follows the read-tool event');
+  assert.ok(afterRead.number > empty.number);
+  const observerAfterRead = observers.find(item => item.prompt.includes('read tool'));
+  assert.ok(observerAfterRead, 'expected a Luna assessment based on the post-read snapshot');
+  assert.doesNotMatch(observerAfterRead.prompt, /must not be forwarded/);
   assert.equal((await runState(terminal)).candidate.status, 'UNVERIFIED');
   const manifest = JSON.parse(await readFile(path.join(terminal.stateDir, 'evidence-manifest.json'), 'utf8'));
   assert.equal(manifest.entries.some(entry => entry.path === 'progress' || entry.path.startsWith('progress/')), false);
+});
+
+test('Plan report barrier rescans if filesystem notifications are lost', { timeout: 12_000 }, async t => {
+  const f = await fixture(t);
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'));
+  config.progressIntervalMinutes = 1;
+  await writeFile(f.configFile, JSON.stringify(config));
+  const result = await invoke(f, {
+    SQUIRE_TEST_PROGRESS_INTERVAL_MS: '200',
+    SQUIRE_FAKE_ACTIVITY: '1',
+    SQUIRE_FAKE_PLAN_REPORT_BARRIER: '1',
+    SQUIRE_FAKE_DROP_REPORT_WATCH: '1',
+  }, 8_000);
+  assert.equal(result.code, 0, result.stderr);
+  const reports = (await progressReports(summary(result).stateDir))
+    .filter(report => report.phase === 'plan' && report.status === 'complete');
+  assert.ok(reports.some(report => report.evidence.recentActivity.length === 0));
+  assert.ok(reports.some(report => report.evidence.recentActivity.some(item => item.activity === 'read tool')));
 });
 
 test('streams bounded Luna reports during Implement without changing evidence or candidate status', { timeout: 15_000 }, async t => {
@@ -531,7 +619,8 @@ test('checks and restores plan tampering even when Implement exits nonzero', asy
   assert.equal(result.code, 1);
   const report = summary(result);
   const state = await runState(report);
-  assert.match(state.error, /plan\.md changed/);
+  assert.match(state.error, /plan\.md changed/,
+    state.error.includes('sourceRepo HEAD differs') ? await headDiagnostic(f, result) : undefined);
   assert.equal(await readFile(path.join(report.stateDir, 'plan.md'), 'utf8'), planText);
   assert.ok((await readFile(path.join(report.stateDir, 'implementation.jsonl'), 'utf8')).includes('agent_settled'));
 });
@@ -578,7 +667,8 @@ test('times out without waiting for a descendant that inherited stdout and kills
 test('reports no-candidate separately and does not call it success', async t => {
   const f = await fixture(t);
   const result = await invoke(f, { SQUIRE_FAKE_NO_CHANGES: '1' });
-  assert.equal(result.code, 2, JSON.stringify(await runState(summary(result))));
+  assert.equal(result.code, 2,
+    result.code === 2 ? undefined : await headDiagnostic(f, result));
   const report = summary(result);
   assert.equal(report.phase, 'no-candidate');
   assert.equal(report.candidate, null);
