@@ -58,9 +58,34 @@ The optional trusted `window` config supplies a bounded ticket ID/name; it does 
 
 After `candidate` has been durably persisted, an opted-in runner may write a short-lived, bounded local terminal receipt under a separate `recent-outcomes-v1` directory. New signed v2 receipts carry the internal `CANDIDATE_CREATED` status; authentic, unexpired signed v1 `UNVERIFIED` receipts remain readable. Both project to the neutral user-facing **Code candidate created** wording; the runner's private candidate state remains `UNVERIFIED` and is not a delivery claim. Six allowlisted identity/status fields carry a MAC from a per-user local receipt key; missing, tampered, linked, overlong, expired or cross-run files fail closed. A recovered surplus is pruned to 64 files on the next write; the read path samples at most 128 recognized files and displays at most eight receipts from the last 24 hours. The read-only `api/recent` endpoint never opens arbitrary result roots or infers ticket completion from process exit. A receipt is **not** external review, tests, publication, installation or Linear completion; same-user file/key access is not OS isolation. Independent review, applicable tests and exact-head hosted CI appear as separate pending external gates with outcomes `Not reported`; no independently verified blockers or owner-attention source exists in this version, and no defaults or action buttons are inferred. Historical pre-feature candidate runs cannot be backfilled from untrusted process exit or old results.
 
+## Read-only delivery evidence seam (not wired to the runner)
+
+`candidate-tree.mjs` checks a retained terminal Squire candidate identity and
+applies its bounded binary patch in a temporary no-checkout clone to derive its
+exact Git tree without editing the source or retained candidate. The read-only
+`inspectSquireDelivery` helper binds that tree to an already published PR head
+via GitHub, requiring a pinned repository, PR number, head SHA, base branch and
+explicit head/merge check names. It fails closed unless a distinct GitHub user
+has an undismissed approval at that head, all required GitHub Actions checks
+pass on both the head and merge SHA, and the merge commit (or exact-tree squash)
+is still the base branch tip. API errors, missing/duplicate checks, uncertain
+review history or moving branches block. Reviews are re-read at the final
+observation, but separate GitHub REST requests are not an atomic snapshot;
+new dismissals or branch movement after the last request require a fresh gate
+check before relying on the result. This helper accepts only GitHub's 40-hex
+SHA-1 repositories; the runner's separate 64-hex Git SHA-256 allowance is not
+supported at this GitHub boundary. Fixture tests are not hosted CI.
+
+This is **not** wired to `run.mjs`, a Linear intake, a publisher, or an ordered
+ticket driver. The same-user candidate state and patch are not tamper-proof;
+source and run identity must be supplied by the trusted caller. A GitHub PR
+approval is required here; an independent non-GitHub review is not authenticated.
+The helper does not prove locally run tests, mark a ticket complete, or advance
+a list. No merge command or installation is performed.
+
 ## Deliberate non-features
 
-No GitHub, Linear, Docker Sandbox, queue, PR, CI, review, test gate, commit, publication, repair, or merge integration exists. Squire runs Git for checkout and artifact collection, but does not run repository tests. A model may invoke commands via the allowed host bash tool; their output is not evidence of validation. The observer cannot commit, publish, merge, trade, approve, retry, or change deadlines.
+No Linear, Docker Sandbox, queue, PR publication, automatic review, automatic test gate, commit, repair, or merge integration exists. Squire runs Git for checkout and artifact collection, but does not run repository tests. A model may invoke commands via the allowed host bash tool; their output is not evidence of validation. The observer cannot commit, publish, merge, trade, approve, retry, or change deadlines.
 
 ## Limits
 
