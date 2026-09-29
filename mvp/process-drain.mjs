@@ -5,8 +5,9 @@ import { open } from 'node:fs/promises';
 // afterward can lose bytes even when the process exited successfully.
 export async function drainProcessStream(stream, filename, limit, keepMemory, kill, onChunk = undefined, openLog = open) {
   const opening = filename ? openLog(filename, 'wx', 0o600) : Promise.resolve(null);
-  // The stream may be empty; observe an early open failure until finally awaits it.
-  void opening.catch(() => {});
+  // A silent child cannot advance the read loop: terminate promptly if opening
+  // fails, while leaving the original rejection for the drain's finally block.
+  void opening.catch(() => { kill(); });
   const chunks = [];
   let bytes = 0;
   let exceeded = false;
