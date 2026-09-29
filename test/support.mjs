@@ -14,7 +14,8 @@ export async function fixture(t, specs = [ticket('a')], extra = {}) {
   t.after(async () => {
     for (const close of cleanup.reverse()) await close();
     const resolved = await realpath(root);
-    if (!resolved.startsWith(`${os.tmpdir()}${path.sep}squire-test-`)) throw new Error('Unsafe fixture cleanup path');
+    const relative = path.relative(await realpath(os.tmpdir()), resolved);
+    if (path.isAbsolute(relative) || relative.includes(path.sep) || !relative.startsWith('squire-test-')) throw new Error('Unsafe fixture cleanup path');
     await rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const seed = path.join(root, 'seed'), source = path.join(root, 'source.git'), stateDir = path.join(root, 'state');

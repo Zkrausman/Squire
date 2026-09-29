@@ -7,7 +7,7 @@ import { runProcess } from '../src/process.mjs';
 
 async function temporary(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'squire-test-process-'));
-  t.after(async () => { const target = await realpath(root); assert.ok(target.startsWith(`${os.tmpdir()}${path.sep}squire-test-`)); await rm(target, { recursive: true, force: true, maxRetries: 5 }); }); return root;
+  t.after(async () => { const target = await realpath(root), relative = path.relative(await realpath(os.tmpdir()), target); assert.ok(!path.isAbsolute(relative) && !relative.includes(path.sep) && relative.startsWith('squire-test-')); await rm(target, { recursive: true, force: true, maxRetries: 5 }); }); return root;
 }
 test('process captures fast output and durable failure receipts without shell expansion', async t => {
   const root = await temporary(t);
