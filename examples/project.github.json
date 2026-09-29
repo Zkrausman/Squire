@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "id": "my-project",
+  "stateDir": "C:\\SquireState",
+  "goal": "Implement the authorized project requirements supplied here as small dependency-correct tickets.",
+  "services": {
+    "app": {
+      "source": "https://github.com/OWNER/REPOSITORY",
+      "branch": "main",
+      "setup": [{ "name": "install", "argv": ["npm", "ci", "--ignore-scripts"], "timeoutSeconds": 300 }],
+      "checks": [{ "name": "test", "argv": ["npm", "test"], "timeoutSeconds": 300 }],
+      "acceptance": [],
+      "delivery": { "kind": "github", "repository": "OWNER/REPOSITORY", "mergeMethod": "squash", "requiredChecks": [{ "name": "test", "appId": 15368 }] }
+    }
+  },
+  "runtime": { "kind": "codex", "authentication": "subscription" },
+  "limits": { "maxParallel": 2, "maxRepairs": 2, "maxRebases": 3, "maxAgentCalls": 100, "agentTimeoutSeconds": 1800, "ciTimeoutSeconds": 1800, "rateLimitBackoffSeconds": 600 }
+}

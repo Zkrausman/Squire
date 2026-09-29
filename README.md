@@ -1,37 +1,55 @@
-# Squire — two-phase local MVP
+# Squire
 
-Squire runs exactly one ticket per invocation. It creates a separate local clone at a pinned commit, asks the current host Pi for a plan, then starts a fresh Pi session to implement that plan. While either Pi phase is active, a timer can launch bounded fresh Luna assessments from sanitized progress metadata. On Windows, an optional single read-only window lists active Squire tickets. A changed checkout is retained with a patch labeled **UNVERIFIED**. Squire does not publish or validate the candidate.
+A durable controller for an agentic software delivery loop. Give it an authorized project and trusted executable checks; it plans or accepts tickets, schedules dependencies, runs fresh Codex implementation/review sessions, repairs bounded failures, and delivers verified commits. SQLite checkpoints and process receipts survive controller restarts.
 
-## What a run does
+This is a clean rewrite from `origin/main`; the approved [architecture](docs/ARCHITECTURE.md) and [tldraw canvas](docs/Squire%20Architecture.tldraw) are preserved. Git history retains the previous implementation.
 
-1. Validate a trusted local config, a clean Git checkout whose `HEAD` equals `baseSha`, and a bounded ticket. `resultRoot` must be outside the source checkout. The source checkout is not used as the worktree.
-2. Clone the local repository into a unique run directory and check out the pinned commit. Save a ticket snapshot and a run journal.
-3. Launch current host Pi headlessly in JSON mode for Plan, with only `read`, `grep`, `find`, and `ls`. Start a fresh session for Implement with the exact captured plan and ticket, allowing only Pi's native `read`, `bash`, `edit`, and `write` tools. Both sessions disable extensions, skills, templates, and themes and pass `--no-approve`; `--no-context-files` is intentionally omitted. Pi's normal AGENTS/CLAUDE context discovery remains enabled, and each prompt directly asks the model to read applicable `AGENTS.md` instructions.
-4. During each active Plan or Implement Pi process, the trusted `progressIntervalMinutes` timer (default 15; allowed integer range 1–120) may start one fresh Luna assessment at a time. Luna runs with no tools, extensions, project context, or project trust, from outside the candidate checkout. Its bounded prompt contains only host-collected phase/deadline metadata, allowlisted Pi activity/tool names and statuses, and runner-known milestones—not raw tool responses, commands, repository text, credentials, or Pi context. Observer runtime/output are bounded; errors, timeouts, and provider/authentication failures become explicit unavailable reports and do not fail or authorize the primary run. Percent and ETA remain `unknown` unless later supported by defensible milestones.
-5. Each numbered report, evidence digest, timing, usage receipt, and failure receipt is stored separately under `progress/reports/` and excluded from `evidence-manifest.json`. A `{"type":"squire.progress", ...}` JSON event containing the report is written to stdout as soon as it is persisted, before the run's terminal summary. This stdout JSONL stream is the supported live observation/forwarding boundary: an owner-chat or terminal host may subscribe to stdout and forward these events. Squire has no direct owner-chat transport; the host must perform that integration. Reports are observations, not verification or authority.
-6. Require each primary Pi process to exit successfully and emit an authoritative final assistant `stopReason: "stop"` followed by `agent_settled`. Retain JSONL, Pi session files, stderr, and run state. Before Implement, write `evidence-manifest.json` with hashes of retained pre-implementation evidence. After Implement—also when it exits nonzero or throws—verify the manifest, ticket/plan snapshots, and original evidence inventory; restore ticket and plan from in-memory copies where possible and fail closed on persistent changes. `plan.md` is captured once as bounded, non-empty Markdown; the model need not follow a response schema.
-7. If the worktree differs from the pinned base, retain it and write `candidate.patch`, including untracked files. Do not commit. The outcome is **UNVERIFIED**, regardless of model claims. If there are no changes, the outcome is `no-candidate` (exit code 2), not success.
+## Requirements
 
-The one-ticket runner runs no tests, reviewer, CI, GitHub/Linear action, PR workflow, queue, Docker Sandbox, or automatic repair. Unwired read-only helpers (`mvp/candidate-tree.mjs`, `mvp/github-delivery-evidence.mjs`) can bind a retained candidate patch's Git tree to an already merged PR under explicit review, exact-head and exact-merge check policy; they cannot complete or advance a ticket. See `mvp/architecture.md`. The implementation session has ordinary host-Pi permissions and may choose to run commands through its native bash tool; Squire does not treat those results as a gate. Progress observation adds no authority and cannot commit, publish, merge, trade, approve, retry, or change deadlines.
+- Node 24.14 or newer in the Node 24 series, Git, and Codex CLI signed in with `codex login` using ChatGPT.
+- GitHub delivery also needs `gh auth login` with repository write access and permission to inspect branch protection.
+- On Windows, Codex must have a working native elevated sandbox. Squire explicitly selects this approved mode, retaining workspace boundaries. It does not bypass sandbox failures.
 
-## Requirements and invocation
+The runtime checks ChatGPT authentication and the account's model catalog. API key environment variables are removed; there is no paid API fallback. An unavailable inherited model preference uses the account default; an unavailable explicit project model blocks. Jobs share your subscription usage limits. Quota exhaustion checkpoints and waits.
 
-Requires Node.js 24, Git, the current host Pi CLI, and working Pi authentication for the configured owner-approved models. No dependencies are installed by this project. The default Pi CLI entrypoint is the package adjacent to the running Node installation. Set `PI_CLI_PATH` only when that installation is elsewhere; it must name the trusted JavaScript CLI entrypoint. Tests use a fake CLI through this variable.
+## Run
 
-Copy `mvp/config.example.json` to a trusted private location and set absolute paths, a full pinned commit SHA, and a ticket file. `planModel` and `implementationModel` are optional and, if specified, must remain exactly `openai-codex/gpt-6-sol` and `openai-codex/gpt-6-luna`; thinking levels are fixed to `medium` and `max` respectively. `progressIntervalMinutes` is optional, defaults to 15, and must be an integer from 1 through 120; invalid values are rejected before Pi launches. On Windows only, opt in with `"window": {"ticketId":"AIDEV-335","ticketName":"Active ticket window"}` in each trusted run config. Without it, existing headless behavior is unchanged. A Linux UI is deferred; the Linux runner still works without this option.
-
-```sh
-node mvp/run.mjs C:/private/squire-config.json
-# or: npm run squire -- C:/private/squire-config.json
+```powershell
+npm ci --ignore-scripts
+npm run check
 npm test
+node bin/squire.mjs validate project.json
+node bin/squire.mjs doctor project.json
+node bin/squire.mjs run project.json
 ```
 
-A candidate run exits 0 and reports its run directory; a no-candidate run exits 2; a failed Pi/preflight/artifact run exits 1. While it is running, consume stdout line-by-line and forward/observe JSON objects with `type: "squire.progress"`; the event includes the numbered report, evidence digest, timing, usage/failure receipt, and evidence snapshot. Squire does not connect to owner chat itself. Inspect the reported directory: `state.json`, `evidence-manifest.json`, `progress/reports/`, `ticket.md`, `plan.md`, `implementation-response.txt`, `plan.jsonl`, `implementation.jsonl`, the primary session directories, process stderr, Git command logs, and (when present) `candidate.patch` and `candidate/`. `progress/` is separate from and excluded from the pre-implementation evidence inventory. Failures are retained for inspection and never trigger automatic retry or promotion. Retained primary logs can contain repository data and model/tool output; keep `resultRoot` private.
+Copy [examples/project.github.json](examples/project.github.json), replace repository and absolute state path, and choose checks that prove your requirements. `doctor` checks authentication and delivery policy; the optional `npm run smoke:codex` additionally proves a real agent can execute a command and write an isolated file. It consumes subscription usage and makes no delivery commits.
 
-## Windows active-ticket window
+Use `goal` to request planning, or supply `tickets` with explicit dependencies. Checks/setup/acceptance are trusted argv arrays with timeouts, never shell strings. For Windows npm commands the runner resolves npm's Node entrypoint. Source may be GitHub HTTPS or a local **bare** Git repository. State must live outside source. All controllers on a host should share one state root for repository leases.
 
-When a trusted Windows config includes `window`, Squire publishes its bounded ticket ID/name, phase, runner PID/start identity, short heartbeat, and an allowlisted excerpt of the latest persisted Luna report in a per-user directory under `%LOCALAPPDATA%/Squire/active-window-v1/`. The first run starts a small Microsoft Edge app window backed by a dependency-free local Node HTTP service bound only to `127.0.0.1:41827`; that port also prevents duplicate services or automatic duplicate windows. The browser polls every 3 seconds and lists all **live** opted-in runs (including two runs of the same ticket). The server confirms process start time and a fresh heartbeat; crashed/stale records disappear from the overview. No repository or private ticket/log search occurs. Closing Edge does not stop any run; the independent read-only service remains available. To reopen the view without starting another ticket, run `node mvp/window-web.mjs --open %LOCALAPPDATA%/Squire/active-window-v1` from the installed copy. A display failure leaves the primary run unchanged, and the live JSONL progress stream remains available independently. Select a ticket card to read its latest report for that phase: current action, evidence, risks/stalls, confidence, and report time. Before a report arrives, the detail panel says so; switching phases clears the previous phase's report. The UI never opens ticket bodies, raw logs, or full report files. The phase is live runner status; Luna's report is observational, **not** a model-authorized percent-complete or approval status. No Herdr, remote service, new npm package, or model call is needed. The local URL has a random token and restrictive browser headers, but loopback and same-user execution are **not** credential or process isolation.
+## What shipping means
 
-## Limitations
+An agent's success message is insufficient. Each ticket requires a controller-owned candidate commit, clean exact tree, passing executable checks, a fresh review tied to that head, publication, required CI, an expected-head merge, and passing checks on the exact delivered tree. Only then do dependent tickets start. Moving the base invalidates checks and review. Independent repositories run concurrently; one repository/target branch has one writer. Project completion requires integrated service checks and configured acceptance commands.
 
-This is ordinary host Pi, not a sandbox or credential boundary. Pi inherits the current user's filesystem, network, and available credentials; `--no-extensions`, `--no-approve`, and the tool allowlists do not isolate its process. `--no-approve` disables trust-gated project-local configuration/resources; in the installed Pi implementation it does not disable AGENTS/CLAUDE context discovery, which is controlled separately by `--no-context-files`. The runner's hash/inventory checks detect persistent evidence changes but cannot defend against a malicious same-user model that changes and restores files or tampers with state between checks. Retained evidence remains sensitive. The candidate is not reviewed, tested by Squire, CI-checked, published, committed, or approved as safe. Luna progress reports are bounded best-effort observations, not verification; an unavailable report does not imply primary-run failure. Review the patch and run appropriate validation manually before using it.
+GitHub requires classic strict up-to-date branch protection with administrators enforced, explicit check names and app IDs, and an enabled merge or squash method. Check runs may use head or a verified synthetic merge commit. Skipped/neutral checks do not pass. Ruleset-only protection and merge queues are currently unsupported and block. Deployment is a future separate delivery gate.
+
+## Operate and extend
+
+```powershell
+node bin/squire.mjs status project.json
+node bin/squire.mjs events project.json --after=0
+node bin/squire.mjs pause project.json
+node bin/squire.mjs resume project.json --retry
+node bin/squire.mjs run project.json
+node bin/squire.mjs serve C:\SquireState --port=41828
+```
+
+`run` waits through capacity and CI. `--once` advances available work and returns without waiting. Ctrl+C cancels active jobs and pauses; `resume` reactivates persisted work. `--retry` retries blockers with new evidence; it does not reset exhausted budgets. Preserve state for diagnosis, and explicitly start a new project for changed scope/budgets. A postmerge failure halts the repository lane and is never hidden by a rollback claim.
+
+See [operator/API guide](docs/OPERATIONS.md) and [adapter contracts](src/ports.d.ts). Another harness can call the versioned control API; a future runtime adapter can supply agent execution independently. The initial executable installs only the Codex subscription adapter.
+
+## Verification and limits
+
+Offline tests exercise real local Git delivery with deterministic agent fixtures, repair/review failures, recovery, moved bases, lost merge receipts, quotas, protected paths, exact GitHub evidence, API authentication, and scheduling. They test controller behavior; the first real project will establish model effectiveness and GitHub end-to-end delivery.
+
+This is an owner-controlled single-host tool. Trusted setup/check commands execute repository code under the owner's OS account; same-user auth files are not a separate security boundary. Keep state, transcript logs, and the control token private. Do not expose the loopback API or use untrusted repositories as a multiuser execution service.
