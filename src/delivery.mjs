@@ -98,18 +98,19 @@ export class GitHubDelivery {
     const pr = await this.pull(ticket, service);
     if (pr.merged) return { state: 'merged', ...await this.verifyMerge(ticket, service, pr.merge_commit_sha) };
     if (pr.base?.sha && pr.base.sha !== ticket.baseSha) return { state: 'base_moved' };
-    let checkSha = ticket.headSha;
-    let checks = await this.client.pages(`${this.prefix(service)}/commits/${checkSha}/check-runs`, 'check_runs');
+    const checks = await this.client.pages(`${this.prefix(service)}/commits/${ticket.headSha}/check-runs`, 'check_runs');
+    let mergeChecks = [];
     if (isSha(pr.merge_commit_sha)) {
-      const mergeChecks = await this.client.pages(`${this.prefix(service)}/commits/${pr.merge_commit_sha}/check-runs`, 'check_runs');
+      mergeChecks = await this.client.pages(`${this.prefix(service)}/commits/${pr.merge_commit_sha}/check-runs`, 'check_runs');
       if (mergeChecks.length) {
         const candidate = await this.client.api(`${this.prefix(service)}/git/commits/${pr.merge_commit_sha}`);
         if (candidate.sha !== pr.merge_commit_sha || candidate.tree?.sha !== ticket.treeSha || candidate.parents?.length !== 2 || candidate.parents[0].sha !== ticket.baseSha || candidate.parents[1].sha !== ticket.headSha) return { state: 'base_moved' };
-        checkSha = pr.merge_commit_sha; checks = mergeChecks;
       }
     }
     for (const expected of service.delivery.requiredChecks) {
-      const matches = checks.filter(c => c.name === expected.name && c.app?.id === expected.appId && c.head_sha === checkSha).sort((a, b) => b.id - a.id);
+      const matching = (runs, sha) => runs.filter(c => c.name === expected.name && c.app?.id === expected.appId && c.head_sha === sha).sort((a, b) => b.id - a.id);
+      const mergeMatches = matching(mergeChecks, pr.merge_commit_sha);
+      const matches = mergeMatches.length ? mergeMatches : matching(checks, ticket.headSha);
       const check = matches[0];
       if (!check || check.status !== 'completed') return { state: 'pending', reason: `Waiting for ${expected.name}` };
       if (check.conclusion !== 'success') return { state: 'failed', reason: `${expected.name}: ${check.conclusion}`, checkUrl: check.html_url };

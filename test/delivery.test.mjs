@@ -23,7 +23,7 @@ function fake(options = {}) {
     if (endpoint.includes('/git/commits/')) return { sha: M, tree: { sha: options.tree ?? T }, parents: options.mergeCandidate ? [{ sha: options.parent ?? B }, { sha: H }] : [{ sha: options.parent ?? B }] };
     if (endpoint.includes('/pulls/')) return pr;
     throw new Error(`Unexpected ${endpoint}`);
-  }, pages: async endpoint => endpoint.includes('check-runs') ? (options.checks ?? [{ id: 10, name: 'test', app: { id: 15368 }, head_sha: H, status: 'completed', conclusion: 'success' }]) : [] };
+  }, pages: async endpoint => endpoint.includes('check-runs') ? (options.headChecks && endpoint.includes(H) ? options.headChecks : options.checks ?? [{ id: 10, name: 'test', app: { id: 15368 }, head_sha: H, status: 'completed', conclusion: 'success' }]) : [] };
   return { delivery: new GitHubDelivery(workspace, client), requests, pr };
 }
 test('GitHub fails closed on wrong head, absent checks, skipped checks and spoofed app', async () => {
@@ -46,4 +46,9 @@ test('merge pins exact head and verifies merged tree AND reviewed base ancestry'
 test('already-merged PR reconciles without another merge request', async () => {
   const f = fake({ pr: { state: 'closed', merged: true, merge_commit_sha: M } });
   assert.equal((await f.delivery.merge(ticket, service)).mergeSha, M); assert.equal(f.requests.filter(r => r.method === 'PUT').length, 0);
+});
+test('optional merge checks do not suppress required head checks; required merge failure takes precedence', async () => {
+  const options = { mergeCandidate: true, pr: { merge_commit_sha: M }, headChecks: [{ id: 10, name: 'test', app: { id: 15368 }, head_sha: H, status: 'completed', conclusion: 'success' }], checks: [{ id: 20, name: 'optional', app: { id: 15368 }, head_sha: M, status: 'completed', conclusion: 'success' }] };
+  assert.equal((await fake(options).delivery.inspect(ticket, service)).state, 'ready');
+  assert.equal((await fake({ ...options, checks: [{ ...options.checks[0], name: 'test', conclusion: 'failure' }] }).delivery.inspect(ticket, service)).state, 'failed');
 });
