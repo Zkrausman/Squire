@@ -5,7 +5,7 @@ const MAX_TIMESTAMP = 4_102_444_800_000;
 const MAX_ROWS = 128;
 const MAX_RECENT = 8;
 const RECENT_MS = 24 * 60 * 60_000;
-const NEXT_GATE = 'Independent review and external tests/CI required';
+const NEXT_GATE = 'Independent review, applicable tests, and exact-head hosted CI';
 export const REPORT_STALE_MS = 5 * 60_000;
 const HEARTBEAT_STALE_MS = 16_000;
 
@@ -108,13 +108,13 @@ export function projectRecentOutcomes(value, activeRunIds = [], now = Date.now()
     if (!item || typeof item !== 'object' || Array.isArray(item)
       || Object.keys(item).sort().join(',') !== 'completedAtMs,nextGate,runId,status,ticketId,ticketName'
       || !RUN_ID.test(item.runId) || !TICKET_ID.test(item.ticketId)
-      || !safeText(item.ticketName, 100) || item.status !== 'UNVERIFIED'
+      || !safeText(item.ticketName, 100) || item.status !== 'Code candidate created'
       || item.nextGate !== NEXT_GATE || !safeTimestamp(item.completedAtMs)
       || item.completedAtMs > now + 2_000 || now-item.completedAtMs > RECENT_MS
       || active.has(item.runId) || seen.has(item.runId)) continue;
     seen.add(item.runId);
     rows.push({runId:item.runId,ticketId:item.ticketId,ticketName:item.ticketName,
-      completedAtMs:item.completedAtMs,status:'UNVERIFIED',nextGate:NEXT_GATE});
+      completedAtMs:item.completedAtMs,status:'Code candidate created',nextGate:NEXT_GATE});
   }
   return rows.sort((a,b)=>b.completedAtMs-a.completedAtMs || a.runId.localeCompare(b.runId));
 }

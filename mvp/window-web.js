@@ -238,8 +238,9 @@ function renderRecent() {
     const card = node('article', 'recent-card');
     card.append(node('strong', '', `${row.ticketId} · ${row.ticketName} — ${row.status}`),
       node('span', 'recent-run-id', `Run ${row.runId}`),
-      node('span', '', `Runner terminal receipt: ${formattedTime(row.completedAtMs)}. Not an independently verified result.`),
-      node('span', '', `Next external gate: ${row.nextGate}.`));
+      node('span', '', `Runner terminal receipt: ${formattedTime(row.completedAtMs)}.`),
+      node('span', '', 'This receipt records candidate artifact creation only—not delivery, verification, or ticket completion.'),
+      node('span', '', `Pending external gates: ${row.nextGate}.`));
     recentContainer.append(card);
   }
 }

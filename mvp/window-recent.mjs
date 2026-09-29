@@ -10,7 +10,7 @@ const MAX_STORED = 64;
 const MAX_VISIBLE = 8;
 const MAX_BYTES = 1024;
 const DIR = 'recent-outcomes-v1';
-const NEXT_GATE = 'Independent review and external tests/CI required';
+const NEXT_GATE = 'Independent review, applicable tests, and exact-head hosted CI';
 const KEY_FILE = '.recent-outcomes-key-v1';
 
 async function readKey(root, create = false) {
@@ -32,11 +32,13 @@ function signature(value,key) {
 function valid(value, runId, now) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).sort().join(',') === 'completedAtMs,mac,runId,status,ticketId,ticketName,version'
-    && value.version === 1 && value.runId === runId && RUN_ID.test(runId)
+    && ((value.version === 1 && value.status === 'UNVERIFIED')
+      || (value.version === 2 && value.status === 'CANDIDATE_CREATED'))
+    && value.runId === runId && RUN_ID.test(runId)
     && TICKET_ID.test(value.ticketId) && typeof value.ticketName === 'string'
     && value.ticketName.length > 0 && value.ticketName.length <= 100
     && !/[\u0000-\u001f\u007f-\u009f]/.test(value.ticketName)
-    && value.status === 'UNVERIFIED' && Number.isSafeInteger(value.completedAtMs)
+    && Number.isSafeInteger(value.completedAtMs)
     && value.completedAtMs > 0 && value.completedAtMs <= now + 2_000
     && now - value.completedAtMs <= RECENT_MS;
 }
@@ -67,7 +69,7 @@ export async function readRecentOutcomes(root, now = Date.now()) {
       const expected=Buffer.from(signature(value,key),'hex');
       if (!timingSafeEqual(expected,Buffer.from(value.mac,'hex'))) continue;
       rows.push({ runId:value.runId, ticketId:value.ticketId, ticketName:value.ticketName,
-        completedAtMs:value.completedAtMs, status:'UNVERIFIED', nextGate:NEXT_GATE });
+        completedAtMs:value.completedAtMs, status:'Code candidate created', nextGate:NEXT_GATE });
     } catch { /* A racing, corrupt, or linked receipt is not trusted. */ }
   }
   return rows.sort((a,b)=>b.completedAtMs-a.completedAtMs || a.runId.localeCompare(b.runId)).slice(0,MAX_VISIBLE);
@@ -76,7 +78,7 @@ export async function readRecentOutcomes(root, now = Date.now()) {
 // Called only after the runner has persisted its terminal `candidate` state.
 // This is a presence receipt, not Verify, publication, ticket completion or approval.
 export async function writeCandidateOutcome({ root, runId, ticketId, ticketName, completedAtMs = Date.now() }) {
-  const value = { version:1, runId, ticketId, ticketName, completedAtMs, status:'UNVERIFIED', mac:'0'.repeat(64) };
+  const value = { version:2, runId, ticketId, ticketName, completedAtMs, status:'CANDIDATE_CREATED', mac:'0'.repeat(64) };
   if (!valid(value, runId, Date.now())) throw new Error('Invalid candidate outcome identity');
   const dir = recentDir(root);
   const key = await readKey(root,true);
