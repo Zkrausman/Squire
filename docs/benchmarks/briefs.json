@@ -1,0 +1,191 @@
+{
+  "document": "Squire Benchmark Briefs",
+  "pages": [
+    {
+      "id": "page:page",
+      "name": "01 • StickyCanvas • v1",
+      "content": [
+        {
+          "id": "shape:sticky-acceptance",
+          "type": "geo",
+          "x": 660,
+          "y": 665,
+          "text": "OBSERVABLE ACCEPTANCE\n□ Real desktop app launches from documented local command.\n□ CRUD/search/colors/formatting and multiple windows work visibly.\n□ Restart preserves text, drawings and geometry.\n□ Two notes keep independent drawing histories.\n□ Actual disposable Desktop canvas import, publish and update succeed.\n□ Repeating publication creates no duplicate; unrelated sentinel content remains intact.\n□ Missing/corrupt storage or disconnected Desktop produces useful errors without source damage."
+        },
+        {
+          "id": "shape:sticky-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "FIXED RUN INPUT • v1\nBuild this complete local product from a fresh repository. Choose architecture and decompose the work yourself; implement, test, independently review and deliver a launchable checkout. No publication, accounts or paid services. Preserve all attempts, failures, reviews, interventions and reported/unknown usage. This page is the complete product input; previous solutions and grading fixtures are withheld. Environment, models and budget are pinned by the benchmark runner. Future requirement changes create a new version; do not silently change this brief."
+        },
+        {
+          "id": "shape:sticky-outcome",
+          "type": "geo",
+          "x": 0,
+          "y": 335,
+          "text": "PRODUCT\nA personal Windows desktop prototype faithfully capturing Microsoft Sticky Notes’ essential experience: a searchable notes list plus independently opened sticky-note windows. Warm colored notes, compact title bars, readable text, simple formatting and unobtrusive controls. Support drawing within each note and exchange with the installed tldraw Desktop. Work fully offline; no Microsoft sign-in or cloud sync. Development prototype only; do not claim licensed production release."
+        },
+        {
+          "id": "shape:sticky-sketch-note",
+          "type": "geo",
+          "x": 400,
+          "y": 1000,
+          "text": "+     Grocery list       ⋯     ×\n\nMilk\nApples\nCoffee\n\nB   I   U   •       Text / Draw"
+        },
+        {
+          "id": "shape:sticky-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "StickyCanvas — desktop notes + drawing"
+        },
+        {
+          "id": "shape:sticky-drawing",
+          "type": "geo",
+          "x": 0,
+          "y": 665,
+          "text": "DRAWING + DESKTOP INTEGRATION\nEach note has its own embedded editable tldraw drawing, with undo/redo and persisted drawing state. Switching notes never mixes drawings. Publish a selected note/drawing to an explicitly chosen existing tldraw Desktop canvas; update that published item without duplicate creation. Import a selected Desktop note/drawing as a local note. Preserve unrelated canvas content and source files. Report unavailable Desktop or failed exchanges honestly; never show false success."
+        },
+        {
+          "id": "shape:sticky-sketch-list",
+          "type": "geo",
+          "x": 0,
+          "y": 1000,
+          "text": "NOTES LIST\n[ + New note ]       [ Search… ]\n\nYellow • Grocery list\nMilk, apples, coffee…\n\nBlue • Sketch idea\nDrawing attached\n\nPink • Friday reminder"
+        },
+        {
+          "id": "shape:sticky-sketch-draw",
+          "type": "geo",
+          "x": 850,
+          "y": 1000,
+          "text": "Sketch idea               ⋯     ×\n\n        ◯────□\n          rough diagram\n\nPen • Shapes • Undo • Redo\nPublish / Update / Import\nChosen Desktop canvas"
+        },
+        {
+          "id": "shape:sticky-behavior",
+          "type": "geo",
+          "x": 660,
+          "y": 335,
+          "text": "REQUIRED BEHAVIOR\nCreate, edit, format and delete text notes; choose seven note colors; search text case-insensitively; list and reopen existing notes. Independently move/resize/open/close multiple note windows. Confirm deletion. Persist content, color and window geometry locally; closing a window does not delete its note. Restart restores saved data. Clear empty/search/error states; keyboard-accessible controls."
+        }
+      ]
+    },
+    {
+      "id": "page:scribble-blackjack-v1",
+      "name": "02 • Scribble Blackjack Shooter • v2",
+      "content": [
+        {
+          "id": "shape:blackjack-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "FIXED RUN INPUT • v2 • INTENTIONAL AMBIGUITY\nBuild a small local desktop game from this page in a fresh repository. Interpret the concept, choose a coherent design and break it into implementable work yourself. Make reasonable creative decisions autonomously; record your interpretation before implementation. Implement, test, independently review and deliver a launchable checkout. Preserve attempts, failures, reviews, interventions and reported/unknown usage. Local only. This page is the complete product brief; previous solutions and grading fixtures are withheld. Environment, models and budget are pinned separately. Freeze this wording for repeated runs; future changes create a new version."
+        },
+        {
+          "id": "shape:blackjack-table",
+          "type": "geo",
+          "x": 0,
+          "y": 1190,
+          "text": "CONCEPT SKETCH — DELIBERATELY UNRESOLVED\n\n              [ A ♠ ]      [ 7 ♥ ]         +         aim / shoot\n\n                            ?\n\n                  ONE COHERENT PLAYABLE LOOP\n\nHow do blackjack decisions change the action?\nHow does shooting change the blackjack situation?\nWhich interpretation feels fun, clear and small enough to finish?\n\nThese are design questions for the agent, not prescribed mechanics."
+        },
+        {
+          "id": "shape:blackjack-product",
+          "type": "geo",
+          "x": 0,
+          "y": 370,
+          "text": "THE CONCEPT\n“Scribble blackjack, but make it a shooter.”\n\nA small, enjoyable offline desktop game with a hand-drawn, animated scribble aesthetic. Blackjack and shooting must combine into one understandable game. Decide how the combination works. Cards, risk and the spirit of blackjack should meaningfully affect play; shooting should be an active part of the experience. The player should discover a satisfying loop quickly."
+        },
+        {
+          "id": "shape:blackjack-state",
+          "type": "geo",
+          "x": 0,
+          "y": 715,
+          "text": "DELIVERY BOUNDARIES\nOne small local desktop game, runnable offline with documented launch instructions. Fictional stakes only; no real-money play, accounts, purchases or cloud dependency. Supply all required assets locally. Keep the scope small enough to finish.\n\nTeach controls and the blackjack/shooting interaction inside the game. Provide a complete playable loop with feedback, a clear outcome and a way to replay. Animated hand-drawn presentation is part of the brief."
+        },
+        {
+          "id": "shape:blackjack-rules",
+          "type": "geo",
+          "x": 660,
+          "y": 370,
+          "text": "OPEN DESIGN SPACE\nChoose the perspective, controls, rules, pacing, visual language and relationship between blackjack and combat. Invent the interaction rather than copying a supplied solution.\n\nThere is no prescribed deck size, payout model, enemy pattern, engine, architecture or ticket breakdown. Exact casino blackjack rules are optional. Explain the rules you choose and make the finished game follow them consistently."
+        },
+        {
+          "id": "shape:blackjack-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "Scribble blackjack — but make it a shooter"
+        },
+        {
+          "id": "shape:blackjack-acceptance",
+          "type": "geo",
+          "x": 660,
+          "y": 715,
+          "text": "OBSERVABLE ACCEPTANCE\n□ Actual desktop game launches and can be played offline.\n□ Shooting is playable; blackjack meaningfully affects the same gameplay loop.\n□ Rules and controls can be understood without reading source.\n□ The selected rules behave consistently; important transitions and rapid/repeated input are tested.\n□ A complete loop reaches an outcome and can restart cleanly.\n□ Scribble visual style and animation are visible and coherent.\n□ Deliver launch instructions, design rationale and verification evidence.\n\nNo single reference mechanic or visual solution is required."
+        }
+      ]
+    },
+    {
+      "id": "page:local-job-queue-v1",
+      "name": "03 • Local Job Queue • v1",
+      "content": [
+        {
+          "id": "shape:queue-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "Local Job Queue — durable batch processing"
+        },
+        {
+          "id": "shape:queue-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "FIXED RUN INPUT • v1\nBuild this complete local product from a fresh repository. Choose architecture and decompose the work yourself; implement, test, independently review and deliver a launchable checkout. No publication, accounts or paid services. Preserve all attempts, failures, reviews, interventions and reported/unknown usage. This page is the complete product input; previous solutions and grading fixtures are withheld. Environment, models and budget are pinned by the benchmark runner. Future requirement changes create a new version; do not silently change this brief."
+        },
+        {
+          "id": "shape:queue-product",
+          "type": "geo",
+          "x": 0,
+          "y": 370,
+          "text": "PRODUCT\nA small offline batch-processing app with a usable graphical client, a local service API and independently restartable workers. Submit sales CSV files, watch jobs progress, inspect results, cancel work and retry failures. Support at least two concurrent workers and several queued jobs. Clear labels and trustworthy state matter more than decoration. No cloud, authentication or distributed-machine deployment required. Database, framework, queue mechanism and ticket decomposition are your choices."
+        },
+        {
+          "id": "shape:queue-workload",
+          "type": "geo",
+          "x": 660,
+          "y": 370,
+          "text": "FIXED JOB WORKLOAD\nUTF-8 CSV header: category,quantity,unit_price_cents. Category is nonempty text; quantity is a positive integer; unit price is a nonnegative integer. Support quoted CSV fields. Reject malformed rows with an actionable diagnostic.\nFor valid input return row count, total quantity, exact total sales in cents, and sales totals by category. Each row contributes quantity × unit_price_cents. Never use approximate money arithmetic. Include small sample files and documented finite upload/row limits; reject oversize input clearly."
+        },
+        {
+          "id": "shape:queue-behavior",
+          "type": "geo",
+          "x": 0,
+          "y": 705,
+          "text": "CLIENT + API BEHAVIOR\nSubmit a file; list jobs; inspect status, progress, attempt history, diagnostics and completed results. Show queued/running/completed/failed/cancelled truthfully. API can perform the same core actions without the client. Progress is bounded and meaningful; errors are not successes.\nSubmission retries with the same client request ID and same payload return the same job; conflicting payload under that ID is rejected. Failed jobs can be explicitly retried with retained attempt history. Finished results remain available after restarts."
+        },
+        {
+          "id": "shape:queue-recovery",
+          "type": "geo",
+          "x": 660,
+          "y": 705,
+          "text": "CONCURRENCY + RECOVERY\nMultiple workers must not publish conflicting or duplicate results for one job. Kill a worker mid-job: the job is recoverable, never silently lost or stuck forever. Restart service/workers with pending jobs: retain jobs, history and completed outputs.\nCancel queued/running jobs; cancellation and completion races yield one coherent final outcome. A cancelled job cannot later publish success. Disconnect/reconnect client: show connection loss and reconcile actual state. Preserve evidence of failures and retries. Document bounded recovery/retry policy; replay-safe effects matter more than a claimed exactly-once execution label."
+        },
+        {
+          "id": "shape:queue-acceptance",
+          "type": "geo",
+          "x": 0,
+          "y": 1080,
+          "text": "OBSERVABLE ACCEPTANCE\n□ Real client/service/two workers launch locally from documented commands.\n□ Several CSV jobs produce independently checkable exact results.\n□ Repeated submission is idempotent; conflicting reuse fails.\n□ Malformed/oversize input fails clearly without breaking other jobs.\n□ Worker kill and service restart preserve/recover pending work.\n□ Two workers cannot duplicate or overwrite a final result.\n□ Cancellation/completion races and explicit retry preserve coherent state/history.\n□ Client reconnect shows actual state and results.\n□ Automated API/recovery checks and actual graphical-client evidence are supplied."
+        },
+        {
+          "id": "shape:queue-sketch",
+          "type": "geo",
+          "x": 660,
+          "y": 1080,
+          "text": "LOCAL JOBS                         [ Submit CSV ]\n\nJob             Status        Progress       Attempt\nsales-july      Completed      100%              1\nsales-aug       Running         45%              2\nsales-sep       Queued           —               1\nbad-input       Failed          —               1\n\nSelected: sales-july\nRows: 12     Quantity: 35     Sales: 14250 cents\nCategories: books 8000 • games 6250\n\n[ View history ]    [ Cancel ]    [ Retry ]\nService: connected      Workers: 2"
+        }
+      ]
+    }
+  ]
+}
