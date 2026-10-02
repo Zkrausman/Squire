@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "program": "Squire v0.1 combined product and microbenchmark baseline",
+  "status": "closed-incomplete",
+  "closureReason": "Owner directed closure after the active construction run naturally settled, followed by separately identified manual harness completion.",
+  "originalConstructionStartedAt": "2026-10-02T05:29:42Z",
+  "constructionNaturallyEndedAt": "2026-10-02T17:28:52.295Z",
+  "runtimeSourceDigest": "da9cdcc98cb943c6fa1a92cca37186ac16d1961a2ccf974e0c73e9a75c40adca",
+  "models": {
+    "implementation": {"model": "gpt-6-luna", "reasoning": "xhigh", "authentication": "subscription"},
+    "planningAndReview": {"model": "gpt-6.1-sol", "reasoning": "medium", "authentication": "subscription"}
+  },
+  "majorBenchmarks": {
+    "originalRuns": 3,
+    "independentlyAccepted": 0,
+    "agentSessions": 11,
+    "unknownUsageRecords": 2,
+    "outcomes": [
+      {"benchmark": "Scribble blackjack shooter", "accepted": false, "deliveredTickets": 3, "totalTickets": 8, "implementationTimeouts": 2},
+      {"benchmark": "Local job queue client", "accepted": false, "terminalFinding": "Planner produced invalid ownership globs"},
+      {"benchmark": "Local log explorer", "accepted": false, "terminalFinding": "Planner produced invalid ownership globs"}
+    ],
+    "originalRescueOrRerun": false
+  },
+  "microbenchmarkConstruction": {
+    "phase": "unscored harness engineering",
+    "agentSessions": 104,
+    "unknownUsageRecords": 41,
+    "explicitFinalCumulativeAllowance": 126,
+    "unusedAllowance": 22,
+    "lineageProjects": 6,
+    "individualJobTimeoutSeconds": 900,
+    "artificialGoalDeadline": null,
+    "fullyDeliveredSquireFamilyPackages": ["M01", "M05", "M08"],
+    "allFamilySuiteCompletedThroughSquire": false,
+    "independentScoredTrials": 0,
+    "score": null,
+    "acceptanceRate": null,
+    "interpretation": "Incomplete and unscored. This is not zero of eight scored failures and not successful suite delivery.",
+    "failureCategoriesRetained": [
+      "Implementation timeouts and unknown usage",
+      "Fresh independent review and verification failures",
+      "Windows fixture/path and environment preparation failures",
+      "Root ownership split, scope and role-clarification mistakes",
+      "Rejected native recovery/adoption admissions and exhausted lifetime records",
+      "Source-protection and truthful-state adversarial findings"
+    ]
+  },
+  "combinedOriginalBaseline": {
+    "agentSessions": 115,
+    "unknownUsageRecords": 43,
+    "tokenTotals": null,
+    "tokenCostStatus": "Incomplete usage evidence; no fabricated totals or zero-cost assumption",
+    "historicalEarlierTrialsIncluded": false,
+    "originalFailuresAndCountersRewritten": false
+  },
+  "subsequentManualHarnessCompletion": {
+    "executor": "Owner-authorized root engineering in an isolated private checkout",
+    "status": "complete-and-calibrated-unscored",
+    "familyPackages": 8,
+    "cliPublicInputPreparation": "Every variant validated with private inputs excluded",
+    "graphicalCalibration": "Actual sandboxed Electron reference and targeted defective controls; 19 real screenshot byte hashes reverified",
+    "finalSharedIntegrationTestsPassed": 29,
+    "scoredModelTrials": 0,
+    "squireBaselineDeliveryClaim": false,
+    "engineeringTokenUsage": null,
+    "engineeringTokenUsageStatus": "Unknown and separately accounted",
+    "isolationLimitations": "The SQLite grader imports copied trusted controls in-process; OS/filesystem isolation is not claimed",
+    "privateOraclesReferenceSolutionsAndExecutionRepositoriesPublished": false
+  },
+  "nextStage": "Separately bounded, Squire-managed approved foundations F01-F03",
+  "benchmarkAndComparativeExperimentExecution": "Owner hold remains in effect",
+  "historicalOriginalV01ResultsPreservedSeparately": true,
+  "releaseEntryCreated": false
+}
