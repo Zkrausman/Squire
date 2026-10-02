@@ -1,0 +1,61 @@
+{
+  "diagnosticTests": {
+    "failed": 0,
+    "command": "node --test test/*.test.mjs",
+    "scope": "Delivered repository tests, not independent gameplay oracles",
+    "exitCode": 0,
+    "passed": 27
+  },
+  "unknownUsageCalls": 2,
+  "sourceEdited": false,
+  "controllerOutcomeOverridden": false,
+  "diagnosticOnly": true,
+  "criteria": [
+    {
+      "evidence": "No Electron entry, HTML, renderer, launch script or start command in delivered checkout.",
+      "status": "fail",
+      "criterion": "Actual offline desktop game launch"
+    },
+    {
+      "evidence": "Pure simulation modules delivered; no graphical/player-input integration delivered.",
+      "status": "fail",
+      "criterion": "Playable shooting and blackjack in the same loop"
+    },
+    {
+      "evidence": "Design document exists, but no in-game UI.",
+      "status": "fail",
+      "criterion": "In-game understandable controls and rules"
+    },
+    {
+      "evidence": "27 repository tests independently rerun and passed; actual game interaction unavailable. Unit-only evidence does not establish full product criterion.",
+      "status": "unknown",
+      "criterion": "Selected rules consistent and repeated transitions tested"
+    },
+    {
+      "evidence": "Pure lifecycle tests include victory/defeat/restart; actual complete playable desktop loop absent.",
+      "status": "fail",
+      "criterion": "Playable outcome and clean replay"
+    },
+    {
+      "evidence": "No renderer or graphical assets delivered.",
+      "status": "fail",
+      "criterion": "Visible coherent scribble style and animation"
+    },
+    {
+      "evidence": "Rationale and component tests exist; launch instructions and launchable artifact absent.",
+      "status": "fail",
+      "criterion": "Launch instructions, rationale and verification"
+    }
+  ],
+  "calls": 9,
+  "nextAction": "Retain original scored failure; no rescue or reserve. Continue queue/log baselines.",
+  "failure": "app-04 input/browser integration timed out twice; ordinary retry exhausted. Five downstream tickets blocked by dependency.",
+  "creativeReason": "No visual playable product to grade",
+  "headSha": "6b1559b6bfbd9788b801b8707d2127000bf887e7",
+  "accepted": false,
+  "runId": "b1-game",
+  "version": 1,
+  "creativeScores": null,
+  "status": "failed_incomplete_delivery",
+  "observedAt": "2026-10-02T05:07:34.1036482Z"
+}

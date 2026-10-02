@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
 import { mkdir, realpath, access, writeFile } from 'node:fs/promises';
-import { Blocker, digest, isSha } from './contracts.mjs';
+import { Blocker, digest, isSha, pathIsOwned } from './contracts.mjs';
 import { runProcess } from './process.mjs';
 
 export class GitWorkspace {
@@ -13,6 +13,37 @@ export class GitWorkspace {
       env: { GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 'Squire', GIT_AUTHOR_EMAIL: 'squire@localhost', GIT_COMMITTER_NAME: 'Squire', GIT_COMMITTER_EMAIL: 'squire@localhost' } });
     if (result.exitCode !== 0 || result.stopped || result.outputExceeded) throw new Blocker('git_failed', `Git ${argv[0]} failed`, { receipt: { ...result, stdout: undefined, stderr: undefined }, stderr: result.stderr.slice(-4000) });
     return result.stdout.trim();
+  }
+  async localAutocrlf(directory, signal) {
+    try { return (await this.git(directory, ['config', '--local', '--get', 'core.autocrlf'], signal)).toLowerCase(); }
+    catch (error) { if (error.code === 'git_failed') return null; throw error; }
+  }
+  async localEol(directory, signal) {
+    try { return (await this.git(directory, ['config', '--local', '--get', 'core.eol'], signal)).toLowerCase(); }
+    catch (error) { if (error.code === 'git_failed') return null; throw error; }
+  }
+  async normalizeCleanCheckout(directory, expectedHead, expectedTree, signal, before = undefined) {
+    const current = before ?? await this.identity(directory, signal);
+    if (current.headSha !== expectedHead || current.treeSha !== expectedTree || current.dirty) {
+      throw new Blocker('checkout_normalization_blocked', 'Only the exact clean managed checkout can be normalized', current);
+    }
+    if ((await this.localAutocrlf(directory, signal)) === 'false' && (await this.localEol(directory, signal)) === 'lf') return { ...current, normalized: false };
+    await this.git(directory, ['config', '--local', 'core.autocrlf', 'false'], signal);
+    await this.git(directory, ['config', '--local', 'core.eol', 'lf'], signal);
+    await this.git(directory, ['reset', '--hard', expectedHead], signal);
+    // reset may keep a CRLF worktree file when Git considers it equivalent to
+    // the index blob. Force tracked paths to materialize using the canonical
+    // settings, after the clean exact-head precondition has been established.
+    // Recreate the clean index to discard cached stat/conversion information;
+    // otherwise even --force may keep a previously normalized CRLF file.
+    await this.git(directory, ['read-tree', '--empty'], signal);
+    await this.git(directory, ['read-tree', expectedHead], signal);
+    await this.git(directory, ['checkout-index', '--force', '--all'], signal);
+    const normalized = await this.identity(directory, signal);
+    if (normalized.headSha !== expectedHead || normalized.treeSha !== expectedTree || normalized.dirty) {
+      throw new Blocker('checkout_normalization_failed', 'Checkout normalization changed candidate identity or left a dirty worktree', normalized);
+    }
+    return { ...normalized, normalized: true };
   }
   key(service) { const source = path.isAbsolute(service.source) ? realpathSync(service.source) : service.source.replace(/\.git$/, ''); return digest(`${source.toLowerCase()}#${service.branch}`); }
   async preflight(service, signal) {
@@ -31,7 +62,9 @@ export class GitWorkspace {
   }
   async prepare(service, directory, branch, signal) {
     await mkdir(path.dirname(directory), { recursive: true });
-    await this.git(this.root, ['clone', '--quiet', '--no-hardlinks', '--no-checkout', '--', service.source, directory], signal);
+    await this.git(this.root, ['clone', '--config', 'core.autocrlf=false', '--config', 'core.eol=lf', '--quiet', '--no-hardlinks', '--no-checkout', '--', service.source, directory], signal);
+    await this.git(directory, ['config', '--local', 'core.autocrlf', 'false'], signal);
+    await this.git(directory, ['config', '--local', 'core.eol', 'lf'], signal);
     await this.git(directory, ['fetch', '--no-tags', 'origin', service.branch], signal);
     const baseSha = await this.git(directory, ['rev-parse', 'FETCH_HEAD'], signal);
     if (!isSha(baseSha)) throw new Blocker('base_unavailable', 'Expected SHA-1 Git repository');
@@ -52,7 +85,7 @@ export class GitWorkspace {
   async assertCandidate(ticket, signal) {
     const current = await this.identity(ticket.workspace, signal);
     if (current.headSha !== ticket.headSha || current.treeSha !== ticket.treeSha || current.dirty) throw new Blocker('candidate_changed', 'Candidate changed after checkpoint; verification/review must restart', current);
-    return current;
+    return this.normalizeCleanCheckout(ticket.workspace, ticket.headSha, ticket.treeSha, signal, current);
   }
   async checkpoint(ticket, service, signal) {
     const head = await this.git(ticket.workspace, ['rev-parse', 'HEAD'], signal);
@@ -60,6 +93,7 @@ export class GitWorkspace {
     await this.git(ticket.workspace, ['add', '-A'], signal);
     const files = (await this.git(ticket.workspace, ['diff', '--cached', '--name-only', '-z', ticket.baseSha], signal)).split('\0').filter(Boolean);
     if (files.some(file => service.protectedPaths.some(p => { const root = p.replace(/\/+$/, ''); return file === root || file.startsWith(`${root}/`); }))) throw new Blocker('protected_path', 'Candidate modifies a protected policy path', { files });
+    if (ticket.spec.execution && files.some(file => !pathIsOwned(file, ticket.spec.execution.ownedPaths))) throw new Blocker('scope_escape', 'Candidate modifies files outside the immutable execution slice ownership', { files, ownedPaths: ticket.spec.execution.ownedPaths });
     // Submodules are not an allowed escape from review/test coverage.
     if ((await this.git(ticket.workspace, ['diff', '--cached', '--raw', ticket.baseSha], signal)).includes('160000')) throw new Blocker('submodule_change', 'Submodule changes require a separately authorized project');
     const change = await this.git(ticket.workspace, ['diff', '--cached', '--name-only'], signal);
@@ -92,8 +126,19 @@ export class GitWorkspace {
   }
   async mergeWorkspace(service, mergeSha, directory, signal) {
     await mkdir(path.dirname(directory), { recursive: true });
+    let exists = true;
     try { await access(directory); }
-    catch { await this.git(this.root, ['clone', '--quiet', '--no-hardlinks', '--no-checkout', '--', service.source, directory], signal); }
+    catch { exists = false; }
+    if (exists) {
+      const current = await this.identity(directory, signal);
+      if (current.headSha !== mergeSha || current.dirty) throw new Blocker('merge_workspace_dirty', 'Existing delivered checkout is not the exact clean merge candidate', current);
+      const treeSha = await this.git(directory, ['rev-parse', `${mergeSha}^{tree}`], signal);
+      await this.normalizeCleanCheckout(directory, mergeSha, treeSha, signal, current);
+    } else {
+      await this.git(this.root, ['clone', '--config', 'core.autocrlf=false', '--config', 'core.eol=lf', '--quiet', '--no-hardlinks', '--no-checkout', '--', service.source, directory], signal);
+      await this.git(directory, ['config', '--local', 'core.autocrlf', 'false'], signal);
+      await this.git(directory, ['config', '--local', 'core.eol', 'lf'], signal);
+    }
     await this.git(directory, ['fetch', '--no-tags', 'origin', service.branch], signal);
     await this.git(directory, ['checkout', '--detach', mergeSha], signal);
     const identity = await this.identity(directory, signal);

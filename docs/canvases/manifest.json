@@ -1,0 +1,56 @@
+{
+  "at": "2026-10-02T05:44:49.722Z",
+  "canvases": [
+    {
+      "name": "Squire Benchmark Briefs.tldraw",
+      "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\Squire Benchmark Briefs.tldraw",
+      "sha256": "64d3a1cda8d8347e67d91a1ae220298638dfebbef3c20925dcf0c46d4eac0ec6"
+    },
+    {
+      "name": "Squire - Extensible SDLC Architecture.tldraw",
+      "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\Squire - Extensible SDLC Architecture.tldraw",
+      "sha256": "26842036a20d43d860d4eeae9053cc9edfed1465f05184d518f130c7bc763995"
+    },
+    {
+      "name": "Squire Vision - Near Term and Future DRAFT.tldraw",
+      "source": "C:/Users/zkrau/Documents/Squire Vision - Near Term and Future DRAFT.tldraw",
+      "sha256": "ad3868258294b8434d85695b8e32a4fb6822ceda3b5fa32085aa33ffb16601f2"
+    },
+    {
+      "name": "squire-vision-near-term-and-future.tldraw",
+      "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\Squire\\docs\\architecture\\squire-vision-near-term-and-future.tldraw",
+      "sha256": "ad3868258294b8434d85695b8e32a4fb6822ceda3b5fa32085aa33ffb16601f2"
+    },
+    {
+      "name": "StickyCanvas Integration Fixture.tldraw",
+      "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\sticky-trial\\StickyCanvas Integration Fixture.tldraw",
+      "sha256": "3c70728ec252fedb8a72ff86c3c17cf5d3dc9f460898cd22945e98d3ea13f908"
+    },
+    {
+      "name": "Squire Current Workflow Model.tldraw",
+      "source": "C:\\Users\\zkrau\\OneDrive\\Documents\\Squire Current Workflow Model.tldraw",
+      "sha256": "abaa07dcef32036cb09deab588abcf5a7e96854ba95d1ad8acf4adef917081fe"
+    },
+    {
+      "name": "Squire Workflow Model - Working.tldraw",
+      "source": "C:\\Users\\zkrau\\OneDrive\\Documents\\Squire Workflow Model - Working.tldraw",
+      "sha256": "e7e55f6488bd87e3975c02ffbe6043bde3a1de5125ed9da87baf16442ae141b4"
+    },
+    {
+      "name": "Squire Confirmed Whiteglove Plan Architecture.tldraw",
+      "source": "C:\\Users\\zkrau\\OneDrive\\Documents\\Squire Confirmed Whiteglove Plan Architecture.tldraw",
+      "sha256": "1e0ae8eb4734ffab7e51b09d52a49b145920e8709be362ad70d0fb5d27ba8cca"
+    },
+    {
+      "name": "Squire 24-7 Server Architecture - Proposal.tldraw",
+      "source": "C:\\Users\\zkrau\\OneDrive\\Documents\\Squire 24-7 Server Architecture - Proposal.tldraw",
+      "sha256": "77d42400898f00717788942ef9b1e5f296c5bc002ce45f8d432f244251fd8125"
+    },
+    {
+      "name": "Codex Status Report - Concept Sketches.tldraw",
+      "source": "E:\\Repos - Non Indexed\\squire\\Codex Status Report - Concept Sketches.tldraw",
+      "sha256": "8de58668c2a73d6587739ac97130bb3c5006c2a0ccf30c9e42eb41a454e6d4a5"
+    }
+  ],
+  "otherRepositoryCanvases": "Original architecture and benchmark canvases also remain at their existing docs paths; historical embedded copies are in evidence.tar.gz."
+}

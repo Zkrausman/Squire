@@ -1,0 +1,15 @@
+{
+  "accepted": 0,
+  "queue": "plan rejected: unsafe owned path glob; no implementation",
+  "version": 1,
+  "originalMajorRuns": 3,
+  "game": "3/8 delivered, input integration timed out twice; no playable desktop app",
+  "baselineFailuresPreserved": true,
+  "microBaselineComplete": false,
+  "logs": "plan rejected: unsafe owned path glob; no implementation",
+  "at": "2026-10-02T05:23:33.7248916Z",
+  "unknownUsageCalls": 2,
+  "frameworkChanged": false,
+  "phase": "major-baseline-complete-micros-pending",
+  "calls": 11
+}

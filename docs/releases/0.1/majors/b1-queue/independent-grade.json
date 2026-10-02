@@ -1,0 +1,62 @@
+{
+  "accepted": false,
+  "version": 1,
+  "criteria": [
+    {
+      "status": "fail",
+      "criterion": "□ Real client/service/two workers launch locally from documented commands.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Several CSV jobs produce independently checkable exact results.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Repeated submission is idempotent; conflicting reuse fails.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Malformed/oversize input fails clearly without breaking other jobs.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Worker kill and service restart preserve/recover pending work.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Two workers cannot duplicate or overwrite a final result.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Cancellation/completion races and explicit retry preserve coherent state/history.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Client reconnect shows actual state and results.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Automated API/recovery checks and actual graphical-client evidence are supplied.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    }
+  ],
+  "failure": "Generated plan ownedPaths contained forbidden glob patterns; strict configuration validation blocked before implementation.",
+  "nextAction": "Preserve original failure; no retry or repair; proceed to unscored Squire microbenchmark construction.",
+  "runId": "b1-queue",
+  "observedAt": "2026-10-02T05:23:33.6196842Z",
+  "unknownUsageCalls": 0,
+  "sourceEdited": false,
+  "controllerOutcomeOverridden": false,
+  "planEvidence": "work/benchmark-state/projects/b1-queue/planning/1/job/result.txt",
+  "status": "failed_before_implementation",
+  "calls": 1,
+  "headSha": "732e92f6c21770247b1bb8d4e397580b52b23735"
+}

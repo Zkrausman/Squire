@@ -1,5 +1,7 @@
 # Squire
 
+Experimental local **0.1** snapshot: [release notes and benchmark evidence](docs/releases/0.1/README.md). The major baseline is **0/3 accepted**; calibrated microbenchmark scoring is still pending. This version label does not imply benchmark acceptance.
+
 A durable controller for an agentic software delivery loop. Give it an authorized project and trusted executable checks; it plans or accepts tickets, schedules dependencies, runs fresh Codex implementation/review sessions, repairs bounded failures, and delivers verified commits. SQLite checkpoints and process receipts survive controller restarts.
 
 This is a clean rewrite from `origin/main`; the approved [architecture](docs/ARCHITECTURE.md) and [tldraw canvas](docs/Squire%20Architecture.tldraw) are preserved. Git history retains the previous implementation.

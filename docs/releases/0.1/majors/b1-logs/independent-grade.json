@@ -1,0 +1,62 @@
+{
+  "accepted": false,
+  "version": 1,
+  "criteria": [
+    {
+      "status": "fail",
+      "criterion": "□ Actual graphical app launches locally; readable controls and keyboard search/detail navigation work.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ JSONL + quoted/multiline CSV mixed-source imports retain exact counts, diagnostics and duplicate records.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Timezone/tie ordering, combined filters, minute counts and request correlation match independently computed results.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Full exports match selected records/order, even beyond the visible page.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Save/reload queries and app restart preserve snapshots.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Reimport/cancel/interruption, moved files, malformed input and corrupt storage show coherent state/errors.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Original log bytes and unrelated sentinel files remain unchanged; hostile log text is inert.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ 100k workload meets measured limits; graphical UI remains responsive.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    },
+    {
+      "status": "fail",
+      "criterion": "□ Actual runtime evidence and automated checks accompany the launchable delivery. Child ticket completion alone is not product acceptance.\r",
+      "evidence": "No implementation or launchable product delivered; only the fresh seed remains."
+    }
+  ],
+  "failure": "Generated plan ownedPaths contained forbidden glob patterns; strict configuration validation blocked before implementation.",
+  "nextAction": "Preserve original failure; no retry or repair; proceed to unscored Squire microbenchmark construction.",
+  "runId": "b1-logs",
+  "observedAt": "2026-10-02T05:23:33.7220690Z",
+  "unknownUsageCalls": 0,
+  "sourceEdited": false,
+  "controllerOutcomeOverridden": false,
+  "planEvidence": "work/benchmark-state/projects/b1-logs/planning/1/job/result.txt",
+  "status": "failed_before_implementation",
+  "calls": 1,
+  "headSha": "018c3b8600d70c21a3973f73f20824f5865a1b9d"
+}

@@ -1,10 +1,14 @@
 {
   "name": "squire",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.14 <25" },
-  "bin": { "squire": "bin/squire.mjs" },
+  "engines": {
+    "node": ">=24.14 <25"
+  },
+  "bin": {
+    "squire": "bin/squire.mjs"
+  },
   "scripts": {
     "squire": "node bin/squire.mjs",
     "test": "node --test test/*.test.mjs",

@@ -13,7 +13,17 @@ const sleep = (ms, signal) => new Promise(resolve => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
   const timer = setTimeout(done, ms); signal?.addEventListener('abort', done, { once: true });
 });
-const ticketPrompt = t => `${t.spec.id}: ${t.spec.title}\n${t.spec.description}\nAcceptance:\n${t.spec.acceptance.map(a => `- ${a}`).join('\n')}`;
+const ticketPrompt = t => `${t.spec.id}: ${t.spec.title}\n${t.spec.description}\nAcceptance:\n${t.spec.acceptance.map(a => `- ${a}`).join('\n')}${t.spec.execution ? `\nImmutable execution contract:\n${JSON.stringify(t.spec.execution, null, 2)}\nWork on this single outcome. Every checklist item requires observed evidence at this candidate. Do not expand scope; report unmet criteria or a missing dependency. Self-reported completion does not authorize delivery.` : ''}${t.correctionAdmission ? `\nAuthorized bounded correction:\nOutcome: ${t.correctionAdmission.outcome}\nInstructions: ${t.correctionAdmission.instructions}\nAdditional regression checklist (in addition to the immutable contract):\n${JSON.stringify(t.correctionAdmission.checklist, null, 2)}\nThe original ticket, owned paths, and acceptance remain authoritative.` : ''}`;
+const effectiveExecution = t => t.spec.execution && t.correctionAdmission ? {
+  ...t.spec.execution,
+  checklist: [...t.spec.execution.checklist, ...t.correctionAdmission.checklist]
+} : t.spec.execution;
+const repairCeiling = (t, configured) => t.correctionAdmission?.ceilings?.repairs ?? configured;
+const deliveryPhase = status => ['publishing', 'waiting_ci', 'merging', 'postmerge'].includes(status);
+const ownershipOverlaps = (a, b) => !a || !b || a.some(x => b.some(y => {
+  x = x.replace(/\/$/, '').toLowerCase(); y = y.replace(/\/$/, '').toLowerCase();
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}));
 
 export class Controller {
   constructor(store, projectId, providers = {}) {
@@ -69,19 +79,29 @@ export class Controller {
         if (state.paused) { await Promise.allSettled([...this.active.values()]); return this.store.get(this.id); }
         this.propagate();
         const latest = this.store.get(this.id);
-        const halted = new Set(latest.tickets.filter(t => t.status === 'blocked').map(t => this.workspace.key(this.config.services[t.spec.service])));
+        const halted = new Set(latest.tickets.filter(t => t.status === 'blocked' && (!t.spec.execution || t.mergeSha)).map(t => this.workspace.key(this.config.services[t.spec.service])));
         for (const ticket of latest.tickets) {
           if (this.active.size >= this.config.limits.maxParallel) break;
           const resource = this.workspace.key(this.config.services[ticket.spec.service]);
-          if (this.active.has(ticket.spec.id) || this.resources.has(resource) || halted.has(resource) || ['shipped', 'blocked', 'dependency_blocked'].includes(ticket.status)) continue;
+          if (this.active.has(ticket.spec.id) || halted.has(resource) || ['shipped', 'blocked', 'dependency_blocked'].includes(ticket.status)) continue;
+          const conflict = [...this.active.keys()].some(id => {
+            const other = this.current(id);
+            return this.workspace.key(this.config.services[other.spec.service]) === resource &&
+              ((!ticket.spec.execution || !other.spec.execution) ||
+               (deliveryPhase(ticket.status) && deliveryPhase(other.status)) ||
+               ownershipOverlaps(ticket.spec.execution.ownedPaths, other.spec.execution.ownedPaths));
+          });
+          if (conflict) continue;
           if (ticket.status === 'waiting_capacity' && ticket.retryAt > Date.now() || ticket.pollAt > Date.now()) continue;
           if (!ticket.spec.dependsOn.every(id => latest.tickets.find(t => t.spec.id === id)?.status === 'shipped')) continue;
           let releaseResource;
-          try { releaseResource = this.store.lease(`repository:${resource}`); }
+          // Isolated structured tickets may work concurrently. Repository
+          // publication remains serialized, including exact-head reconciliation.
+          const leaseKey = !ticket.spec.execution || deliveryPhase(ticket.status) ? `repository:${resource}` : `ticket:${resource}:${ticket.spec.id}`;
+          try { releaseResource = this.store.lease(leaseKey); }
           catch (e) { if (e.code === 'lease_busy') continue; throw e; }
-          this.resources.add(resource);
           const promise = this.step(ticket.spec.id, signal).finally(() => {
-            this.resources.delete(resource); this.active.delete(ticket.spec.id); releaseResource();
+            this.active.delete(ticket.spec.id); releaseResource();
           });
           this.active.set(ticket.spec.id, promise);
         }
@@ -167,8 +187,12 @@ export class Controller {
     return true;
   }
   async repair(id, reason) {
-    const t = this.current(id);
-    if (t.repairs >= this.config.limits.maxRepairs) throw new Blocker('repair_budget', 'Automatic repair budget exhausted', { reason });
+    let t = this.current(id);
+    if (reason?.verdict === 'fail' && t.review?.verdict === 'fail' && t.review.headSha === t.headSha) {
+      this.change(id, ticket => { ticket.lastFailedReview = structuredClone(ticket.review); });
+      t = this.current(id);
+    }
+    if (t.repairs >= repairCeiling(t, this.config.limits.maxRepairs)) throw new Blocker('repair_budget', 'Automatic repair budget exhausted', { reason });
     this.transition(id, 'repairing', { repairReason: reason, verification: null, review: null, pollAt: 0 });
   }
   async refresh(id, signal) {
@@ -179,7 +203,7 @@ export class Controller {
       this.transition(id, 'verifying', { ...identity, rebases: t.rebases + 1, verification: null, review: null, ciDeadline: null, pollAt: 0 });
     } catch (error) {
       if (error.code !== 'rebase_conflict') throw error;
-      if (t.repairs >= this.config.limits.maxRepairs) throw new Blocker('repair_budget', 'Conflict repair budget exhausted');
+      if (t.repairs >= repairCeiling(t, this.config.limits.maxRepairs)) throw new Blocker('repair_budget', 'Conflict repair budget exhausted');
       const generation = t.generation + 1, directory = path.join(this.root, 'workspaces', `${id}-${generation}`);
       const prepared = await this.workspace.conflictWorkspace(t, service, directory, signal);
       await this.verifier.setup(directory, service.setup, `conflict-${id}-${generation}`, signal);
@@ -217,22 +241,38 @@ export class Controller {
         } else this.transition(id, 'prepared');
         return;
       }
-      if (t.status === 'prepared' || t.status === 'repairing') {
+      if (t.status === 'recovering_candidate') {
+        await this.finishInterruptedCandidateVerification(id, t.interruptedCandidateVerification.recoveryId, signal); return;
+      }
+      if (t.status === 'prepared' || t.status === 'repairing' || t.status === 'continuing') {
+        const continuing = t.status === 'continuing';
+        if (t.status === 'repairing' && t.repairs >= repairCeiling(t, this.config.limits.maxRepairs)) throw new Blocker('repair_budget', 'Automatic repair budget exhausted', { repairCeiling: repairCeiling(t, this.config.limits.maxRepairs) });
+        const attemptCeiling = t.correctionAdmission?.ceilings?.implementAttempts ?? t.spec.execution?.maxAttempts;
+        if (!continuing && t.spec.execution && t.attempts >= attemptCeiling) throw new Blocker('slice_budget', 'Execution slice attempt limit reached; replan the unresolved outcome', { stopWhen: t.spec.execution.stopWhen, attemptCeiling });
         const before = await this.workspace.identity(t.workspace, signal);
         if (before.dirty && t.status === 'prepared' && !t.capacity) throw new Blocker('dirty_workspace', 'Trusted setup changed source before implementation');
-        const attempt = t.attempts + 1, repairing = t.status === 'repairing';
-        const reason = repairing ? `\nRepair these verified failures/findings within this ticket: ${JSON.stringify(t.repairReason)}\nPreserve existing useful work. Every edit will receive fresh tests and review.` : '';
+        if (continuing && (before.headSha !== t.headSha || before.treeSha !== t.treeSha || before.dirty)) throw new Blocker('continuation_identity_mismatch', 'Recovered partial candidate changed or became dirty before its continuation', before);
+        const attempt = continuing ? t.attempts : t.attempts + 1, repairing = t.status === 'repairing';
+        const reason = repairing || continuing ? `\n${continuing ? 'Continue the same logical implementation attempt' : 'Repair these verified failures/findings'} within this ticket: ${JSON.stringify(t.repairReason)}\nPreserve existing useful work. Every edit will receive fresh tests and review.` : '';
         const instructions = `Implement the following authorized ticket in this workspace. Read applicable AGENTS.md. Do the work and meaningful tests; do not merely propose a plan.\n${ticketPrompt(t)}\nBase: ${t.baseSha}.\nProtected paths: ${JSON.stringify(service.protectedPaths)}.\nDo not commit, rewrite Git history, publish, merge, access credentials or modify controller policy/evidence. Squire owns those actions. Stay within the ticket. Your final message should summarize the concrete change and validation.${reason}`;
-        const outcome = await this.callAgent('implement', t.workspace, path.join(this.root, 'jobs', id, `${attempt}-implement`), instructions, signal, (s, job) => {
-          const ticket = s.tickets.find(x => x.spec.id === id); Object.assign(ticket, { status: 'implementing', attempts: attempt, beforeAgentHead: before.headSha, activeJob: job.id, repairs: ticket.repairs + (repairing ? 1 : 0), verification: null, review: null });
+        const jobDirectory = continuing ? `${attempt}-continuation-1-implement` : `${attempt}-implement`;
+        const outcome = await this.callAgent('implement', t.workspace, path.join(this.root, 'jobs', id, jobDirectory), instructions, signal, (s, job) => {
+          const ticket = s.tickets.find(x => x.spec.id === id);
+          Object.assign(ticket, { status: 'implementing', attempts: continuing ? ticket.attempts : attempt, beforeAgentHead: before.headSha, activeJob: job.id, repairs: ticket.repairs + (repairing ? 1 : 0), verification: null, review: null });
+          if (continuing) Object.assign(ticket.interruptedContinuation, { status: 'running', startedAt: Date.now(), jobId: job.id, logicalAttempt: ticket.attempts });
         });
         if (outcome.outcome === 'waiting_capacity') {
-          this.transition(id, 'waiting_capacity', { retryAt: outcome.retryAt, resumeStatus: repairing ? 'repairing' : 'prepared', capacity: outcome.detail });
+          this.transition(id, 'waiting_capacity', { retryAt: outcome.retryAt, resumeStatus: continuing ? 'continuing' : repairing ? 'repairing' : 'prepared', capacity: outcome.detail });
+          if (continuing) this.change(id, ticket => { ticket.interruptedContinuation.status = 'waiting_capacity'; });
           if (repairing) this.change(id, ticket => { ticket.repairs--; });
           return;
         }
         const candidate = await this.workspace.checkpoint(this.current(id), service, signal);
-        this.transition(id, 'verifying', { ...candidate, implementation: { sessionRef: outcome.sessionRef, jobId: outcome.jobId, usage: outcome.usage }, activeJob: null }); return;
+        const implementation = { sessionRef: outcome.sessionRef, jobId: outcome.jobId, usage: outcome.usage,
+          ...(continuing ? { continuationId: t.interruptedContinuation.continuationId, logicalAttempt: attempt } : {}) };
+        const continuationRecord = continuing ? structuredClone(this.current(id).interruptedContinuation) : undefined;
+        if (continuationRecord) Object.assign(continuationRecord, { status: 'completed', completedAt: Date.now(), jobId: outcome.jobId, sessionRef: outcome.sessionRef, completedHeadSha: candidate.headSha, completedTreeSha: candidate.treeSha });
+        this.transition(id, 'verifying', { ...candidate, implementation, ...(continuationRecord ? { interruptedContinuation: continuationRecord } : {}), activeJob: null }); return;
       }
       if (t.status === 'verifying') {
         await this.workspace.assertCandidate(t, signal);
@@ -243,21 +283,28 @@ export class Controller {
         return;
       }
       if (t.status === 'review_ready') {
-        await this.workspace.assertCandidate(t, signal);
+        const candidate = await this.workspace.assertCandidate(t, signal);
+        if (candidate.normalized) {
+          this.transition(id, 'verifying', { verification: null, review: null }); return;
+        }
         const attempt = (t.reviewAttempts ?? 0) + 1;
         this.transition(id, 'reviewing', { reviewAttempts: attempt });
-        const instructions = `Independently review the exact candidate at HEAD ${t.headSha} against base ${t.baseSha}. You are a fresh reviewer, not the implementer. Read applicable AGENTS.md, inspect the complete diff including tests, and assess acceptance/integration/error handling. Do not edit any file.\n${ticketPrompt(t)}\nController verification passed: ${JSON.stringify(t.verification.results.map(r => r.name))}.\nReturn headSha exactly ${t.headSha}, verdict pass only if no actionable findings, concise summary, and findings with priority/file/line/message. Do not invent hypothetical blockers.`;
+        const requiredExecution = effectiveExecution(t);
+        const instructions = `Independently review the exact candidate at HEAD ${t.headSha} against base ${t.baseSha}. You are a fresh reviewer, not the implementer. Read applicable AGENTS.md, inspect the complete diff including tests, and assess acceptance/integration/error handling. Do not edit any file.\n${ticketPrompt(t)}\nController verification passed: ${JSON.stringify(t.verification.results.map(r => r.name))}.\nReturn headSha exactly ${t.headSha}, verdict pass only if no actionable findings, concise summary, and findings with priority/file/line/message. ${requiredExecution ? `For passing review, return checklist with exactly one {id,verdict:"pass",evidence} per required criterion: ${JSON.stringify(requiredExecution.checklist.map(item => item.id))}. Evidence must identify the actual test/assertion or observed artifact establishing the criterion at this candidate; do not infer GUI validation from mocks. ` : ''}Do not invent hypothetical blockers.`;
         const outcome = await this.callAgent('review', t.workspace, path.join(this.root, 'jobs', id, `${t.headSha}-review-${attempt}`), instructions, signal);
         await this.workspace.assertCandidate(t, signal);
         if (outcome.outcome === 'waiting_capacity') { this.transition(id, 'waiting_capacity', { retryAt: outcome.retryAt, resumeStatus: 'review_ready' }); return; }
         if (outcome.sessionRef === t.implementation?.sessionRef || t.implementationSessions?.includes(outcome.sessionRef)) throw new Blocker('review_not_fresh', 'Review reused an implementation session');
-        const review = validateReview(outcome.result, t.headSha);
+        const review = validateReview(outcome.result, t.headSha, requiredExecution);
         this.change(id, ticket => { ticket.review = { ...review, sessionRef: outcome.sessionRef, jobId: outcome.jobId }; });
         if (review.verdict === 'fail') await this.repair(id, review); else this.transition(id, 'publishing');
         return;
       }
       if (['publishing', 'waiting_ci', 'merging'].includes(t.status)) {
-        await this.workspace.assertCandidate(t, signal);
+        const candidate = await this.workspace.assertCandidate(t, signal);
+        if (candidate.normalized) {
+          this.transition(id, 'verifying', { verification: null, review: null }); return;
+        }
         if (!t.verification?.passed || t.verification.headSha !== t.headSha || t.verification.treeSha !== t.treeSha || t.verification.policyDigest !== digest(service.checks) || t.review?.verdict !== 'pass' || t.review.headSha !== t.headSha) throw new Blocker('missing_evidence', 'Exact candidate verification and fresh review are required');
         // Reconcile delivery BEFORE rebasing an already merged head on restart.
         if (t.publication) {
@@ -299,7 +346,10 @@ export class Controller {
         const checks = await this.verifier.run(directory, service.checks, `delivered-${id}-${t.mergeSha}`, signal);
         const after = await this.workspace.identity(directory, signal);
         if (!checks.passed || after.dirty || after.headSha !== t.mergeSha) throw new Blocker('postmerge_failed', 'Postmerge verification failed; repository lane halted', checks);
-        this.transition(id, 'shipped', { postmerge: { ...checks, headSha: t.mergeSha, treeSha: identity.treeSha }, shippedAt: Date.now() }); return;
+        this.transition(id, 'shipped', { postmerge: { ...checks, headSha: t.mergeSha, treeSha: identity.treeSha },
+          ...(t.spec.execution ? { checklistEvidence: { headSha: t.mergeSha, reviewedHeadSha: t.review.headSha, contractDigest: digest(t.spec.execution), items: t.review.checklist, verification: t.verification.results, postmerge: checks.results,
+            ...(t.correctionAdmission ? { correctionAdmissionId: t.correctionAdmission.admissionId, correctionDigest: digest({ outcome: t.correctionAdmission.outcome, instructions: t.correctionAdmission.instructions, checklist: t.correctionAdmission.checklist }), correctionChecklist: t.correctionAdmission.checklist } : {}) } } : {}),
+          shippedAt: Date.now() }); return;
       }
       throw new Blocker('invalid_state', `Unsupported ticket state ${t.status}`);
     } catch (e) {
@@ -308,14 +358,62 @@ export class Controller {
       if (e.code === 'runtime_failed' && current.status === 'reviewing' && (current.runtimeRetries ?? 0) < this.config.limits.maxRepairs) {
         this.transition(id, 'review_ready', { runtimeRetries: (current.runtimeRetries ?? 0) + 1, activeJob: null }); return;
       }
-      if (e.code === 'runtime_failed' && current.repairs < this.config.limits.maxRepairs) {
+      if (e.code === 'runtime_failed' && current.repairs < repairCeiling(current, this.config.limits.maxRepairs)) {
         this.transition(id, 'repairing', { repairReason: { code: e.code, message: e.message, detail: e.detail }, activeJob: null }); return;
       }
       if (e.code === 'github_unavailable' && ['publishing', 'waiting_ci', 'merging'].includes(current.status) && (current.networkFailures ?? 0) < 3) {
         this.change(id, ticket => { ticket.networkFailures = (ticket.networkFailures ?? 0) + 1; ticket.pollAt = Date.now() + 15000 * ticket.networkFailures; }); return;
       }
-      this.transition(id, 'blocked', { blocker: { code: e.code ?? 'unexpected_error', message: e.message, detail: e.detail }, activeJob: null });
+      const blocker = { code: e.code ?? 'unexpected_error', message: e.message, detail: e.detail };
+      if (e.code === 'runtime_failed') blocker.role = current.status === 'implementing' ? 'implement' : current.status === 'reviewing' ? 'review' : 'unknown';
+      this.transition(id, 'blocked', { blocker, activeJob: null });
     }
+  }
+  async recoverInterruptedImplementation(request, signal) {
+    const authorization = this.store.authorizeInterruptedRecovery(this.config, request);
+    try {
+      const ticket = this.current(request.ticketId), service = this.config.services[ticket.spec.service];
+      const before = await this.workspace.identity(ticket.workspace, signal);
+      if (before.headSha !== ticket.beforeAgentHead || !before.dirty ||
+          (ticket.headSha != null && (before.headSha !== ticket.headSha || before.treeSha !== ticket.treeSha))) {
+        throw new Blocker('partial_recovery_identity_mismatch', 'Workspace must contain dirty partial work on the exact pre-implementation head', before);
+      }
+      const candidate = await this.workspace.checkpoint(ticket, service, signal);
+      this.store.completeInterruptedRecovery(this.id, request.ticketId, authorization.recoveryId, candidate, before);
+      const recovered = this.current(request.ticketId);
+      return { recovered: true, project: this.id, ticket: request.ticketId, recoveryId: authorization.recoveryId,
+        status: recovered.status, workspace: recovered.workspace, baseSha: recovered.baseSha,
+        beforeAgentHead: recovered.beforeAgentHead, headSha: recovered.headSha, treeSha: recovered.treeSha,
+        files: candidate.files };
+    } catch (error) {
+      this.store.failInterruptedRecovery(this.id, request.ticketId, authorization.recoveryId, error);
+      throw error;
+    }
+  }
+  async finishInterruptedCandidateVerification(ticketId, recoveryId, signal) {
+    const ticket = this.current(ticketId), record = ticket?.interruptedCandidateVerification;
+    if (!ticket || ticket.status !== 'recovering_candidate' || record?.recoveryId !== recoveryId || record.status !== 'authorized') {
+      throw new Blocker('interrupted_candidate_state_mismatch', 'Interrupted-candidate checkpoint authorization is missing or already settled');
+    }
+    try {
+      const service = this.config.services[ticket.spec.service], before = await this.workspace.identity(ticket.workspace, signal);
+      if (before.headSha !== record.evidence.beforeAgentHead || before.treeSha !== record.evidence.priorCandidate.treeSha || !before.dirty) {
+        throw new Blocker('interrupted_candidate_identity_mismatch', 'Workspace must retain dirty partial work on the exact pre-agent head and tree', before);
+      }
+      const candidate = await this.workspace.checkpoint(ticket, service, signal);
+      this.store.completeInterruptedCandidateVerification(this.id, ticket.spec.id, recoveryId, candidate, before);
+      const checked = this.current(ticketId);
+      return { checkpointed: true, project: this.id, ticket: ticket.spec.id, recoveryId, status: checked.status,
+        workspace: checked.workspace, baseSha: checked.baseSha, priorHeadSha: before.headSha, priorTreeSha: before.treeSha,
+        headSha: checked.headSha, treeSha: checked.treeSha, files: candidate.files, implementationCompleted: false };
+    } catch (error) {
+      this.store.failInterruptedCandidateVerification(this.id, ticket.spec.id, recoveryId, error);
+      throw error;
+    }
+  }
+  async checkpointInterruptedCandidateVerification(request, signal) {
+    const authorization = this.store.authorizeInterruptedCandidateVerification(this.config, request);
+    return this.finishInterruptedCandidateVerification(request.ticketId, authorization.recoveryId, signal);
   }
   async acceptance(signal) {
     for (const [name, service] of Object.entries(this.config.services)) {
