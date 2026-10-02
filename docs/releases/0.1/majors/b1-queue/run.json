@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "runId": "b1-queue",
+  "caseId": "queue",
+  "pageId": "page:local-job-queue-v1",
+  "pageName": "02 • Local Job Queue • v1",
+  "projectId": "b1-queue",
+  "stateDir": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\benchmark-state",
+  "runtime": {
+    "version": 1,
+    "label": "pretrial2",
+    "preparedAt": "2026-10-01T09:32:02.100Z",
+    "checkout": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\runtimes\\pretrial2\\source",
+    "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\state\\projects\\pretrial2-initialization\\acceptance\\framework-ecb2a6340c4a93001a66a0a8428c6afb3e9c6d4a",
+    "sourceDigest": "da9cdcc98cb943c6fa1a92cca37186ac16d1961a2ccf974e0c73e9a75c40adca",
+    "sourceFiles": 39,
+    "repositoryHead": "68743192614f50b4cba63a39c70440a2e21f7081",
+    "deliveredHead": "ecb2a6340c4a93001a66a0a8428c6afb3e9c6d4a",
+    "immutable": true,
+    "baselineSourceDigest": "629c8dad0fc20ef4c751f8136216af1d15cfcf73a6badae16e359e2464105276",
+    "rollback": {
+      "version": 1,
+      "label": "v01",
+      "preparedAt": "2026-10-01T01:02:24.020Z",
+      "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\sticky-trial\\review-package\\snapshot\\framework\\source",
+      "checkout": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\runtimes\\v01\\source",
+      "sourceDigest": "629c8dad0fc20ef4c751f8136216af1d15cfcf73a6badae16e359e2464105276",
+      "sourceFiles": 37,
+      "repositoryHead": "57ebacafd577e57a90aa2e3d7d4b665bff5d2c0e",
+      "originalFrameworkHead": "c2303016e330121dbccb40671f96958985aeeb53",
+      "dirtySourceIncluded": true,
+      "immutable": true
+    },
+    "constructionLineage": [
+      {
+        "record": "builds/pretrial2-cleanup/result.json",
+        "sha256": "9513e9a2cb2ac2230f0c5857790cc9bcb10fd45c007924da21234c044e2a8a32"
+      },
+      {
+        "record": "builds/pretrial2-cancellation/result.json",
+        "sha256": "2467769633d6ee1f89cc9d4ba101e5f0cb72795a4c916838e286775162482a9d"
+      },
+      {
+        "record": "builds/pretrial2-initialization/result.json",
+        "sha256": "b728daad47697cb050b5101d9d69f0d0757524c784fd978cb1dfc6f22a743139"
+      },
+      {
+        "record": "builds/pretrial2-initialization/admission.json",
+        "sha256": "fa2e1b18e2cd5963257f538804474a613ed076e9e2557a7d836813c8f09a271d"
+      },
+      {
+        "record": "h1-construction-replan.json",
+        "sha256": "bdda040e7cf5bc4aab0d3f175243b595a580a818aca25cab273f5bc0dad4bb27"
+      },
+      {
+        "record": "stabilization/status.json",
+        "sha256": "4f723ecbc97047c65b691274a10779032cb78240cf62f79e165f7a0029f37c7b"
+      }
+    ],
+    "historicalUnknownUsageRetained": true,
+    "constructionComparisonScored": false,
+    "nativeAcceptanceSha256": "799eaa13fb822511c23b69fd5d3db91beccbade828f5a07466f05ba6cf80eae8",
+    "sourceScope": [
+      "src/controller.mjs",
+      "src/runtime-codex.mjs",
+      "test/controller-cancellation.test.mjs",
+      "test/review-scratch.test.mjs",
+      "test/runtime.test.mjs"
+    ],
+    "buildContextOmitted": [
+      "AGENTS.md",
+      "HYPOTHESIS.md",
+      "PRETRIAL2-REPLAN.md",
+      "CANCELLATION-CONTRACT.md",
+      "INITIALIZATION-CONTRACT.md"
+    ]
+  },
+  "authority": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-queue\\delivery.git",
+  "seed": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-queue\\seed",
+  "seedHead": "732e92f6c21770247b1bb8d4e397580b52b23735",
+  "seedDigest": "138a7839e923ca8d0145b39b290cf8f7b0ad4fdbcd4d64b1ee1f7cbb66b60896",
+  "inputSha256": "6fdc5ba3168a23c31927a3ce67c57d98fbe2e03fac3bebee57e8eb23922f6250",
+  "pageSha256": "7060096261d9faa47b82090f48a3acd13e2a881494eb2ee25b0c2af2b9e98a25",
+  "configDigest": "f96f53b6be78b4bc0f3e67740906be78bd173fa2f48dffa724ebdc7158aa04b2",
+  "budget": {
+    "agentCalls": 48,
+    "maxParallel": 4,
+    "implementationAttemptsPerTicket": 2,
+    "ordinaryRepairs": 1,
+    "maxRebases": 3,
+    "jobTimeoutSeconds": 900,
+    "goalDeadline": null
+  },
+  "phase": "three-product-baseline",
+  "repeat": 1,
+  "interventions": [],
+  "independentAcceptance": "orchestrator actual runtime gate after exact local delivery; GRADING.md",
+  "createdAt": "2026-10-02T03:46:55.974Z"
+}

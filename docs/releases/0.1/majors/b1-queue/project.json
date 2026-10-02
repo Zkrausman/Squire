@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "id": "b1-queue",
+  "stateDir": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\benchmark-state",
+  "goal": "Deliver the complete BENCHMARK.md product from this fresh repository. This page is the sole product specification; preserve every criterion. Plan narrow reviewable slices with explicit execution ownership and dependency interfaces, at most 12 tickets and at most 2 implementation attempts per ticket; all 48 calls include planning, implementation, repair and fresh review. Independent final actual graphical/product grading occurs after local delivery, not inside component review. Return a complete local launchable artifact with meaningful tests and README. No prior solutions, other products, protected benchmark graders, extra permissions, special corrective admissions, external publication or hidden budget resets. Choose routine design decisions yourself.",
+  "services": {
+    "app": {
+      "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-queue\\delivery.git",
+      "branch": "main",
+      "setup": [
+        {
+          "name": "offline-pinned-dependencies",
+          "argv": [
+            "C:\\nvm4w\\nodejs\\node.exe",
+            "C:/nvm4w/nodejs/node_modules/npm/bin/npm-cli.js",
+            "ci",
+            "--offline",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund"
+          ],
+          "timeoutSeconds": 240
+        }
+      ],
+      "checks": [
+        {
+          "name": "platform-and-repository-checks",
+          "argv": [
+            "C:\\nvm4w\\nodejs\\node.exe",
+            "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\platform-check.mjs"
+          ],
+          "timeoutSeconds": 600
+        }
+      ],
+      "acceptance": [],
+      "protectedPaths": [
+        "AGENTS.md",
+        "BENCHMARK.md",
+        "package-lock.json",
+        ".gitignore"
+      ],
+      "delivery": {
+        "kind": "local"
+      }
+    }
+  },
+  "runtime": {
+    "kind": "codex",
+    "authentication": "subscription",
+    "roles": {
+      "implement": {
+        "model": "gpt-6-luna",
+        "reasoning": "xhigh"
+      },
+      "plan": {
+        "model": "gpt-6.1-sol",
+        "reasoning": "medium"
+      },
+      "review": {
+        "model": "gpt-6.1-sol",
+        "reasoning": "medium"
+      }
+    }
+  },
+  "limits": {
+    "maxParallel": 4,
+    "maxRepairs": 1,
+    "maxRebases": 3,
+    "maxAgentCalls": 48,
+    "agentTimeoutSeconds": 900,
+    "ciTimeoutSeconds": 600,
+    "rateLimitBackoffSeconds": 600
+  }
+}

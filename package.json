@@ -1,12 +1,18 @@
 {
   "name": "squire",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": {"squire": "./mvp/run.mjs"},
-  "engines": {"node": ">=24 <25"},
+  "engines": {
+    "node": ">=24.14 <25"
+  },
+  "bin": {
+    "squire": "bin/squire.mjs"
+  },
   "scripts": {
-    "squire": "node mvp/run.mjs",
-    "test": "node --check mvp/run.mjs && node --check mvp/window-web.mjs && node --check mvp/window-web.js && node --test mvp/test/*.test.mjs"
+    "squire": "node bin/squire.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "smoke:codex": "node scripts/smoke-codex.mjs"
   }
 }

@@ -1,0 +1,126 @@
+{
+  "runId": "b1-game",
+  "caseId": "game",
+  "status": "blocked",
+  "controllerCompleted": false,
+  "accepted": false,
+  "acceptanceStatus": "pending_independent_runtime",
+  "diagnosticOnly": true,
+  "headSha": "6b1559b6bfbd9788b801b8707d2127000bf887e7",
+  "checkout": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-game\\acceptance-checkout",
+  "elapsedMs": 4345589,
+  "telemetry": {
+    "agentCalls": 9,
+    "knownCalls": 7,
+    "unknownCalls": 2,
+    "totals": {
+      "input_tokens": 2874265,
+      "cached_input_tokens": 2523392,
+      "output_tokens": 96555
+    },
+    "noncachedInputTokens": 350873,
+    "jobs": [
+      {
+        "jobId": "30ee6f52-4b5e-450c-9df6-b4cd4d3fd426",
+        "role": "plan",
+        "usage": {
+          "input_tokens": 77130,
+          "cached_input_tokens": 54144,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 6515,
+          "reasoning_output_tokens": 536
+        },
+        "outcome": "completed"
+      },
+      {
+        "jobId": "36e69ec6-e031-4db3-826c-12c90de7a6af",
+        "role": "implement",
+        "usage": {
+          "input_tokens": 279093,
+          "cached_input_tokens": 237312,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 12748,
+          "reasoning_output_tokens": 8428
+        },
+        "outcome": "completed"
+      },
+      {
+        "jobId": "9f15c36a-82ac-494b-add3-ef5277a78e24",
+        "role": "review",
+        "usage": {
+          "input_tokens": 107183,
+          "cached_input_tokens": 81408,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2279,
+          "reasoning_output_tokens": 198
+        },
+        "outcome": "completed"
+      },
+      {
+        "jobId": "ff579b1d-6b07-40f4-9a1d-f0963e8c3096",
+        "role": "implement",
+        "usage": {
+          "input_tokens": 906315,
+          "cached_input_tokens": 818944,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 30578,
+          "reasoning_output_tokens": 17696
+        },
+        "outcome": "completed"
+      },
+      {
+        "jobId": "391649ef-b169-4d6f-a6ba-aa3ba8ab91e8",
+        "role": "review",
+        "usage": {
+          "input_tokens": 122919,
+          "cached_input_tokens": 73984,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2098,
+          "reasoning_output_tokens": 195
+        },
+        "outcome": "completed"
+      },
+      {
+        "jobId": "bd52c18d-a65f-48a5-bdc7-fb64c5964f22",
+        "role": "implement",
+        "usage": {
+          "input_tokens": 1181582,
+          "cached_input_tokens": 1098240,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 39725,
+          "reasoning_output_tokens": 28164
+        },
+        "outcome": "completed"
+      },
+      {
+        "jobId": "51ed352f-b905-49aa-9e1d-306fe8a09d6c",
+        "role": "review",
+        "usage": {
+          "input_tokens": 200043,
+          "cached_input_tokens": 159360,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2612,
+          "reasoning_output_tokens": 273
+        },
+        "outcome": "completed"
+      },
+      {
+        "jobId": "46580ccc-916a-4beb-8fbd-7df098cba6e8",
+        "role": "implement",
+        "usage": null,
+        "outcome": null
+      },
+      {
+        "jobId": "4153c8fc-cc45-41f2-9e0b-cbd2ca12a6d4",
+        "role": "implement",
+        "usage": null,
+        "outcome": null
+      }
+    ]
+  },
+  "error": null,
+  "budgetCompliant": true,
+  "operatorInterventions": [],
+  "sourceDigest": "da9cdcc98cb943c6fa1a92cca37186ac16d1961a2ccf974e0c73e9a75c40adca",
+  "inputSha256": "6fd2f86ab215e563d494ac9585b68f04f1c18a9b25d5f758444b137a98b2e2fc"
+}

@@ -1,0 +1,7 @@
+{
+  "sourceSyntaxCheck": {"command": "node --run check", "exitCode": 0},
+  "regressionSuite": {"command": "node --run test", "exitCode": 0, "tests": 81, "passed": 81, "failed": 0, "cancelled": 0, "skipped": 0, "durationMs": 474794.3405},
+  "scope": "Existing current-checkout source regression tests; not acceptance of major benchmark products or microbenchmark calibration",
+  "majorProductAcceptance": "0/3",
+  "microbenchmarkScoring": "pending"
+}

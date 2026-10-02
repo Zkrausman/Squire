@@ -1,0 +1,228 @@
+{
+  "version": 1,
+  "label": "three-products-current-squire-baseline-r1",
+  "baselineRuntime": {
+    "version": 1,
+    "label": "pretrial2",
+    "preparedAt": "2026-10-01T09:32:02.100Z",
+    "checkout": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\runtimes\\pretrial2\\source",
+    "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\state\\projects\\pretrial2-initialization\\acceptance\\framework-ecb2a6340c4a93001a66a0a8428c6afb3e9c6d4a",
+    "sourceDigest": "da9cdcc98cb943c6fa1a92cca37186ac16d1961a2ccf974e0c73e9a75c40adca",
+    "sourceFiles": 39,
+    "repositoryHead": "68743192614f50b4cba63a39c70440a2e21f7081",
+    "deliveredHead": "ecb2a6340c4a93001a66a0a8428c6afb3e9c6d4a",
+    "immutable": true,
+    "baselineSourceDigest": "629c8dad0fc20ef4c751f8136216af1d15cfcf73a6badae16e359e2464105276",
+    "rollback": {
+      "version": 1,
+      "label": "v01",
+      "preparedAt": "2026-10-01T01:02:24.020Z",
+      "source": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\sticky-trial\\review-package\\snapshot\\framework\\source",
+      "checkout": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\runtimes\\v01\\source",
+      "sourceDigest": "629c8dad0fc20ef4c751f8136216af1d15cfcf73a6badae16e359e2464105276",
+      "sourceFiles": 37,
+      "repositoryHead": "57ebacafd577e57a90aa2e3d7d4b665bff5d2c0e",
+      "originalFrameworkHead": "c2303016e330121dbccb40671f96958985aeeb53",
+      "dirtySourceIncluded": true,
+      "immutable": true
+    },
+    "constructionLineage": [
+      {
+        "record": "builds/pretrial2-cleanup/result.json",
+        "sha256": "9513e9a2cb2ac2230f0c5857790cc9bcb10fd45c007924da21234c044e2a8a32"
+      },
+      {
+        "record": "builds/pretrial2-cancellation/result.json",
+        "sha256": "2467769633d6ee1f89cc9d4ba101e5f0cb72795a4c916838e286775162482a9d"
+      },
+      {
+        "record": "builds/pretrial2-initialization/result.json",
+        "sha256": "b728daad47697cb050b5101d9d69f0d0757524c784fd978cb1dfc6f22a743139"
+      },
+      {
+        "record": "builds/pretrial2-initialization/admission.json",
+        "sha256": "fa2e1b18e2cd5963257f538804474a613ed076e9e2557a7d836813c8f09a271d"
+      },
+      {
+        "record": "h1-construction-replan.json",
+        "sha256": "bdda040e7cf5bc4aab0d3f175243b595a580a818aca25cab273f5bc0dad4bb27"
+      },
+      {
+        "record": "stabilization/status.json",
+        "sha256": "4f723ecbc97047c65b691274a10779032cb78240cf62f79e165f7a0029f37c7b"
+      }
+    ],
+    "historicalUnknownUsageRetained": true,
+    "constructionComparisonScored": false,
+    "nativeAcceptanceSha256": "799eaa13fb822511c23b69fd5d3db91beccbade828f5a07466f05ba6cf80eae8",
+    "sourceScope": [
+      "src/controller.mjs",
+      "src/runtime-codex.mjs",
+      "test/controller-cancellation.test.mjs",
+      "test/review-scratch.test.mjs",
+      "test/runtime.test.mjs"
+    ],
+    "buildContextOmitted": [
+      "AGENTS.md",
+      "HYPOTHESIS.md",
+      "PRETRIAL2-REPLAN.md",
+      "CANCELLATION-CONTRACT.md",
+      "INITIALIZATION-CONTRACT.md"
+    ]
+  },
+  "briefCommit": "76fe94dc",
+  "runs": [
+    {
+      "runId": "b1-game",
+      "caseId": "game",
+      "manifest": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-game\\run.json",
+      "project": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-game\\project.json",
+      "inputSha256": "6fd2f86ab215e563d494ac9585b68f04f1c18a9b25d5f758444b137a98b2e2fc"
+    },
+    {
+      "runId": "b1-queue",
+      "caseId": "queue",
+      "manifest": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-queue\\run.json",
+      "project": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-queue\\project.json",
+      "inputSha256": "6fdc5ba3168a23c31927a3ce67c57d98fbe2e03fac3bebee57e8eb23922f6250"
+    },
+    {
+      "runId": "b1-logs",
+      "caseId": "logs",
+      "manifest": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-logs\\run.json",
+      "project": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-logs\\project.json",
+      "inputSha256": "596c216ef84056de557b31b738317b65c35c2ba1e527ca2a131a358a58406974"
+    }
+  ],
+  "platform": {
+    "node": "v24.14.0",
+    "dependencies": {
+      "parse5": "8.0.1",
+      "react": "19.3.0",
+      "react-dom": "19.3.0"
+    },
+    "devDependencies": {
+      "@playwright/test": "1.63.0",
+      "electron": "44.5.0",
+      "vite": "8.3.1"
+    },
+    "npmEntry": "C:/nvm4w/nodejs/node_modules/npm/bin/npm-cli.js",
+    "electronBinary": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\electron44\\electron.exe"
+  },
+  "environment": {
+    "node": "v24.14.0",
+    "platform": "win32",
+    "architecture": "x64",
+    "osRelease": "10.0.26300",
+    "cpuModel": "Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz",
+    "logicalCpus": 8,
+    "memoryBytes": 34287550464,
+    "cliVersion": "0.159.2",
+    "browserVersion": "154.0.4258.48",
+    "browserSelection": "VersionInfo.FileVersion of installed msedge.exe; older installed directories ignored explicitly",
+    "files": {
+      "node": {
+        "path": "C:\\nvm4w\\nodejs\\node.exe",
+        "sha256": "63c259c81e5d472b5f11c8d506070130cb04a1ecf84b80377a34ed6ec9048088"
+      },
+      "cliEntry": {
+        "path": "C:\\nvm4w\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js",
+        "sha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70"
+      },
+      "cliPackage": {
+        "path": "C:\\nvm4w\\nodejs\\node_modules\\@openai\\codex\\package.json",
+        "sha256": "d4e69a623f79ede30c5abb2a4a4bef8b7ff71dbda1362ebe198676ab56113c15"
+      },
+      "cliNative": {
+        "path": "C:\\nvm4w\\nodejs\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+        "sha256": "52f75c649bebb8001102a1dd129c1ea6d02b0940321e6d7e82ee0526753bd58a"
+      },
+      "edge": {
+        "path": "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+        "sha256": "64670d599edc778d7a2a7db70a98791799fe027a9858eff7eeb28d31975dba3c"
+      },
+      "edgeEngine": {
+        "path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\154.0.4258.48\\msedge.dll",
+        "sha256": "8ae316fa76bf493ed0b4f27ffa0938efa13c0151c9cb080937ed48302c53d48c"
+      },
+      "electron": {
+        "path": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\electron44\\electron.exe",
+        "sha256": "3e76fb616aa60a850b7f64800dd81b21e06ddee3f1919650183b047f03e7cb9f"
+      },
+      "playwrightEntry": {
+        "path": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\StickyCanvas-local\\node_modules\\playwright-core\\index.mjs",
+        "sha256": "3d36e2132d3c8b62397d23f0bb4177336aaee503203ae2a2c90fbeb5bf3317dd"
+      }
+    },
+    "limitation": "Remote model backend revisions, thermal/load variability and every dependency file are not proven immutable."
+  },
+  "harness": {
+    "platform-check.mjs": "8a1f886809253b1671f330485b282504815ada0f532cf581e1284f2d599dd44f",
+    "GRADING.md": "f3707375026269302c0b69002247286487138c55821fba6964c93090e6e649e8",
+    "platform.json": "81ddb2d1749517a5642eac6f2e4c2591940c4a8be8c020da6c7b200183e414a9",
+    "run-baseline.mjs": "b720cf7b4ab3e7d59afe0cf7eb4245177457105eff99a8d2848ff5733bf943f3",
+    "oracles.mjs": "1df6b74230175601c286c061447dcb2057d600ee780325afdaff1ef8c9287744",
+    "environment.mjs": "e52baaf537b816ffbfe6826d281a33a3f26c07c8dc71e0c67803919ec7fb94f7"
+  },
+  "oracleIdentity": {
+    "digest": "0daa1fe57d8561a7decbcb16e1b8d8ddd9571c8e9479f7dce397ed4c0307d751",
+    "files": [
+      {
+        "path": "identity.json",
+        "sha256": "2d7232b09205f017ee07b3003e1f4826a5fb2082a7ff1154b3aa0d9d3f18ea6c"
+      },
+      {
+        "path": "logs-100k-expected.json",
+        "sha256": "cb8cb77fb5559ba5c001f92893bd29f23f1d8157b28df0f154968243d0377a50"
+      },
+      {
+        "path": "logs-100k.jsonl",
+        "sha256": "d583797447eea91d7172ee0a41eaf9f84075b8a71dd6dd1e0e17ad177c429c59"
+      },
+      {
+        "path": "logs-duplicate.jsonl",
+        "sha256": "9b35d63907029f673262688ae8a7cb98e7a3b9bf8a18cb26bb99028d3d0caaa1"
+      },
+      {
+        "path": "logs-expected.json",
+        "sha256": "c65723b18cec2dfd4d82145273a775f56c1e603ba31c39069c2f6facd8db663f"
+      },
+      {
+        "path": "logs-invalid-utf8.jsonl",
+        "sha256": "46e94749f9da5d0f808ea020860ab671a39ad4e0ff49a59d7d1ddcf46ed55f7d"
+      },
+      {
+        "path": "logs-small.csv",
+        "sha256": "da78e53da25868e2b3380033779e78d5c7e17379b8ce0e3ce250849f949f4929"
+      },
+      {
+        "path": "logs-small.jsonl",
+        "sha256": "16e4adf4adb560403b3251997edbdd72d00e3452e21061f098bf1e154afa63e5"
+      },
+      {
+        "path": "queue-expected.json",
+        "sha256": "942162fecdca729e937be5a260776c772315397bc27ee941c245a5a5ed252860"
+      },
+      {
+        "path": "queue-invalid.csv",
+        "sha256": "df3fee7638fbecd6a0ec9524cdebf4f9f275d2bdb429d20c205a4468fedc7a79"
+      },
+      {
+        "path": "queue-valid.csv",
+        "sha256": "6f404aa3aa390493c2b0d6ad5bc64329bf184b40f3205016e3e9620b2746d1ee"
+      }
+    ]
+  },
+  "allLocal": true,
+  "globalTicketCeiling": 4,
+  "goalDeadline": null,
+  "comparison": "One run per new product; old v0.1 cohort remains separate.",
+  "frozenAt": "2026-10-02T03:48:26.747Z",
+  "status": "prepared",
+  "preparationInterventions": [
+    {
+      "calls": 0,
+      "reason": "Missing original Electron install located in cache and extracted independently. Old environment selector rejected two installed Edge directories; current active binary explicitly selects154.0.4258.48. All three original seeds/configs preserved; no implementation dispatched."
+    }
+  ]
+}

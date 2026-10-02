@@ -1,0 +1,11 @@
+{
+  "sha256": "c0e907779be7654b14b2c65b68f83d123bbe7dbe507ceb992c98458a5a08bb97",
+  "bytes": 183579461,
+  "files": 51118,
+  "splitArchive": "evidence-parts.json",
+  "originalPrivateArchive": {
+    "sha256": "1c290f3804919eba56aa380a60a08c397b05f9a065ba89d316c250b1dd8c7872",
+    "bytes": 208707764,
+    "files": 62466
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "runId": "b1-queue",
+  "caseId": "queue",
+  "status": "blocked",
+  "controllerCompleted": false,
+  "accepted": false,
+  "acceptanceStatus": "pending_independent_runtime",
+  "diagnosticOnly": true,
+  "headSha": "732e92f6c21770247b1bb8d4e397580b52b23735",
+  "checkout": "C:\\Users\\zkrau\\Documents\\Codex\\2026-09-29\\can-you-find-x20\\work\\squire-evals\\product-suite\\runs\\b1-queue\\acceptance-checkout",
+  "elapsedMs": 276035,
+  "telemetry": {
+    "agentCalls": 1,
+    "knownCalls": 1,
+    "unknownCalls": 0,
+    "totals": {
+      "input_tokens": 77965,
+      "cached_input_tokens": 54912,
+      "output_tokens": 6626
+    },
+    "noncachedInputTokens": 23053,
+    "jobs": [
+      {
+        "jobId": "f29b571b-bec7-4d9b-b846-6bc3917c1940",
+        "role": "plan",
+        "usage": {
+          "input_tokens": 77965,
+          "cached_input_tokens": 54912,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 6626,
+          "reasoning_output_tokens": 530
+        },
+        "outcome": "completed"
+      }
+    ]
+  },
+  "error": null,
+  "budgetCompliant": true,
+  "operatorInterventions": [],
+  "sourceDigest": "da9cdcc98cb943c6fa1a92cca37186ac16d1961a2ccf974e0c73e9a75c40adca",
+  "inputSha256": "6fdc5ba3168a23c31927a3ce67c57d98fbe2e03fac3bebee57e8eb23922f6250"
+}

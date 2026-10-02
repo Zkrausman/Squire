@@ -1,0 +1,288 @@
+{
+  "document": "Squire Benchmark Briefs",
+  "pages": [
+    {
+      "id": "page:scribble-blackjack-v1",
+      "name": "01 • Scribble Blackjack Shooter • v2",
+      "content": [
+        {
+          "id": "shape:blackjack-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "FIXED RUN INPUT • v2 • INTENTIONAL AMBIGUITY\nBuild a small local desktop game from this page in a fresh repository. Interpret the concept, choose a coherent design and break it into implementable work yourself. Make reasonable creative decisions autonomously; record your interpretation before implementation. Implement, test, independently review and deliver a launchable checkout. Preserve attempts, failures, reviews, interventions and reported/unknown usage. Local only. This page is the complete product brief; previous solutions and grading fixtures are withheld. Environment, models and budget are pinned separately. Freeze this wording for repeated runs; future changes create a new version."
+        },
+        {
+          "id": "shape:blackjack-table",
+          "type": "geo",
+          "x": 0,
+          "y": 1190,
+          "text": "CONCEPT SKETCH — DELIBERATELY UNRESOLVED\n\n              [ A ♠ ]      [ 7 ♥ ]         +         aim / shoot\n\n                            ?\n\n                  ONE COHERENT PLAYABLE LOOP\n\nHow do blackjack decisions change the action?\nHow does shooting change the blackjack situation?\nWhich interpretation feels fun, clear and small enough to finish?\n\nThese are design questions for the agent, not prescribed mechanics."
+        },
+        {
+          "id": "shape:blackjack-product",
+          "type": "geo",
+          "x": 0,
+          "y": 370,
+          "text": "THE CONCEPT\n“Scribble blackjack, but make it a shooter.”\n\nA small, enjoyable offline desktop game with a hand-drawn, animated scribble aesthetic. Blackjack and shooting must combine into one understandable game. Decide how the combination works. Cards, risk and the spirit of blackjack should meaningfully affect play; shooting should be an active part of the experience. The player should discover a satisfying loop quickly."
+        },
+        {
+          "id": "shape:blackjack-state",
+          "type": "geo",
+          "x": 0,
+          "y": 715,
+          "text": "DELIVERY BOUNDARIES\nOne small local desktop game, runnable offline with documented launch instructions. Fictional stakes only; no real-money play, accounts, purchases or cloud dependency. Supply all required assets locally. Keep the scope small enough to finish.\n\nTeach controls and the blackjack/shooting interaction inside the game. Provide a complete playable loop with feedback, a clear outcome and a way to replay. Animated hand-drawn presentation is part of the brief."
+        },
+        {
+          "id": "shape:blackjack-rules",
+          "type": "geo",
+          "x": 660,
+          "y": 370,
+          "text": "OPEN DESIGN SPACE\nChoose the perspective, controls, rules, pacing, visual language and relationship between blackjack and combat. Invent the interaction rather than copying a supplied solution.\n\nThere is no prescribed deck size, payout model, enemy pattern, engine, architecture or ticket breakdown. Exact casino blackjack rules are optional. Explain the rules you choose and make the finished game follow them consistently."
+        },
+        {
+          "id": "shape:blackjack-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "Scribble blackjack — but make it a shooter"
+        },
+        {
+          "id": "shape:blackjack-acceptance",
+          "type": "geo",
+          "x": 660,
+          "y": 715,
+          "text": "OBSERVABLE ACCEPTANCE\n□ Actual desktop game launches and can be played offline.\n□ Shooting is playable; blackjack meaningfully affects the same gameplay loop.\n□ Rules and controls can be understood without reading source.\n□ The selected rules behave consistently; important transitions and rapid/repeated input are tested.\n□ A complete loop reaches an outcome and can restart cleanly.\n□ Scribble visual style and animation are visible and coherent.\n□ Deliver launch instructions, design rationale and verification evidence.\n\nNo single reference mechanic or visual solution is required."
+        }
+      ]
+    },
+    {
+      "id": "page:local-job-queue-v1",
+      "name": "02 • Local Job Queue • v1",
+      "content": [
+        {
+          "id": "shape:queue-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "Local Job Queue — durable batch processing"
+        },
+        {
+          "id": "shape:queue-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "FIXED RUN INPUT • v1\nBuild this complete local product from a fresh repository. Choose architecture and decompose the work yourself; implement, test, independently review and deliver a launchable checkout. No publication, accounts or paid services. Preserve all attempts, failures, reviews, interventions and reported/unknown usage. This page is the complete product input; previous solutions and grading fixtures are withheld. Environment, models and budget are pinned by the benchmark runner. Future requirement changes create a new version; do not silently change this brief."
+        },
+        {
+          "id": "shape:queue-product",
+          "type": "geo",
+          "x": 0,
+          "y": 370,
+          "text": "PRODUCT\nA small offline batch-processing app with a usable graphical client, a local service API and independently restartable workers. Submit sales CSV files, watch jobs progress, inspect results, cancel work and retry failures. Support at least two concurrent workers and several queued jobs. Clear labels and trustworthy state matter more than decoration. No cloud, authentication or distributed-machine deployment required. Database, framework, queue mechanism and ticket decomposition are your choices."
+        },
+        {
+          "id": "shape:queue-workload",
+          "type": "geo",
+          "x": 660,
+          "y": 370,
+          "text": "FIXED JOB WORKLOAD\nUTF-8 CSV header: category,quantity,unit_price_cents. Category is nonempty text; quantity is a positive integer; unit price is a nonnegative integer. Support quoted CSV fields. Reject malformed rows with an actionable diagnostic.\nFor valid input return row count, total quantity, exact total sales in cents, and sales totals by category. Each row contributes quantity × unit_price_cents. Never use approximate money arithmetic. Include small sample files and documented finite upload/row limits; reject oversize input clearly."
+        },
+        {
+          "id": "shape:queue-behavior",
+          "type": "geo",
+          "x": 0,
+          "y": 705,
+          "text": "CLIENT + API BEHAVIOR\nSubmit a file; list jobs; inspect status, progress, attempt history, diagnostics and completed results. Show queued/running/completed/failed/cancelled truthfully. API can perform the same core actions without the client. Progress is bounded and meaningful; errors are not successes.\nSubmission retries with the same client request ID and same payload return the same job; conflicting payload under that ID is rejected. Failed jobs can be explicitly retried with retained attempt history. Finished results remain available after restarts."
+        },
+        {
+          "id": "shape:queue-recovery",
+          "type": "geo",
+          "x": 660,
+          "y": 705,
+          "text": "CONCURRENCY + RECOVERY\nMultiple workers must not publish conflicting or duplicate results for one job. Kill a worker mid-job: the job is recoverable, never silently lost or stuck forever. Restart service/workers with pending jobs: retain jobs, history and completed outputs.\nCancel queued/running jobs; cancellation and completion races yield one coherent final outcome. A cancelled job cannot later publish success. Disconnect/reconnect client: show connection loss and reconcile actual state. Preserve evidence of failures and retries. Document bounded recovery/retry policy; replay-safe effects matter more than a claimed exactly-once execution label."
+        },
+        {
+          "id": "shape:queue-acceptance",
+          "type": "geo",
+          "x": 0,
+          "y": 1080,
+          "text": "OBSERVABLE ACCEPTANCE\n□ Real client/service/two workers launch locally from documented commands.\n□ Several CSV jobs produce independently checkable exact results.\n□ Repeated submission is idempotent; conflicting reuse fails.\n□ Malformed/oversize input fails clearly without breaking other jobs.\n□ Worker kill and service restart preserve/recover pending work.\n□ Two workers cannot duplicate or overwrite a final result.\n□ Cancellation/completion races and explicit retry preserve coherent state/history.\n□ Client reconnect shows actual state and results.\n□ Automated API/recovery checks and actual graphical-client evidence are supplied."
+        },
+        {
+          "id": "shape:queue-sketch",
+          "type": "geo",
+          "x": 660,
+          "y": 1080,
+          "text": "LOCAL JOBS                         [ Submit CSV ]\n\nJob             Status        Progress       Attempt\nsales-july      Completed      100%              1\nsales-aug       Running         45%              2\nsales-sep       Queued           —               1\nbad-input       Failed          —               1\n\nSelected: sales-july\nRows: 12     Quantity: 35     Sales: 14250 cents\nCategories: books 8000 • games 6250\n\n[ View history ]    [ Cancel ]    [ Retry ]\nService: connected      Workers: 2"
+        }
+      ]
+    },
+    {
+      "id": "page:local-log-explorer-v1",
+      "name": "03 • Local Log Explorer • v1",
+      "content": [
+        {
+          "id": "shape:log-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "Local Log Explorer — find the story across files"
+        },
+        {
+          "id": "shape:log-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "FIXED RUN INPUT • LOCAL LOG EXPLORER v1\nBuild this complete Windows-local product from a fresh repository. Choose architecture and decompose the work yourself; implement, test, independently review and deliver a launchable checkout. Work offline with disposable log files; no accounts, cloud, Codex plugin or host restart. Preserve all attempts, failures, reviews, interventions and known/unknown usage. This page is the complete product input; previous solutions and grading fixtures are withheld. Runner pins environment, models and budgets separately. Requirement changes create a new version; never silently rewrite this brief."
+        },
+        {
+          "id": "shape:log-product",
+          "type": "geo",
+          "x": 0,
+          "y": 370,
+          "text": "PRODUCT + DELIVERY\nA small graphical local log explorer for diagnosing events across several files. Import logs, scan a chronological timeline, combine filters, inspect original records, save useful queries and export matching events. Clear counts, readable controls and trustworthy errors matter.\nDeliver documented local launch and automated verification commands plus small sample logs. Desktop or localhost browser UI is acceptable; choose storage/framework yourself. Launch and restart independently of Codex. No live tailing, server fleet, remote ingestion, authentication or generated AI summaries required."
+        },
+        {
+          "id": "shape:log-input",
+          "type": "geo",
+          "x": 680,
+          "y": 370,
+          "text": "FIXED INPUT CONTRACT\nUTF-8 JSONL objects and CSV with header: timestamp,level,service,message,request_id. JSONL uses the same field names; preserve extra fields in record details. Accept quoted CSV fields, commas/newlines in messages, CRLF and optional UTF-8 BOM.\nTimestamp: RFC3339 with explicit Z or numeric offset; normalize to UTC. Level: DEBUG/INFO/WARN/ERROR, case-insensitive. Service: nonempty text. Message: text, may be empty. request_id: optional text, missing/empty means none. Invalid required fields, malformed rows and invalid UTF-8 are rejected records, never silently coerced."
+        },
+        {
+          "id": "shape:log-import",
+          "type": "geo",
+          "x": 0,
+          "y": 720,
+          "text": "IMPORT + RECORD IDENTITY\nImport at least two sources into one workspace. Show per-source accepted/rejected counts and actionable diagnostics identifying source and physical line (CSV record start for multiline fields). Keep valid records around bad rows. Completely unreadable files produce a visible failure; no fake successful import.\nKeep original record text, normalized fields and source/record ordinal. Identical events in different records or files remain distinct. Same canonical file path identifies one source. Reimport explicitly replaces that source atomically, never silently appends duplicates; cancel/failure retains its previous accepted snapshot. Inspect sources and remove one without removing others."
+        },
+        {
+          "id": "shape:log-query",
+          "type": "geo",
+          "x": 680,
+          "y": 720,
+          "text": "EXACT QUERY + TIMELINE RULES\nCombine filters with AND: case-insensitive literal message substring, selected severity set (empty = all), exact service, exact request ID and inclusive UTC start/end time. No regex or fuzzy interpretation. Missing request IDs never match a nonempty ID. Invalid time ranges show an error.\nSort ascending by UTC timestamp, ties by source import order then record ordinal. Match count refers to all matching records, not just visible rows. Histogram shows counts per UTC minute for the same filtered set. Selecting a minute applies that interval while retaining other filters. Selecting a request ID correlates events across sources; no invented relationship."
+        },
+        {
+          "id": "shape:log-state",
+          "type": "geo",
+          "x": 0,
+          "y": 1100,
+          "text": "DETAILS, EXPORT + RESTART\nRecord details show original text, source/ordinal, UTC timestamp and extra JSON fields; markup/scripts in log text render inert. Save, rename, delete and reload named queries including every filter. Export ALL matching records as UTF-8 JSONL in displayed sort order, with normalized fields plus source, record ordinal and original text; no paging truncation.\nRestart preserves imported snapshots, source order and saved queries. Moving/deleting a source file after import does not erase its snapshot; explicit reimport reports missing/unreadable source. Interrupted import cannot leave half a replacement. Corrupt app storage yields a useful error and explicit recovery choice, never silent data loss or damage to source files."
+        },
+        {
+          "id": "shape:log-performance",
+          "type": "geo",
+          "x": 680,
+          "y": 1100,
+          "text": "SCALE + RESPONSIVENESS\nSupport a workspace totaling 100,000 records / 50 MiB, whichever limit is reached first. Document and reject larger imports before committing replacement. Show progress and cancellation for long imports; rendering must be paged or virtualized. Keep search/navigation usable during import; no unbounded DOM growth.\nOn the runner-pinned reference machine: 100k-record import completes within 30 seconds; five successive combined-filter changes each settle within 2 seconds after ingestion. Record dataset hash, machine, elapsed measurements and graphical responsiveness evidence. These are performance criteria, not an overall project deadline. Limits and timings are fixed for repeat runs."
+        },
+        {
+          "id": "shape:log-acceptance",
+          "type": "geo",
+          "x": 0,
+          "y": 1480,
+          "text": "OBSERVABLE ACCEPTANCE\n□ Actual graphical app launches locally; readable controls and keyboard search/detail navigation work.\n□ JSONL + quoted/multiline CSV mixed-source imports retain exact counts, diagnostics and duplicate records.\n□ Timezone/tie ordering, combined filters, minute counts and request correlation match independently computed results.\n□ Full exports match selected records/order, even beyond the visible page.\n□ Save/reload queries and app restart preserve snapshots.\n□ Reimport/cancel/interruption, moved files, malformed input and corrupt storage show coherent state/errors.\n□ Original log bytes and unrelated sentinel files remain unchanged; hostile log text is inert.\n□ 100k workload meets measured limits; graphical UI remains responsive.\n□ Actual runtime evidence and automated checks accompany the launchable delivery. Child ticket completion alone is not product acceptance."
+        },
+        {
+          "id": "shape:log-sketch",
+          "type": "geo",
+          "x": 680,
+          "y": 1480,
+          "text": "EXPLORER • CONCEPT SKETCH (layout is flexible)\n[Import logs]   Sources: api.jsonl / worker.csv\nWorkspace: 12,450 valid • 7 rejected [Diagnostics]\n\nSearch message [timeout     ]   Level [ERROR]\nService [all]  Request ID [job-42]  [Saved queries]\nUTC from [10:00] to [11:00]       [Export matches]\n\nTimeline / minute counts  ▁▂▁▅█▂▁   34 matches\nTime       Level   Service   Message\n10:02:01   ERROR   api       request timeout\n10:02:03   ERROR   worker    job retry exhausted\n\nSelected record: source + original text + extra fields\nImporting: 42% [Cancel] • previous snapshot retained\nNo backend failure or stale result shown as success."
+        }
+      ]
+    },
+    {
+      "id": "page:squire-microbenchmarks-v1",
+      "name": "04 • Microbenchmarks • suite plan v1",
+      "content": [
+        {
+          "id": "shape:micro-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "Squire microbenchmarks — fast feedback before full projects"
+        },
+        {
+          "id": "shape:micro-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "RECOMMENDED SUITE • DESIGN v1 • NOT IMPLEMENTED OR BASELINED YET\nComplete the current three-product baseline first. Build and calibrate these small fixtures, then measure the unchanged Squire version before the first hill-climbing change. This page is the suite plan; each implemented microcase gets its own frozen public goal, seed, budgets and private independent oracle. The three major product briefs remain unchanged. Keep deterministic controller tests and actual model/runtime measurements as separate lanes. No synthetic agent result counts as model success."
+        },
+        {
+          "id": "shape:micro-m01",
+          "type": "geo",
+          "x": 0,
+          "y": 360,
+          "text": "M01 • PLAN A SMALL CHANGE\nSeed: tiny task app with persistence and clear module boundaries. Goal: add labels, filtering and a saved view; a second variant is intentionally underspecified.\nObserve: Squire decomposes useful narrow outcomes, names ownership/interfaces, orders integration after prerequisites and makes routine design decisions without owner interruption.\nGrade: independent graph/path audit plus completed product behavior, rather than a preferred number of tickets or wording. Record plan revisions, unnecessary dependencies, clarification calls and downstream rework."
+        },
+        {
+          "id": "shape:micro-m02",
+          "type": "geo",
+          "x": 680,
+          "y": 360,
+          "text": "M02 • PARALLEL WORK WITHOUT LOST CHANGES\nSeed: two independent modules with a small shared assembly file. Goal: add one behavior to each module, then compose them.\nDeterministic lane: delayed jobs prove disjoint implementations can overlap; overlapping ownership and repository publication serialize.\nReal lane: actual independent implementations, fresh review and local merge. Grade both effects present, source ownership respected, coherent final assembly and fresh checks/review after a moved base. Measure overlap, wait time and rebase churn."
+        },
+        {
+          "id": "shape:micro-m03",
+          "type": "geo",
+          "x": 0,
+          "y": 690,
+          "text": "M03 • SERVICE / CLIENT CONTRACT + GATE ORDER\nSeed: small local service and client with one versioned response. Goal: add one field, validation and visible client behavior. Include unavailable and stale responses.\nGrade: actual launched HTTP + graphical client, agreed schema, truthful loading/error/reconnect and no stale success. Component review must not wait for a final runtime gate that only runs after merge.\nRecord missing prerequisites, interface mismatches, integration repair and acceptance-order cycles. Keep the payload and UI tiny."
+        },
+        {
+          "id": "shape:micro-m04",
+          "type": "geo",
+          "x": 680,
+          "y": 690,
+          "text": "M04 • REVIEW THAT CATCHES REAL DEFECTS\nPairs: known-correct candidate and one injected defect: ignored rejection, cross-request stale result, unsafe input, or off-by-one limit. Use equivalent fresh variants.\nGrade: fresh exact-head review rejects the defective candidate with a reproducible finding and accepts the correct counterpart. Read-only reviewer can run meaningful tests in authorized scratch without changing source.\nMeasure false accepts, false rejects and finding validity separately. Fabricated blockers and a review tied to an obsolete head both fail."
+        },
+        {
+          "id": "shape:micro-m05",
+          "type": "geo",
+          "x": 0,
+          "y": 1020,
+          "text": "M05 • INTERRUPTED WORK + DURABLE RESUME\nSeed: one small implemented change with controlled process interruption before checkpoint, during verification or after a delivery receipt.\nGrade: preserve partial work and all old receipts/calls; reconcile real process ownership; resume only the remaining permitted phase; fresh review still required. No duplicate live worker, lost change or fabricated implementation completion.\nUse deterministic fault injection for exact windows, plus an actual-runtime case. Measure recoverable completion, operator interventions and time to reconcile."
+        },
+        {
+          "id": "shape:micro-m06",
+          "type": "geo",
+          "x": 680,
+          "y": 1020,
+          "text": "M06 • BOUNDED FAILURE, RETRY + ACCOUNTING\nSeed: one repairable failing check, one unchanged/no-candidate continuation and one exhausted goal. Inject timeout or quota wait separately.\nGrade: ordinary authorized repair can progress; unchanged work is reported accurately; exhausted budget stops new calls. Every plan/implement/review call and unknown usage survives restart. No hidden cost reset or extra descendant budget.\nRoutine authorized work must not stall awaiting unnecessary owner approval. Genuine missing authority is surfaced. Record elapsed time, unknown cost and failed attempts."
+        },
+        {
+          "id": "shape:micro-m07",
+          "type": "geo",
+          "x": 0,
+          "y": 1350,
+          "text": "M07 • PROTECTED DATA + REAL STORAGE\nSeed: tiny reader over a disposable SQLite source plus a separate app cache. Goal: read a coherent bounded snapshot and show unavailable data honestly.\nGrade: committed WAL records visible; first and repeated reads preserve original DB/WAL/SHM bytes and absent sidecars; missing source is never created. Malformed/unknown data fails clearly; protected sentinel files stay unchanged.\nUse independently computed byte hashes and process-controlled fixtures. No fixture-only read-only claim; include the actual native storage runtime."
+        },
+        {
+          "id": "shape:micro-m08",
+          "type": "geo",
+          "x": 680,
+          "y": 1350,
+          "text": "M08 • IDEMPOTENT ACTION + RACE HANDLING\nSeed: local request/result service with one client action. Goal: submit once, retry safely and recover across a process restart.\nGrade: same request ID/payload returns the same result, conflicting reuse rejects, concurrent submissions create one coherent effect. An obsolete A response cannot settle the current B request or hide B failure.\nUse actual child processes + minimal graphical client, duplicate requests, delayed responses and restart. Grade observable effects, never an exactly-once label alone."
+        },
+        {
+          "id": "shape:micro-measurement",
+          "type": "geo",
+          "x": 0,
+          "y": 1680,
+          "text": "MEASUREMENT + FAIR COMPARISON\nFreeze input/seed/oracle/runtime/model/platform hashes and the original-goal allowance per microcase BEFORE its baseline. Calibrate with known-good and deliberately defective artifacts. Start with two real-runtime repeats per selected family; add repeats when results are noisy. Deterministic fixtures cover all eight cheaply.\nRecord functional criteria pass/fail/unknown, call/known-token costs, unknown usage, elapsed time, repairs, false review outcomes, lost/duplicate work and owner interventions. Retain every failed run.\nUse matched variants and equal budgets. Separate model changes from Squire changes. Private grader fixtures/previous solutions stay outside worker inputs; do not claim filesystem read isolation that was not enforced."
+        },
+        {
+          "id": "shape:micro-loop",
+          "type": "geo",
+          "x": 680,
+          "y": 1680,
+          "text": "HILL-CLIMBING CADENCE + KEEP / REJECT\n1. Finish and grade all three major baseline runs.\n2. Implement/calibrate microcases and collect their unchanged-version baseline.\n3. Record one bounded hypothesis; change Squire in a separate candidate checkout.\n4. Run affected microcases + relevant deterministic regression coverage; confirm on fresh variants.\n5. Every 2–3 iterations, run one rotating major benchmark.\n6. Run all three at a major milestone or a broadly affecting change.\n\nKeep a change only with credible acceptance gains or equivalent correctness with better efficiency. Correctness, source protection and truthful evidence cannot regress. Micro score improvement earns a larger test; full-product acceptance establishes transfer. No single blended score hides failures."
+        }
+      ]
+    }
+  ]
+}
