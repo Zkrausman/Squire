@@ -193,6 +193,96 @@
           "text": "EXPLORER • CONCEPT SKETCH (layout is flexible)\n[Import logs]   Sources: api.jsonl / worker.csv\nWorkspace: 12,450 valid • 7 rejected [Diagnostics]\n\nSearch message [timeout     ]   Level [ERROR]\nService [all]  Request ID [job-42]  [Saved queries]\nUTC from [10:00] to [11:00]       [Export matches]\n\nTimeline / minute counts  ▁▂▁▅█▂▁   34 matches\nTime       Level   Service   Message\n10:02:01   ERROR   api       request timeout\n10:02:03   ERROR   worker    job retry exhausted\n\nSelected record: source + original text + extra fields\nImporting: 42% [Cancel] • previous snapshot retained\nNo backend failure or stale result shown as success."
         }
       ]
+    },
+    {
+      "id": "page:squire-microbenchmarks-v1",
+      "name": "04 • Microbenchmarks • suite plan v1",
+      "content": [
+        {
+          "id": "shape:micro-title",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "text": "Squire microbenchmarks — fast feedback before full projects"
+        },
+        {
+          "id": "shape:micro-protocol",
+          "type": "geo",
+          "x": 0,
+          "y": 90,
+          "text": "RECOMMENDED SUITE • DESIGN v1 • NOT IMPLEMENTED OR BASELINED YET\nComplete the current three-product baseline first. Build and calibrate these small fixtures, then measure the unchanged Squire version before the first hill-climbing change. This page is the suite plan; each implemented microcase gets its own frozen public goal, seed, budgets and private independent oracle. The three major product briefs remain unchanged. Keep deterministic controller tests and actual model/runtime measurements as separate lanes. No synthetic agent result counts as model success."
+        },
+        {
+          "id": "shape:micro-m01",
+          "type": "geo",
+          "x": 0,
+          "y": 360,
+          "text": "M01 • PLAN A SMALL CHANGE\nSeed: tiny task app with persistence and clear module boundaries. Goal: add labels, filtering and a saved view; a second variant is intentionally underspecified.\nObserve: Squire decomposes useful narrow outcomes, names ownership/interfaces, orders integration after prerequisites and makes routine design decisions without owner interruption.\nGrade: independent graph/path audit plus completed product behavior, rather than a preferred number of tickets or wording. Record plan revisions, unnecessary dependencies, clarification calls and downstream rework."
+        },
+        {
+          "id": "shape:micro-m02",
+          "type": "geo",
+          "x": 680,
+          "y": 360,
+          "text": "M02 • PARALLEL WORK WITHOUT LOST CHANGES\nSeed: two independent modules with a small shared assembly file. Goal: add one behavior to each module, then compose them.\nDeterministic lane: delayed jobs prove disjoint implementations can overlap; overlapping ownership and repository publication serialize.\nReal lane: actual independent implementations, fresh review and local merge. Grade both effects present, source ownership respected, coherent final assembly and fresh checks/review after a moved base. Measure overlap, wait time and rebase churn."
+        },
+        {
+          "id": "shape:micro-m03",
+          "type": "geo",
+          "x": 0,
+          "y": 690,
+          "text": "M03 • SERVICE / CLIENT CONTRACT + GATE ORDER\nSeed: small local service and client with one versioned response. Goal: add one field, validation and visible client behavior. Include unavailable and stale responses.\nGrade: actual launched HTTP + graphical client, agreed schema, truthful loading/error/reconnect and no stale success. Component review must not wait for a final runtime gate that only runs after merge.\nRecord missing prerequisites, interface mismatches, integration repair and acceptance-order cycles. Keep the payload and UI tiny."
+        },
+        {
+          "id": "shape:micro-m04",
+          "type": "geo",
+          "x": 680,
+          "y": 690,
+          "text": "M04 • REVIEW THAT CATCHES REAL DEFECTS\nPairs: known-correct candidate and one injected defect: ignored rejection, cross-request stale result, unsafe input, or off-by-one limit. Use equivalent fresh variants.\nGrade: fresh exact-head review rejects the defective candidate with a reproducible finding and accepts the correct counterpart. Read-only reviewer can run meaningful tests in authorized scratch without changing source.\nMeasure false accepts, false rejects and finding validity separately. Fabricated blockers and a review tied to an obsolete head both fail."
+        },
+        {
+          "id": "shape:micro-m05",
+          "type": "geo",
+          "x": 0,
+          "y": 1020,
+          "text": "M05 • INTERRUPTED WORK + DURABLE RESUME\nSeed: one small implemented change with controlled process interruption before checkpoint, during verification or after a delivery receipt.\nGrade: preserve partial work and all old receipts/calls; reconcile real process ownership; resume only the remaining permitted phase; fresh review still required. No duplicate live worker, lost change or fabricated implementation completion.\nUse deterministic fault injection for exact windows, plus an actual-runtime case. Measure recoverable completion, operator interventions and time to reconcile."
+        },
+        {
+          "id": "shape:micro-m06",
+          "type": "geo",
+          "x": 680,
+          "y": 1020,
+          "text": "M06 • BOUNDED FAILURE, RETRY + ACCOUNTING\nSeed: one repairable failing check, one unchanged/no-candidate continuation and one exhausted goal. Inject timeout or quota wait separately.\nGrade: ordinary authorized repair can progress; unchanged work is reported accurately; exhausted budget stops new calls. Every plan/implement/review call and unknown usage survives restart. No hidden cost reset or extra descendant budget.\nRoutine authorized work must not stall awaiting unnecessary owner approval. Genuine missing authority is surfaced. Record elapsed time, unknown cost and failed attempts."
+        },
+        {
+          "id": "shape:micro-m07",
+          "type": "geo",
+          "x": 0,
+          "y": 1350,
+          "text": "M07 • PROTECTED DATA + REAL STORAGE\nSeed: tiny reader over a disposable SQLite source plus a separate app cache. Goal: read a coherent bounded snapshot and show unavailable data honestly.\nGrade: committed WAL records visible; first and repeated reads preserve original DB/WAL/SHM bytes and absent sidecars; missing source is never created. Malformed/unknown data fails clearly; protected sentinel files stay unchanged.\nUse independently computed byte hashes and process-controlled fixtures. No fixture-only read-only claim; include the actual native storage runtime."
+        },
+        {
+          "id": "shape:micro-m08",
+          "type": "geo",
+          "x": 680,
+          "y": 1350,
+          "text": "M08 • IDEMPOTENT ACTION + RACE HANDLING\nSeed: local request/result service with one client action. Goal: submit once, retry safely and recover across a process restart.\nGrade: same request ID/payload returns the same result, conflicting reuse rejects, concurrent submissions create one coherent effect. An obsolete A response cannot settle the current B request or hide B failure.\nUse actual child processes + minimal graphical client, duplicate requests, delayed responses and restart. Grade observable effects, never an exactly-once label alone."
+        },
+        {
+          "id": "shape:micro-measurement",
+          "type": "geo",
+          "x": 0,
+          "y": 1680,
+          "text": "MEASUREMENT + FAIR COMPARISON\nFreeze input/seed/oracle/runtime/model/platform hashes and the original-goal allowance per microcase BEFORE its baseline. Calibrate with known-good and deliberately defective artifacts. Start with two real-runtime repeats per selected family; add repeats when results are noisy. Deterministic fixtures cover all eight cheaply.\nRecord functional criteria pass/fail/unknown, call/known-token costs, unknown usage, elapsed time, repairs, false review outcomes, lost/duplicate work and owner interventions. Retain every failed run.\nUse matched variants and equal budgets. Separate model changes from Squire changes. Private grader fixtures/previous solutions stay outside worker inputs; do not claim filesystem read isolation that was not enforced."
+        },
+        {
+          "id": "shape:micro-loop",
+          "type": "geo",
+          "x": 680,
+          "y": 1680,
+          "text": "HILL-CLIMBING CADENCE + KEEP / REJECT\n1. Finish and grade all three major baseline runs.\n2. Implement/calibrate microcases and collect their unchanged-version baseline.\n3. Record one bounded hypothesis; change Squire in a separate candidate checkout.\n4. Run affected microcases + relevant deterministic regression coverage; confirm on fresh variants.\n5. Every 2–3 iterations, run one rotating major benchmark.\n6. Run all three at a major milestone or a broadly affecting change.\n\nKeep a change only with credible acceptance gains or equivalent correctness with better efficiency. Correctness, source protection and truthful evidence cannot regress. Micro score improvement earns a larger test; full-product acceptance establishes transfer. No single blended score hides failures."
+        }
+      ]
     }
   ]
 }
