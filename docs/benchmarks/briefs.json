@@ -126,64 +126,78 @@
       ]
     },
     {
-      "id": "page:local-job-queue-v1",
-      "name": "03 • Local Job Queue • v1",
+      "id": "page:local-log-explorer-v1",
+      "name": "03 • Local Log Explorer • v1",
       "content": [
         {
-          "id": "shape:queue-title",
+          "id": "shape:log-title",
           "type": "text",
           "x": 0,
           "y": 0,
-          "text": "Local Job Queue — durable batch processing"
+          "text": "Local Log Explorer — find the story across files"
         },
         {
-          "id": "shape:queue-protocol",
+          "id": "shape:log-protocol",
           "type": "geo",
           "x": 0,
           "y": 90,
-          "text": "FIXED RUN INPUT • v1\nBuild this complete local product from a fresh repository. Choose architecture and decompose the work yourself; implement, test, independently review and deliver a launchable checkout. No publication, accounts or paid services. Preserve all attempts, failures, reviews, interventions and reported/unknown usage. This page is the complete product input; previous solutions and grading fixtures are withheld. Environment, models and budget are pinned by the benchmark runner. Future requirement changes create a new version; do not silently change this brief."
+          "text": "FIXED RUN INPUT • LOCAL LOG EXPLORER v1\nBuild this complete Windows-local product from a fresh repository. Choose architecture and decompose the work yourself; implement, test, independently review and deliver a launchable checkout. Work offline with disposable log files; no accounts, cloud, Codex plugin or host restart. Preserve all attempts, failures, reviews, interventions and known/unknown usage. This page is the complete product input; previous solutions and grading fixtures are withheld. Runner pins environment, models and budgets separately. Requirement changes create a new version; never silently rewrite this brief."
         },
         {
-          "id": "shape:queue-product",
+          "id": "shape:log-product",
           "type": "geo",
           "x": 0,
           "y": 370,
-          "text": "PRODUCT\nA small offline batch-processing app with a usable graphical client, a local service API and independently restartable workers. Submit sales CSV files, watch jobs progress, inspect results, cancel work and retry failures. Support at least two concurrent workers and several queued jobs. Clear labels and trustworthy state matter more than decoration. No cloud, authentication or distributed-machine deployment required. Database, framework, queue mechanism and ticket decomposition are your choices."
+          "text": "PRODUCT + DELIVERY\nA small graphical local log explorer for diagnosing events across several files. Import logs, scan a chronological timeline, combine filters, inspect original records, save useful queries and export matching events. Clear counts, readable controls and trustworthy errors matter.\nDeliver documented local launch and automated verification commands plus small sample logs. Desktop or localhost browser UI is acceptable; choose storage/framework yourself. Launch and restart independently of Codex. No live tailing, server fleet, remote ingestion, authentication or generated AI summaries required."
         },
         {
-          "id": "shape:queue-workload",
+          "id": "shape:log-input",
           "type": "geo",
-          "x": 660,
+          "x": 680,
           "y": 370,
-          "text": "FIXED JOB WORKLOAD\nUTF-8 CSV header: category,quantity,unit_price_cents. Category is nonempty text; quantity is a positive integer; unit price is a nonnegative integer. Support quoted CSV fields. Reject malformed rows with an actionable diagnostic.\nFor valid input return row count, total quantity, exact total sales in cents, and sales totals by category. Each row contributes quantity × unit_price_cents. Never use approximate money arithmetic. Include small sample files and documented finite upload/row limits; reject oversize input clearly."
+          "text": "FIXED INPUT CONTRACT\nUTF-8 JSONL objects and CSV with header: timestamp,level,service,message,request_id. JSONL uses the same field names; preserve extra fields in record details. Accept quoted CSV fields, commas/newlines in messages, CRLF and optional UTF-8 BOM.\nTimestamp: RFC3339 with explicit Z or numeric offset; normalize to UTC. Level: DEBUG/INFO/WARN/ERROR, case-insensitive. Service: nonempty text. Message: text, may be empty. request_id: optional text, missing/empty means none. Invalid required fields, malformed rows and invalid UTF-8 are rejected records, never silently coerced."
         },
         {
-          "id": "shape:queue-behavior",
+          "id": "shape:log-import",
           "type": "geo",
           "x": 0,
-          "y": 705,
-          "text": "CLIENT + API BEHAVIOR\nSubmit a file; list jobs; inspect status, progress, attempt history, diagnostics and completed results. Show queued/running/completed/failed/cancelled truthfully. API can perform the same core actions without the client. Progress is bounded and meaningful; errors are not successes.\nSubmission retries with the same client request ID and same payload return the same job; conflicting payload under that ID is rejected. Failed jobs can be explicitly retried with retained attempt history. Finished results remain available after restarts."
+          "y": 720,
+          "text": "IMPORT + RECORD IDENTITY\nImport at least two sources into one workspace. Show per-source accepted/rejected counts and actionable diagnostics identifying source and physical line (CSV record start for multiline fields). Keep valid records around bad rows. Completely unreadable files produce a visible failure; no fake successful import.\nKeep original record text, normalized fields and source/record ordinal. Identical events in different records or files remain distinct. Same canonical file path identifies one source. Reimport explicitly replaces that source atomically, never silently appends duplicates; cancel/failure retains its previous accepted snapshot. Inspect sources and remove one without removing others."
         },
         {
-          "id": "shape:queue-recovery",
+          "id": "shape:log-query",
           "type": "geo",
-          "x": 660,
-          "y": 705,
-          "text": "CONCURRENCY + RECOVERY\nMultiple workers must not publish conflicting or duplicate results for one job. Kill a worker mid-job: the job is recoverable, never silently lost or stuck forever. Restart service/workers with pending jobs: retain jobs, history and completed outputs.\nCancel queued/running jobs; cancellation and completion races yield one coherent final outcome. A cancelled job cannot later publish success. Disconnect/reconnect client: show connection loss and reconcile actual state. Preserve evidence of failures and retries. Document bounded recovery/retry policy; replay-safe effects matter more than a claimed exactly-once execution label."
+          "x": 680,
+          "y": 720,
+          "text": "EXACT QUERY + TIMELINE RULES\nCombine filters with AND: case-insensitive literal message substring, selected severity set (empty = all), exact service, exact request ID and inclusive UTC start/end time. No regex or fuzzy interpretation. Missing request IDs never match a nonempty ID. Invalid time ranges show an error.\nSort ascending by UTC timestamp, ties by source import order then record ordinal. Match count refers to all matching records, not just visible rows. Histogram shows counts per UTC minute for the same filtered set. Selecting a minute applies that interval while retaining other filters. Selecting a request ID correlates events across sources; no invented relationship."
         },
         {
-          "id": "shape:queue-acceptance",
+          "id": "shape:log-state",
           "type": "geo",
           "x": 0,
-          "y": 1080,
-          "text": "OBSERVABLE ACCEPTANCE\n□ Real client/service/two workers launch locally from documented commands.\n□ Several CSV jobs produce independently checkable exact results.\n□ Repeated submission is idempotent; conflicting reuse fails.\n□ Malformed/oversize input fails clearly without breaking other jobs.\n□ Worker kill and service restart preserve/recover pending work.\n□ Two workers cannot duplicate or overwrite a final result.\n□ Cancellation/completion races and explicit retry preserve coherent state/history.\n□ Client reconnect shows actual state and results.\n□ Automated API/recovery checks and actual graphical-client evidence are supplied."
+          "y": 1100,
+          "text": "DETAILS, EXPORT + RESTART\nRecord details show original text, source/ordinal, UTC timestamp and extra JSON fields; markup/scripts in log text render inert. Save, rename, delete and reload named queries including every filter. Export ALL matching records as UTF-8 JSONL in displayed sort order, with normalized fields plus source, record ordinal and original text; no paging truncation.\nRestart preserves imported snapshots, source order and saved queries. Moving/deleting a source file after import does not erase its snapshot; explicit reimport reports missing/unreadable source. Interrupted import cannot leave half a replacement. Corrupt app storage yields a useful error and explicit recovery choice, never silent data loss or damage to source files."
         },
         {
-          "id": "shape:queue-sketch",
+          "id": "shape:log-performance",
           "type": "geo",
-          "x": 660,
-          "y": 1080,
-          "text": "LOCAL JOBS                         [ Submit CSV ]\n\nJob             Status        Progress       Attempt\nsales-july      Completed      100%              1\nsales-aug       Running         45%              2\nsales-sep       Queued           —               1\nbad-input       Failed          —               1\n\nSelected: sales-july\nRows: 12     Quantity: 35     Sales: 14250 cents\nCategories: books 8000 • games 6250\n\n[ View history ]    [ Cancel ]    [ Retry ]\nService: connected      Workers: 2"
+          "x": 680,
+          "y": 1100,
+          "text": "SCALE + RESPONSIVENESS\nSupport a workspace totaling 100,000 records / 50 MiB, whichever limit is reached first. Document and reject larger imports before committing replacement. Show progress and cancellation for long imports; rendering must be paged or virtualized. Keep search/navigation usable during import; no unbounded DOM growth.\nOn the runner-pinned reference machine: 100k-record import completes within 30 seconds; five successive combined-filter changes each settle within 2 seconds after ingestion. Record dataset hash, machine, elapsed measurements and graphical responsiveness evidence. These are performance criteria, not an overall project deadline. Limits and timings are fixed for repeat runs."
+        },
+        {
+          "id": "shape:log-acceptance",
+          "type": "geo",
+          "x": 0,
+          "y": 1480,
+          "text": "OBSERVABLE ACCEPTANCE\n□ Actual graphical app launches locally; readable controls and keyboard search/detail navigation work.\n□ JSONL + quoted/multiline CSV mixed-source imports retain exact counts, diagnostics and duplicate records.\n□ Timezone/tie ordering, combined filters, minute counts and request correlation match independently computed results.\n□ Full exports match selected records/order, even beyond the visible page.\n□ Save/reload queries and app restart preserve snapshots.\n□ Reimport/cancel/interruption, moved files, malformed input and corrupt storage show coherent state/errors.\n□ Original log bytes and unrelated sentinel files remain unchanged; hostile log text is inert.\n□ 100k workload meets measured limits; graphical UI remains responsive.\n□ Actual runtime evidence and automated checks accompany the launchable delivery. Child ticket completion alone is not product acceptance."
+        },
+        {
+          "id": "shape:log-sketch",
+          "type": "geo",
+          "x": 680,
+          "y": 1480,
+          "text": "EXPLORER • CONCEPT SKETCH (layout is flexible)\n[Import logs]   Sources: api.jsonl / worker.csv\nWorkspace: 12,450 valid • 7 rejected [Diagnostics]\n\nSearch message [timeout     ]   Level [ERROR]\nService [all]  Request ID [job-42]  [Saved queries]\nUTC from [10:00] to [11:00]       [Export matches]\n\nTimeline / minute counts  ▁▂▁▅█▂▁   34 matches\nTime       Level   Service   Message\n10:02:01   ERROR   api       request timeout\n10:02:03   ERROR   worker    job retry exhausted\n\nSelected record: source + original text + extra fields\nImporting: 42% [Cancel] • previous snapshot retained\nNo backend failure or stale result shown as success."
         }
       ]
     }
