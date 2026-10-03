@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import {readFile,mkdtemp,readdir,writeFile,mkdir,symlink} from 'node:fs/promises';
+import {readFile,mkdtemp,readdir,writeFile,mkdir,symlink,link,unlink,lstat,rm} from 'node:fs/promises';
 import {materializeTask,validateTask,toSquireTicket,toSquireProject} from '../benchmarks/contracts/task.mjs';
 // Inert synthetic markers exercise file boundaries; no grader or answer is executed.
 const task={version:1,id:'public-fixture',goal:'Update the public fixture module.',publicRoot:'public',privateRoot:'private',
@@ -39,4 +39,15 @@ test('linked public file cannot leak a private control',async()=>{
  await writeFile(path.join(temp,'private/grader.txt'),'INERT_PRIVATE_GRADER_MARKER');await writeFile(path.join(temp,'private/reference.txt'),'INERT_PRIVATE_REFERENCE_MARKER');
  await symlink(path.join(temp,'private/reference.txt'),path.join(temp,'public/fixture.mjs'));
  await assert.rejects(materializeTask(task,temp,path.join(path.dirname(temp),path.basename(temp)+'-worker')),/Symlink/);
+});
+test('hardlinked public seed cannot copy private reference bytes or create a workspace',async t=>{
+ const root=await syntheticCase(t),scratch=await mkdtemp(path.join(os.tmpdir(),'squire-hardlink-'));
+ t.after(()=>rm(scratch,{recursive:true,force:true}));
+ const source=path.join(root,'public/fixture.mjs'),reference=path.join(root,'private/reference.txt');
+ await unlink(source);await link(reference,source);
+ assert.equal((await lstat(source)).nlink,2);
+ const destination=path.join(scratch,'worker');
+ await assert.rejects(materializeTask(task,root,destination),/Hardlinked input rejected/);
+ await assert.rejects(lstat(destination),{code:'ENOENT'});
+ assert.equal(await readFile(reference,'utf8'),'INERT_PRIVATE_REFERENCE_MARKER');
 });

@@ -23,6 +23,6 @@ export function summarizeTrace(events,{startedAt,endedAt}={}){
  return {...metrics,tokenSemantics:'Known usage only; cached input is included in input and reasoning output is included in output. Unknown usage is not zero.',jobs:[...jobs.values()]};
 }
 export function calibrationReport({task,observations,processReceipt,trace=[],startedAt,endedAt}){
- const observed=processReceipt.exitCode===0&&!processReceipt.timedOut&&observations?.newBehavior?.passed===true&&observations?.preservation?.passed===true;
+ const observed=processReceipt.exitCode===0&&!processReceipt.timedOut&&!processReceipt.stopped&&!processReceipt.outputExceeded&&observations?.newBehavior?.passed===true&&observations?.preservation?.passed===true;
  return {version:1,task,kind:'reference-control-calibration',scored:false,score:null,accepted:observed,newBehavior:observations?.newBehavior??{passed:false},preservation:observations?.preservation??{passed:false},processReceipt,metrics:summarizeTrace(trace,{startedAt,endedAt}),modelPerformanceMeasured:false,isolation:'Fresh subprocess for trusted local controls; not an OS security sandbox for adversarial candidates.'};
 }

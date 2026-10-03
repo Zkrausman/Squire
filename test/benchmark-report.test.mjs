@@ -24,6 +24,14 @@ test('unscored reports keep supplied new-behavior and preservation observations 
 test('process failure cannot pass even if supplied observations claim success',()=>{
  assert.equal(calibrationReport({task:'x',observations:{newBehavior:{passed:true},preservation:{passed:true}},processReceipt:{exitCode:0,timedOut:true}}).accepted,false);
 });
+test('stopped process cannot pass with exit zero and passing observations',()=>{
+ const report=calibrationReport({task:'synthetic-observations',observations:{newBehavior:{passed:true},preservation:{passed:true}},processReceipt:{exitCode:0,timedOut:false,stopped:true,outputExceeded:false}});
+ assert.equal(report.accepted,false);
+});
+test('output-limited process cannot pass with exit zero and passing observations',()=>{
+ const report=calibrationReport({task:'synthetic-observations',observations:{newBehavior:{passed:true},preservation:{passed:true}},processReceipt:{exitCode:0,timedOut:false,stopped:false,outputExceeded:true}});
+ assert.equal(report.accepted,false);
+});
 test('actual controller trace retains timed-out reservations and final unknown usage without changing the thrown blocker',async t=>{
  const f=await fixture(t),runtime=new FixtureRuntime();
  runtime.execute=async()=>{throw new Blocker('runtime_failed','Stopped',{receipt:{startedAt:10,endedAt:30,exitCode:1,stopped:true,timedOut:true}});};

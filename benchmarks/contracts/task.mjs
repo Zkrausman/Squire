@@ -24,7 +24,9 @@ async function safeFile(root,relativePath){
  let current=root;
  for(const segment of relativePath.split('/')){current=path.join(current,segment);const info=await lstat(current);requireValue(!info.isSymbolicLink(),'Symlink input rejected');}
  const canonical=await realpath(current);requireValue(inside(root,canonical),'Input escapes root');
- requireValue((await lstat(canonical)).isFile(),'Input must be a regular file');return canonical;
+ const info=await lstat(canonical);
+ requireValue(info.isFile(),'Input must be a regular file');
+ requireValue(info.nlink===1,'Hardlinked input rejected');return canonical;
 }
 export async function materializeTask(input,caseRoot,destination){
  const task=validateTask(input),root=await realpath(caseRoot);
