@@ -8,4 +8,4 @@ async function check(directory) {
     else if (filename.endsWith('.mjs')) execFileSync(process.execPath, ['--check', filename], { stdio: 'inherit', windowsHide: true });
   }
 }
-for (const directory of ['bin', 'src', 'scripts', 'test']) await check(directory);
+for (const directory of ['bin', 'src', 'scripts', 'test', 'benchmarks']) await check(directory);

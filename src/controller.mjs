@@ -13,13 +13,66 @@ const sleep = (ms, signal) => new Promise(resolve => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
   const timer = setTimeout(done, ms); signal?.addEventListener('abort', done, { once: true });
 });
-const ticketPrompt = t => `${t.spec.id}: ${t.spec.title}\n${t.spec.description}\nAcceptance:\n${t.spec.acceptance.map(a => `- ${a}`).join('\n')}${t.spec.execution ? `\nImmutable execution contract:\n${JSON.stringify(t.spec.execution, null, 2)}\nWork on this single outcome. Every checklist item requires observed evidence at this candidate. Do not expand scope; report unmet criteria or a missing dependency. Self-reported completion does not authorize delivery.` : ''}${t.correctionAdmission ? `\nAuthorized bounded correction:\nOutcome: ${t.correctionAdmission.outcome}\nInstructions: ${t.correctionAdmission.instructions}\nAdditional regression checklist (in addition to the immutable contract):\n${JSON.stringify(t.correctionAdmission.checklist, null, 2)}\nThe original ticket, owned paths, and acceptance remain authoritative.` : ''}`;
+const ticketPrompt = t => `${t.spec.id}: ${t.spec.title}\n${t.spec.description}\nAcceptance:\n${t.spec.acceptance.map(a => `- ${a}`).join('\n')}${t.spec.execution ? `\nImmutable execution contract:\n${JSON.stringify(t.spec.execution, null, 2)}\nWork on this single outcome. Every checklist item requires observed evidence at this candidate. Do not expand scope; report unmet criteria or a missing dependency. Self-reported completion does not authorize delivery.` : ''}${t.preparation ? `\nPreparation evidence (controller-generated before implementation dispatch):\n${JSON.stringify(t.preparation, null, 2)}\nUse the focused test ownership and native commands recorded here. Before editing implementation code, identify the focused regression path and its owner within the declared ownership or a planned dependency. If no valid test owner/path is available, stop and report that missing prerequisite. Run the listed configured checks on this native environment; do not substitute guessed commands.` : ''}${t.correctionAdmission ? `\nAuthorized bounded correction:\nOutcome: ${t.correctionAdmission.outcome}\nInstructions: ${t.correctionAdmission.instructions}\nAdditional regression checklist (in addition to the immutable contract):\n${JSON.stringify(t.correctionAdmission.checklist, null, 2)}\nThe original ticket, owned paths, and acceptance remain authoritative.` : ''}`;
 const effectiveExecution = t => t.spec.execution && t.correctionAdmission ? {
   ...t.spec.execution,
   checklist: [...t.spec.execution.checklist, ...t.correctionAdmission.checklist]
 } : t.spec.execution;
 const repairCeiling = (t, configured) => t.correctionAdmission?.ceilings?.repairs ?? configured;
 const deliveryPhase = status => ['publishing', 'waiting_ci', 'merging', 'postmerge'].includes(status);
+const isTestPath = value => /(?:^|\/)(?:test|tests|__tests__|spec|specs)(?:\/|$)|(?:^|[.-])(?:test|spec)\.[^/]+$/i.test(value);
+const preparationEvidence = (spec, service, plan, { allowConfiguredCheckFallback = false } = {}) => {
+  const related = new Set([spec.id]);
+  const pending = [spec.id], byId = new Map(plan.map(item => [item.id, item]));
+  while (pending.length) {
+    const id = pending.pop(), current = byId.get(id);
+    for (const candidate of plan) if (!related.has(candidate.id) &&
+      (candidate.dependsOn.includes(id) || current.dependsOn.includes(candidate.id))) {
+      related.add(candidate.id); pending.push(candidate.id);
+    }
+  }
+  const plannedTestOwners = plan.filter(item => item.id !== spec.id && related.has(item.id)).flatMap(item => {
+    const paths = (item.execution?.ownedPaths ?? []).filter(isTestPath);
+    return paths.length ? [{ ticket: item.id, paths }] : [];
+  });
+  const recognizedTestPaths = (spec.execution?.ownedPaths ?? []).filter(isTestPath);
+  const hasFocusedPathOwner = recognizedTestPaths.length > 0 || plannedTestOwners.length > 0;
+  const useConfiguredCheckOwners = !spec.execution || (allowConfiguredCheckFallback && !hasFocusedPathOwner);
+  return {
+    focusedTestOwnership: {
+      ticket: spec.id,
+      authorizedPaths: spec.execution?.ownedPaths ?? [],
+      recognizedTestPaths,
+      plannedTestOwners,
+      // Older brief plans predate structured ownership. Keep their established
+      // serial repository workflow usable, with the service's trusted checks
+      // recorded as the validation owner for this compatibility path. Explicit
+      // structured ticket sets also retain their configured checks as owners
+      // when their existing ownership does not name a test path.
+      ...(useConfiguredCheckOwners ? { configuredCheckOwners: service.checks.map(({ name, argv }) => ({ name, argv: structuredClone(argv) })) } : {}),
+      required: true
+    },
+    nativeEnvironment: {
+      platform: process.platform,
+      architecture: process.arch,
+      node: process.version,
+      nodeExecutable: process.execPath,
+      workingDirectory: 'prepared ticket workspace',
+      setup: structuredClone(service.setup ?? []),
+      checks: structuredClone(service.checks)
+    }
+  };
+};
+const prepareTicketSpecs = (tickets, services, options) => {
+  const prepared = tickets.map(spec => ({ spec, preparation: preparationEvidence(spec, services[spec.service], tickets, options) }));
+  const missingTestOwners = prepared.filter(({ preparation }) =>
+    preparation.focusedTestOwnership.recognizedTestPaths.length === 0 &&
+    preparation.focusedTestOwnership.plannedTestOwners.length === 0 &&
+    (preparation.focusedTestOwnership.configuredCheckOwners?.length ?? 0) === 0
+  ).map(({ spec }) => spec.id);
+  if (missingTestOwners.length) throw new Blocker('plan_test_owner', 'Every planned work item requires a focused test owner in its owned paths or a related planned dependency', { tickets: missingTestOwners });
+  return prepared;
+};
 const ownershipOverlaps = (a, b) => !a || !b || a.some(x => b.some(y => {
   x = x.replace(/\/$/, '').toLowerCase(); y = y.replace(/\/$/, '').toLowerCase();
   return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
@@ -44,6 +97,19 @@ export class Controller {
     return this.store.update(this.id, state => { const ticket = state.tickets.find(t => t.spec.id === id); if (!ticket) throw new Blocker('not_found', `Ticket ${id} unavailable`); fn(ticket); }, type, { ticket: id, ...detail });
   }
   transition(id, status, fields = {}) { this.change(id, t => { Object.assign(t, fields); t.status = status; }, 'ticket.transition', { status }); }
+  async ensureTicketPreparation() {
+    const state = this.store.get(this.id);
+    if (!state.tickets.length || state.tickets.every(ticket => ticket.preparation)) return;
+    const specs = state.tickets.map(ticket => ticket.spec);
+    validateTickets(specs, this.config.services);
+    const prepared = prepareTicketSpecs(specs, this.config.services, { allowConfiguredCheckFallback: this.config.tickets !== undefined });
+    const preparationById = new Map(prepared.map(item => [item.spec.id, item.preparation]));
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(this.root, 'ticket-plan.json'), JSON.stringify(prepared.map(({ spec, preparation }) => ({ ...spec, preparation })), null, 2), { mode: 0o600 });
+    this.store.update(this.id, current => {
+      for (const ticket of current.tickets) if (!ticket.preparation) ticket.preparation = preparationById.get(ticket.spec.id);
+    }, 'tickets.prepared', { count: prepared.length });
+  }
   async assertActive(signal) {
     if (signal?.aborted || this.store.get(this.id).paused) throw new Blocker('paused', 'Controller paused at a safe boundary');
   }
@@ -56,6 +122,7 @@ export class Controller {
       if (state.status === 'completed') return state;
       await reconcileProcesses(this.root, signal);
       await this.runtime.preflight(signal);
+      await this.ensureTicketPreparation();
       // Parent-death supervision ends interrupted jobs. No in-memory promise is
       // treated as an outcome; re-enter a persisted phase with fresh evidence.
       this.store.update(this.id, s => {
@@ -141,19 +208,27 @@ export class Controller {
     });
   }
   async callAgent(role, workspace, directory, instructions, signal, onStarted = () => {}) {
-    let job;
+    const job = { version: 1, id: randomUUID(), role, workspace, directory, instructions, timeoutSeconds: this.config.limits.agentTimeoutSeconds, backoffSeconds: this.config.limits.rateLimitBackoffSeconds };
     this.store.update(this.id, s => {
       if (s.agentCalls >= this.config.limits.maxAgentCalls) throw new Blocker('budget', 'Project agent-call budget exhausted');
-      s.agentCalls++; job = { version: 1, id: randomUUID(), role, workspace, directory, instructions, timeoutSeconds: this.config.limits.agentTimeoutSeconds, backoffSeconds: this.config.limits.rateLimitBackoffSeconds };
+      s.agentCalls++;
       onStarted(s, job);
-    }, 'job.started', { role });
-    const outcome = await this.runtime.execute({ ...job, signal, onEvent: event => {
+    }, 'job.started', { role, jobId: job.id });
+    let outcome, observedUsage, observedSession;
+    try { outcome = await this.runtime.execute({ ...job, signal, onEvent: event => {
+      if (event.usage) observedUsage = event.usage;
+      if (event.sessionRef) observedSession = event.sessionRef;
       if (event.type === 'thread.started' || event.type === 'turn.completed') this.store.update(this.id, s => {
         if (role === 'implement' && event.sessionRef) for (const t of s.tickets) if (t.activeJob === job.id) {
           t.implementationSessions = [...new Set([...(t.implementationSessions ?? []), event.sessionRef])];
         }
       }, 'job.event', { jobId: job.id, role, sessionRef: event.sessionRef, eventType: event.type, usage: event.usage });
-    } });
+    } }); } catch (error) {
+      const receipt = error.detail?.receipt;
+      this.store.emit(this.id, 'job.finished', { jobId: job.id, role, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage,
+        ...(receipt ? { receipt: { startedAt: receipt.startedAt, endedAt: receipt.endedAt, exitCode: receipt.exitCode, stopped: receipt.stopped, timedOut: receipt.timedOut } } : {}) });
+      throw error;
+    }
     this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, outcome: outcome.outcome, sessionRef: outcome.sessionRef, usage: outcome.usage });
     if (!['completed', 'waiting_capacity'].includes(outcome?.outcome)) throw new Blocker('runtime_result', 'Runtime returned unsupported job outcome');
     if (outcome.outcome === 'completed' && typeof outcome.sessionRef !== 'string') throw new Blocker('runtime_result', 'Completed job has no provider session identity');
@@ -170,20 +245,20 @@ export class Controller {
       paths[name] = await this.workspace.prepare(service, directory, `squire-plan-${attempt}`, signal);
     }
     const workspace = Object.values(paths)[0].directory;
-    const instructions = `Plan a bounded software project. Read applicable AGENTS.md and inspect the named service workspaces, without editing files.\nGoal: ${this.config.goal}\nServices: ${JSON.stringify(paths)}\nProduce 1..20 small reviewable tickets, each for ONE named service, with explicit acceptance criteria and dependency IDs. Use dependencies for cross-service integration. Every ticket must produce a useful code change. Do not add repositories, permissions, check commands, deployments or unrelated cleanup. Existing required checks and policy are authoritative. No separate planning ticket is needed. Return the required JSON schema.`;
+    const instructions = `Prepare complete, reviewable software outcomes. Read applicable AGENTS.md and inspect the named service workspaces, without editing files.\nGoal: ${this.config.goal}\nServices: ${JSON.stringify(paths)}\nChoose work item boundaries from coherent outcomes, explicit file ownership and dependency interfaces. Do not impose a fixed ticket count, file count or one-file rule. Every work item must have a useful outcome, explicit acceptance criteria, dependency IDs and a focused regression test owner/path within its owned paths or through a named planned dependency. Use the existing test conventions and report a missing ownership prerequisite instead of assuming authority to edit a test path. The controller attaches each work item's native platform, architecture, Node executable/version, ticket workspace working directory, setup commands and configured checks before implementation dispatch; use those commands as the reproducible environment and do not invent replacements. Use dependencies for cross-service integration. Do not add repositories, permissions, check commands, deployments or unrelated cleanup. Existing required checks and policy are authoritative. No separate planning ticket is needed. Return the required JSON schema.`;
     const result = await this.callAgent('plan', workspace, path.join(this.root, 'planning', String(attempt), 'job'), instructions, signal);
     if (result.outcome === 'waiting_capacity') {
       this.store.update(this.id, s => { s.status = 'waiting_capacity'; s.planRetryAt = result.retryAt; }, 'project.waiting_capacity');
       return false;
     }
     const tickets = validateTickets(result.result?.tickets, this.config.services);
-    if (tickets.length > 20) throw new Blocker('plan_size', 'Generated plan exceeds 20 tickets');
     for (const value of Object.values(paths)) {
       const identity = await this.workspace.identity(value.directory, signal);
       if (identity.dirty || identity.headSha !== value.baseSha) throw new Blocker('planner_mutation', 'Planning modified a workspace or its HEAD');
     }
-    await writeFile(path.join(this.root, 'ticket-plan.json'), JSON.stringify(tickets, null, 2), { mode: 0o600 });
-    this.store.update(this.id, s => { s.tickets = tickets.map(spec => ({ spec, status: 'queued', attempts: 0, repairs: 0, rebases: 0 })); s.plan = { sessionRef: result.sessionRef, jobId: result.jobId }; s.status = 'running'; }, 'project.planned', { count: tickets.length });
+    const prepared = prepareTicketSpecs(tickets, this.config.services);
+    await writeFile(path.join(this.root, 'ticket-plan.json'), JSON.stringify(prepared.map(({ spec, preparation }) => ({ ...spec, preparation })), null, 2), { mode: 0o600 });
+    this.store.update(this.id, s => { s.tickets = prepared.map(({ spec, preparation }) => ({ spec, preparation, status: 'queued', attempts: 0, repairs: 0, rebases: 0 })); s.plan = { sessionRef: result.sessionRef, jobId: result.jobId }; s.status = 'running'; }, 'project.planned', { count: tickets.length });
     return true;
   }
   async repair(id, reason) {
@@ -213,9 +288,12 @@ export class Controller {
     }
   }
   async step(id, signal) {
-    const t = this.current(id), service = this.config.services[t.spec.service], delivery = this.deliveryFactory(service);
+    let t = this.current(id);
+    const service = this.config.services[t.spec.service], delivery = this.deliveryFactory(service);
     try {
       await this.assertActive(signal);
+      await this.ensureTicketPreparation();
+      t = this.current(id);
       if (t.status === 'waiting_capacity') {
         this.transition(id, t.resumeStatus ?? 'repairing', { retryAt: 0 }); return;
       }
