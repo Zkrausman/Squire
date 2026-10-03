@@ -60,6 +60,174 @@ const correctiveExecution = {
   stopWhen: 'Stop if the feature cannot be verified.', maxAttempts: 1
 };
 const correctiveTicket = () => ({ ...ticket('a'), execution: structuredClone(correctiveExecution) });
+const plannedTicket = (id, ownedPaths, dependsOn = []) => ({
+  ...ticket(id, dependsOn),
+  execution: { ...structuredClone(correctiveExecution), ownedPaths }
+});
+async function planningFixture(t, plannedTickets) {
+  const f = await fixture(t, [], ({ source, check }) => ({
+    goal: 'Prepare a small complete feature outcome.',
+    tickets: undefined,
+    services: { app: {
+      source, branch: 'main', delivery: { kind: 'local' },
+      setup: [{ name: 'native-setup', argv: [process.execPath, '-e', 'void 0'], timeoutSeconds: 10 }],
+      checks: [{ name: 'focused-test', argv: [process.execPath, check], timeoutSeconds: 10 }]
+    } }
+  }));
+  const runtime = new FixtureRuntime(async (job, _runtime, sessionRef) => job.role === 'plan'
+    ? { outcome: 'completed', sessionRef, result: { tickets: plannedTickets } }
+    : undefined);
+  return { f, runtime, controller: new Controller(f.store, f.config.id, { runtime }) };
+}
+test('preparation preserves alternative decompositions and captures focused tests and native commands before dispatch', { timeout: 120000 }, async t => {
+  const plans = [
+    plannedTicket('combined', ['src/feature.mjs', 'test/feature.test.mjs']),
+    plannedTicket('code-first', ['src/separate.mjs']),
+    plannedTicket('tests-second', ['test/separate.test.mjs'], ['code-first']),
+    ...Array.from({ length: 18 }, (_, index) => plannedTicket(`outcome-${index}`, [`src/outcome-${index}.mjs`, `test/outcome-${index}.test.mjs`]))
+  ];
+  const { f, runtime, controller } = await planningFixture(t, plans);
+  assert.equal(await controller.plan(), true);
+  const saved = f.store.get(f.config.id).tickets;
+  assert.equal(saved.length, 21);
+  assert.deepEqual(saved[0].spec.execution.ownedPaths, ['src/feature.mjs', 'test/feature.test.mjs']);
+  assert.deepEqual(saved[1].spec.dependsOn, []);
+  assert.deepEqual(saved[2].spec.dependsOn, ['code-first']);
+  assert.deepEqual(saved[0].preparation.focusedTestOwnership, {
+    ticket: 'combined', authorizedPaths: ['src/feature.mjs', 'test/feature.test.mjs'],
+    recognizedTestPaths: ['test/feature.test.mjs'], plannedTestOwners: [], required: true
+  });
+  assert.deepEqual(saved[1].preparation.focusedTestOwnership, {
+    ticket: 'code-first', authorizedPaths: ['src/separate.mjs'], recognizedTestPaths: [],
+    plannedTestOwners: [{ ticket: 'tests-second', paths: ['test/separate.test.mjs'] }], required: true
+  });
+  assert.deepEqual(saved[2].preparation.focusedTestOwnership.recognizedTestPaths, ['test/separate.test.mjs']);
+  assert.equal(saved[0].preparation.nativeEnvironment.platform, process.platform);
+  assert.equal(saved[0].preparation.nativeEnvironment.architecture, process.arch);
+  assert.equal(saved[0].preparation.nativeEnvironment.node, process.version);
+  assert.equal(saved[0].preparation.nativeEnvironment.nodeExecutable, process.execPath);
+  assert.equal(saved[0].preparation.nativeEnvironment.workingDirectory, 'prepared ticket workspace');
+  assert.deepEqual(saved[0].preparation.nativeEnvironment.setup, f.config.services.app.setup);
+  assert.deepEqual(saved[0].preparation.nativeEnvironment.checks, f.config.services.app.checks);
+  const persisted = JSON.parse(await readFile(path.join(controller.root, 'ticket-plan.json'), 'utf8'));
+  assert.deepEqual(persisted[0].preparation, saved[0].preparation);
+
+  const implementationPrompts = [];
+  runtime.handler = async (job, _runtime, sessionRef) => {
+    if (job.role === 'implement') {
+      implementationPrompts.push(job.instructions);
+      return { outcome: 'waiting_capacity', sessionRef, retryAt: Date.now() + 60_000, detail: 'Fixture only' };
+    }
+  };
+  await controller.step('combined');
+  await controller.step('combined');
+  await controller.step('code-first');
+  await controller.step('code-first');
+  const combinedPrompt = implementationPrompts.find(prompt => prompt.includes('combined: Feature'));
+  const splitPrompt = implementationPrompts.find(prompt => prompt.includes('code-first: Feature'));
+  assert.ok(combinedPrompt);
+  assert.ok(splitPrompt);
+  assert.match(combinedPrompt, /Preparation evidence \(controller-generated before implementation dispatch\)/);
+  assert.match(combinedPrompt, /focusedTestOwnership/);
+  assert.match(combinedPrompt, /nativeEnvironment/);
+  assert.match(combinedPrompt, new RegExp(process.platform));
+  assert.match(combinedPrompt, /focused-test/);
+  const evidenceMarker = 'Preparation evidence (controller-generated before implementation dispatch):\n';
+  const evidenceStart = combinedPrompt.indexOf(evidenceMarker) + evidenceMarker.length;
+  const evidenceEnd = combinedPrompt.indexOf('\nUse the focused test ownership', evidenceStart);
+  assert.ok(evidenceStart >= evidenceMarker.length && evidenceEnd > evidenceStart);
+  assert.deepEqual(JSON.parse(combinedPrompt.slice(evidenceStart, evidenceEnd)), saved[0].preparation);
+  assert.match(splitPrompt, /tests-second/);
+  assert.match(splitPrompt, /test\/separate\.test\.mjs/);
+  assert.equal(runtime.calls.filter(call => call.role === 'implement').length, 2);
+});
+test('generated plans still reject unsafe ownership and missing prerequisites', { timeout: 120000 }, async t => {
+  const invalidPlans = [
+    { name: 'unsafe ownership', ticket: plannedTicket('unsafe', ['../outside.mjs']), message: /safe relative path/ },
+    { name: 'missing dependency', ticket: plannedTicket('orphan', ['src/orphan.mjs'], ['missing']), message: /Unknown dependency/ },
+    { name: 'missing focused test owner', ticket: plannedTicket('untested', ['src/untested.mjs']), message: /focused test owner/ },
+    {
+      name: 'unrelated test owner does not satisfy prerequisite',
+      tickets: [plannedTicket('untested', ['src/untested.mjs']), plannedTicket('unrelated-tests', ['test/unrelated.test.mjs'])],
+      message: /focused test owner/
+    }
+  ];
+  for (const invalid of invalidPlans) await t.test(invalid.name, async subtest => {
+    const { f, runtime, controller } = await planningFixture(subtest, invalid.tickets ?? [invalid.ticket]);
+    await assert.rejects(() => controller.plan(), invalid.message);
+    assert.equal(f.store.get(f.config.id).tickets.length, 0);
+    assert.equal(runtime.calls.filter(call => call.role === 'implement').length, 0);
+  });
+});
+test('explicit structured tickets expose preparation before their implementation handoff', { timeout: 120000 }, async t => {
+  const spec = plannedTicket('explicit', ['feature-explicit.mjs', 'test/feature-explicit.test.mjs']);
+  const f = await fixture(t, [spec]);
+  let handoff;
+  const runtime = new FixtureRuntime(async (job, _runtime, sessionRef) => {
+    if (job.role !== 'implement') return undefined;
+    const saved = f.store.get(f.config.id).tickets[0];
+    const persisted = JSON.parse(await readFile(path.join(controller.root, 'ticket-plan.json'), 'utf8'))[0];
+    handoff = { prompt: job.instructions, preparation: saved.preparation, persistedPreparation: persisted.preparation };
+    return { outcome: 'waiting_capacity', sessionRef, retryAt: Date.now() + 60_000, detail: 'Fixture handoff captured' };
+  });
+  const controller = new Controller(f.store, f.config.id, { runtime });
+  const result = await controller.run(undefined, { wait: false });
+
+  assert.equal(result.status, 'waiting_capacity');
+  assert.ok(handoff, 'the explicit ticket reached the implementation runtime');
+  assert.deepEqual(handoff.preparation.focusedTestOwnership, {
+    ticket: 'explicit', authorizedPaths: spec.execution.ownedPaths,
+    recognizedTestPaths: ['test/feature-explicit.test.mjs'], plannedTestOwners: [], required: true
+  });
+  assert.deepEqual(handoff.preparation.nativeEnvironment, {
+    platform: process.platform, architecture: process.arch, node: process.version,
+    nodeExecutable: process.execPath, workingDirectory: 'prepared ticket workspace',
+    setup: f.config.services.app.setup ?? [], checks: f.config.services.app.checks
+  });
+  assert.deepEqual(handoff.persistedPreparation, handoff.preparation);
+  assert.match(handoff.prompt, /Preparation evidence \(controller-generated before implementation dispatch\)/);
+  assert.match(handoff.prompt, /focusedTestOwnership/);
+  assert.match(handoff.prompt, /nativeEnvironment/);
+  assert.equal(runtime.calls.filter(call => call.role === 'implement').length, 1);
+});
+test('explicit structured tickets reject unsafe ownership and expose configured validation ownership for existing inputs', { timeout: 120000 }, async t => {
+  await t.test('unsafe ownership is rejected during project validation', async subtest => {
+    await assert.rejects(() => fixture(subtest, [plannedTicket('unsafe-explicit', ['../outside.mjs'])]), /safe relative path/);
+  });
+  await t.test('existing configured checks remain visible before implementation dispatch', async subtest => {
+    const f = await fixture(subtest, [plannedTicket('untested-explicit', ['src/untested.mjs'])]);
+    const runtime = new FixtureRuntime();
+    const controller = new Controller(f.store, f.config.id, { runtime });
+    await controller.ensureTicketPreparation();
+    const result = f.store.get(f.config.id);
+    assert.equal(result.tickets[0].status, 'queued');
+    assert.deepEqual(result.tickets[0].preparation.focusedTestOwnership.configuredCheckOwners,
+      f.config.services.app.checks.map(({name,argv})=>({name,argv})));
+    assert.deepEqual(result.tickets[0].preparation.nativeEnvironment.checks,f.config.services.app.checks);
+    assert.equal(runtime.calls.filter(call => call.role === 'implement').length, 0);
+  });
+});
+test('brief plans without structured ownership retain trusted validation preparation and complete', { timeout: 120000 }, async t => {
+  const { f, runtime, controller } = await planningFixture(t, [ticket('legacy')]);
+  let implementationPrompt;
+  runtime.handler = async (job, _runtime, sessionRef) => {
+    if (job.role === 'plan') return { outcome: 'completed', sessionRef, result: { tickets: [ticket('legacy')] } };
+    if (job.role === 'implement') implementationPrompt = job.instructions;
+  };
+
+  const result = await controller.run();
+  assert.equal(result.status, 'completed', JSON.stringify(result));
+  assert.equal(result.tickets[0].status, 'shipped');
+  assert.equal(result.tickets[0].spec.execution, undefined);
+  assert.deepEqual(result.tickets[0].preparation.focusedTestOwnership, {
+    ticket: 'legacy', authorizedPaths: [], recognizedTestPaths: [], plannedTestOwners: [],
+    configuredCheckOwners: f.config.services.app.checks.map(({ name, argv }) => ({ name, argv })), required: true
+  });
+  assert.deepEqual(result.tickets[0].preparation.nativeEnvironment.checks, f.config.services.app.checks);
+  assert.match(implementationPrompt, /Preparation evidence \(controller-generated before implementation dispatch\)/);
+  assert.match(implementationPrompt, /configuredCheckOwners/);
+  assert.match(implementationPrompt, /nativeEnvironment/);
+});
 const correctiveAdmission = headSha => ({
   ticketId: 'a', expectedHeadSha: headSha, outcome: 'Handle the reviewed boundary case.',
   instructions: 'Keep the change within feature-a.mjs and add the boundary regression.',
