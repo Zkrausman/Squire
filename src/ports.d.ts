@@ -3,6 +3,8 @@ export interface AgentJob {
   version: 1; id: string; role: 'plan' | 'implement' | 'review';
   workspace: string; directory: string; instructions: string;
   timeoutSeconds: number; backoffSeconds: number;
+  /** Only the explicitly approved inline public goal; durable job.started records this digest. */
+  publicContract?: { sha256: string; bytes: number };
   signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void;
 }
 export interface RuntimeEvent { version: 1; jobId: string; type: string; sessionRef?: string; usage?: Record<string, number>; requestedModel?: string | null; requestedReasoning?: string | null; reportedModel?: string | null; reportedReasoning?: string | null; }
