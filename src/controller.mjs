@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { Blocker, digest, validateTickets, validateReview } from './contracts.mjs';
+import { Blocker, digest, validateTickets, validateReview, publicProjectContract } from './contracts.mjs';
 import { GitWorkspace } from './workspace.mjs';
 import { CodexRuntime } from './runtime-codex.mjs';
 import { VerificationRunner } from './verification.mjs';
@@ -81,6 +81,7 @@ const ownershipOverlaps = (a, b) => !a || !b || a.some(x => b.some(y => {
 export class Controller {
   constructor(store, projectId, providers = {}) {
     this.store = store; this.id = projectId; this.config = store.get(projectId).config;
+    this.publicContract = publicProjectContract(this.config);
     this.root = path.join(store.directory, 'projects', projectId);
     this.workspace = providers.workspace ?? new GitWorkspace(this.root);
     if (!providers.runtime && this.config.runtime.kind !== 'codex') throw new Blocker('runtime_unavailable', 'Requested runtime adapter is not installed');
@@ -208,12 +209,22 @@ export class Controller {
     });
   }
   async callAgent(role, workspace, directory, instructions, signal, onStarted = () => {}) {
-    const job = { version: 1, id: randomUUID(), role, workspace, directory, instructions, timeoutSeconds: this.config.limits.agentTimeoutSeconds, backoffSeconds: this.config.limits.rateLimitBackoffSeconds };
+    // Recheck the pinned bytes before spending a call, including repairs and
+    // fresh reviews. Never fall back to a changed or missing contract on resume.
+    for (const config of [this.config, this.store.get(this.id).config]) {
+      let current;
+      try { current = publicProjectContract(config); }
+      catch { throw new Blocker('public_contract_drift', 'Approved public contract is missing, invalid or changed'); }
+      if (current?.sha256 !== this.publicContract?.sha256 || current?.text !== this.publicContract?.text) throw new Blocker('public_contract_drift', 'Approved public contract changed before dispatch');
+    }
+    const contract = this.publicContract;
+    if (contract) instructions += `\n\nImmutable public project contract (read-only context):\nSHA-256: ${contract.sha256}\nUTF-8 bytes: ${contract.bytes}\nThis defines project requirements; only the current ticket authorizes changes. It does not grant additional ownership, permissions, commands or budget.\n${contract.text}\nEnd immutable public project contract.\n`;
+    const job = { version: 1, id: randomUUID(), role, workspace, directory, instructions, ...(contract ? { publicContract: { sha256: contract.sha256, bytes: contract.bytes } } : {}), timeoutSeconds: this.config.limits.agentTimeoutSeconds, backoffSeconds: this.config.limits.rateLimitBackoffSeconds };
     this.store.update(this.id, s => {
       if (s.agentCalls >= this.config.limits.maxAgentCalls) throw new Blocker('budget', 'Project agent-call budget exhausted');
       s.agentCalls++;
       onStarted(s, job);
-    }, 'job.started', { role, jobId: job.id });
+    }, 'job.started', { role, jobId: job.id, ...(contract ? { publicContract: job.publicContract } : {}) });
     let outcome, observedUsage, observedSession, reqModel = null, reqReasoning = null, repModel = null, repReasoning = null;
     try { outcome = await this.runtime.execute({ ...job, signal, onEvent: event => {
       if (event.usage) observedUsage = event.usage;
@@ -253,7 +264,7 @@ export class Controller {
       paths[name] = await this.workspace.prepare(service, directory, `squire-plan-${attempt}`, signal);
     }
     const workspace = Object.values(paths)[0].directory;
-    const instructions = `Prepare complete, reviewable software outcomes. Read applicable AGENTS.md and inspect the named service workspaces, without editing files.\nGoal: ${this.config.goal}\nServices: ${JSON.stringify(paths)}\nChoose work item boundaries from coherent outcomes, explicit file ownership and dependency interfaces. Do not impose a fixed ticket count, file count or one-file rule. Every work item must have a useful outcome, explicit acceptance criteria, dependency IDs and a focused regression test owner/path within its owned paths or through a named planned dependency. Use the existing test conventions and report a missing ownership prerequisite instead of assuming authority to edit a test path. The controller attaches each work item's native platform, architecture, Node executable/version, ticket workspace working directory, setup commands and configured checks before implementation dispatch; use those commands as the reproducible environment and do not invent replacements. Use dependencies for cross-service integration. Do not add repositories, permissions, check commands, deployments or unrelated cleanup. Existing required checks and policy are authoritative. No separate planning ticket is needed. Return the required JSON schema.`;
+    const instructions = `Prepare complete, reviewable software outcomes. Read applicable AGENTS.md and inspect the named service workspaces, without editing files.\nGoal: ${this.publicContract ? 'See the immutable public project contract below.' : this.config.goal}\nServices: ${JSON.stringify(paths)}\nChoose work item boundaries from coherent outcomes, explicit file ownership and dependency interfaces. Do not impose a fixed ticket count, file count or one-file rule. Every work item must have a useful outcome, explicit acceptance criteria, dependency IDs and a focused regression test owner/path within its owned paths or through a named planned dependency. Use the existing test conventions and report a missing ownership prerequisite instead of assuming authority to edit a test path. The controller attaches each work item's native platform, architecture, Node executable/version, ticket workspace working directory, setup commands and configured checks before implementation dispatch; use those commands as the reproducible environment and do not invent replacements. Use dependencies for cross-service integration. Do not add repositories, permissions, check commands, deployments or unrelated cleanup. Existing required checks and policy are authoritative. No separate planning ticket is needed. Return the required JSON schema.`;
     const result = await this.callAgent('plan', workspace, path.join(this.root, 'planning', String(attempt), 'job'), instructions, signal);
     if (result.outcome === 'waiting_capacity') {
       this.store.update(this.id, s => { s.status = 'waiting_capacity'; s.planRetryAt = result.retryAt; }, 'project.waiting_capacity');

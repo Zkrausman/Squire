@@ -74,8 +74,21 @@ export function commands(value, label, required = true) {
   }
   return value;
 }
+// Explicit owner approval to propagate only the inline goal. No path, directory,
+// workspace, audit or file-loading interface is accepted by this declaration.
+export const MAX_PUBLIC_CONTRACT_BYTES = 32768;
+export function publicProjectContract(config) {
+  if (config.publicContract === undefined) return null;
+  keys(config.publicContract, ['sha256'], 'publicContract');
+  requireValue(typeof config.publicContract.sha256 === 'string' && /^[a-f0-9]{64}$/.test(config.publicContract.sha256), 'publicContract.sha256 must pin the public inline goal');
+  text(config.goal, 'public contract goal');
+  const bytes = Buffer.byteLength(config.goal, 'utf8');
+  requireValue(bytes <= MAX_PUBLIC_CONTRACT_BYTES, `Public contract exceeds ${MAX_PUBLIC_CONTRACT_BYTES} UTF-8 bytes`);
+  requireValue(digest(config.goal) === config.publicContract.sha256, 'Public contract goal hash does not match its approved digest');
+  return Object.freeze({ text: config.goal, sha256: config.publicContract.sha256, bytes });
+}
 export function validateConfig(input) {
-  keys(input, ['version', 'id', 'stateDir', 'goal', 'tickets', 'services', 'runtime', 'limits'], 'project');
+  keys(input, ['version', 'id', 'stateDir', 'goal', 'publicContract', 'tickets', 'services', 'runtime', 'limits'], 'project');
   requireValue(input.version === VERSION, 'Unsupported project version'); identifier(input.id, 'project id');
   requireValue(typeof input.stateDir === 'string' && path.isAbsolute(input.stateDir), 'stateDir must be absolute');
   object(input.services, 'services'); requireValue(Object.keys(input.services).length > 0 && Object.keys(input.services).length <= 20, 'Provide 1..20 services');
@@ -126,6 +139,7 @@ export function validateConfig(input) {
   for (const [key, max] of Object.entries({ maxParallel: 8, maxRepairs: 10, maxRebases: 10, maxAgentCalls: 1000, agentTimeoutSeconds: 7200, ciTimeoutSeconds: 7200, rateLimitBackoffSeconds: 86400 })) integer(limits[key], key, key.includes('Repairs') || key.includes('Rebases') ? 0 : 1, max);
   input.runtime = runtime; input.limits = limits;
   if (input.goal !== undefined) text(input.goal, 'goal');
+  publicProjectContract(input);
   requireValue(input.goal || input.tickets?.length, 'Provide a goal or tickets');
   if (input.tickets !== undefined) validateTickets(input.tickets, input.services);
   return input;
