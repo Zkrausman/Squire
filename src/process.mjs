@@ -68,6 +68,7 @@ export async function runProcess({ argv, cwd, directory, timeoutSeconds = 120, i
   });
   child.stderr.on('data', () => {});
   await new Promise(resolve => { child.on('error', e => { error = e; resolve(); }); child.on('close', resolve); });
+  if (buffer.length > 0) { try { onLine?.(buffer); } catch {} buffer = ''; }
   clearTimeout(timeout); clearTimeout(hardTimeout); signal?.removeEventListener('abort', cancel);
   await unlink(request).catch(() => {});
   if (error) throw error;

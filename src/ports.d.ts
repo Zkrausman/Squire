@@ -5,10 +5,12 @@ export interface AgentJob {
   timeoutSeconds: number; backoffSeconds: number;
   signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void;
 }
-export interface RuntimeEvent { version: 1; jobId: string; type: string; sessionRef?: string; usage?: Record<string, number>; }
+export interface RuntimeEvent { version: 1; jobId: string; type: string; sessionRef?: string; usage?: Record<string, number>; requestedModel?: string | null; requestedReasoning?: string | null; reportedModel?: string | null; reportedReasoning?: string | null; }
 export interface AgentResult {
   outcome: 'completed' | 'waiting_capacity'; sessionRef?: string; result?: unknown;
   usage?: Record<string, number>; retryAt?: number; detail?: string; receipt?: unknown;
+  requestedModel?: string | null; requestedReasoning?: string | null;
+  reportedModel?: string | null; reportedReasoning?: string | null;
 }
 export interface AgentRuntime {
   version: 1;
