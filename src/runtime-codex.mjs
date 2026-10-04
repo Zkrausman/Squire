@@ -71,6 +71,7 @@ export class CodexRuntime {
     const settings = await this.settings(job.role);
     if (settings.model) argv.push('-m', settings.model);
     if (settings.reasoning) argv.push('-c', `model_reasoning_effort="${settings.reasoning}"`);
+    job.onEvent?.({ version: VERSION, jobId: job.id, type: 'runtime.configured', requestedModel: settings.model ?? null, requestedReasoning: settings.reasoning ?? null, reportedModel: null, reportedReasoning: null });
     if (job.role !== 'implement') {
       const schema = path.join(job.directory, 'schema.json');
       await writeFile(schema, JSON.stringify(job.role === 'plan' ? planSchema : reviewSchema), { mode: 0o600 });
@@ -107,7 +108,7 @@ export class CodexRuntime {
       // output happens to contain capacity-like digits or messages.
       if (receipt.timedOut || receipt.stopped) throw new Blocker('runtime_failed', 'Codex job was stopped before it completed', { receipt: { ...receipt, stdout: undefined, stderr: undefined }, detail: failure.slice(-2000) });
       if (/invalid[^\n]*schema|schema[^\n]*required|invalid_json_schema/i.test(failure)) throw new Blocker('runtime_schema', 'Codex response schema was rejected before review; correct adapter infrastructure without repairing application source', { receipt: { ...receipt, stdout: undefined, stderr: undefined }, detail: failure.slice(-2000) });
-      if (capacityFailure(failureEvents, receipt.stderr)) return { outcome: 'waiting_capacity', sessionRef, usage, receipt, retryAt: Date.now() + job.backoffSeconds * 1000, detail: failure.slice(-2000) };
+      if (capacityFailure(failureEvents, receipt.stderr)) return { outcome: 'waiting_capacity', sessionRef, usage, receipt, retryAt: Date.now() + job.backoffSeconds * 1000, detail: failure.slice(-2000), requestedModel: settings.model ?? null, requestedReasoning: settings.reasoning ?? null, reportedModel: null, reportedReasoning: null };
       if (/authentication|unauthorized|please log in|401|token expired/i.test(failure)) throw new Blocker('authentication', 'Codex subscription sign-in requires attention', { receipt: { ...receipt, stdout: undefined, stderr: undefined } });
       throw new Blocker('runtime_failed', 'Codex job did not complete successfully', { receipt: { ...receipt, stdout: undefined, stderr: undefined }, detail: failure.slice(-2000) });
     }
@@ -115,6 +116,6 @@ export class CodexRuntime {
     if (!text.trim() || text.length > 128 * 1024 || !sessionRef) throw new Blocker('runtime_result', 'Codex completion lacks a bounded result/session identity');
     let result = text;
     if (job.role !== 'implement') { try { result = JSON.parse(text); } catch { throw new Blocker('runtime_result', 'Structured agent result is not JSON'); } }
-    return { outcome: 'completed', sessionRef, usage, result, receipt: { ...receipt, stdout: undefined, stderr: undefined } };
+    return { outcome: 'completed', sessionRef, usage, result, receipt: { ...receipt, stdout: undefined, stderr: undefined }, requestedModel: settings.model ?? null, requestedReasoning: settings.reasoning ?? null, reportedModel: null, reportedReasoning: null };
   }
 }

@@ -214,22 +214,30 @@ export class Controller {
       s.agentCalls++;
       onStarted(s, job);
     }, 'job.started', { role, jobId: job.id });
-    let outcome, observedUsage, observedSession;
+    let outcome, observedUsage, observedSession, reqModel = null, reqReasoning = null, repModel = null, repReasoning = null;
     try { outcome = await this.runtime.execute({ ...job, signal, onEvent: event => {
       if (event.usage) observedUsage = event.usage;
       if (event.sessionRef) observedSession = event.sessionRef;
-      if (event.type === 'thread.started' || event.type === 'turn.completed') this.store.update(this.id, s => {
+      if (event.requestedModel !== undefined) reqModel = event.requestedModel;
+      if (event.requestedReasoning !== undefined) reqReasoning = event.requestedReasoning;
+      if (event.reportedModel !== undefined) repModel = event.reportedModel;
+      if (event.reportedReasoning !== undefined) repReasoning = event.reportedReasoning;
+      if (['runtime.configured', 'thread.started', 'turn.completed'].includes(event.type)) this.store.update(this.id, s => {
         if (role === 'implement' && event.sessionRef) for (const t of s.tickets) if (t.activeJob === job.id) {
           t.implementationSessions = [...new Set([...(t.implementationSessions ?? []), event.sessionRef])];
         }
-      }, 'job.event', { jobId: job.id, role, sessionRef: event.sessionRef, eventType: event.type, usage: event.usage });
+      }, 'job.event', { jobId: job.id, role, sessionRef: event.sessionRef, eventType: event.type, usage: event.usage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning });
     } }); } catch (error) {
       const receipt = error.detail?.receipt;
-      this.store.emit(this.id, 'job.finished', { jobId: job.id, role, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage,
+      this.store.emit(this.id, 'job.finished', { jobId: job.id, role, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning,
         ...(receipt ? { receipt: { startedAt: receipt.startedAt, endedAt: receipt.endedAt, exitCode: receipt.exitCode, stopped: receipt.stopped, timedOut: receipt.timedOut } } : {}) });
       throw error;
     }
-    this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, outcome: outcome.outcome, sessionRef: outcome.sessionRef, usage: outcome.usage });
+    const finalReqModel = outcome.requestedModel !== undefined ? outcome.requestedModel : reqModel;
+    const finalReqReasoning = outcome.requestedReasoning !== undefined ? outcome.requestedReasoning : reqReasoning;
+    const finalRepModel = outcome.reportedModel !== undefined ? outcome.reportedModel : repModel;
+    const finalRepReasoning = outcome.reportedReasoning !== undefined ? outcome.reportedReasoning : repReasoning;
+    this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, outcome: outcome.outcome, sessionRef: outcome.sessionRef, usage: outcome.usage, requestedModel: finalReqModel, requestedReasoning: finalReqReasoning, reportedModel: finalRepModel, reportedReasoning: finalRepReasoning });
     if (!['completed', 'waiting_capacity'].includes(outcome?.outcome)) throw new Blocker('runtime_result', 'Runtime returned unsupported job outcome');
     if (outcome.outcome === 'completed' && typeof outcome.sessionRef !== 'string') throw new Blocker('runtime_result', 'Completed job has no provider session identity');
     return { ...outcome, jobId: job.id };
