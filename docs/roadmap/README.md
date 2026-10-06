@@ -24,11 +24,14 @@ The design work is documented; the implementation slices and new acceptance fixt
 8. **Measure before optimizing (A5).** Prepare a fixed-workflow comparison protocol and full accounting without running it. Preserve the baseline/owner-hold prerequisites above. A later Pith output-transform comparison additionally requires output-fidelity validation. Gate: independently graded quality, total resource use and owner recovery effort are measured; incomplete usage, interruption or compressed output alone cannot become a savings claim.
 9. **Make current work and owner decisions explicit (O0-O5).** Start with a passive CLI view of observed activity, last durable progress, pending result and one decision per root blocker. Keep missing observation intervals unknown; reuse R1/R3 and P5 for stronger process facts and R5/A2/A3 for result claims. An optional notification sink follows the local queue, with configured quiet windows and replay-safe delivery. Gate: synthetic replay/interruption cases cannot claim false activity/completion, lose decisions, duplicate unchanged notices or authorize execution.
 
+10. **Make trust and disclosure boundaries explicit (T0-T3).** Document the trusted-owner host-process limit, then separate verifier environments and diagnostic authority, constrain R3 artifact readers/collectors and review destination-specific repair/PR/owner exports. Reuse P-series profiles, A2 references and O-series projections. Gate: inert synthetic markers and wrong-path/link fixtures cannot silently cross the declared boundary; no claim of hostile-code isolation, secret-free output or prompt-injection immunity. These controls and fixtures remain proposed.
+
 Detailed dependencies, negative cases and unresolved choices:
 - [Recovery, artifact retention and delivery receipts](../research/factory-recovery.md)
 - [Acceptance, visual evidence and controlled comparisons](../research/factory-acceptance.md)
 - [Execution-boundary admission and bounded capability probes](../research/factory-runtime-preflight.md)
 - [Operator visibility, exact decisions and quiet notifications](../research/factory-operator-workflow.md)
+- [Trust, privacy and safe disclosure boundaries](../research/factory-trust-boundaries.md)
 
 After separate execution authorization, pursue three small owner outcomes in order:
 
