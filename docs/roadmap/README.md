@@ -32,6 +32,7 @@ Detailed dependencies, negative cases and unresolved choices:
 - [Execution-boundary admission and bounded capability probes](../research/factory-runtime-preflight.md)
 - [Operator visibility, exact decisions and quiet notifications](../research/factory-operator-workflow.md)
 - [Trust, privacy and safe disclosure boundaries](../research/factory-trust-boundaries.md)
+- [Delivery benchmark portfolio, corpus validity and readiness](../research/factory-benchmark-portfolio.md): BP0-BP4 propose four exposed Go/Node cases, an optional generic desktop case and separately selected evaluation families. Implementation, zero-model execution and campaigns remain separately gated; the small portfolio cannot replace the required larger baseline or reopen historical runs.
 
 After separate execution authorization, pursue three small owner outcomes in order:
 
