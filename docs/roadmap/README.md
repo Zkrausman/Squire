@@ -44,6 +44,7 @@ Share one small receipt format across recovery, acceptance and preflight. GEPA, 
 
 ## Other retained commitments
 
+- [EmbeddingGemma 2 feasibility](../proposals/embedding-gemma-integration.md): optional ticket-local Squire retrieval and opt-in offline Pith discovery remain proposed; default synchronous Pith inference is a no-go under the negligible-latency requirement. No implementation, model download or benchmark is authorized by this report.
 - Squire dashboard overview.
 - Host the Squire overview dashboard and store its metrics in an S3 bucket or other durable cloud storage. Keep it behind the dependable local delivery/evidence path; storage choice is not settled by this research.
 - [Self-improving skills](../research/factory-skill-improvement.md) and phase-owned evolving specialist teams, after the authorized larger-benchmark baseline prerequisite.
