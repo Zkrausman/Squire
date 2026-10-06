@@ -81,7 +81,9 @@ A proposed SkillRevision record contains:
 
 A separate controller-owned decision records status: proposed, selected_for_final_evaluation, approved_for_future_jobs, rejected or revoked. The proposer cannot write it. A candidate does not become approved merely by entering GEPA's Pareto pool.
 
-Before dispatch, the trusted loader resolves exact approved bytes and freezes them into the job recipe. R3's manifest carries skill/template digests alongside job, logical attempt, project and candidate identities. Recheck bytes before reservation using the existing public-contract pattern. Resume uses the same recipe; a moving current-version pointer cannot alter an in-flight job. A later prompt/model/harness change creates a new evaluated recipe instead of silently inheriting an old result.
+Keep **evaluation-only admission** separate from **approved_for_future_jobs**. A trusted admission receipt authorizes exact candidate bytes only within a named, bounded experiment, with fixed role, applicability, protocol and budget. It can admit a proposed revision for its permitted evaluation, but does not change the ordinary-job selector or grant production approval. Ordinary delivery selects only the approved incumbent or a separately promoted revision. The optimizer cannot create either evaluation admission or production approval; final-holdout access still requires the independently selected, frozen finalist and protocol below.
+
+Before dispatch, the trusted loader resolves the exact bytes authorized for that job's evaluation-only or ordinary-delivery scope and freezes them into the job recipe. R3's manifest carries skill/template digests alongside job, logical attempt, project and candidate identities. Recheck bytes before reservation using the existing public-contract pattern. Resume uses the same recipe; a moving current-version pointer cannot alter an in-flight job. A later prompt/model/harness change creates a new evaluated recipe instead of silently inheriting an old result.
 
 The first role is implementation only. Planner/reviewer skill tuning would be a separate experiment because changing the judge or decomposition simultaneously destroys attribution. The reviewer receives the unchanged acceptance context, not training answers or a request to validate the optimizer's claims.
 
@@ -152,7 +154,7 @@ Report setup cost and future per-task operating cost separately. Any amortized c
 Use this sequence, with immutable references at every transition:
 
 1. Propose bounded text from permitted training feedback.
-2. Independently admit the candidate's bytes/scope, then evaluate under the fixed protocol. Preserve unsuccessful candidates and their costs.
+2. Independently admit the candidate's exact bytes/scope for evaluation only in the named, bounded experiment, then evaluate under the fixed protocol. This leaves ordinary-job selection unchanged. Preserve unsuccessful candidates and their costs.
 3. Select exactly one finalist from training/selection evidence under a predeclared tie-breaker. Freeze it and the decision before final grading.
 4. Independently grade incumbent/finalist on untouched holdout; apply the predeclared quality/preservation, cost and owner-effort rule. Initial small pilots can establish feasibility only. A lack of detected difference in a small sample is not equivalence.
 5. Obtain the required owner/reviewer approval of the exact skill diff and applicability. Store a promotion receipt naming both revisions, evidence completeness, protocol and reason. No self-promotion and no blanket permission to alter future prompts.
@@ -191,7 +193,7 @@ First test the narrow bridge with a scripted search driver; a later authorized c
 8. Concurrent/batch requests cannot overdraw the campaign envelope; disabled refiners/merge/proposal fan-out cannot silently introduce extra jobs.
 9. Changed grader/recipe/environment/case invalidates a cached or resumed evaluation. Repetition identity prevents reuse as another sample.
 10. An interrupted proposal/evaluation is reconciled using the recovery design's shared R1-R4 settlement contract before new work; this fixture checks integration, not a second recovery implementation or a claim that those proposed slices have shipped.
-11. A candidate marked best by GEPA cannot change the selected future skill without an independent promotion receipt.
+11. An evaluation-admitted proposed revision can run its authorized experiment but is rejected by ordinary-job selection. GEPA's best-candidate label grants neither evaluation admission nor production selection; ordinary selection still requires an independent promotion receipt.
 12. Rollback restores the prior version for new jobs while preserving in-flight recipe identity, historical evidence and all counters.
 
 Prototype completion means these contracts have an implementable fixture inventory and, after future authorization, verified replay results. It does not mean a valid model baseline, a measured skill improvement, production readiness or permission for a real experiment.
