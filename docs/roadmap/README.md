@@ -34,8 +34,16 @@ The first useful outcome is a recoverable interrupted ticket; the next is an aud
 
 - Squire dashboard overview.
 - Host the Squire overview dashboard and store its metrics in an S3 bucket or other durable cloud storage. Keep it behind the dependable local delivery/evidence path; storage choice is not settled by this research.
-- Phase-owned evolving specialist teams alongside self-improving skills, after the authorized larger-benchmark baseline prerequisite.
+- [Self-improving skills](../research/factory-skill-improvement.md) and phase-owned evolving specialist teams, after the authorized larger-benchmark baseline prerequisite.
 - Intelligent task-aware model selection: low priority and exploratory, behind delivery reliability and benchmark work.
+
+## Self-improving skills — future, unstarted
+
+The [bounded skill-improvement design](../research/factory-skill-improvement.md) proposes one advisory implementation-skill text with fixed models, tools, authority, acceptance and delivery gates. GEPA may propose candidates; independent evaluation and review decide whether an exact revision can be selected for future jobs. Its published benchmark gains do not establish a Squire benefit.
+
+First specify immutable skill/recipe identity (S1), frozen task-family splits and allowlisted training feedback (S2), then a zero-model replay fixture for selection, accounting, promotion and rollback (S3). Reuse R3 retention, R1-R4 recovery, A2/A3 acceptance, A5 reporting and R6/P0-P5 readiness wherever applicable. The prototype and all implementation remain unexecuted and need separate authorization.
+
+A real trial (S4-S5) additionally requires the separately authorized, completed and independently graded larger-benchmark baseline. Freeze training, separate selection validation and an untouched final holdout; count proposal, rejected/interrupted evaluation, grading and owner effort in the whole-campaign budget. A frozen finalist needs independent promotion, and rollback selects the prior approved skill for new jobs without rewriting historical receipts. Keep the incumbent when evidence is insufficient. Skill search does not authorize team growth, routing changes, API fallback or reopening the historical baseline.
 
 ## Phase-owned evolving specialist teams — future, unstarted
 
