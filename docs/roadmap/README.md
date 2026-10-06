@@ -22,11 +22,13 @@ The design work is documented; the implementation slices and new acceptance fixt
 6. **Resolve acceptance claims to evidence (A1-A3).** Separate production origin from quality; attach immutable observations to candidate criteria and have fresh review reference them. Keep legacy narrative evidence honestly labeled. Gate: nonexistent, altered, wrong-candidate or incompatible-kind evidence blocks acceptance.
 7. **Prove one small end-to-end route (R7; A2/A3 for criterion acceptance).** Begin with disposable offline failure fixtures, then a separately authorized local/GitHub demonstration after capacity returns. A delivery-only result leaves criterion acceptance pending; a version-2 accepted result requires A2/A3. Add A4 or the declared native producer only when the task needs it. Gate: the exact candidate passes the required gates and the owner can inspect its result; a preview, mock or synthetic capability fixture never substitutes for actual product observations.
 8. **Measure before optimizing (A5).** Prepare a fixed-workflow comparison protocol and full accounting without running it. Preserve the baseline/owner-hold prerequisites above. A later Pith output-transform comparison additionally requires output-fidelity validation. Gate: independently graded quality, total resource use and owner recovery effort are measured; incomplete usage, interruption or compressed output alone cannot become a savings claim.
+9. **Make current work and owner decisions explicit (O0-O5).** Start with a passive CLI view of observed activity, last durable progress, pending result and one decision per root blocker. Keep missing observation intervals unknown; reuse R1/R3 and P5 for stronger process facts and R5/A2/A3 for result claims. An optional notification sink follows the local queue, with configured quiet windows and replay-safe delivery. Gate: synthetic replay/interruption cases cannot claim false activity/completion, lose decisions, duplicate unchanged notices or authorize execution.
 
 Detailed dependencies, negative cases and unresolved choices:
 - [Recovery, artifact retention and delivery receipts](../research/factory-recovery.md)
 - [Acceptance, visual evidence and controlled comparisons](../research/factory-acceptance.md)
 - [Execution-boundary admission and bounded capability probes](../research/factory-runtime-preflight.md)
+- [Operator visibility, exact decisions and quiet notifications](../research/factory-operator-workflow.md)
 
 After separate execution authorization, pursue three small owner outcomes in order:
 
