@@ -41,6 +41,8 @@ Use candidate head/tree, physical job ID, logical attempt, operation ID and immu
 
 - Trust T1 reuses P0/P1 process-profile identity; T2 extends the R1/R3 collector/reader and A2 references; T3 constrains existing repair/publication paths and O-series exports before an optional sink. Environment filtering, candidate hashes and local file modes do not establish hostile same-user code isolation.
 
+For the first non-GUI route, R6 means the applicable P0-P3 admission path. P4 and real browser/native producers are required only for the selected task's capability/acceptance claims; P5 is required for benchmark invocation/progress correlation claims. O0's reference to the P5 design does not require P5 implementation, and O1/O2 can report explicit unknowns. Design references do not make every downstream implementation a prerequisite; no required capability, acceptance or safety gate becomes optional.
+
 Slices are deliberately small. Shared manifest/identity fields should have one implementation, with the recovery document owning retention, the acceptance document owning evidence admissibility, the preflight document owning boundary-scoped readiness, and the skill document owning candidate text/lineage, split identity, feedback export and future-job selection. P4's inert browser fixture does not replace A4's real application acceptance. “Proof” in a slice name means evidence satisfying a declared criterion, not a universal correctness or security guarantee.
 
 ## Historical results and execution hold

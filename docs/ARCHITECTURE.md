@@ -1,6 +1,10 @@
 # Squire architecture
 
-Status: architecture approved; implemented as the Squire 0.3 rewrite. The approved canvas is saved alongside this document. The user will select the first live acceptance project after readiness checks.
+Status: approved architecture design with historical and aspirational surfaces below. The rewrite was historically called “Squire 0.3”; the current package uses the **0.1.0 experimental release/program label**, whose [snapshot identities](releases/0.1/README.md#runtime-identity) are distinct from the frozen benchmark runtime. This document and its [canvas](Squire%20Architecture.tldraw) are not a current implementation or acceptance inventory.
+
+For current behavior, start with the [repository README](../README.md), [source contracts](../src/ports.d.ts), [roadmap/research status](research/README.md) and [owner/orchestrator boundary](ORCHESTRATOR-BOUNDARY.md). In particular, the current GitHub adapter requires classic strict protection and **blocks merge queues**; the merge-queue alternative below is design intent. The runtime port currently uses `preflight`/`execute` with cancellation via `AbortSignal`; broader start/inspect/resume diagrams are conceptual. SQLite events are not a notification delivery/deduplication ledger; that stronger contract is proposed in [O4](research/factory-operator-workflow.md#bounded-implementation-slices).
+
+The first-project plan below is historical. The [later v0.1 closure](releases/0.1/baseline-closure.json) governs that program's outcome and hold; earlier approval labels do not reopen trials or authorize implementation. See the [canvas legend](canvases/README.md) for archived design precedence.
 
 ## Product contract
 
