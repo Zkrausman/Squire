@@ -31,7 +31,7 @@ Use candidate head/tree, physical job ID, logical attempt, operation ID and immu
 - R2/R3 support R4 result/budget recovery and R5 exact delivery receipts.
 - R1/R3 support R6 execution-boundary readiness. Its P0/P1 schema and pure resolver precede P2's one supported probe route and P3's pre-reservation dispatch gate; P4 (GUI/IPC capability, also requiring A2) and P5 (status correlation) follow P3.
 - R3 supports A2 immutable acceptance references; A2 plus trusted admission supports A3 criterion enforcement.
-- R4-R6 support R7's separately authorized demonstration. A2/A3/R6 support A4's first real browser producer when the task needs it.
+- R4-R6 support R7's separately authorized delivery/recovery demonstration. An R7 claim of version-2 criterion acceptance additionally requires A2/A3; otherwise label criterion acceptance pending. GUI/native claims require the task-specific producer and actual candidate observations. A2/A3/R6 support A4's first real browser producer; its synthetic fixture would establish the pipeline only.
 - A5 prepares a report/protocol. Any effectiveness trial still needs a separately authorized, completed and independently graded baseline; Pith adds its output-fidelity prerequisite.
 - Skill S1/S2 reuse R3 recipe/evidence identity, A2/A3 acceptance and A5 reporting; S3 specifies the bridge and uses R1-R4/R6 wherever physical jobs would occur. S4/S5 additionally require explicit execution approval and the independently graded larger-benchmark baseline. Neither GEPA validation nor controller CI is an untouched final holdout or a Squire effectiveness result.
 

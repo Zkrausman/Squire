@@ -20,7 +20,7 @@ The design work is documented; the implementation slices and new acceptance fixt
 4. **Retain the delivery facts already checked (R5).** Record publication intent, selected current check-run/app/head identities, and exact merge/tree/ancestry/postmerge receipts. Preserve all current gates. Gate: lost responses reconcile and stale, skipped, wrong-head or wrong-app evidence cannot advance delivery.
 5. **Validate the actual execution route (R6; P0-P5).** After R1/R3, add one zero-model, exact-policy probe route for the prepared workspace, Git base, role-specific toolchain, process lifecycle and artifact return, before call reservation. Add bounded GUI/IPC capability fixtures only when required, retaining browser sandboxing and verifying cleanup; report task, benchmark process and progress separately. Gate: denied, unsupported, unknown or stale required capabilities block; executor/policy/workspace changes invalidate receipts. Capability readiness does not establish application acceptance or authorize a benchmark run.
 6. **Resolve acceptance claims to evidence (A1-A3).** Separate production origin from quality; attach immutable observations to candidate criteria and have fresh review reference them. Keep legacy narrative evidence honestly labeled. Gate: nonexistent, altered, wrong-candidate or incompatible-kind evidence blocks acceptance.
-7. **Prove one small end-to-end route (R7; A4 for GUI scope).** Begin with disposable offline failure fixtures, then a separately authorized local/GitHub demonstration after capacity returns. Add one real browser evidence producer only when needed. Gate: the exact candidate passes the required gates and the owner can inspect its result; a preview or mock is never substituted for product acceptance.
+7. **Prove one small end-to-end route (R7; A2/A3 for criterion acceptance).** Begin with disposable offline failure fixtures, then a separately authorized local/GitHub demonstration after capacity returns. A delivery-only result leaves criterion acceptance pending; a version-2 accepted result requires A2/A3. Add A4 or the declared native producer only when the task needs it. Gate: the exact candidate passes the required gates and the owner can inspect its result; a preview, mock or synthetic capability fixture never substitutes for actual product observations.
 8. **Measure before optimizing (A5).** Prepare a fixed-workflow comparison protocol and full accounting without running it. Preserve the baseline/owner-hold prerequisites above. A later Pith output-transform comparison additionally requires output-fidelity validation. Gate: independently graded quality, total resource use and owner recovery effort are measured; incomplete usage, interruption or compressed output alone cannot become a savings claim.
 
 Detailed dependencies, negative cases and unresolved choices:
@@ -28,7 +28,13 @@ Detailed dependencies, negative cases and unresolved choices:
 - [Acceptance, visual evidence and controlled comparisons](../research/factory-acceptance.md)
 - [Execution-boundary admission and bounded capability probes](../research/factory-runtime-preflight.md)
 
-The first useful outcome is a recoverable interrupted ticket; the next is an auditable delivered result. Share one small receipt format across recovery, acceptance and preflight. No distributed workflow service, hosted preview platform or additional agents are prerequisites.
+After separate execution authorization, pursue three small owner outcomes in order:
+
+1. **Retain one explainable candidate after interruption.** Use R0-R3 and the R4 settlement needed for that route; keep conservative accounting until any exemption has affirmative evidence.
+2. **Refuse an avoidable wasted call on one owner-used route.** Add P0-P3 to that registry/retention path, freezing one supported execution profile and its actual role policy before dispatch.
+3. **Deliver one small change with an auditable accepted result.** Add R5 and A2/A3, frozen task/check ownership and explicit demonstration permission; require browser/native evidence only as the chosen task demands.
+
+Share one small receipt format across recovery, acceptance and preflight. GEPA, specialists, dashboards, distributed workflow services, hosted previews and a Pith comparison are not prerequisites for these outcomes.
 
 ## Other retained commitments
 
