@@ -12,6 +12,32 @@ An operation's immutable canonical terminal record binds the existing receipt by
 
 Known, durably projected outcomes still use the existing verification, review, candidate and delivery gates. This prerequisite does not complete recovery, prove exactly-once remote effects, or demonstrate a performance improvement.
 
+### Passive held-scope inspection
+
+Run `node bin/squire.mjs inspect-producers project.json` for one bounded JSON diagnostic (`type: squire.producer-inspection`, `version: 1`). The command reads only `id` and absolute `stateDir` from the supplied config; it does not validate or execute its runtime/check settings. It accepts no options. Existing `status` and HTTP API output remain unchanged.
+
+The selection includes open producer scopes belonging to the project plus scopes explicitly referenced by its retained ticket holds and `producer_unresolved` blocker details (including a referenced conflicting project). Closed historical scopes otherwise remain outside this small view. It joins scope, resource, operation and call-reservation records; `holds` preserves the link from ticket to scope. Resource IDs are the existing canonical repository/branch digests. Project/ticket names are bounded identifiers; malformed IDs become null with an issue code. This is a local diagnostic, not a public export.
+
+| Evidence | Meaning in this view |
+| --- | --- |
+| `registered` | Operation registered; launch unconfirmed. |
+| `supervisor` | Supervisor grant consumed; target launch unconfirmed. |
+| `target` | Target grant consumed immediately before spawn; successful spawn and current liveness remain unconfirmed. |
+| Recorded terminal | Canonical terminal record, including nonzero/null exit codes and receipt digest. `immutableGuard` reports recognition of the database update guard. The artifact itself is not verified. |
+| `terminal_records_present_scope_outcome_unprojected` | All selected operation records have valid terminals, but no scope outcome was recorded. The scope fence remains; this does not establish whether individual ticket updates already happened. |
+| `recorded_closed` | Scope closure and outcome state digest are recorded. This does not establish product acceptance or current liveness. |
+| Reservation without an operation | Retained call identifier with no linked operation evidence; never a refund or retry entitlement. |
+
+`artifacts` supplies an operation ID, a digest of the recorded directory and fixed protocol slots (`<operationId>.receipt.json`, `.request.json`, `.active.json`, `.stdout.log`, `.stderr.log`). These are handles to retained database metadata, not verified file links: presence is `not_checked`. No directory or artifact path from stored data is followed. Requests, logs, argv, prompt/config payloads, free-form blockers, owner/grant tokens and raw paths are omitted. Identifier names can still be private; do not publish this output automatically.
+
+The source database is **never opened by SQLite**. A read-only SQLite connection can still create or update WAL shared memory, so inspection instead reads the fixed existing `squire.sqlite` and optional `squire.sqlite-wal` into a private temporary directory. File identity, size, modification and change times must agree before and after the entire capture. Any rollback journal, detected concurrent change, incompatible SQLite image or read failure returns a sanitized `squire.error` and exit 1 without source recovery. It does not retry. Ordinary local filesystem metadata and cooperative SQLite writers are assumed; this is not an adversarial filesystem snapshot protocol. Reads can update filesystem access times. The command does not mutate source bytes, namespace, mtime or ctime; all SQLite sidecar work is confined to the temporary copy, which is removed afterward.
+
+The captured image is opened read-only with extension loading disabled and trusted schema off. One transaction reads the snapshot, selected records and global event high-water. `snapshot.sha256` identifies the captured DB/WAL bytes, not a persistent state-generation ID. The view does not replay event history or claim complete lifecycle coverage. WAL commits newer than the capture are not part of the result. No `immutable=true` live-database shortcut is used. If private-copy cleanup fails after bounded retries, the command withholds the result and reports `inspection_cleanup` without exposing paths; a private temporary copy may remain for local cleanup.
+
+Limits: 1 MiB config, 64 MiB combined DB/WAL, 2-second cooperative capture budget, 1 MiB project state, 4 KiB per selected field, 200 scopes/hold references and 200 total child records (resources, reservations, operations), 256 KiB JSON output. Size or row exhaustion returns an error rather than an apparently complete truncated view. The time budget is checked between bounded reads; it cannot interrupt a stalled OS filesystem call. Oversized/malformed state or fields and missing/legacy tables are explicitly partial/unknown. An empty selection never means idle or settled.
+
+Inspection creates no source database/schema, migrations, checkpoints, leases, events or reservations. It clears no fences and performs no import, recovery, retry, subprocess, provider query, process/PID probe or benchmark. Controller liveness is always unknown and useful progress is not assessed. Better explanation alone establishes neither improved recovery nor measured time savings. The deterministic fixtures use only disposable SQLite state and fake evidence.
+
 `pause` takes effect at the next boundary; Ctrl+C cancels local jobs and records pause. `resume --retry`, when no producer scope is held, can re-enter verification or postmerge checks after the owner resolves a blocker. Budget ceilings remain durable; changing config for an existing project ID is rejected. Use a new explicitly authorized project when changing scope or budget, preserving the old evidence. Quota waits are automatic and charge neither repair nor rebase counters, but dispatched model calls count against the total call ceiling.
 
 Shipping authorizes merges, not production deployment. Postmerge failure requires owner reconciliation because the branch already contains that commit.
