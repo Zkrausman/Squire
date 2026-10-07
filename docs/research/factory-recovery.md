@@ -1,6 +1,6 @@
 # Squire recovery and delivery hardening
 
-Research snapshot: 6 October 2026. Implementation update: 7 October 2026. Status: proposed hardening with R1 active-evidence inventory and a conservative pre-spawn registration/producer-fencing prerequisite implemented. OS process identity, descendant settlement, automatic result reconciliation and the other slices remain proposed.
+Research snapshot: 6 October 2026. Implementation update: 7 October 2026. Status: R1 active-evidence inventory, conservative pre-spawn registration/producer fencing, and bounded R3 physical-job evidence are implemented. OS process identity, descendant settlement, automatic result reconciliation and broader recovery remain proposed.
 
 See the [research index](README.md) for evidence labels and the combined dependency order, and [acceptance design](factory-acceptance.md) for criterion-to-proof resolution.
 
@@ -16,7 +16,7 @@ The highest-priority changes are:
 4. Retain the exact remote check and merge facts used by delivery, rather than only the final ready state.
 5. Make quota waits, unknown usage and restart budgets visible without changing frozen benchmark accounting.
 
-This remains an implementation design except for the R1 inventory and registration/fencing prerequisites described below. Deterministic offline fixtures exercise process inventory, grants, malformed records, accounting, lease turnover and persistence failures; they do not prove live provider recovery or remote-effect settlement. No provider, application or benchmark execution was performed for this source audit or that improvement. The remaining proposed fault-injection fixtures were not executed. The other crash windows below are deductions from the pinned code, not reproduced failures.
+This remains an implementation design except for the R1 inventory/registration prerequisites and the bounded R3 evidence slice described below. Deterministic offline fixtures exercise process inventory, grants, malformed records, accounting, lease turnover and persistence failures; they do not prove live provider recovery or remote-effect settlement. No provider, application or benchmark execution was performed for this source audit or that improvement. The remaining proposed fault-injection fixtures were not executed. The other crash windows below are deductions from the pinned code, not reproduced failures.
 
 ## Source baseline and limits
 
@@ -55,7 +55,7 @@ Implemented narrow R1 improvement: the [reconciler](../../src/process.mjs) now i
 
 The standalone legacy scanner remains observation-only, with the existing 50-probe bound and 200 ms waits. It never sends a terminating signal or imports a receipt. Production controller admission now additionally refuses unregistered legacy evidence outright, as described below. A live PID, including one that may have been reused or belong to an unrelated process, prevents progress; permission-denied liveness probes also remain live/unknown. A settled or removed record retains the existing behavior. The stored startedAt is validated for shape only: it is **not** an OS process-start identity, ownership proof or executor identity. No PID-reuse detection or full R1 reliability claim is made.
 
-The existing service-name collision with the reserved-in-practice planning job directory is unchanged: a service named job shares its checkout path with planner artifacts. This slice does not add a service-name policy or migrate that namespace.
+The R1 slice retained the baseline planning namespace, where a service named job shared its checkout path with planner artifacts. The bounded R3 slice below puts new physical jobs under jobs/physical/<UUID>, separating new planner artifacts from those checkouts. It adds no service-name policy and does not migrate historical evidence.
 
 The next implemented prerequisite closes the unregistered outer-spawn window using [producer scopes and process operations](../../src/operation-store.mjs) in the existing SQLite store. Each operation is registered before the outer supervisor starts. Compare-and-swap grants admit one supervisor and one target launch; lease turnover cannot grant another launch. Canonical terminal/not-started records are immutable and bind the existing private receipt by digest. Registry rows contain identifiers, paths, hashes and terminal metadata, not prompts, argv or credentials. Call reservation and debit share the existing accounting transaction, with registrations linked to that reservation.
 
@@ -76,6 +76,16 @@ The current adapter declares resume false. The immediate design should remain st
 Process logs have UUID filenames, but prompt.txt, result.txt and worker-temp use the caller's job directory. An explicitly continued logical attempt can revisit that same directory after capacity waiting. schema.json is also directory-scoped, but only planning/review write it; the concrete continuation collision concerns the implementation files. A working directory also changes during repair. This makes a per-job immutable manifest more useful than relying on directory names or a later snapshot of the workspace. [Directory choice](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/controller.mjs#L352-L365), [file writes](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/runtime-codex.mjs#L63-L90).
 
 Use a unique directory per physical job ID. Preserve a manifest for every terminal outcome, including no change, timeout, cancellation, capacity and failure. Final manifests should be write-once; later reconciliation appends a new receipt that points to the original. Do not overwrite the failed attempt when a retry works.
+
+### Bounded R3 physical-job evidence
+
+Controller dispatch now allocates `jobs/physical/<job UUID>` for every physical call, including planning and repeated capacity waits of one continuation. Logical attempts, repair counts, call reservation/debit and role/model policy are unchanged. An exclusive intent records the current job, producer scope, role/runtime, ticket, attempt, continuation and caller-observed source identities; missing identity is explicit null, never borrowed from an older successful implementation.
+
+The controller exports a write-once `terminal.json` before projecting `job.finished`, whose event binds its digest. Metadata is limited to 128 KiB. A separate private normalized result (including explicit absence for compatible version-1 adapters) is limited to 1 MiB. Known Codex prompt/result/schema and process receipt/stdout/stderr files are referenced by byte count and SHA-256; each artifact is bounded to 16 MiB. Process evidence is checked against its registered job/scope and canonical receipt. The JSONL spool records its complete byte/record cursor; malformed or trailing partial records refuse completion. Manifests omit prompt/result text, arguments, environment, tokens and free-form diagnostics. Private raw artifacts retain their existing sensitivity and must not be published as logs.
+
+Runtime completed, failed, timeout, cancellation and capacity outcomes remain separate. Implementation checkpoint writes a separate immutable `candidate.json` referencing the terminal digest, distinguishing a candidate from no-change or checkpoint failure. A completed runtime manifest alone does not establish a candidate; missing disposition remains unknown. Failed/missing/malformed/conflicting exports leave the existing producer fence held. Atomic no-replace publication uses a synced temporary file and hard link; unsupported filesystems fail closed. This is not a power-loss durability guarantee for directory metadata.
+
+The bounded manifest inventories only these known files, not arbitrary workspace or worker-temp contents. Per-job worker-temp directories are retained without reuse; there is no recursive snapshot/export, cleanup, credential search, artifact platform, receipt import, automatic result adoption/replay, scope release, OS process identity or descendant settlement. Crash fixtures and fake CLI tests provide local evidence only. R3's larger recovery design and R4 remain incomplete; historical benchmark evidence stays frozen.
 
 ### The delivery decision is more exact than its stored CI receipt
 
@@ -205,14 +215,14 @@ Do not add Temporal for one owner on one host. Its documented activity retries m
 
 ## Dependency sequence and small implementation slices
 
-The R1 inventory, malformed-evidence refusal and registration/fencing prerequisites above are implemented; the remaining work in these slices is proposed. Each should be a small independently reviewed change with offline tests first; combine only if the resulting diff remains easy to audit. Historical benchmark configurations, outcomes and artifacts stay frozen. The [v0.1 closure record](../releases/0.1/baseline-closure.json) remains closed-incomplete, and the recorded benchmark/comparison hold remains in force. A future baseline or live demonstration needs separate authorization; no run resumes merely because documentation is ready.
+The R1 inventory, malformed-evidence refusal and registration/fencing prerequisites and bounded R3 physical-job evidence above are implemented; the remaining recovery work is proposed. Each should be a small independently reviewed change with offline tests first; combine only if the resulting diff remains easy to audit. Historical benchmark configurations, outcomes and artifacts stay frozen. The [v0.1 closure record](../releases/0.1/baseline-closure.json) remains closed-incomplete, and the recorded benchmark/comparison hold remains in force. A future baseline or live demonstration needs separate authorization; no run resumes merely because documentation is ready.
 
 | Slice | Depends on | Narrow implementation | Evidence required to close |
 | --- | --- | --- | --- |
 | R0 Document current contracts | None | Mark existing vs proposed mechanisms; record source pins and invariants; define job/receipt schema without changing behavior | Review confirms no existing delivery or budget gate weakened |
 | R1 Cover process reconciliation (partial) | R0 | Implemented: planning/GitHub inventory, malformed-record refusal, pre-spawn registration, one-use grants and conservative producer fencing. Proposed: OS identity and descendant settlement | Offline inventory/malformed-record/restart guards are covered; full identity and crash-window acceptance remains open, with no unrelated PID termination |
 | R2 Journal candidate checkpoint | R1 | Candidate intent, prepared commit identity, CAS ref transition and restart adoption | Crash at every candidate boundary converges to one authorized candidate or an exact blocker |
-| R3 Make job artifacts immutable | R1 | Unique job directories, atomic terminal manifest, normalized completed result and spool cursor | All outcomes retain usable evidence; corruption/truncation stays explicit |
+| R3 Make job artifacts immutable (bounded slice implemented) | R1 | Unique physical directories, write-once bounded manifests, normalized result and spool cursor | Offline retention/fencing fixtures implemented; arbitrary workspace/temp snapshots and automatic recovery are not provided |
 | R4 Recover job outcomes and budgets | R2 and R3 | Idempotent receipt import, terminal settlement, quota/logical-attempt distinction, preserved deadlines | No duplicate call debit/import; no restarted budget; bounded capacity hold |
 | R5 Record delivery evidence | R2 and R3 | Publication intent; selected CI check facts; merge provenance and immutable receipt chain | Lost push/PR/merge responses reconcile; stale/wrong-app/check-head evidence blocks |
 | R6 Add exact-boundary readiness | R1 and R3 | Capability/preflight schema and fingerprint; deterministic task-specific probes; explicit native/GUI exclusions | Unsupported route fails before agent dispatch; changes invalidate receipt |
