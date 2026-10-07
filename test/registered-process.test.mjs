@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixture, FixtureRuntime, statusUntil } from './support.mjs';
-import { Blocker } from '../src/contracts.mjs';
+import { Blocker, digest } from '../src/contracts.mjs';
 import { Store } from '../src/store.mjs';
 import { CodexRuntime } from '../src/runtime-codex.mjs';
 import { readCatalog } from '../src/codex-catalog.mjs';
@@ -55,6 +55,33 @@ test('nonzero canonical terminal remains fenced until caller outcome, and exclud
  await repeatBlocked(f);
  assert.equal(await readFile(f.marker,'utf8'),'launch\n');
  assert.equal(f.store.processOperation(result.operationId).terminal,row.terminal);
+});
+test('immutable receipt records launch-bound identity while leaving descendant coverage unknown', async t => {
+ const f=await setup(t); let operationId;
+ const command={...f.command,argv:[process.execPath,'-e','setTimeout(()=>{console.log("identity fixture");process.exit(7)},150)']};
+ const result=await withProducer({...f.context,onRegistered:value=>{operationId=value.id;}},()=>runProcess(command));
+ const receipt=JSON.parse(await readFile(path.join(command.directory,`${operationId}.receipt.json`),'utf8'));
+ const operation=f.store.processOperation(operationId), evidence=receipt.identityEvidence;
+ assert.equal(JSON.parse(operation.terminal).receiptDigest,digest(receipt));
+ assert.equal(evidence.version,1);assert.equal(evidence.operationId,operationId);
+ assert.equal(evidence.requestDigest,operation.request_digest);
+ assert.equal(evidence.supervisor.role,'supervisor');assert.equal(evidence.target.role,'target');
+ assert.equal(evidence.target.operationId,operationId);assert.equal(evidence.target.requestDigest,operation.request_digest);
+ assert.equal(evidence.descendantCoverage.status,'unknown');
+ assert.equal(evidence.descendantCoverage.reason,'no_complete_descendant_inventory');
+ if(process.platform==='linux') {
+  assert.equal(evidence.supervisor.status,'verified');assert.equal(evidence.supervisor.continuity.status,'verified');
+  assert.equal(evidence.target.status,'verified');
+  assert.equal(evidence.target.identity.parentPid,evidence.supervisor.identity.pid);
+  assert.equal(evidence.target.identity.processGroupId,evidence.target.identity.pid);
+  assert.equal(evidence.target.identity.sessionId,evidence.target.identity.pid);
+  assert.equal(evidence.directTerminal.status,'verified');
+ } else {
+  assert.equal(evidence.supervisor.status,'unknown');assert.equal(evidence.target.status,'unknown');
+  assert.equal(evidence.directTerminal.status,'unknown');
+ }
+ assert.equal(result.identityEvidence.directTerminal.status,evidence.directTerminal.status);
+ assert.equal(f.store.db.prepare('SELECT closed_at FROM producer_scopes WHERE id=?').get(f.scopeId).closed_at,null);
 });
 test('registration barrier interruption retains request and debit without any first or second launch',async t=>{
  const f=await setup(t);let operationId,request;
