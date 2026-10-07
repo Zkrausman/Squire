@@ -66,7 +66,7 @@ export async function finishJobEvidence(evidence, { outcome, error, sessionRef, 
     const { directory, intent, reference } = evidence;
     const current = await artifact(directory, 'intent.json');
     if (current.sha256 !== reference.sha256) throw fail();
-    const receipt = outcome?.receipt ?? error?.detail?.receipt;
+    const receipt = outcome?.evidenceProcess === true ? outcome.receipt : error?.detail?.receipt;
     const status = receipt?.timedOut ? 'timeout' : receipt?.stopped ? 'cancelled' : error ? 'failed' : outcome?.outcome;
     if (!['completed', 'waiting_capacity', 'failed', 'timeout', 'cancelled'].includes(status)) throw fail();
     if (outcome?.outcome === 'completed' && status !== 'completed') throw fail();
@@ -77,8 +77,8 @@ export async function finishJobEvidence(evidence, { outcome, error, sessionRef, 
       artifacts.push(await publish(directory, 'normalized-result.json', { version: 1, present: outcome.result !== undefined, ...(outcome.result !== undefined ? { result: outcome.result } : {}) }, 1024 * 1024));
     }
     let processEvidence = null, spool = null;
-    if (receipt?.operationId !== undefined) {
-      const id = receipt.operationId;
+    if (outcome?.evidenceProcess === true || error?.evidenceProcess === true) {
+      const id = receipt?.operationId;
       if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw fail();
       for (const suffix of ['receipt.json', 'stdout.log', 'stderr.log']) artifacts.push(await artifact(directory, `${id}.${suffix}`));
       const raw = JSON.parse(await readFile(path.join(directory, `${id}.receipt.json`), 'utf8'));

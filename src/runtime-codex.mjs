@@ -60,8 +60,8 @@ export class CodexRuntime {
   }
   async execute(job) {
     const evidenceArtifacts = [];
-    try { return { ...await this.executeJob(job, evidenceArtifacts), evidenceArtifacts }; }
-    catch (error) { error.evidenceArtifacts = evidenceArtifacts; throw error; }
+    try { return { ...await this.executeJob(job, evidenceArtifacts), evidenceArtifacts, evidenceProcess: true }; }
+    catch (error) { error.evidenceArtifacts = evidenceArtifacts; error.evidenceProcess = Boolean(error.detail?.receipt?.operationId); throw error; }
   }
   async executeJob(job, evidenceArtifacts) {
     await this.preflight(job.signal);

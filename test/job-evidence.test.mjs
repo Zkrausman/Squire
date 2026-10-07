@@ -107,7 +107,7 @@ test('process evidence distinguishes timeout/cancellation and refuses malformed 
     await writeFile(receipt.stdoutPath, variant === 'malformed' ? '{bad}\n' : variant === 'truncated' ? '{"type":' : '{"type":"turn.failed"}\n');
     await writeFile(receipt.stderrPath, 'private diagnostic sentinel');
     await writeFile(path.join(evidence.directory, `${id}.receipt.json`), JSON.stringify({ ...receipt, ...(variant === 'conflict' ? { exitCode: 9 } : {}) }));
-    const error = { detail: { receipt } };
+    const error = { evidenceProcess: true, detail: { receipt } };
     if (['timeout', 'cancelled'].includes(variant)) {
       await finishJobEvidence(evidence, { error });
       const terminal = await readJobEvidence(evidence.directory, variant);
@@ -136,8 +136,8 @@ test('completed result cannot bless a failed process and inspection recomputes b
   await writeFile(receipt.stdoutPath, '{"type":"turn.failed"}\n');
   await writeFile(receipt.stderrPath, '');
   await writeFile(path.join(evidence.directory, `${id}.receipt.json`), JSON.stringify(receipt));
-  await assert.rejects(() => finishJobEvidence(evidence, { outcome: { ...completed, receipt } }), { code: 'job_evidence_incomplete' });
-  await finishJobEvidence(evidence, { error: { detail: { receipt } } });
+  await assert.rejects(() => finishJobEvidence(evidence, { outcome: { ...completed, receipt, evidenceProcess: true } }), { code: 'job_evidence_incomplete' });
+  await finishJobEvidence(evidence, { error: { evidenceProcess: true, detail: { receipt } } });
   const terminal = JSON.parse(await readFile(path.join(evidence.directory, 'terminal.json')));
   await writeFile(path.join(evidence.directory, 'terminal.json'), JSON.stringify({ ...terminal, spool: { ...terminal.spool, records: 99 } }));
   await assert.rejects(() => readJobEvidence(evidence.directory, 'job'), { code: 'job_evidence_incomplete' });
@@ -160,4 +160,13 @@ test('crash after terminal export before event projection retains evidence and n
   for (let i = 0; i < 2; i++) await assert.rejects(() => new Controller(f.store, f.config.id, { runtime }).step('a'), { code: 'producer_unresolved' });
   assert.deepEqual(await readFile(path.join(directory, 'terminal.json')), bytes);
   assert.equal(f.store.get(f.config.id).agentCalls, 1);
+});
+
+test('opaque version-1 receipt identifiers do not invent local process provenance', async t => {
+  const evidence = await evidenceFixture(t);
+  await finishJobEvidence(evidence, { outcome: { ...completed, receipt: { operationId: 'provider-run-17', timedOut: true } } });
+  const terminal = await readJobEvidence(evidence.directory, 'job');
+  assert.equal(terminal.outcome, 'completed');
+  assert.equal(terminal.process, null); assert.equal(terminal.spool, null);
+  assert.ok(!JSON.stringify(terminal).includes('provider-run-17'));
 });
