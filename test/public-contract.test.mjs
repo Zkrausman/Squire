@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Controller } from '../src/controller.mjs';

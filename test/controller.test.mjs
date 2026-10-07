@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { writeFile, readFile, mkdir } from 'node:fs/promises';
@@ -24,7 +24,7 @@ test('unsettled planning and GitHub records block repeated startup before prefli
       const observed = t.mock.method(process, 'kill', () => true);
       t.mock.method(globalThis, 'setTimeout', callback => { queueMicrotask(callback); });
       for (const [record, message] of [
-        [{ supervisorPid: process.pid, childPid: process.pid, startedAt: 1 }, 'Interrupted job remains live'],
+        [{ supervisorPid: process.pid, childPid: process.pid, startedAt: 1 }, 'Legacy active evidence'],
         [{ supervisorPid: process.pid }, 'Invalid active process record']
       ]) {
         await writeFile(target, JSON.stringify(record));
@@ -560,7 +560,7 @@ test('interrupted candidate checkpoint rejects scope escape and preserves dirty 
   assert.equal(git(prepared.workspace, 'rev-parse', 'HEAD'), ticketBefore.headSha);
   assert.equal(await readFile(unowned, 'utf8'), 'Keep this partial file.\n');
   assert.equal(runtime.calls.length, 0);
-  assert.throws(() => f.store.resume(f.config.id, true, ['a']), /one-time/);
+  assert.throws(() => f.store.resume(f.config.id, true, ['a']), { code: 'producer_unresolved' });
 });
 test('one interrupted logical attempt continues with unchanged counters and fresh verification and review', { timeout: 120000 }, async t => {
   const f = await fixture(t, [correctiveTicket()], { limits: { maxRepairs: 0 } }); let reviewCount = 0, continuationJobDirectory;

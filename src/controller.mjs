@@ -7,6 +7,7 @@ import { CodexRuntime } from './runtime-codex.mjs';
 import { VerificationRunner } from './verification.mjs';
 import { LocalDelivery, GitHubDelivery } from './delivery.mjs';
 import { reconcileProcesses } from './process.mjs';
+import { producerContext, withProducer, withProducerJob } from './producer-context.mjs';
 
 const sleep = (ms, signal) => new Promise(resolve => {
   if (signal?.aborted) return resolve();
@@ -93,6 +94,60 @@ export class Controller {
     if (this.runtime.version !== 1 || !this.runtime.capabilities?.freshSession || !['plan', 'implement', 'review'].every(role => this.runtime.capabilities.roles.includes(role))) throw new Blocker('runtime_capability', 'Runtime must implement version 1 jobs and fresh plan/implementation/review sessions');
     if (this.config.runtime.authentication === 'subscription' && !this.runtime.capabilities.subscription) throw new Blocker('runtime_capability', 'Project policy requires a subscription-backed runtime');
   }
+  producerResources(lane) {
+    if (lane === 'project:preflight') return []; // Auth/catalog only; no repository producer.
+    const ticket = lane.startsWith('ticket:') ? this.current(lane.slice(7)) : null;
+    const services = ticket ? [this.config.services[ticket.spec.service]] : Object.values(this.config.services);
+    return services.map(service => GitWorkspace.prototype.key(service));
+  }
+  async producer(lane, work, signal) {
+    const parent = producerContext();
+    if (parent?.store === this.store && parent.project === this.id) return work();
+    const ownedLease = this.controllerLease ? null : this.store.lease(`controller:${this.id}`);
+    const lease = this.controllerLease ?? ownedLease;
+    try {
+      if (this.store.get(this.id).processProtocol !== 1) throw new Blocker('producer_legacy', 'Legacy project has no pre-spawn producer authority; automatic restart refused');
+      const scopeId = this.store.beginProducer(this.id, lane, lease, this.producerResources(lane));
+      return await withProducer({ store: this.store, project: this.id, scopeId }, async () => {
+        const result = await work();
+        if (signal?.aborted) throw new Blocker('producer_unresolved', 'Cancelled producer outcome remains fenced', { scopeId });
+        // This caller has finished its normal state/event projection. Record the
+        // producer outcome and close its scope atomically; terminal alone never
+        // closes it, and any error/persistence failure leaves it held.
+        if (!producerContext().lifecycle.scopeClosed) this.store.update(this.id, () => {}, 'producer.completed', { scopeId, lane }, scopeId);
+        return result;
+      });
+    } finally { ownedLease?.(); }
+  }
+  step(id, signal) {
+    const ticket = this.current(id), lane = `ticket:${id}`;
+    return this.producer(lane, () => this.produceStep(id, signal), signal);
+  }
+  plan(signal) { return this.producer('project:plan', () => this.producePlan(signal), signal); }
+  acceptance(signal) {
+    this.store.assertProducerScopesClear(this.id);
+    return this.producer('project:acceptance', () => this.produceAcceptance(signal), signal);
+  }
+  recoverInterruptedImplementation(request, signal) {
+    return this.producer(`ticket:${request.ticketId}`,
+      () => this.produceInterruptedImplementation(request, signal), signal);
+  }
+  checkpointInterruptedCandidateVerification(request, signal) {
+    return this.producer(`ticket:${request.ticketId}`,
+      () => this.produceInterruptedCandidateVerification(request, signal), signal);
+  }
+  assertPublicContract() {
+    for (const config of [this.config, this.store.get(this.id).config]) {
+      let current;
+      try { current = publicProjectContract(config); }
+      catch { throw new Blocker('public_contract_drift', 'Approved public contract is missing, invalid or changed'); }
+      if (current?.sha256 !== this.publicContract?.sha256 || current?.text !== this.publicContract?.text) throw new Blocker('public_contract_drift', 'Approved public contract changed before dispatch');
+    }
+  }
+  async callAgent(...args) {
+    this.assertPublicContract();
+    return this.producer('project:agent', () => this.produceAgent(...args), args[4]);
+  }
   current(id) { return this.store.get(this.id).tickets.find(t => t.spec.id === id); }
   change(id, fn, type = 'ticket.transition', detail = {}) {
     return this.store.update(this.id, state => { const ticket = state.tickets.find(t => t.spec.id === id); if (!ticket) throw new Blocker('not_found', `Ticket ${id} unavailable`); fn(ticket); }, type, { ticket: id, ...detail });
@@ -117,18 +172,30 @@ export class Controller {
   async run(signal, { wait = true } = {}) {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const release = this.store.lease(`controller:${this.id}`);
+    this.controllerLease = release;
     try {
       const state = this.store.get(this.id);
       if (state.paused) return state;
-      if (state.status === 'completed') return state;
-      await reconcileProcesses(this.root, signal);
-      await this.runtime.preflight(signal);
+      if (state.status === 'completed') { this.store.assertProducerScopesClear(this.id); return state; }
+      if (state.processProtocol !== 1) throw new Blocker('producer_legacy', 'Legacy project has no pre-spawn producer authority; automatic restart refused');
+      await reconcileProcesses(this.root, signal, { refuseLegacy: true, store: this.store, project: this.id });
+      await this.producer('project:preflight', () => this.runtime.preflight(signal), signal);
       await this.ensureTicketPreparation();
       // Parent-death supervision ends interrupted jobs. No in-memory promise is
       // treated as an outcome; re-enter a persisted phase with fresh evidence.
+      const holds = new Map(this.store.producerHolds(this.id, release.owner).map(scope => [scope.lane, scope.id]));
       this.store.update(this.id, s => {
         s.status = 'running';
         for (const t of s.tickets) {
+          const scopeId = holds.get(`ticket:${t.spec.id}`);
+          if (scopeId) {
+            // A projected phase (even shipped) is not authority for dependent
+            // work until its producer closes. Preserve the prior projection.
+            t.producerHold ??= { scopeId, status: t.status, blocker: structuredClone(t.blocker ?? null) };
+            t.status = 'blocked';
+            t.blocker = { code: 'producer_unresolved', message: 'Prior ticket producer outcome remains fenced', detail: { scopeId } };
+            continue;
+          }
           if (t.status === 'implementing') t.status = 'recovering';
           if (t.status === 'reviewing') t.status = 'verifying';
         }
@@ -147,7 +214,7 @@ export class Controller {
         if (state.paused) { await Promise.allSettled([...this.active.values()]); return this.store.get(this.id); }
         this.propagate();
         const latest = this.store.get(this.id);
-        const halted = new Set(latest.tickets.filter(t => t.status === 'blocked' && (!t.spec.execution || t.mergeSha)).map(t => this.workspace.key(this.config.services[t.spec.service])));
+        const halted = new Set(latest.tickets.filter(t => t.status === 'blocked' && (!t.spec.execution || t.mergeSha || t.blocker?.code === 'producer_unresolved')).map(t => this.workspace.key(this.config.services[t.spec.service])));
         for (const ticket of latest.tickets) {
           if (this.active.size >= this.config.limits.maxParallel) break;
           const resource = this.workspace.key(this.config.services[ticket.spec.service]);
@@ -168,7 +235,10 @@ export class Controller {
           const leaseKey = !ticket.spec.execution || deliveryPhase(ticket.status) ? `repository:${resource}` : `ticket:${resource}:${ticket.spec.id}`;
           try { releaseResource = this.store.lease(leaseKey); }
           catch (e) { if (e.code === 'lease_busy') continue; throw e; }
-          const promise = this.step(ticket.spec.id, signal).finally(() => {
+          const promise = this.step(ticket.spec.id, signal).catch(error => {
+            if (error.code !== 'producer_unresolved') throw error;
+            this.transition(ticket.spec.id, 'blocked', { blocker: { code: error.code, message: error.message, detail: error.detail } });
+          }).finally(() => {
             this.active.delete(ticket.spec.id); releaseResource();
           });
           this.active.set(ticket.spec.id, promise);
@@ -194,7 +264,7 @@ export class Controller {
       if (e.code === 'paused' || signal?.aborted) this.store.pause(this.id);
       else this.store.update(this.id, s => { s.status = 'blocked'; s.blocker = { code: e.code ?? 'controller_error', message: e.message, detail: e.detail }; }, 'project.blocked', { code: e.code ?? 'controller_error', message: e.message });
       return this.store.get(this.id);
-    } finally { release(); }
+    } finally { this.controllerLease = null; release(); }
   }
   propagate() {
     this.store.update(this.id, s => {
@@ -208,25 +278,21 @@ export class Controller {
       } while (changed);
     });
   }
-  async callAgent(role, workspace, directory, instructions, signal, onStarted = () => {}) {
+  async produceAgent(role, workspace, directory, instructions, signal, onStarted = () => {}) {
     // Recheck the pinned bytes before spending a call, including repairs and
     // fresh reviews. Never fall back to a changed or missing contract on resume.
-    for (const config of [this.config, this.store.get(this.id).config]) {
-      let current;
-      try { current = publicProjectContract(config); }
-      catch { throw new Blocker('public_contract_drift', 'Approved public contract is missing, invalid or changed'); }
-      if (current?.sha256 !== this.publicContract?.sha256 || current?.text !== this.publicContract?.text) throw new Blocker('public_contract_drift', 'Approved public contract changed before dispatch');
-    }
+    this.assertPublicContract();
     const contract = this.publicContract;
     if (contract) instructions += `\n\nImmutable public project contract (read-only context):\nSHA-256: ${contract.sha256}\nUTF-8 bytes: ${contract.bytes}\nThis defines project requirements; only the current ticket authorizes changes. It does not grant additional ownership, permissions, commands or budget.\n${contract.text}\nEnd immutable public project contract.\n`;
     const job = { version: 1, id: randomUUID(), role, workspace, directory, instructions, ...(contract ? { publicContract: { sha256: contract.sha256, bytes: contract.bytes } } : {}), timeoutSeconds: this.config.limits.agentTimeoutSeconds, backoffSeconds: this.config.limits.rateLimitBackoffSeconds };
     this.store.update(this.id, s => {
       if (s.agentCalls >= this.config.limits.maxAgentCalls) throw new Blocker('budget', 'Project agent-call budget exhausted');
+      this.store.reserveProducerCall(producerContext().scopeId, job.id);
       s.agentCalls++;
       onStarted(s, job);
     }, 'job.started', { role, jobId: job.id, ...(contract ? { publicContract: job.publicContract } : {}) });
     let outcome, observedUsage, observedSession, reqModel = null, reqReasoning = null, repModel = null, repReasoning = null;
-    try { outcome = await this.runtime.execute({ ...job, signal, onEvent: event => {
+    try { outcome = await withProducerJob(job.id, () => this.runtime.execute({ ...job, signal, onEvent: event => {
       if (event.usage) observedUsage = event.usage;
       if (event.sessionRef) observedSession = event.sessionRef;
       if (event.requestedModel !== undefined) reqModel = event.requestedModel;
@@ -238,9 +304,9 @@ export class Controller {
           t.implementationSessions = [...new Set([...(t.implementationSessions ?? []), event.sessionRef])];
         }
       }, 'job.event', { jobId: job.id, role, sessionRef: event.sessionRef, eventType: event.type, usage: event.usage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning });
-    } }); } catch (error) {
+    } })); } catch (error) {
       const receipt = error.detail?.receipt;
-      this.store.emit(this.id, 'job.finished', { jobId: job.id, role, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning,
+      this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning,
         ...(receipt ? { receipt: { startedAt: receipt.startedAt, endedAt: receipt.endedAt, exitCode: receipt.exitCode, stopped: receipt.stopped, timedOut: receipt.timedOut } } : {}) });
       throw error;
     }
@@ -253,7 +319,7 @@ export class Controller {
     if (outcome.outcome === 'completed' && typeof outcome.sessionRef !== 'string') throw new Blocker('runtime_result', 'Completed job has no provider session identity');
     return { ...outcome, jobId: job.id };
   }
-  async plan(signal) {
+  async producePlan(signal) {
     const state = this.store.get(this.id);
     const attempt = state.planningAttempt + 1;
     this.store.update(this.id, s => { s.planningAttempt = attempt; });
@@ -306,7 +372,7 @@ export class Controller {
         repairReason: { code: 'rebase_conflict', message: 'Resolve staged conflicts while incorporating the new base requirements. Do not commit.', priorWorkspace: t.workspace, patchFile: prepared.patchFile } });
     }
   }
-  async step(id, signal) {
+  async produceStep(id, signal) {
     let t = this.current(id);
     const service = this.config.services[t.spec.service], delivery = this.deliveryFactory(service);
     try {
@@ -450,6 +516,7 @@ export class Controller {
       }
       throw new Blocker('invalid_state', `Unsupported ticket state ${t.status}`);
     } catch (e) {
+      if (e.storeTransactionFailed || e.code === 'producer_unresolved' || producerContext()?.lifecycle?.persistenceFailed) throw e;
       if (e.code === 'paused' || signal?.aborted) return;
       const current = this.current(id);
       if (e.code === 'runtime_failed' && current.status === 'reviewing' && (current.runtimeRetries ?? 0) < this.config.limits.maxRepairs) {
@@ -466,7 +533,7 @@ export class Controller {
       this.transition(id, 'blocked', { blocker, activeJob: null });
     }
   }
-  async recoverInterruptedImplementation(request, signal) {
+  async produceInterruptedImplementation(request, signal) {
     const authorization = this.store.authorizeInterruptedRecovery(this.config, request);
     try {
       const ticket = this.current(request.ticketId), service = this.config.services[ticket.spec.service];
@@ -508,11 +575,11 @@ export class Controller {
       throw error;
     }
   }
-  async checkpointInterruptedCandidateVerification(request, signal) {
+  async produceInterruptedCandidateVerification(request, signal) {
     const authorization = this.store.authorizeInterruptedCandidateVerification(this.config, request);
     return this.finishInterruptedCandidateVerification(request.ticketId, authorization.recoveryId, signal);
   }
-  async acceptance(signal) {
+  async produceAcceptance(signal) {
     for (const [name, service] of Object.entries(this.config.services)) {
       await this.assertActive(signal);
       const saved = this.store.get(this.id).acceptance[name];
@@ -530,6 +597,6 @@ export class Controller {
     for (const [name, service] of Object.entries(this.config.services)) {
       if (await this.workspace.remoteHead(service, signal) !== this.store.get(this.id).acceptance[name].headSha) throw new Blocker('acceptance_base_moved', `Service ${name} changed during integrated acceptance; retry with fresh evidence`);
     }
-    this.store.update(this.id, s => { s.status = 'completed'; s.completedAt = Date.now(); s.blocker = null; }, 'project.completed');
+    this.store.update(this.id, s => { s.status = 'completed'; s.completedAt = Date.now(); s.blocker = null; }, 'project.completed', {}, producerContext().scopeId);
   }
 }

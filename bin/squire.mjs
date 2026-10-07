@@ -36,8 +36,12 @@ async function main() {
       const runtime = { ...config.runtime, ...overrides };
       const next = validateConfig({ ...config, runtime });
       const probe = new CodexRuntime(runtime, path.join(store.directory, 'projects', config.id));
-      const availability = await probe.preflight();
-      const state = store.configureRuntime(config, next.runtime);
+      const controller = new Controller(store, config.id);
+      let availability;
+      const state = await controller.producer('project:configure-runtime', async () => {
+        availability = await probe.preflight();
+        return store.configureRuntime(config, next.runtime);
+      });
       const temp = `${filename}.runtime.tmp`;
       await writeFile(temp, `${JSON.stringify(state.config, null, 2)}\n`);
       await rename(temp, filename);
@@ -90,8 +94,10 @@ async function main() {
     if (!['run', 'doctor'].includes(command)) throw new Error(`Unknown command ${command}`);
     const controller = new Controller(store, config.id);
     if (command === 'doctor') {
-      await controller.runtime.preflight();
-      for (const service of Object.values(config.services)) await controller.deliveryFactory(service).preflight(service);
+      await controller.producer('project:doctor', async () => {
+        await controller.runtime.preflight();
+        for (const service of Object.values(config.services)) await controller.deliveryFactory(service).preflight(service);
+      });
       print({ ready: true, authentication: 'chatgpt', project: config.id }); return;
     }
     const abort = new AbortController(), cancel = () => abort.abort();

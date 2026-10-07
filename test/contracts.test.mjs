@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import { validateConfig, validateTickets, validateReview, pathIsOwned, planSchema, reviewSchema } from '../src/contracts.mjs';
 import { ticket } from './support.mjs';
