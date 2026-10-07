@@ -1,13 +1,13 @@
 import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { writeFile, readFile, mkdir } from 'node:fs/promises';
 import { Controller } from '../src/controller.mjs';
 import { Blocker, digest } from '../src/contracts.mjs';
 import { LocalDelivery } from '../src/delivery.mjs';
 import { pathToFileURL } from 'node:url';
 import { checkpointFixtureCandidate, fixture, ticket, FixtureRuntime, statusUntil, git } from './support.mjs';
+import { correctiveExecution, correctiveTicket, correctiveAdmission, prepareInterruptedCorrection, reserveHistoricalTicketJob } from './controller-fixtures.mjs';
 
 test('unsettled planning and GitHub records block repeated startup before preflight or dispatch without spending counters', async t => {
   for (const directory of ['planning/2/job', 'github-logs']) {
@@ -109,16 +109,6 @@ test('exhausted repair budget blocks dependency instead of producing success', {
   assert.equal(runtime.calls.length, 2); assert.equal(git(f.root, '--git-dir', f.source, 'rev-list', '--count', 'main'), '1');
 });
 
-const correctiveExecution = {
-  version: 1, outcome: 'Add the feature with stable numeric behavior.', ownedPaths: ['feature-a.mjs'], contextPaths: [],
-  invariants: ['Keep the exported add function stable.'],
-  checklist: [
-    { id: 'base-one', assertion: 'Addition works.', steps: ['Run the behavior check.'], evidence: 'Passing assertion.' },
-    { id: 'base-two', assertion: 'Negative values work.', steps: ['Run with a negative value.'], evidence: 'Observed expected value.' }
-  ],
-  stopWhen: 'Stop if the feature cannot be verified.', maxAttempts: 1
-};
-const correctiveTicket = () => ({ ...ticket('a'), execution: structuredClone(correctiveExecution) });
 const plannedTicket = (id, ownedPaths, dependsOn = []) => ({
   ...ticket(id, dependsOn),
   execution: { ...structuredClone(correctiveExecution), ownedPaths }
@@ -287,21 +277,6 @@ test('brief plans without structured ownership retain trusted validation prepara
   assert.match(implementationPrompt, /configuredCheckOwners/);
   assert.match(implementationPrompt, /nativeEnvironment/);
 });
-const correctiveAdmission = headSha => ({
-  ticketId: 'a', expectedHeadSha: headSha, outcome: 'Handle the reviewed boundary case.',
-  instructions: 'Keep the change within feature-a.mjs and add the boundary regression.',
-  checklist: [{ id: 'corrective-one', assertion: 'The boundary case works.', steps: ['Run the boundary regression.'], evidence: 'Observed expected output.' }]
-});
-const interruptedCorrectionReceipt = workspace => ({
-  code: 'runtime_failed', role: 'implement', message: 'The corrective implementation timed out during final verification.',
-  detail: { receipt: { argv: ['codex', 'exec', '--ignore-user-config', '--json', '--ephemeral', '-C', workspace, '--sandbox', 'workspace-write'],
-    startedAt: 10, endedAt: 20, exitCode: null, stopped: false, timedOut: true, outputExceeded: false, launchError: null } }
-});
-const interruptedCorrectionRequest = ticketState => ({ ticketId: ticketState.spec.id, expectedWorkspace: ticketState.workspace,
-  expectedBaseSha: ticketState.baseSha, expectedBeforeAgentHead: ticketState.beforeAgentHead, expectedHeadSha: ticketState.headSha,
-  expectedTreeSha: ticketState.treeSha, expectedCorrectionAdmissionId: ticketState.correctionAdmission.admissionId,
-  expectedCorrectionDigest: digest(ticketState.correctionAdmission), expectedBlockerDigest: digest(ticketState.blocker),
-  expectedProcessReceiptDigest: digest(ticketState.blocker.detail.receipt) });
 async function reachCorrectionBlock(f, runtime) {
   const initial = await new Controller(f.store, f.config.id, { runtime }).run();
   assert.equal(initial.tickets[0].blocker.code, 'slice_budget', JSON.stringify(initial.tickets[0]));
@@ -311,61 +286,6 @@ async function reachCorrectionBlock(f, runtime) {
   assert.equal(receipt.status, 'repairing');
   f.store.resume(f.config.id);
 }
-async function reserveHistoricalTicketJob(f, controller, ticketId = 'a') {
-  const jobId = randomUUID(), lease = f.store.lease(`controller:${f.config.id}`);
-  try {
-    const scopeId = f.store.beginProducer(f.config.id, `ticket:${ticketId}`, lease, controller.producerResources(`ticket:${ticketId}`));
-    f.store.reserveProducerCall(scopeId, jobId);
-    f.store.update(f.config.id, () => {}, 'producer.completed', { scopeId, lane: `ticket:${ticketId}` }, scopeId);
-    return jobId;
-  } finally { lease(); }
-}
-async function prepareInterruptedCorrection(t, partialSource) {
-  const f = await fixture(t, [correctiveTicket()], { limits: { maxRepairs: 0 } });
-  const runtime = new FixtureRuntime(), controller = new Controller(f.store, f.config.id, { runtime });
-  await statusUntil(f.store, controller, 'prepared');
-  const prepared = f.store.get(f.config.id).tickets[0];
-  await writeFile(path.join(prepared.workspace, 'feature-a.mjs'), 'export const add=(a,b)=>a+b;\n// previous verified candidate\n');
-  const prior = await checkpointFixtureCandidate(f, controller.workspace, { ...prepared, beforeAgentHead: prepared.baseSha }, f.config.services.app);
-  await writeFile(path.join(prepared.workspace, 'feature-a.mjs'), partialSource);
-  const priorImplementation = { sessionRef: 'prior-completed-implementation', jobId: 'prior-implementation-job' };
-  f.store.update(f.config.id, state => {
-    const ticket = state.tickets[0];
-    Object.assign(ticket, {
-      status: 'blocked', attempts: 2, repairs: 1, rebases: 0, reviewAttempts: 1,
-      beforeAgentHead: prior.headSha, headSha: prior.headSha, treeSha: prior.treeSha,
-      implementation: priorImplementation, implementationSessions: [priorImplementation.sessionRef, 'timed-out-correction-session'],
-      correctionAdmission: { admissionId: 'correction-385', outcome: 'Complete the already admitted fix.',
-        instructions: 'Keep changes within the original owned paths.', checklist: structuredClone(correctiveAdmission(prior.headSha).checklist),
-        ceilings: { implementAttempts: 2, repairs: 1 }, evidence: { original: true } },
-      interruptedContinuation: { continuationId: 'continuation-385', status: 'completed', logicalAttempt: 1 },
-      partialRecovery: { recoveryId: 'partial-recovery-385', status: 'completed' },
-      blocker: interruptedCorrectionReceipt(prepared.workspace),
-      review: { headSha: prior.headSha, verdict: 'fail', summary: 'Prior review.', findings: [] },
-      verification: { passed: false, headSha: prior.headSha, treeSha: prior.treeSha, policyDigest: digest(f.config.services.app.checks), results: [] }
-    });
-    state.agentCalls = 7;
-  });
-  f.store.pause(f.config.id);
-  const before = f.store.get(f.config.id), ticketBefore = before.tickets[0];
-  return { f, runtime, controller, prepared, before, ticketBefore, request: interruptedCorrectionRequest(ticketBefore) };
-}
-
-test('interrupted-candidate projection failure leaves the authorized record and candidate intent unresolved', { timeout: 90000 }, async t => {
-  const { f, controller, prepared, ticketBefore, request } = await prepareInterruptedCorrection(t, 'export const add=(a,b)=>a+b;\n// interrupted candidate\n');
-  f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
-    BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
-  await assert.rejects(() => controller.checkpointInterruptedCandidateVerification(request), error =>
-    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
-  const saved = f.store.get(f.config.id).tickets[0], intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=? ORDER BY created_at DESC LIMIT 1').get('a');
-  assert.equal(saved.status, 'recovering_candidate');
-  assert.equal(saved.interruptedCandidateVerification.status, 'authorized');
-  assert.equal(saved.headSha, ticketBefore.headSha); assert.equal(saved.treeSha, ticketBefore.treeSha);
-  assert.equal(intent.purpose, 'interrupted_candidate_verification');
-  assert.equal(intent.recovery_id, saved.interruptedCandidateVerification.recoveryId); assert.equal(intent.phase, 'intent');
-  assert.equal(git(prepared.workspace, 'rev-parse', 'HEAD'), intent.commit_sha);
-  assert.equal(f.store.db.prepare('SELECT closed_at FROM producer_scopes WHERE id=?').get(intent.scope_id).closed_at, null);
-});
 
 test('completed failed application verification admits a bounded repair and still requires fresh gates', { timeout: 120000 }, async t => {
   const f = await fixture(t, [correctiveTicket()], { limits: { maxRepairs: 0 } });
@@ -469,36 +389,7 @@ test('interrupted implementation retains partial work and re-enters trusted gate
   assert.equal(checkpoint.jobId, result.tickets[0].activeJob);
   assert.equal(runtime.calls.filter(c => c.role === 'implement').length, 0); assert.equal(runtime.calls.filter(c => c.role === 'review').length, 1);
 });
-test('normal implementation projection failure preserves the candidate intent and producer fence', { timeout: 90000 }, async t => {
-  const f = await fixture(t), controller = new Controller(f.store, f.config.id, { runtime: new FixtureRuntime() });
-  await statusUntil(f.store, controller, 'prepared');
-  f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
-    BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
-  await assert.rejects(() => controller.step('a'), error =>
-    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
-  const ticketState = f.store.get(f.config.id).tickets[0];
-  const intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=?').get('a');
-  assert.equal(ticketState.status, 'implementing'); assert.equal(ticketState.activeJob, intent.job_id);
-  assert.equal(intent.purpose, 'implementation'); assert.equal(intent.phase, 'intent');
-  assert.equal(git(ticketState.workspace, 'rev-parse', 'HEAD'), intent.commit_sha);
-  assert.equal(f.store.db.prepare('SELECT closed_at FROM producer_scopes WHERE id=?').get(intent.scope_id).closed_at, null);
-});
-test('automatic-recovery projection failure keeps its old job identity and unresolved intent', { timeout: 90000 }, async t => {
-  const f = await fixture(t), controller = new Controller(f.store, f.config.id, { runtime: new FixtureRuntime() });
-  await statusUntil(f.store, controller, 'prepared');
-  const prepared = f.store.get(f.config.id).tickets[0], jobId = await reserveHistoricalTicketJob(f, controller);
-  await writeFile(path.join(prepared.workspace, 'feature-a.mjs'), 'export const add=(a,b)=>a+b;\n');
-  controller.transition('a', 'recovering', { beforeAgentHead: prepared.baseSha, activeJob: jobId });
-  f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
-    BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
-  await assert.rejects(() => controller.step('a'), error =>
-    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
-  const saved = f.store.get(f.config.id).tickets[0], intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=?').get('a');
-  assert.equal(saved.status, 'recovering'); assert.equal(saved.activeJob, jobId);
-  assert.equal(intent.purpose, 'automatic_recovery'); assert.equal(intent.job_id, jobId); assert.equal(intent.phase, 'intent');
-  assert.equal(git(saved.workspace, 'rev-parse', 'HEAD'), intent.commit_sha);
-  assert.equal(f.store.db.prepare('SELECT closed_at FROM producer_scopes WHERE id=?').get(intent.scope_id).closed_at, null);
-});
+
 test('explicit timed-out implementation recovery checkpoints only owned partial work before continuation', { timeout: 90000 }, async t => {
   const f = await fixture(t, [correctiveTicket()]), runtime = new FixtureRuntime(), controller = new Controller(f.store, f.config.id, { runtime });
   await statusUntil(f.store, controller, 'prepared');
@@ -541,32 +432,7 @@ test('explicit timed-out implementation recovery checkpoints only owned partial 
   assert.equal(continuation.status, 'continuing');
   assert.equal(f.store.get(f.config.id).tickets[0].attempts, ticketBefore.attempts);
 });
-test('partial-recovery projection failure retains the authorized recovery and open fence', { timeout: 90000 }, async t => {
-  const f = await fixture(t, [correctiveTicket()]), controller = new Controller(f.store, f.config.id, { runtime: new FixtureRuntime() });
-  await statusUntil(f.store, controller, 'prepared');
-  const prepared = f.store.get(f.config.id).tickets[0];
-  await writeFile(path.join(prepared.workspace, 'feature-a.mjs'), 'export const add=(a,b)=>a+b;\n// useful partial work\n');
-  f.store.update(f.config.id, state => Object.assign(state.tickets[0], {
-    status: 'blocked', attempts: 1, repairs: 0, beforeAgentHead: prepared.baseSha, headSha: null, treeSha: null,
-    implementation: null, activeJob: null,
-    blocker: { code: 'runtime_failed', role: 'implement', message: 'Implementation timed out.', detail: { receipt: {
-      argv: ['codex', 'exec', '--sandbox', 'workspace-write'], exitCode: null, stopped: false, timedOut: true,
-      outputExceeded: false, launchError: null
-    } } }
-  }));
-  f.store.pause(f.config.id);
-  const before = f.store.get(f.config.id).tickets[0];
-  f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
-    BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
-  await assert.rejects(() => controller.recoverInterruptedImplementation({ ticketId: 'a', expectedWorkspace: before.workspace,
-    expectedBaseSha: before.baseSha, expectedBeforeAgentHead: before.beforeAgentHead }), error =>
-    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
-  const saved = f.store.get(f.config.id).tickets[0], intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=?').get('a');
-  assert.equal(saved.status, 'recovering_partial'); assert.equal(saved.partialRecovery.status, 'authorized');
-  assert.equal(intent.purpose, 'partial_recovery'); assert.equal(intent.recovery_id, saved.partialRecovery.recoveryId); assert.equal(intent.phase, 'intent');
-  assert.equal(git(saved.workspace, 'rev-parse', 'HEAD'), intent.commit_sha);
-  assert.equal(f.store.db.prepare('SELECT closed_at FROM producer_scopes WHERE id=?').get(intent.scope_id).closed_at, null);
-});
+
 test('partial recovery rejects out-of-scope work without discarding it', { timeout: 90000 }, async t => {
   const f = await fixture(t, [correctiveTicket()]), runtime = new FixtureRuntime(), controller = new Controller(f.store, f.config.id, { runtime });
   await statusUntil(f.store, controller, 'prepared');
