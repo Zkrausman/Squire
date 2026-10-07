@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, realpath, rename, symlink } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { fixture, git } from './support.mjs';
 import { GitWorkspace } from '../src/workspace.mjs';
@@ -35,13 +36,19 @@ async function candidateFixture(t) {
   return { ...f, workspace, directory, prepared, current, scopeId, producer, context, checkpoint, sha, release };
 }
 
-test('native Windows workspace spelling may differ from realpath while naming the same managed checkout', { skip: process.platform !== 'win32' }, async t => {
+test('Windows short workspace spelling is canonicalized before checkpointing', { skip: process.platform !== 'win32' }, async t => {
   const f = await candidateFixture(t), canonical = await realpath(f.directory);
-  assert.notEqual(path.resolve(f.directory), canonical, 'This Windows runner must expose the short/canonical path spelling difference');
-  assert.equal(await realpath(f.directory), await realpath(path.join(f.workspace.root, 'workspaces', 'a-1')));
-  const candidate = await f.checkpoint();
+  const shortWorkspace = execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', 'for %I in (.) do @echo %~fsI'],
+    { cwd: f.directory, encoding: 'utf8', windowsHide: true }).trim();
+  assert.ok(shortWorkspace, 'cmd.exe must return the workspace short path spelling');
+  if (path.resolve(shortWorkspace).toLowerCase() === path.resolve(canonical).toLowerCase()) {
+    t.skip('The filesystem does not expose a distinct 8.3 workspace spelling');
+    return;
+  }
+  assert.equal(await realpath(shortWorkspace), canonical, 'the short path must resolve to the fixture checkout');
+  const candidate = await f.checkpoint({ ...f.current, workspace: shortWorkspace });
   assert.equal(f.sha('HEAD'), candidate.headSha);
-  assert.equal(f.store.candidateCheckpoint(candidate.operationId).workspace, f.directory);
+  assert.equal(f.store.candidateCheckpoint(candidate.operationId).workspace, shortWorkspace);
 });
 
 test('candidate checkpoint rejects a different workspace generation even when it is a valid managed clone', async t => {
