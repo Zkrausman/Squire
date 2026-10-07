@@ -2,6 +2,8 @@ import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdir, writeFile, readFile, access } from 'node:fs/promises';
+import { Controller } from '../src/controller.mjs';
+import { readJobEvidence } from '../src/job-evidence.mjs';
 import { CodexRuntime } from '../src/runtime-codex.mjs';
 import { fixture } from './support.mjs';
 
@@ -140,4 +142,19 @@ test('capacity failures require capacity context and local timeout takes precede
 test('invalid response schema is infrastructure failure rather than application repair', async t => {
   const f = await runtimeFixture(t); process.env.SQUIRE_FAKE_RESULT = 'schema'; t.after(() => delete process.env.SQUIRE_FAKE_RESULT);
   await assert.rejects(() => f.runtime.execute({ id: 'schema', role: 'review', workspace: f.seed, directory: path.join(f.runtimeRoot, 'schema'), instructions: 'Review', timeoutSeconds: 10, backoffSeconds: 60 }), e => e.code === 'runtime_schema');
+});
+
+test('controller retains immutable Codex artifact and process provenance using only the fake CLI', async t => {
+  const f = await runtimeFixture(t);
+  const controller = new Controller(f.store, f.config.id, { runtime: f.runtime });
+  const result = await controller.callAgent('implement', f.seed, path.join(f.root, 'logical-job'), 'Fixture task', undefined);
+  const terminal = await readJobEvidence(result.evidence.directory, result.jobId);
+  assert.equal(terminal.outcome, 'completed');
+  assert.ok(terminal.artifacts.some(item => item.file === 'prompt.txt'));
+  assert.ok(terminal.artifacts.some(item => item.file === 'result.txt'));
+  assert.equal(terminal.process.operationId, result.receipt.operationId);
+  assert.ok(terminal.spool.records >= 2);
+  const before = await readFile(path.join(result.evidence.directory, 'prompt.txt'));
+  await assert.rejects(() => f.runtime.execute({ id: result.jobId, role: 'implement', workspace: f.seed, directory: result.evidence.directory, instructions: 'replacement', timeoutSeconds: 10 }), { code: 'EEXIST' });
+  assert.deepEqual(await readFile(path.join(result.evidence.directory, 'prompt.txt')), before);
 });

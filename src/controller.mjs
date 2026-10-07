@@ -7,6 +7,7 @@ import { CodexRuntime } from './runtime-codex.mjs';
 import { VerificationRunner } from './verification.mjs';
 import { LocalDelivery, GitHubDelivery } from './delivery.mjs';
 import { reconcileProcesses } from './process.mjs';
+import { beginJobEvidence, finishJobEvidence, recordCandidateDisposition } from './job-evidence.mjs';
 import { producerContext, withProducer, withProducerJob } from './producer-context.mjs';
 
 const sleep = (ms, signal) => new Promise(resolve => {
@@ -278,19 +279,21 @@ export class Controller {
       } while (changed);
     });
   }
-  async produceAgent(role, workspace, directory, instructions, signal, onStarted = () => {}) {
+  async produceAgent(role, workspace, directory, instructions, signal, onStarted = () => {}, provenance = {}) {
     // Recheck the pinned bytes before spending a call, including repairs and
     // fresh reviews. Never fall back to a changed or missing contract on resume.
     this.assertPublicContract();
     const contract = this.publicContract;
     if (contract) instructions += `\n\nImmutable public project contract (read-only context):\nSHA-256: ${contract.sha256}\nUTF-8 bytes: ${contract.bytes}\nThis defines project requirements; only the current ticket authorizes changes. It does not grant additional ownership, permissions, commands or budget.\n${contract.text}\nEnd immutable public project contract.\n`;
-    const job = { version: 1, id: randomUUID(), role, workspace, directory, instructions, ...(contract ? { publicContract: { sha256: contract.sha256, bytes: contract.bytes } } : {}), timeoutSeconds: this.config.limits.agentTimeoutSeconds, backoffSeconds: this.config.limits.rateLimitBackoffSeconds };
+    const jobId = randomUUID();
+    const job = { version: 1, id: jobId, role, workspace, directory: path.join(this.root, 'jobs', 'physical', jobId), provenance, instructions, ...(contract ? { publicContract: { sha256: contract.sha256, bytes: contract.bytes } } : {}), timeoutSeconds: this.config.limits.agentTimeoutSeconds, backoffSeconds: this.config.limits.rateLimitBackoffSeconds };
     this.store.update(this.id, s => {
       if (s.agentCalls >= this.config.limits.maxAgentCalls) throw new Blocker('budget', 'Project agent-call budget exhausted');
       this.store.reserveProducerCall(producerContext().scopeId, job.id);
       s.agentCalls++;
       onStarted(s, job);
     }, 'job.started', { role, jobId: job.id, ...(contract ? { publicContract: job.publicContract } : {}) });
+    const evidence = await beginJobEvidence(job, { projectId: this.id, scopeId: producerContext().scopeId, runtime: this.runtime instanceof CodexRuntime ? 'codex' : 'version-1-adapter', ticketId: null, attempt: null, continuationId: null, source: null, ...provenance });
     let outcome, observedUsage, observedSession, reqModel = null, reqReasoning = null, repModel = null, repReasoning = null;
     try { outcome = await withProducerJob(job.id, () => this.runtime.execute({ ...job, signal, onEvent: event => {
       if (event.usage) observedUsage = event.usage;
@@ -306,7 +309,8 @@ export class Controller {
       }, 'job.event', { jobId: job.id, role, sessionRef: event.sessionRef, eventType: event.type, usage: event.usage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning });
     } })); } catch (error) {
       const receipt = error.detail?.receipt;
-      this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning,
+      const terminal = await finishJobEvidence(evidence, { error, sessionRef: observedSession, models: { requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning } });
+      this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, evidence: terminal, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning,
         ...(receipt ? { receipt: { startedAt: receipt.startedAt, endedAt: receipt.endedAt, exitCode: receipt.exitCode, stopped: receipt.stopped, timedOut: receipt.timedOut } } : {}) });
       throw error;
     }
@@ -314,10 +318,11 @@ export class Controller {
     const finalReqReasoning = outcome.requestedReasoning !== undefined ? outcome.requestedReasoning : reqReasoning;
     const finalRepModel = outcome.reportedModel !== undefined ? outcome.reportedModel : repModel;
     const finalRepReasoning = outcome.reportedReasoning !== undefined ? outcome.reportedReasoning : repReasoning;
-    this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, outcome: outcome.outcome, sessionRef: outcome.sessionRef, usage: outcome.usage, requestedModel: finalReqModel, requestedReasoning: finalReqReasoning, reportedModel: finalRepModel, reportedReasoning: finalRepReasoning });
+    const terminal = await finishJobEvidence(evidence, { outcome, models: { requestedModel: finalReqModel, requestedReasoning: finalReqReasoning, reportedModel: finalRepModel, reportedReasoning: finalRepReasoning } });
+    this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, evidence: terminal, outcome: outcome.outcome, sessionRef: outcome.sessionRef, usage: outcome.usage, requestedModel: finalReqModel, requestedReasoning: finalReqReasoning, reportedModel: finalRepModel, reportedReasoning: finalRepReasoning });
     if (!['completed', 'waiting_capacity'].includes(outcome?.outcome)) throw new Blocker('runtime_result', 'Runtime returned unsupported job outcome');
     if (outcome.outcome === 'completed' && typeof outcome.sessionRef !== 'string') throw new Blocker('runtime_result', 'Completed job has no provider session identity');
-    return { ...outcome, jobId: job.id };
+    return { ...outcome, jobId: job.id, evidence };
   }
   async producePlan(signal) {
     const state = this.store.get(this.id);
@@ -331,7 +336,7 @@ export class Controller {
     }
     const workspace = Object.values(paths)[0].directory;
     const instructions = `Prepare complete, reviewable software outcomes. Read applicable AGENTS.md and inspect the named service workspaces, without editing files.\nGoal: ${this.publicContract ? 'See the immutable public project contract below.' : this.config.goal}\nServices: ${JSON.stringify(paths)}\nChoose work item boundaries from coherent outcomes, explicit file ownership and dependency interfaces. Do not impose a fixed ticket count, file count or one-file rule. Every work item must have a useful outcome, explicit acceptance criteria, dependency IDs and a focused regression test owner/path within its owned paths or through a named planned dependency. Use the existing test conventions and report a missing ownership prerequisite instead of assuming authority to edit a test path. The controller attaches each work item's native platform, architecture, Node executable/version, ticket workspace working directory, setup commands and configured checks before implementation dispatch; use those commands as the reproducible environment and do not invent replacements. Use dependencies for cross-service integration. Do not add repositories, permissions, check commands, deployments or unrelated cleanup. Existing required checks and policy are authoritative. No separate planning ticket is needed. Return the required JSON schema.`;
-    const result = await this.callAgent('plan', workspace, path.join(this.root, 'planning', String(attempt), 'job'), instructions, signal);
+    const result = await this.callAgent('plan', workspace, path.join(this.root, 'planning', String(attempt), 'job'), instructions, signal, undefined, { attempt, source: Object.fromEntries(Object.entries(paths).map(([name, value]) => [name, { baseSha: value.baseSha }])) });
     if (result.outcome === 'waiting_capacity') {
       this.store.update(this.id, s => { s.status = 'waiting_capacity'; s.planRetryAt = result.retryAt; }, 'project.waiting_capacity');
       return false;
@@ -423,14 +428,20 @@ export class Controller {
           const ticket = s.tickets.find(x => x.spec.id === id);
           Object.assign(ticket, { status: 'implementing', attempts: continuing ? ticket.attempts : attempt, beforeAgentHead: before.headSha, activeJob: job.id, repairs: ticket.repairs + (repairing ? 1 : 0), verification: null, review: null });
           if (continuing) Object.assign(ticket.interruptedContinuation, { status: 'running', startedAt: Date.now(), jobId: job.id, logicalAttempt: ticket.attempts });
-        });
+        }, { ticketId: id, attempt, continuationId: continuing ? t.interruptedContinuation.continuationId : null, source: { headSha: before.headSha, treeSha: before.treeSha, dirty: before.dirty, baseSha: t.baseSha } });
         if (outcome.outcome === 'waiting_capacity') {
           this.transition(id, 'waiting_capacity', { retryAt: outcome.retryAt, resumeStatus: continuing ? 'continuing' : repairing ? 'repairing' : 'prepared', capacity: outcome.detail });
           if (continuing) this.change(id, ticket => { ticket.interruptedContinuation.status = 'waiting_capacity'; });
           if (repairing) this.change(id, ticket => { ticket.repairs--; });
           return;
         }
-        const candidate = await this.workspace.checkpoint(this.current(id), service, signal);
+        let candidate;
+        try { candidate = await this.workspace.checkpoint(this.current(id), service, signal); }
+        catch (error) {
+          await recordCandidateDisposition(outcome.evidence, { outcome: error.code === 'no_candidate' ? 'no_change' : 'failed' });
+          throw error;
+        }
+        await recordCandidateDisposition(outcome.evidence, { outcome: 'candidate', headSha: candidate.headSha, treeSha: candidate.treeSha });
         const implementation = { sessionRef: outcome.sessionRef, jobId: outcome.jobId, usage: outcome.usage,
           ...(continuing ? { continuationId: t.interruptedContinuation.continuationId, logicalAttempt: attempt } : {}) };
         const continuationRecord = continuing ? structuredClone(this.current(id).interruptedContinuation) : undefined;
@@ -454,7 +465,7 @@ export class Controller {
         this.transition(id, 'reviewing', { reviewAttempts: attempt });
         const requiredExecution = effectiveExecution(t);
         const instructions = `Independently review the exact candidate at HEAD ${t.headSha} against base ${t.baseSha}. You are a fresh reviewer, not the implementer. Read applicable AGENTS.md, inspect the complete diff including tests, and assess acceptance/integration/error handling. Do not edit any file.\n${ticketPrompt(t)}\nController verification passed: ${JSON.stringify(t.verification.results.map(r => r.name))}.\nReturn headSha exactly ${t.headSha}, verdict pass only if no actionable findings, concise summary, and findings with priority/file/line/message. ${requiredExecution ? `For passing review, return checklist with exactly one {id,verdict:"pass",evidence} per required criterion: ${JSON.stringify(requiredExecution.checklist.map(item => item.id))}. Evidence must identify the actual test/assertion or observed artifact establishing the criterion at this candidate; do not infer GUI validation from mocks. ` : ''}Do not invent hypothetical blockers.`;
-        const outcome = await this.callAgent('review', t.workspace, path.join(this.root, 'jobs', id, `${t.headSha}-review-${attempt}`), instructions, signal);
+        const outcome = await this.callAgent('review', t.workspace, path.join(this.root, 'jobs', id, `${t.headSha}-review-${attempt}`), instructions, signal, undefined, { ticketId: id, attempt, source: { headSha: t.headSha, treeSha: t.treeSha, baseSha: t.baseSha } });
         await this.workspace.assertCandidate(t, signal);
         if (outcome.outcome === 'waiting_capacity') { this.transition(id, 'waiting_capacity', { retryAt: outcome.retryAt, resumeStatus: 'review_ready' }); return; }
         if (outcome.sessionRef === t.implementation?.sessionRef || t.implementationSessions?.includes(outcome.sessionRef)) throw new Blocker('review_not_fresh', 'Review reused an implementation session');

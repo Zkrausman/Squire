@@ -570,7 +570,7 @@ test('one interrupted logical attempt continues with unchanged counters and fres
       if (++reviewCount === 1) return { outcome: 'completed', sessionRef: 'partial-review', result: { headSha, verdict: 'fail', summary: 'Startup cleanup is missing.', findings: [{ priority: 'P1', file: 'feature-a.mjs', line: 1, message: 'Dispose the startup resource when shutdown interrupts startup.' }] } };
       return { outcome: 'completed', sessionRef: 'continuation-review', result: { headSha, verdict: 'pass', summary: 'Original and corrective criteria passed.', findings: [], checklist: ['base-one', 'base-two'].map(id => ({ id, verdict: 'pass', evidence: `Observed ${id} in the candidate regression.` })) } };
     }
-    if (job.role === 'implement' && job.directory.endsWith(path.join('1-continuation-1-implement'))) {
+    if (job.role === 'implement' && job.provenance?.continuationId) {
       continuationJobDirectory = job.directory;
       assert.match(job.instructions, /actualPartialReview/);
       assert.match(job.instructions, /Finish the interrupted startup cleanup/);
@@ -608,7 +608,7 @@ test('one interrupted logical attempt continues with unchanged counters and fres
   assert.equal(f.store.get(f.config.id).agentCalls, 4);
   assert.equal(runtime.calls.filter(call => call.role === 'implement').length, 1);
   assert.equal(runtime.calls.filter(call => call.role === 'review').length, 2);
-  assert.ok(continuationJobDirectory?.endsWith(path.join('1-continuation-1-implement')));
+  assert.match(path.basename(continuationJobDirectory), /^[a-f0-9-]{36}$/);
 });
 test('continuation refuses an unexpected dirty partial workspace before starting an agent', { timeout: 90000 }, async t => {
   const f = await fixture(t, [correctiveTicket()], { limits: { maxRepairs: 0 } });

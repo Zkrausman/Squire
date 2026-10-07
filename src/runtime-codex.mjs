@@ -59,6 +59,11 @@ export class CodexRuntime {
     return { authentication: 'chatgpt', command, ...await this.settings(), roles };
   }
   async execute(job) {
+    const evidenceArtifacts = [];
+    try { return { ...await this.executeJob(job, evidenceArtifacts), evidenceArtifacts }; }
+    catch (error) { error.evidenceArtifacts = evidenceArtifacts; throw error; }
+  }
+  async executeJob(job, evidenceArtifacts) {
     await this.preflight(job.signal);
     await mkdir(job.directory, { recursive: true, mode: 0o700 });
     const output = path.join(job.directory, 'result.txt');
@@ -74,7 +79,8 @@ export class CodexRuntime {
     job.onEvent?.({ version: VERSION, jobId: job.id, type: 'runtime.configured', requestedModel: settings.model ?? null, requestedReasoning: settings.reasoning ?? null, reportedModel: null, reportedReasoning: null });
     if (job.role !== 'implement') {
       const schema = path.join(job.directory, 'schema.json');
-      await writeFile(schema, JSON.stringify(job.role === 'plan' ? planSchema : reviewSchema), { mode: 0o600 });
+      await writeFile(schema, JSON.stringify(job.role === 'plan' ? planSchema : reviewSchema), { mode: 0o600, flag: 'wx' });
+      evidenceArtifacts.push('schema.json');
       argv.push('--output-schema', schema);
     }
     argv.push('-');
@@ -87,7 +93,11 @@ export class CodexRuntime {
     const instructions = process.platform === 'win32'
       ? `${taskInstructions}\n\nWindows worker execution constraint: Do not launch electron.exe, Playwright _electron, or npm start for an Electron app inside this isolated worker. Prior launches failed runtime ACL checks and produced native crash dialogs. Implement and run non-GUI tests/builds here; report GUI validation as pending. Actual Electron/visual acceptance must run through the trusted owner-host controller or coordinator, with application sandboxing retained. Never change ACLs or disable sandboxing to work around this. This does not waive any GUI acceptance requirement.\n`
       : taskInstructions;
-    await writeFile(path.join(job.directory, 'prompt.txt'), instructions, { mode: 0o600 });
+    await writeFile(path.join(job.directory, 'prompt.txt'), instructions, { mode: 0o600, flag: 'wx' });
+    evidenceArtifacts.push('prompt.txt');
+    // Reserve the CLI output path before launch; a reused artifact directory fails closed.
+    await writeFile(output, '', { mode: 0o600, flag: 'wx' });
+    evidenceArtifacts.push('result.txt');
     let sessionRef, usage, completed = false, errorMessage = '';
     const failureEvents = [];
     const env = workerTemp ? { ...subscriptionEnvironment(), TEMP: workerTemp, TMP: workerTemp, TMPDIR: workerTemp } : subscriptionEnvironment();
@@ -113,9 +123,9 @@ export class CodexRuntime {
       throw new Blocker('runtime_failed', 'Codex job did not complete successfully', { receipt: { ...receipt, stdout: undefined, stderr: undefined }, detail: failure.slice(-2000) });
     }
     const text = await readFile(output, 'utf8').catch(() => '');
-    if (!text.trim() || text.length > 128 * 1024 || !sessionRef) throw new Blocker('runtime_result', 'Codex completion lacks a bounded result/session identity');
+    if (!text.trim() || text.length > 128 * 1024 || !sessionRef) throw new Blocker('runtime_result', 'Codex completion lacks a bounded result/session identity', { receipt: { ...receipt, stdout: undefined, stderr: undefined } });
     let result = text;
-    if (job.role !== 'implement') { try { result = JSON.parse(text); } catch { throw new Blocker('runtime_result', 'Structured agent result is not JSON'); } }
+    if (job.role !== 'implement') { try { result = JSON.parse(text); } catch { throw new Blocker('runtime_result', 'Structured agent result is not JSON', { receipt: { ...receipt, stdout: undefined, stderr: undefined } }); } }
     return { outcome: 'completed', sessionRef, usage, result, receipt: { ...receipt, stdout: undefined, stderr: undefined }, requestedModel: settings.model ?? null, requestedReasoning: settings.reasoning ?? null, reportedModel: null, reportedReasoning: null };
   }
 }
