@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixture, FixtureRuntime, statusUntil } from './support.mjs';
-import { Blocker } from '../src/contracts.mjs';
+import { Blocker, digest } from '../src/contracts.mjs';
 import { Store } from '../src/store.mjs';
 import { CodexRuntime } from '../src/runtime-codex.mjs';
 import { readCatalog } from '../src/codex-catalog.mjs';
@@ -13,7 +13,7 @@ import { GitWorkspace } from '../src/workspace.mjs';
 import { VerificationRunner } from '../src/verification.mjs';
 import { GitHubClient } from '../src/delivery.mjs';
 import { Controller } from '../src/controller.mjs';
-import { runProcess } from '../src/process.mjs';
+import { createCancellationGate, runProcess, settleChildBeforeIdentity } from '../src/process.mjs';
 import { withProducer } from '../src/producer-context.mjs';
 
 async function setup(t) {
@@ -39,6 +39,29 @@ async function repeatBlocked(f) {
   } finally { store.close(); }
  }
 }
+test('settlement disarms cancellation and cleanup before delayed identity evidence is awaited', async () => {
+ const order=[];let releaseIdentity,cleanupObserved;
+ const identityPending=new Promise(resolve=>{releaseIdentity=resolve;});
+ const cleanupReached=new Promise(resolve=>{cleanupObserved=resolve;});
+ let deadlineArmed=true,identityCompleted=false;
+ const lifecycle={stopped:false,timedOut:false,terminations:0};
+ const cancellation=createCancellationGate(()=>{lifecycle.stopped=true;lifecycle.terminations++;});
+ const settled=settleChildBeforeIdentity({
+  settled:Promise.resolve(7),
+  targetIdentity:identityPending.then(evidence=>{identityCompleted=true;order.push('identity');return evidence;}),
+  disarmCancellation:()=>{cancellation.disarm();order.push('disarm');},
+  cleanup:()=>{deadlineArmed=false;order.push('cleanup');cleanupObserved();}
+ });
+ await cleanupReached;
+ assert.deepEqual(order,['disarm','cleanup']);assert.equal(deadlineArmed,false);assert.equal(identityCompleted,false);
+ assert.equal(cancellation.cancel(),false);
+ if(cancellation.cancel()) lifecycle.timedOut=true;
+ assert.deepEqual(lifecycle,{stopped:false,timedOut:false,terminations:0});
+ releaseIdentity({status:'unknown',reason:'fixture'});
+ const result=await settled;
+ assert.deepEqual(order,['disarm','cleanup','identity']);assert.equal(result.exitCode,7);
+ assert.deepEqual(result.targetEvidence,{status:'unknown',reason:'fixture'});
+});
 test('production process entry requires an explicit scope before creating evidence', async t => {
  const f = await fixture(t), directory=path.join(f.root,'absent');
  await assert.rejects(runProcess({argv:[process.execPath,'-e',''],cwd:f.root,directory}),{code:'producer_context_required'});
@@ -55,6 +78,33 @@ test('nonzero canonical terminal remains fenced until caller outcome, and exclud
  await repeatBlocked(f);
  assert.equal(await readFile(f.marker,'utf8'),'launch\n');
  assert.equal(f.store.processOperation(result.operationId).terminal,row.terminal);
+});
+test('immutable receipt records launch-bound identity while leaving descendant coverage unknown', async t => {
+ const f=await setup(t); let operationId;
+ const command={...f.command,argv:[process.execPath,'-e','setTimeout(()=>{console.log("identity fixture");process.exit(7)},150)']};
+ const result=await withProducer({...f.context,onRegistered:value=>{operationId=value.id;}},()=>runProcess(command));
+ const receipt=JSON.parse(await readFile(path.join(command.directory,`${operationId}.receipt.json`),'utf8'));
+ const operation=f.store.processOperation(operationId), evidence=receipt.identityEvidence;
+ assert.equal(JSON.parse(operation.terminal).receiptDigest,digest(receipt));
+ assert.equal(evidence.version,1);assert.equal(evidence.operationId,operationId);
+ assert.equal(evidence.requestDigest,operation.request_digest);
+ assert.equal(evidence.supervisor.role,'supervisor');assert.equal(evidence.target.role,'target');
+ assert.equal(evidence.target.operationId,operationId);assert.equal(evidence.target.requestDigest,operation.request_digest);
+ assert.equal(evidence.descendantCoverage.status,'unknown');
+ assert.equal(evidence.descendantCoverage.reason,'no_complete_descendant_inventory');
+ if(process.platform==='linux') {
+  assert.equal(evidence.supervisor.status,'verified');assert.equal(evidence.supervisor.continuity.status,'verified');
+  assert.equal(evidence.target.status,'verified');
+  assert.equal(evidence.target.identity.parentPid,evidence.supervisor.identity.pid);
+  assert.equal(evidence.target.identity.processGroupId,evidence.target.identity.pid);
+  assert.equal(evidence.target.identity.sessionId,evidence.target.identity.pid);
+  assert.equal(evidence.directTerminal.status,'verified');
+ } else {
+  assert.equal(evidence.supervisor.status,'unknown');assert.equal(evidence.target.status,'unknown');
+  assert.equal(evidence.directTerminal.status,'unknown');
+ }
+ assert.equal(result.identityEvidence.directTerminal.status,evidence.directTerminal.status);
+ assert.equal(f.store.db.prepare('SELECT closed_at FROM producer_scopes WHERE id=?').get(f.scopeId).closed_at,null);
 });
 test('registration barrier interruption retains request and debit without any first or second launch',async t=>{
  const f=await setup(t);let operationId,request;

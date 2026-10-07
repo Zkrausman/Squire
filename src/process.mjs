@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './store.mjs';
 import { digest, Blocker } from './contracts.mjs';
 import { producerContext } from './producer-context.mjs';
+import { captureProcessIdentity, sameProcessIdentity, unknownProcessIdentity } from './process-identity.mjs';
 
 const self = fileURLToPath(import.meta.url);
 const MAX_OUTPUT = 16 * 1024 * 1024;
@@ -22,6 +23,25 @@ export async function resolveArgv(argv) {
   return argv;
 }
 const alive = pid => { if (!Number.isSafeInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; } };
+
+export function createCancellationGate(onCancel) {
+  let armed = true;
+  return {
+    cancel() { if (!armed) return false; onCancel(); return true; },
+    disarm() { armed = false; }
+  };
+}
+
+/** Settle the spawned child and restore deadline/output state before awaiting
+ * asynchronous process identity evidence. The recorder has no authority to
+ * delay lifecycle cleanup or change its timeout outcome. */
+export async function settleChildBeforeIdentity({ settled, targetIdentity, disarmCancellation = () => {}, cleanup }) {
+  const exitCode = await settled;
+  disarmCancellation();
+  cleanup();
+  const targetEvidence = await targetIdentity;
+  return { exitCode, targetEvidence };
+}
 
 /** An interrupted controller must not race an old worker still settling. */
 export async function reconcileProcesses(root, signal, { refuseLegacy = false, store, project } = {}) {
@@ -86,6 +106,34 @@ async function saveReceipt(filename, receipt) {
 }
 const terminalRecord = (receipt, kind) => ({ kind, exitCode: receipt.exitCode, endedAt: receipt.endedAt, receiptDigest: digest(receipt) });
 
+function unknownIdentityEvidence(operationId, requestDigest, reason) {
+  return { version: 1, operationId, requestDigest,
+    supervisor: unknownProcessIdentity({ operationId, requestDigest, role: 'supervisor' }, reason),
+    target: unknownProcessIdentity({ operationId, requestDigest, role: 'target' }, reason),
+    directTerminal: { status: 'unknown', reason, provenance: 'supervisor-child-lifecycle', observedAt: Date.now() },
+    descendantCoverage: { status: 'unknown', reason: 'no_complete_descendant_inventory',
+      provenance: 'process-group-and-stdio-observations-do-not-prevent-descendant-escape', observedAt: Date.now() } };
+}
+
+async function observedIdentityEvidence({ operationId, requestDigest, supervisorStart, target, spawned, closeObserved, exitCode, signal }) {
+  const supervisorEnd = await captureProcessIdentity({ operationId, requestDigest, role: 'supervisor', pid: process.pid });
+  const supervisor = supervisorStart.status !== 'verified' ? supervisorStart :
+    supervisorEnd.status !== 'verified' ? supervisorEnd :
+      sameProcessIdentity(supervisorStart, supervisorEnd)
+        ? { ...supervisorStart, continuity: { status: 'verified', provenance: 'same-supervisor-birth-identity-at-target-terminal', observedAt: supervisorEnd.observedAt } }
+        : unknownProcessIdentity({ operationId, requestDigest, role: 'supervisor' }, 'supervisor_identity_not_stable');
+  const directTerminal = spawned && closeObserved && target.status === 'verified'
+    ? { status: 'verified', provenance: 'node-close-event-for-the-spawned-target-handle', observedAt: Date.now(), exitCode, signal: signal ?? null }
+    : { status: 'unknown', provenance: 'supervisor-child-lifecycle', observedAt: Date.now(),
+      reason: !spawned ? 'target_spawn_not_observed' : !closeObserved ? 'target_close_not_observed' : target.reason ?? 'target_identity_unknown' };
+  return { version: 1, operationId, requestDigest, supervisor, target,
+    directTerminal,
+    // Node's stdio close and a direct-child identity do not establish that every
+    // descendant remained registered or stayed in the original process group.
+    descendantCoverage: { status: 'unknown', reason: 'no_complete_descendant_inventory',
+      provenance: 'process-group-and-stdio-observations-do-not-prevent-descendant-escape', observedAt: Date.now() } };
+}
+
 /** Registration precedes the outer spawn. Neither a new controller nor a second
  * supervisor may consume an existing grant again. Random tokens prove protocol
  * ownership only; they are not OS process identities. */
@@ -114,7 +162,7 @@ async function registeredProcess({ argv, cwd, directory, timeoutSeconds = 120, i
     const stdoutPath = path.join(directory, `${id}.stdout.log`), stderrPath = path.join(directory, `${id}.stderr.log`);
     await writeFile(stdoutPath, '', { flag: 'wx', mode: 0o600 }); await writeFile(stderrPath, '', { flag: 'wx', mode: 0o600 });
     const now = Date.now(), result = { operationId: id, argv, startedAt: now, endedAt: now, exitCode: null, stopped: false, timedOut: false, outputExceeded: false,
-      launchError: error.message, stdoutPath, stderrPath };
+      launchError: error.message, stdoutPath, stderrPath, identityEvidence: unknownIdentityEvidence(id, digest(payload), 'supervisor_spawn_not_observed') };
     await saveReceipt(receiptFile, result);
     if (grant) context.store.finishProcess(grant, 'registered', terminalRecord(result, 'not_started'));
   };
@@ -167,16 +215,22 @@ async function supervise(requestPath) {
     const environment = { ...process.env, ...request.env };
     for (const key of Object.keys(environment)) if (environment[key] === null) delete environment[key];
     const startedAt = Date.now(); let stopped = false, timedOut = false, outputExceeded = false, bytes = 0, launchError, child, spawned = false;
+    const requestDigest = digest(payload);
     let timer;
-    const stop = () => { stopped = true; terminate(child?.pid); };
+    const cancellation = createCancellationGate(() => { stopped = true; terminate(child?.pid); });
+    const stop = () => cancellation.cancel();
     process.stdin.resume(); process.stdin.on('end', stop); process.on('SIGTERM', stop); process.on('SIGINT', stop);
+    const supervisorIdentityStart = await captureProcessIdentity({ operationId: request.id, requestDigest, role: 'supervisor', pid: process.pid });
     if (grant) store.claimProcess(grant, 'supervisor', 'target', digest(payload));
     try {
       child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
     } catch (error) {
       fsyncSync(out); fsyncSync(err); closeSync(out); closeSync(err);
       const receipt = { operationId: request.id, argv: request.argv, startedAt, endedAt: Date.now(), exitCode: null,
-        stopped, timedOut, outputExceeded, launchError: error.message, stdoutPath, stderrPath };
+        stopped, timedOut, outputExceeded, launchError: error.message, stdoutPath, stderrPath,
+        identityEvidence: await observedIdentityEvidence({ operationId: request.id, requestDigest, supervisorStart: supervisorIdentityStart,
+          target: unknownProcessIdentity({ operationId: request.id, requestDigest, role: 'target' }, 'target_spawn_not_observed'),
+          spawned: false, closeObserved: false }) };
       await saveReceipt(path.join(request.directory, `${request.id}.receipt.json`), receipt);
       if (grant) store.finishProcess(grant, 'target', terminalRecord(receipt, 'not_started'));
       process.exit(0);
@@ -184,7 +238,7 @@ async function supervise(requestPath) {
     }
     const activeFile = path.join(request.directory, `${request.id}.active.json`);
     const activeWriting = writeFile(activeFile, JSON.stringify({ operationId: request.id, supervisorPid: process.pid, childPid: child.pid, startedAt }), { mode: 0o600, flag: 'wx' });
-    timer = setTimeout(() => { timedOut = true; stop(); }, request.timeoutSeconds * 1000);
+    timer = setTimeout(() => { if (stop()) timedOut = true; }, request.timeoutSeconds * 1000);
     const capture = (fd, chunk, forward) => {
       bytes += chunk.length;
       if (bytes > MAX_OUTPUT) { outputExceeded = true; stop(); return; }
@@ -192,18 +246,35 @@ async function supervise(requestPath) {
       if (forward) process.stdout.write(chunk);
     };
     child.stdout.on('data', c => capture(out, c, true)); child.stderr.on('data', c => capture(err, c, false));
-    child.on('spawn', () => { spawned = true; if (stopped) stop(); });
+    let targetIdentity = Promise.resolve(unknownProcessIdentity({ operationId: request.id, requestDigest, role: 'target' }, 'target_spawn_not_observed'));
+    child.on('spawn', () => {
+      spawned = true;
+      targetIdentity = captureProcessIdentity({ operationId: request.id, requestDigest, role: 'target', pid: child.pid,
+        expectedParentPid: process.pid, launchHandle: child, requireSessionLeader: process.platform !== 'win32' });
+      if (stopped) stop();
+    });
     child.on('exit', () => { terminate(child.pid); });
     child.stdin.on('error', () => {});
-    const settled = new Promise(resolve => { child.on('error', e => { launchError = e.message; }); child.on('close', resolve); });
+    let closeObserved = false, terminalSignal = null;
+    const settled = new Promise(resolve => {
+      child.on('error', e => { launchError = e.message; });
+      child.on('close', (code, signal) => { closeObserved = true; terminalSignal = signal; resolve(code); });
+    });
     let activeError;
     await activeWriting.catch(error => { activeError = error; stop(); });
     child.stdin.end(request.input);
-    const exitCode = await settled;
-    terminate(child.pid); clearTimeout(timer);
-    fsyncSync(out); fsyncSync(err); closeSync(out); closeSync(err);
+    const { exitCode, targetEvidence } = await settleChildBeforeIdentity({ settled, targetIdentity,
+      disarmCancellation: () => {
+        cancellation.disarm();
+        process.stdin.off('end', stop); process.off('SIGTERM', stop); process.off('SIGINT', stop);
+      }, cleanup: () => {
+      terminate(child.pid); clearTimeout(timer);
+      fsyncSync(out); fsyncSync(err); closeSync(out); closeSync(err);
+    } });
     if (activeError) throw activeError;
-    const receipt = { operationId: request.id, argv: request.argv, startedAt, endedAt: Date.now(), exitCode, stopped, timedOut, outputExceeded, launchError, stdoutPath, stderrPath };
+    const receipt = { operationId: request.id, argv: request.argv, startedAt, endedAt: Date.now(), exitCode, stopped, timedOut, outputExceeded, launchError, stdoutPath, stderrPath,
+      identityEvidence: await observedIdentityEvidence({ operationId: request.id, requestDigest, supervisorStart: supervisorIdentityStart,
+        target: targetEvidence, spawned, closeObserved, exitCode, signal: terminalSignal }) };
     await saveReceipt(path.join(request.directory, `${request.id}.receipt.json`), receipt);
     if (grant) store.finishProcess(grant, 'target', terminalRecord(receipt, spawned ? 'terminal' : 'not_started'));
     await unlink(activeFile);
