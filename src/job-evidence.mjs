@@ -98,8 +98,10 @@ export async function finishJobEvidence(evidence, { outcome, error, sessionRef, 
     }
     // Only the Codex adapter declares these artifacts. Other version-1 adapters
     // retain their existing result contract without invented process provenance.
-    if (outcome?.evidenceArtifacts || error?.evidenceArtifacts) {
-      for (const name of outcome?.evidenceArtifacts ?? error.evidenceArtifacts) {
+    const declaredArtifacts = outcome?.evidenceArtifacts !== undefined ? outcome.evidenceArtifacts : error?.evidenceArtifacts;
+    if (declaredArtifacts !== undefined) {
+      if (!Array.isArray(declaredArtifacts) || declaredArtifacts.length > 3 || new Set(declaredArtifacts).size !== declaredArtifacts.length) throw fail();
+      for (const name of declaredArtifacts) {
         if (!['prompt.txt', 'result.txt', 'schema.json'].includes(name)) throw fail();
         artifacts.push(await artifact(directory, name));
       }

@@ -189,3 +189,18 @@ test('missing adapter outcomes and null throws retain debit and producer fence',
     await assert.rejects(() => new Controller(f.store, f.config.id, { runtime }).step('a'), { code: 'producer_unresolved' });
   }
 });
+
+test('duplicate artifact declarations cannot publish a terminal or release the producer', async t => {
+  const f = await fixture(t); let directory;
+  const runtime = new FixtureRuntime(async job => {
+    directory = job.directory;
+    await writeFile(path.join(directory, 'prompt.txt'), 'private fixture');
+    return { ...completed, evidenceArtifacts: ['prompt.txt', 'prompt.txt'] };
+  });
+  const controller = new Controller(f.store, f.config.id, { runtime });
+  await statusUntil(f.store, controller, 'prepared');
+  await assert.rejects(() => controller.step('a'), { code: 'job_evidence_incomplete' });
+  await assert.rejects(() => readFile(path.join(directory, 'terminal.json')), { code: 'ENOENT' });
+  await assert.rejects(() => new Controller(f.store, f.config.id, { runtime }).step('a'), { code: 'producer_unresolved' });
+  assert.equal(f.store.get(f.config.id).agentCalls, 1);
+});
