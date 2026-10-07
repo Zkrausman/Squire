@@ -111,11 +111,17 @@ export async function finishJobEvidence(evidence, { outcome, error, sessionRef, 
     return await publish(directory, 'terminal.json', terminal);
   });
 }
-export async function recordCandidateDisposition(evidence, disposition) {
+export async function recordCandidateDisposition(evidence, disposition, candidate = null) {
   return guarded(async () => {
     const terminal = await artifact(evidence.directory, 'terminal.json');
-    return publish(evidence.directory, 'candidate.json', { version: 1, jobId: evidence.intent.jobId,
-      terminalSha256: terminal.sha256, intentSha256: evidence.reference.sha256, ...disposition });
+    const candidateOperation = candidate ? { id: candidate.operationId, parentSha: candidate.parentSha,
+      commitSha: candidate.headSha, treeSha: candidate.treeSha } : null;
+    if (disposition.outcome === 'candidate' && (!candidateOperation || !/^[a-f0-9-]{36}$/.test(candidateOperation.id) ||
+        !/^[a-f0-9]{40,64}$/.test(candidateOperation.parentSha) || candidateOperation.commitSha !== disposition.headSha ||
+        candidateOperation.treeSha !== disposition.treeSha)) throw fail();
+    return publish(evidence.directory, 'candidate.json', { version: candidate ? 2 : 1, jobId: evidence.intent.jobId,
+      terminalSha256: terminal.sha256, intentSha256: evidence.reference.sha256, ...disposition,
+      ...(candidate ? { candidateOperation } : {}) });
   });
 }
 // Inspection only. No result adoption, replay, scope release, or accounting writes.
@@ -163,10 +169,15 @@ export async function readJobEvidence(directory, jobId, expectedTerminal = null)
       const ref = await artifact(directory, 'candidate.json');
       if (ref.bytes > LIMIT) throw fail();
       disposition = JSON.parse(await readFile(path.join(directory, 'candidate.json'), 'utf8'));
-      if (disposition.version !== 1 || disposition.jobId !== jobId || disposition.intentSha256 !== intent.sha256 ||
+      if (![1, 2].includes(disposition.version) || disposition.jobId !== jobId || disposition.intentSha256 !== intent.sha256 ||
           disposition.terminalSha256 !== terminalRef.sha256 || terminal.outcome !== 'completed' ||
           !['candidate', 'no_change', 'failed'].includes(disposition.outcome) ||
-          (disposition.outcome === 'candidate' && (!/^[a-f0-9]{40,64}$/.test(disposition.headSha) || !/^[a-f0-9]{40,64}$/.test(disposition.treeSha)))) throw fail();
+          (disposition.outcome === 'candidate' && (!/^[a-f0-9]{40,64}$/.test(disposition.headSha) || !/^[a-f0-9]{40,64}$/.test(disposition.treeSha))) ||
+          (disposition.version === 2 && disposition.outcome === 'candidate' &&
+            (!disposition.candidateOperation || !/^[a-f0-9-]{36}$/.test(disposition.candidateOperation.id) ||
+             !/^[a-f0-9]{40,64}$/.test(disposition.candidateOperation.parentSha) ||
+             disposition.candidateOperation.commitSha !== disposition.headSha || disposition.candidateOperation.treeSha !== disposition.treeSha)) ||
+          (disposition.version === 1 && disposition.candidateOperation !== undefined)) throw fail();
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     return { ...terminal, disposition };
   });
