@@ -24,6 +24,16 @@ export async function resolveArgv(argv) {
 }
 const alive = pid => { if (!Number.isSafeInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; } };
 
+/** Settle the spawned child and restore deadline/output state before awaiting
+ * asynchronous process identity evidence. The recorder has no authority to
+ * delay lifecycle cleanup or change its timeout outcome. */
+export async function settleChildBeforeIdentity({ settled, targetIdentity, cleanup }) {
+  const exitCode = await settled;
+  cleanup();
+  const targetEvidence = await targetIdentity;
+  return { exitCode, targetEvidence };
+}
+
 /** An interrupted controller must not race an old worker still settling. */
 export async function reconcileProcesses(root, signal, { refuseLegacy = false, store, project } = {}) {
   const entries = directory => readdir(directory, { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
@@ -230,7 +240,7 @@ async function supervise(requestPath) {
     child.on('spawn', () => {
       spawned = true;
       targetIdentity = captureProcessIdentity({ operationId: request.id, requestDigest, role: 'target', pid: child.pid,
-        expectedParentPid: process.pid, requireSessionLeader: process.platform !== 'win32' });
+        expectedParentPid: process.pid, launchHandle: child, requireSessionLeader: process.platform !== 'win32' });
       if (stopped) stop();
     });
     child.on('exit', () => { terminate(child.pid); });
@@ -243,10 +253,10 @@ async function supervise(requestPath) {
     let activeError;
     await activeWriting.catch(error => { activeError = error; stop(); });
     child.stdin.end(request.input);
-    const exitCode = await settled;
-    const targetEvidence = await targetIdentity;
-    terminate(child.pid); clearTimeout(timer);
-    fsyncSync(out); fsyncSync(err); closeSync(out); closeSync(err);
+    const { exitCode, targetEvidence } = await settleChildBeforeIdentity({ settled, targetIdentity, cleanup: () => {
+      terminate(child.pid); clearTimeout(timer);
+      fsyncSync(out); fsyncSync(err); closeSync(out); closeSync(err);
+    } });
     if (activeError) throw activeError;
     const receipt = { operationId: request.id, argv: request.argv, startedAt, endedAt: Date.now(), exitCode, stopped, timedOut, outputExceeded, launchError, stdoutPath, stderrPath,
       identityEvidence: await observedIdentityEvidence({ operationId: request.id, requestDigest, supervisorStart: supervisorIdentityStart,

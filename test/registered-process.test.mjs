@@ -13,7 +13,7 @@ import { GitWorkspace } from '../src/workspace.mjs';
 import { VerificationRunner } from '../src/verification.mjs';
 import { GitHubClient } from '../src/delivery.mjs';
 import { Controller } from '../src/controller.mjs';
-import { runProcess } from '../src/process.mjs';
+import { runProcess, settleChildBeforeIdentity } from '../src/process.mjs';
 import { withProducer } from '../src/producer-context.mjs';
 
 async function setup(t) {
@@ -39,6 +39,23 @@ async function repeatBlocked(f) {
   } finally { store.close(); }
  }
 }
+test('settlement cleanup completes before delayed identity evidence is awaited', async () => {
+ const order=[];let releaseIdentity,cleanupObserved;
+ const identityPending=new Promise(resolve=>{releaseIdentity=resolve;});
+ const cleanupReached=new Promise(resolve=>{cleanupObserved=resolve;});
+ let deadlineArmed=true,identityCompleted=false;
+ const settled=settleChildBeforeIdentity({
+  settled:Promise.resolve(7),
+  targetIdentity:identityPending.then(evidence=>{identityCompleted=true;order.push('identity');return evidence;}),
+  cleanup:()=>{deadlineArmed=false;order.push('cleanup');cleanupObserved();}
+ });
+ await cleanupReached;
+ assert.deepEqual(order,['cleanup']);assert.equal(deadlineArmed,false);assert.equal(identityCompleted,false);
+ releaseIdentity({status:'unknown',reason:'fixture'});
+ const result=await settled;
+ assert.deepEqual(order,['cleanup','identity']);assert.equal(result.exitCode,7);
+ assert.deepEqual(result.targetEvidence,{status:'unknown',reason:'fixture'});
+});
 test('production process entry requires an explicit scope before creating evidence', async t => {
  const f = await fixture(t), directory=path.join(f.root,'absent');
  await assert.rejects(runProcess({argv:[process.execPath,'-e',''],cwd:f.root,directory}),{code:'producer_context_required'});
