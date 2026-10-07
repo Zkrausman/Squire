@@ -24,11 +24,20 @@ export async function resolveArgv(argv) {
 }
 const alive = pid => { if (!Number.isSafeInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; } };
 
+export function createCancellationGate(onCancel) {
+  let armed = true;
+  return {
+    cancel() { if (!armed) return false; onCancel(); return true; },
+    disarm() { armed = false; }
+  };
+}
+
 /** Settle the spawned child and restore deadline/output state before awaiting
  * asynchronous process identity evidence. The recorder has no authority to
  * delay lifecycle cleanup or change its timeout outcome. */
-export async function settleChildBeforeIdentity({ settled, targetIdentity, cleanup }) {
+export async function settleChildBeforeIdentity({ settled, targetIdentity, disarmCancellation = () => {}, cleanup }) {
   const exitCode = await settled;
+  disarmCancellation();
   cleanup();
   const targetEvidence = await targetIdentity;
   return { exitCode, targetEvidence };
@@ -208,7 +217,8 @@ async function supervise(requestPath) {
     const startedAt = Date.now(); let stopped = false, timedOut = false, outputExceeded = false, bytes = 0, launchError, child, spawned = false;
     const requestDigest = digest(payload);
     let timer;
-    const stop = () => { stopped = true; terminate(child?.pid); };
+    const cancellation = createCancellationGate(() => { stopped = true; terminate(child?.pid); });
+    const stop = () => cancellation.cancel();
     process.stdin.resume(); process.stdin.on('end', stop); process.on('SIGTERM', stop); process.on('SIGINT', stop);
     const supervisorIdentityStart = await captureProcessIdentity({ operationId: request.id, requestDigest, role: 'supervisor', pid: process.pid });
     if (grant) store.claimProcess(grant, 'supervisor', 'target', digest(payload));
@@ -228,7 +238,7 @@ async function supervise(requestPath) {
     }
     const activeFile = path.join(request.directory, `${request.id}.active.json`);
     const activeWriting = writeFile(activeFile, JSON.stringify({ operationId: request.id, supervisorPid: process.pid, childPid: child.pid, startedAt }), { mode: 0o600, flag: 'wx' });
-    timer = setTimeout(() => { timedOut = true; stop(); }, request.timeoutSeconds * 1000);
+    timer = setTimeout(() => { if (stop()) timedOut = true; }, request.timeoutSeconds * 1000);
     const capture = (fd, chunk, forward) => {
       bytes += chunk.length;
       if (bytes > MAX_OUTPUT) { outputExceeded = true; stop(); return; }
@@ -253,7 +263,11 @@ async function supervise(requestPath) {
     let activeError;
     await activeWriting.catch(error => { activeError = error; stop(); });
     child.stdin.end(request.input);
-    const { exitCode, targetEvidence } = await settleChildBeforeIdentity({ settled, targetIdentity, cleanup: () => {
+    const { exitCode, targetEvidence } = await settleChildBeforeIdentity({ settled, targetIdentity,
+      disarmCancellation: () => {
+        cancellation.disarm();
+        process.stdin.off('end', stop); process.off('SIGTERM', stop); process.off('SIGINT', stop);
+      }, cleanup: () => {
       terminate(child.pid); clearTimeout(timer);
       fsyncSync(out); fsyncSync(err); closeSync(out); closeSync(err);
     } });

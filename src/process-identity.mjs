@@ -24,7 +24,23 @@ export function parseProcStat(text) {
   return { pid, state: fields[0], parentPid: integer(1), processGroupId: integer(2), sessionId: integer(3), startTicks };
 }
 
+/** Parse the namespace-ordered PID list from Linux /proc/<pid>/status. */
+export function parseProcNSpid(text) {
+  if (typeof text !== 'string') throw new TypeError('invalid proc status');
+  const entries = text.split(/\r?\n/).filter(line => line.startsWith('NSpid:'));
+  if (entries.length !== 1) throw new TypeError('invalid proc status');
+  const values = entries[0].slice('NSpid:'.length).trim().split(/\s+/).map(value => {
+    if (!/^\d+$/.test(value)) throw new TypeError('invalid proc status');
+    const pid = Number(value);
+    if (!positive(pid)) throw new TypeError('invalid proc status');
+    return pid;
+  });
+  if (values.length === 0) throw new TypeError('invalid proc status');
+  return values;
+}
+
 const identityTuple = value => [value.pid, value.parentPid, value.processGroupId, value.sessionId, value.startTicks].join(':');
+const pidHierarchyTuple = value => value.join(':');
 const errorReason = error => error?.code === 'EACCES' || error?.code === 'EPERM' ? 'permission_denied' :
   error?.code === 'ENOENT' || error?.code === 'ESRCH' ? 'process_missing_or_reaped' : 'identity_read_failed';
 
@@ -70,13 +86,17 @@ export async function captureProcessIdentity({ operationId, requestDigest, role,
     };
     const stat = async filename => parseProcStat(await checkedText(filename));
     const selfStatPath = path.join(procRoot, 'self/stat');
+    const selfStatusPath = path.join(procRoot, 'self/status');
     const selfNamespacePath = path.join(procRoot, 'self/ns/pid');
     const numericSelfStatPath = path.join(procRoot, String(selfPid), 'stat');
+    const numericSelfStatusPath = path.join(procRoot, String(selfPid), 'status');
     const numericSelfNamespacePath = path.join(procRoot, String(selfPid), 'ns/pid');
     const selfFirst = await stat(selfStatPath);
     const numericSelfFirst = await stat(numericSelfStatPath);
     const selfNamespaceBefore = await checkedLink(selfNamespacePath);
     const numericSelfNamespaceBefore = await checkedLink(numericSelfNamespacePath);
+    const selfPidHierarchyBefore = parseProcNSpid(await checkedText(selfStatusPath));
+    const numericSelfPidHierarchyBefore = parseProcNSpid(await checkedText(numericSelfStatusPath));
 
     const statPath = path.join(procRoot, String(pid), 'stat');
     const first = await stat(statPath);
@@ -90,6 +110,8 @@ export async function captureProcessIdentity({ operationId, requestDigest, role,
     const selfSecond = await stat(selfStatPath);
     const numericSelfNamespaceAfter = await checkedLink(numericSelfNamespacePath);
     const selfNamespaceAfter = await checkedLink(selfNamespacePath);
+    const numericSelfPidHierarchyAfter = parseProcNSpid(await checkedText(numericSelfStatusPath));
+    const selfPidHierarchyAfter = parseProcNSpid(await checkedText(selfStatusPath));
     if (!targetHandleLive()) return unknown('launch_handle_not_live');
 
     if (selfFirst.pid !== selfPid || numericSelfFirst.pid !== selfPid ||
@@ -99,6 +121,14 @@ export async function captureProcessIdentity({ operationId, requestDigest, role,
     if (!/^pid:\[[1-9]\d*\]$/.test(selfNamespaceBefore) || selfNamespaceBefore !== numericSelfNamespaceBefore ||
         selfNamespaceBefore !== selfNamespaceAfter || numericSelfNamespaceBefore !== numericSelfNamespaceAfter)
       return unknown('supervisor_pid_namespace_mapping_mismatch');
+    // NSpid is ordered from the procfs mount's namespace toward nested PID
+    // namespaces. A single entry matching Node's getpid() rules out an
+    // ancestor-mounted procfs even when its PID happens to collide numerically.
+    if (selfPidHierarchyBefore.length !== 1 || selfPidHierarchyBefore[0] !== selfPid ||
+        pidHierarchyTuple(selfPidHierarchyBefore) !== pidHierarchyTuple(numericSelfPidHierarchyBefore) ||
+        pidHierarchyTuple(selfPidHierarchyBefore) !== pidHierarchyTuple(selfPidHierarchyAfter) ||
+        pidHierarchyTuple(numericSelfPidHierarchyBefore) !== pidHierarchyTuple(numericSelfPidHierarchyAfter))
+      return unknown('supervisor_pid_numbering_unproven');
     if (identityTuple(first) !== identityTuple(second) || first.state === 'Z' || first.state === 'X' || second.state === 'Z' || second.state === 'X')
       return unknown('identity_changed_or_reaped');
     if (first.pid !== pid) return unknown('target_pid_mapping_mismatch');

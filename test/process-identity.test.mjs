@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { captureProcessIdentity, parseProcStat, sameProcessIdentity } from '../src/process-identity.mjs';
+import { captureProcessIdentity, parseProcNSpid, parseProcStat, sameProcessIdentity } from '../src/process-identity.mjs';
 
 const OPERATION = '7bd57c1f-7095-4e71-9ea5-c44cc50e7192';
 const REQUEST = 'a'.repeat(64);
@@ -16,16 +16,20 @@ const stat = ({ pid = 721, state = 'S', parent = 700, group = 721, session = 721
 const liveHandle = () => ({ pid: 721, exitCode: null, signalCode: null });
 function procReader({ stats = [stat(), stat()], selfStats = [supervisorStat(), supervisorStat()],
   supervisorStats = [supervisorStat(), supervisorStat()], boot = [BOOT, BOOT],
+  selfStatuses = ['Name:\tsupervisor\nNSpid:\t700\n', 'Name:\tsupervisor\nNSpid:\t700\n'],
+  supervisorStatuses = ['Name:\tsupervisor\nNSpid:\t700\n', 'Name:\tsupervisor\nNSpid:\t700\n'],
   selfNamespaces = [NAMESPACE, NAMESPACE], supervisorNamespaces = [NAMESPACE, NAMESPACE],
   namespaces = [NAMESPACE, NAMESPACE], error, afterRead } = {}) {
-  let targetReads = 0, selfReads = 0, supervisorReads = 0, bootReads = 0;
+  let targetReads = 0, selfReads = 0, supervisorReads = 0, selfStatusReads = 0, supervisorStatusReads = 0, bootReads = 0;
   let targetNsReads = 0, selfNsReads = 0, supervisorNsReads = 0;
   return {
     readText: async filename => {
       if (error) throw Object.assign(new Error('private path detail'), { code: error });
       let value;
       if (filename.endsWith('/self/stat')) value = selfStats[Math.min(selfReads++, selfStats.length - 1)];
+      else if (filename.endsWith('/self/status')) value = selfStatuses[Math.min(selfStatusReads++, selfStatuses.length - 1)];
       else if (filename.endsWith('/700/stat')) value = supervisorStats[Math.min(supervisorReads++, supervisorStats.length - 1)];
+      else if (filename.endsWith('/700/status')) value = supervisorStatuses[Math.min(supervisorStatusReads++, supervisorStatuses.length - 1)];
       else if (filename.endsWith('/721/stat')) value = stats[Math.min(targetReads++, stats.length - 1)];
       else if (filename.endsWith('/boot_id')) value = boot[Math.min(bootReads++, boot.length - 1)];
       else throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
@@ -47,6 +51,8 @@ const request = (extra = {}) => ({ operationId: OPERATION, requestDigest: REQUES
 test('proc stat parser preserves fields after command names containing spaces and parentheses', () => {
   assert.deepEqual(parseProcStat(stat()), { pid: 721, state: 'S', parentPid: 700, processGroupId: 721, sessionId: 721, startTicks: 555 });
   assert.throws(() => parseProcStat('not a proc record'), /invalid proc stat/);
+  assert.deepEqual(parseProcNSpid('Name:\tnode\nNSpid:\t700\n'), [700]);
+  assert.deepEqual(parseProcNSpid('Name:\tnode\nNSpid:\t700 700\n'), [700, 700]);
 });
 
 test('Linux launch identity binds the procfs self PID view and live child handle', async () => {
@@ -72,6 +78,11 @@ for (const [name, fixture, reason] of [
   ['self PID numbering differs from Node', { selfStats: [stat({ pid: 701 }), stat({ pid: 701 })] }, 'supervisor_pid_mapping_mismatch'],
   ['numeric supervisor stat disagrees with procfs self', { supervisorStats: [stat({ pid: 701 }), stat({ pid: 701 })] }, 'supervisor_pid_mapping_mismatch'],
   ['self and numeric supervisor namespaces differ', { supervisorNamespaces: ['pid:[4026533001]', 'pid:[4026533001]'] }, 'supervisor_pid_namespace_mapping_mismatch'],
+  ['ancestor procfs has coincident self PID and same-parent/session sibling', {
+    selfStatuses: ['Name:\tsupervisor\nNSpid:\t700 700\n', 'Name:\tsupervisor\nNSpid:\t700 700\n'],
+    supervisorStatuses: ['Name:\tsupervisor\nNSpid:\t700 700\n', 'Name:\tsupervisor\nNSpid:\t700 700\n'],
+    stats: [stat({ start: 999 }), stat({ start: 999 })]
+  }, 'supervisor_pid_numbering_unproven'],
   ['target stat PID disagrees with requested PID', { stats: [stat({ pid: 722 }), stat({ pid: 722 })] }, 'target_pid_mapping_mismatch'],
   ['malformed identity', { stats: ['malformed', 'malformed'] }, 'malformed_os_identity'],
   ['denied procfs', { error: 'EACCES' }, 'permission_denied'],
