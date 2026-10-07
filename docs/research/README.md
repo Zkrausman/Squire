@@ -14,6 +14,8 @@ Source audit: 6 October 2026, based on Squire [ec98a61](https://github.com/Zkrau
 
 Use the existing SQLite store, process supervisor, workspace and delivery adapters. The goal is less owner reconstruction after an interruption and a truthful result with inspectable evidence, not a new general-purpose orchestration platform.
 
+For choosing what to work on next, use the [value/effort selection method and qualitative shortlist](factory-value-prioritization.md). Rank complete eligible outcomes at decision boundaries, include full remaining verification and owner effort, and stop research once the next decision is supported. This planning rule changes neither the dependencies nor the execution hold below.
+
 ## Evidence vocabulary
 
 | Label | Meaning in these documents |
