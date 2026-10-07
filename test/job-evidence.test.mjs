@@ -100,11 +100,11 @@ test('export failure retains debit and blocks a replacement across reopen', asyn
   assert.equal(f.store.get(f.config.id).agentCalls, 1);
 });
 test('process evidence distinguishes timeout/cancellation and refuses malformed or truncated spools', async t => {
-  for (const variant of ['timeout', 'cancelled', 'malformed', 'truncated', 'conflict']) {
+  for (const variant of ['timeout', 'cancelled', 'malformed', 'truncated', 'invalid_utf8', 'conflict']) {
     const evidence = await evidenceFixture(t, variant), id = '11111111-1111-4111-8111-111111111111';
     const receipt = { operationId: id, startedAt: 1, endedAt: 2, exitCode: null, timedOut: variant === 'timeout', stopped: ['timeout', 'cancelled'].includes(variant), outputExceeded: false,
       stdoutPath: path.join(evidence.directory, `${id}.stdout.log`), stderrPath: path.join(evidence.directory, `${id}.stderr.log`) };
-    await writeFile(receipt.stdoutPath, variant === 'malformed' ? '{bad}\n' : variant === 'truncated' ? '{"type":' : '{"type":"turn.failed"}\n');
+    await writeFile(receipt.stdoutPath, variant === 'invalid_utf8' ? Buffer.concat([Buffer.from('{"type":"turn.failed","detail":"'), Buffer.from([0xff]), Buffer.from('"}\n')]) : variant === 'malformed' ? '{bad}\n' : variant === 'truncated' ? '{"type":' : '{"type":"turn.failed"}\n');
     await writeFile(receipt.stderrPath, 'private diagnostic sentinel');
     await writeFile(path.join(evidence.directory, `${id}.receipt.json`), JSON.stringify({ ...receipt, ...(variant === 'conflict' ? { exitCode: 9 } : {}) }));
     const error = { evidenceProcess: true, detail: { receipt } };
@@ -113,7 +113,14 @@ test('process evidence distinguishes timeout/cancellation and refuses malformed 
       const terminal = await readJobEvidence(evidence.directory, variant);
       assert.equal(terminal.outcome, variant); assert.equal(terminal.spool.records, 1);
       assert.ok(!JSON.stringify(terminal).includes('private diagnostic sentinel'));
-    } else await assert.rejects(() => finishJobEvidence(evidence, { error }), { code: 'job_evidence_incomplete' });
+    } else {
+      const lifecycle = {};
+      await withProducer({ lifecycle }, async () => {
+        await assert.rejects(() => finishJobEvidence(evidence, { error }), { code: 'job_evidence_incomplete' });
+        assert.equal(lifecycle.persistenceFailed, true);
+      });
+      await assert.rejects(() => readFile(path.join(evidence.directory, 'terminal.json')), { code: 'ENOENT' });
+    }
   }
 });
 

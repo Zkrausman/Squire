@@ -34,7 +34,7 @@ async function artifact(directory, name) {
 function spoolRecord(id, bytes) {
   const end = bytes.lastIndexOf(10) + 1;
   let records = 0;
-  for (const line of bytes.subarray(0, end).toString('utf8').split('\n').slice(0, -1)) {
+  for (const line of new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, end)).split('\n').slice(0, -1)) {
     const event = JSON.parse(line);
     if (!event || typeof event.type !== 'string') throw fail();
     records++;
