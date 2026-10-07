@@ -15,9 +15,9 @@ import { publicState } from '../src/api.mjs';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 
-function directory(t) {
+function directory(t, beforeRemove = () => {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'squire-inspection-test-'));
-  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  t.after(async () => { await beforeRemove(); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   return root;
 }
 function fingerprint(root) {
@@ -27,8 +27,9 @@ function fingerprint(root) {
   });
 }
 function fixture(t) {
-  const root = directory(t), store = new Store(root);
-  t.after(() => store.close());
+  const cleanup = [];
+  const root = directory(t, async () => { for (const close of cleanup.reverse()) await close(); });
+  const store = new Store(root); cleanup.push(() => store.close());
   const config = { id: 'fixture', stateDir: root };
   store.initialize({ ...config, tickets: [{ id: 'a' }] });
   const lease = store.lease('controller:fixture');
@@ -41,7 +42,7 @@ function fixture(t) {
   }, 'job.started', { jobId });
   const grant = store.registerProcess(scope, jobId, operationId, path.join(root, 'private-logs'), digest('private-request'));
   const terminal = { kind: 'terminal', endedAt: 123456, exitCode: 9, receiptDigest: digest('receipt') };
-  return { root, store, config, scope, jobId, operationId, grant, terminal, inspect: () => inspectProducers(config),
+  return { root, store, config, scope, jobId, operationId, grant, terminal, addCleanup: close => cleanup.push(close), inspect: () => inspectProducers(config),
     finish: () => {
       store.claimProcess(grant, 'registered', 'supervisor', digest('private-request'));
       store.claimProcess(grant, 'supervisor', 'target', digest('private-request'));
@@ -299,21 +300,23 @@ test('concurrent WAL commits yield a coherent captured horizon or an explicit un
   // Keep a real concurrent SQLite writer alive; all data is disposable synthetic state.
   const worker = new Worker(`const {workerData}=require('node:worker_threads'); const {DatabaseSync}=require('node:sqlite');
     const gate=new Int32Array(workerData.control), db=new DatabaseSync(workerData.file); db.exec('PRAGMA busy_timeout=1000');
-    let n=0; Atomics.store(gate,0,1); Atomics.notify(gate,0);
+    let n=0;
     while(!Atomics.load(gate,1)) { db.exec('BEGIN IMMEDIATE');
       const s=JSON.parse(db.prepare('SELECT state FROM project WHERE id=?').get('fixture').state); s.updatedAt=100000+(++n);
       db.prepare('UPDATE project SET state=? WHERE id=?').run(JSON.stringify(s),'fixture');
       db.prepare('INSERT INTO events(project,data) VALUES (?,?)').run('fixture',JSON.stringify({n})); db.exec('COMMIT');
+      if(n===1) { Atomics.store(gate,0,1); Atomics.notify(gate,0); }
       Atomics.wait(gate,1,0,2);
     } db.close();`, { eval: true, workerData: { control: control.buffer, file: path.join(f.root, 'squire.sqlite') } });
   const done = new Promise((resolve, reject) => { worker.on('exit', resolve); worker.on('error', reject); });
-  t.after(async () => { Atomics.store(control, 1, 1); await done; });
+  f.addCleanup(async () => { Atomics.store(control, 1, 1); Atomics.notify(control, 1); await done; });
   assert.notEqual(Atomics.wait(control, 0, 0, 5000), 'timed-out');
   for (let i = 0; i < 20; i++) {
+    let view;
     try {
-      const view = f.inspect();
-      assert.equal(view.updatedAt - 100000, view.snapshot.eventHighWater - 2);
-    } catch (e) { assert.ok(['inspection_changed', 'inspection_unavailable'].includes(e.code), e.stack); }
+      view = f.inspect();
+    } catch (e) { assert.ok(['inspection_changed', 'inspection_unavailable'].includes(e.code), e.stack); continue; }
+    assert.equal(view.updatedAt - 100000, view.snapshot.eventHighWater - 2);
   }
   Atomics.store(control, 1, 1); await done;
   const before = fingerprint(f.root), view = f.inspect();
