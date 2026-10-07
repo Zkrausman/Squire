@@ -1,12 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { captureProcessIdentity, parseProcNSpid, parseProcStat, sameProcessIdentity } from '../src/process-identity.mjs';
 
 const OPERATION = '7bd57c1f-7095-4e71-9ea5-c44cc50e7192';
 const REQUEST = 'a'.repeat(64);
 const BOOT = 'b9e9c470-dfb0-4bc9-8bc6-b0ee7461077e';
 const NAMESPACE = 'pid:[4026533000]';
+const PROC_ROOT = '/fixture/proc';
+const procPath = (...parts) => path.join(PROC_ROOT, ...parts);
+const PROC_PATHS = {
+  selfStat: procPath('self', 'stat'),
+  selfStatus: procPath('self', 'status'),
+  selfNamespace: procPath('self', 'ns', 'pid'),
+  supervisorStat: procPath('700', 'stat'),
+  supervisorStatus: procPath('700', 'status'),
+  supervisorNamespace: procPath('700', 'ns', 'pid'),
+  targetStat: procPath('721', 'stat'),
+  targetNamespace: procPath('721', 'ns', 'pid'),
+  bootId: procPath('sys', 'kernel', 'random', 'boot_id')
+};
 const supervisorStat = () => stat({ pid: 700, parent: 500, group: 500, session: 500, start: 100 });
 const stat = ({ pid = 721, state = 'S', parent = 700, group = 721, session = 721, start = 555 } = {}) => {
   const fields = Array(20).fill('0');
@@ -26,27 +40,27 @@ function procReader({ stats = [stat(), stat()], selfStats = [supervisorStat(), s
     readText: async filename => {
       if (error) throw Object.assign(new Error('private path detail'), { code: error });
       let value;
-      if (filename.endsWith('/self/stat')) value = selfStats[Math.min(selfReads++, selfStats.length - 1)];
-      else if (filename.endsWith('/self/status')) value = selfStatuses[Math.min(selfStatusReads++, selfStatuses.length - 1)];
-      else if (filename.endsWith('/700/stat')) value = supervisorStats[Math.min(supervisorReads++, supervisorStats.length - 1)];
-      else if (filename.endsWith('/700/status')) value = supervisorStatuses[Math.min(supervisorStatusReads++, supervisorStatuses.length - 1)];
-      else if (filename.endsWith('/721/stat')) value = stats[Math.min(targetReads++, stats.length - 1)];
-      else if (filename.endsWith('/boot_id')) value = boot[Math.min(bootReads++, boot.length - 1)];
+      if (filename === PROC_PATHS.selfStat) value = selfStats[Math.min(selfReads++, selfStats.length - 1)];
+      else if (filename === PROC_PATHS.selfStatus) value = selfStatuses[Math.min(selfStatusReads++, selfStatuses.length - 1)];
+      else if (filename === PROC_PATHS.supervisorStat) value = supervisorStats[Math.min(supervisorReads++, supervisorStats.length - 1)];
+      else if (filename === PROC_PATHS.supervisorStatus) value = supervisorStatuses[Math.min(supervisorStatusReads++, supervisorStatuses.length - 1)];
+      else if (filename === PROC_PATHS.targetStat) value = stats[Math.min(targetReads++, stats.length - 1)];
+      else if (filename === PROC_PATHS.bootId) value = boot[Math.min(bootReads++, boot.length - 1)];
       else throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
       afterRead?.(filename, value);
       return value;
     },
     readLink: async filename => {
-      if (filename.endsWith('/self/ns/pid')) return selfNamespaces[Math.min(selfNsReads++, selfNamespaces.length - 1)];
-      if (filename.endsWith('/700/ns/pid')) return supervisorNamespaces[Math.min(supervisorNsReads++, supervisorNamespaces.length - 1)];
-      if (filename.endsWith('/721/ns/pid')) return namespaces[Math.min(targetNsReads++, namespaces.length - 1)];
+      if (filename === PROC_PATHS.selfNamespace) return selfNamespaces[Math.min(selfNsReads++, selfNamespaces.length - 1)];
+      if (filename === PROC_PATHS.supervisorNamespace) return supervisorNamespaces[Math.min(supervisorNsReads++, supervisorNamespaces.length - 1)];
+      if (filename === PROC_PATHS.targetNamespace) return namespaces[Math.min(targetNsReads++, namespaces.length - 1)];
       throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
     }
   };
 }
 const request = (extra = {}) => ({ operationId: OPERATION, requestDigest: REQUEST, role: 'target', pid: 721,
   expectedParentPid: 700, launchHandle: liveHandle(), requireSessionLeader: true,
-  platform: 'linux', arch: 'x64', procRoot: '/fixture/proc', now: () => 1234, ...extra });
+  platform: 'linux', arch: 'x64', procRoot: PROC_ROOT, now: () => 1234, ...extra });
 
 test('proc stat parser preserves fields after command names containing spaces and parentheses', () => {
   assert.deepEqual(parseProcStat(stat()), { pid: 721, state: 'S', parentPid: 700, processGroupId: 721, sessionId: 721, startTicks: 555 });
@@ -128,7 +142,7 @@ test('a child reaped during procfs observation invalidates the handle-bound iden
   const launchHandle = liveHandle();
   const evidence = await captureProcessIdentity(request({ launchHandle, ...procReader({
     stats: [stat({ start: 999 }), stat({ start: 999 })],
-    afterRead: filename => { if (filename.endsWith('/721/stat')) launchHandle.exitCode = 0; }
+    afterRead: filename => { if (filename === PROC_PATHS.targetStat) launchHandle.exitCode = 0; }
   }) }));
   assert.equal(evidence.status, 'unknown');
   assert.equal(evidence.reason, 'launch_handle_not_live');
