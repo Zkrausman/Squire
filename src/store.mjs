@@ -6,6 +6,7 @@ import { Blocker, digest, isSha, VERSION, validateConfig, validateReview } from 
 
 import { producerContext } from './producer-context.mjs';
 import * as operations from './operation-store.mjs';
+import * as candidates from './candidate-journal.mjs';
 
 const correctionFields = ['ticketId', 'expectedHeadSha', 'outcome', 'instructions', 'checklist'];
 const checklistFields = ['id', 'assertion', 'steps', 'evidence'];
@@ -142,6 +143,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS events (cursor INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS leases (resource TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`);
     this.db.exec(operations.operationSchema);
+    this.db.exec(candidates.candidateJournalSchema);
   }
   ownsProducerLease(resource) {
     const context = producerContext();
@@ -163,6 +165,10 @@ export class Store {
   claimProcess(grant, from, to, requestDigest) { return operations.claimOperation(this, grant, from, to, requestDigest); }
   finishProcess(grant, phase, record) { return operations.finishOperation(this, grant, phase, record); }
   processOperation(id) { return operations.operation(this, id); }
+  prepareCandidateCheckpoint(record) {
+    return this.transaction(() => candidates.prepareCandidateCheckpoint(this, record));
+  }
+  candidateCheckpoint(id) { return candidates.getCandidateCheckpoint(this, id); }
   close() { this.db.close(); }
   initialize(config) {
     const previous = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
@@ -183,9 +189,11 @@ export class Store {
   } }
   get(id) { const row = this.db.prepare('SELECT state FROM project WHERE id=?').get(id); if (!row) throw new Blocker('not_found', `Project ${id} not found`); return JSON.parse(row.state); }
   list() { return this.db.prepare('SELECT id FROM project').all().map(r => this.get(r.id)); }
-  update(id, fn, type, detail = {}, completedScope = null) {
+  update(id, fn, type, detail = {}, completedScope = null, candidateOperationId = null) {
     const result = this.transaction(() => {
-      const state = this.get(id); fn(state); state.updatedAt = Date.now();
+      const state = this.get(id); fn(state);
+      if (candidateOperationId) candidates.projectCandidateCheckpoint(this, state, candidateOperationId);
+      state.updatedAt = Date.now();
       this.db.prepare('UPDATE project SET state=? WHERE id=?').run(JSON.stringify(state), id);
       if (type) this.emit(id, type, detail);
       if (completedScope) {
@@ -482,7 +490,7 @@ export class Store {
         baseSha: ticket.baseSha, beforeAgentHead: ticket.beforeAgentHead };
     });
   }
-  completeInterruptedRecovery(id, ticketId, recoveryId, candidate, beforeIdentity) {
+  completeInterruptedRecovery(id, ticketId, recoveryId, candidate, beforeIdentity, candidateOperationId = null) {
     requireValue(candidate && isSha(candidate.headSha) && isSha(candidate.treeSha) && Array.isArray(candidate.files) &&
       beforeIdentity && isSha(beforeIdentity.headSha) && isSha(beforeIdentity.treeSha) && typeof beforeIdentity.dirty === 'string' && beforeIdentity.dirty,
     'Checkpoint candidate and observed partial workspace identities are incomplete', 'partial_recovery_identity_mismatch');
@@ -496,11 +504,11 @@ export class Store {
           beforeIdentity.headSha !== ticket.beforeAgentHead || ticket.headSha != null && beforeIdentity.treeSha !== ticket.treeSha) {
         throw new Blocker('partial_recovery_identity_mismatch', 'Durable workspace identity changed during partial recovery');
       }
-      ticket.headSha = candidate.headSha; ticket.treeSha = candidate.treeSha;
+      ticket.headSha = candidate.headSha; ticket.treeSha = candidate.treeSha; ticket.candidateCheckpointId = candidateOperationId;
       ticket.recovered = true; ticket.status = 'blocked'; delete ticket.activeJob;
       Object.assign(ticket.partialRecovery, { status: 'completed', completedAt: Date.now(), beforeIdentity: structuredClone(beforeIdentity), candidate: structuredClone(candidate) });
       state.updatedAt = ticket.partialRecovery.completedAt;
-    }, 'ticket.partial_recovery_completed', { ticket: ticketId, recoveryId, headSha: candidate.headSha, treeSha: candidate.treeSha });
+    }, 'ticket.partial_recovery_completed', { ticket: ticketId, recoveryId, headSha: candidate.headSha, treeSha: candidate.treeSha }, null, candidateOperationId);
   }
   failInterruptedRecovery(id, ticketId, recoveryId, error) {
     return this.update(id, state => {
@@ -606,7 +614,7 @@ export class Store {
         workspace: ticket.workspace, beforeAgentHead: ticket.beforeAgentHead, expectedHeadSha: ticket.headSha, expectedTreeSha: ticket.treeSha };
     });
   }
-  completeInterruptedCandidateVerification(id, ticketId, recoveryId, candidate, beforeIdentity) {
+  completeInterruptedCandidateVerification(id, ticketId, recoveryId, candidate, beforeIdentity, candidateOperationId = null) {
     requireValue(candidate && isSha(candidate.headSha) && isSha(candidate.treeSha) && Array.isArray(candidate.files) &&
       beforeIdentity && isSha(beforeIdentity.headSha) && isSha(beforeIdentity.treeSha) && typeof beforeIdentity.dirty === 'string' && beforeIdentity.dirty,
     'Checkpoint candidate and observed interrupted workspace identities are incomplete', 'interrupted_candidate_identity_mismatch');
@@ -623,11 +631,11 @@ export class Store {
           candidate.headSha === beforeIdentity.headSha || candidate.treeSha === beforeIdentity.treeSha) {
         throw new Blocker('interrupted_candidate_identity_mismatch', 'Durable ticket or workspace identity changed during interrupted-candidate checkpoint');
       }
-      ticket.headSha = candidate.headSha; ticket.treeSha = candidate.treeSha;
+      ticket.headSha = candidate.headSha; ticket.treeSha = candidate.treeSha; ticket.candidateCheckpointId = candidateOperationId;
       ticket.status = 'verifying'; ticket.review = null; ticket.verification = null; ticket.blocker = null; delete ticket.activeJob;
       Object.assign(record, { status: 'completed', completedAt: Date.now(), beforeIdentity: structuredClone(beforeIdentity), candidate: structuredClone(candidate) });
       state.updatedAt = record.completedAt;
-    }, 'ticket.interrupted_candidate_verification_completed', { ticket: ticketId, recoveryId, headSha: candidate.headSha, treeSha: candidate.treeSha });
+    }, 'ticket.interrupted_candidate_verification_completed', { ticket: ticketId, recoveryId, headSha: candidate.headSha, treeSha: candidate.treeSha }, null, candidateOperationId);
   }
   failInterruptedCandidateVerification(id, ticketId, recoveryId, error) {
     return this.update(id, state => {

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { GitWorkspace } from '../src/workspace.mjs';
-import { fixture, git } from './support.mjs';
+import { checkpointFixtureCandidate, fixture, git, ticket } from './support.mjs';
 
 test('repository aliases share the same target-branch lease identity', async t => {
   const f = await fixture(t), alias = path.join(f.root, 'alias');
@@ -19,7 +19,27 @@ test('protected directory root cannot be replaced with a file', async t => {
   const workspace = new GitWorkspace(root), directory = path.join(root, 'candidate');
   const prepared = await workspace.prepare(f.config.services.app, directory, 'squire/test');
   await writeFile(path.join(directory, '.github'), 'replacement');
-  await assert.rejects(() => workspace.checkpoint({ workspace: directory, baseSha: prepared.baseSha, beforeAgentHead: prepared.baseSha, spec: { id: 'a', title: 'Root replacement' } }, f.config.services.app), e => e.code === 'protected_path');
+  const ticketState = { ...f.store.get(f.config.id).tickets[0], workspace: directory, branch: prepared.branch, generation: 1, baseSha: prepared.baseSha };
+  await assert.rejects(() => checkpointFixtureCandidate(f, workspace, ticketState, f.config.services.app), e => e.code === 'protected_path');
+});
+
+test('renaming a protected path remains blocked by its source name', async t => {
+  const f = await fixture(t, [ticket('a')], async ({ seed, source, check }) => {
+    const policy = path.join(seed, 'secret', 'policy.txt');
+    await mkdir(path.dirname(policy), { recursive: true });
+    await writeFile(policy, 'protected policy\n');
+    git(seed, 'add', 'secret/policy.txt'); git(seed, 'commit', '-m', 'Add protected policy'); git(seed, 'push', source, 'main');
+    return { services: { app: { source, branch: 'main', delivery: { kind: 'local' },
+      checks: [{ name: 'behavior', argv: [process.execPath, check], timeoutSeconds: 10 }], protectedPaths: ['secret/'] } } };
+  });
+  const root = path.join(f.stateDir, 'projects', 'fixture'); await mkdir(root, { recursive: true });
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
+  const prepared = await workspace.prepare(f.config.services.app, directory, 'squire/rename-fixture');
+  git(directory, 'mv', 'secret/policy.txt', 'renamed-policy.txt');
+  const ticketState = { ...f.store.get(f.config.id).tickets[0], workspace: directory, branch: prepared.branch,
+    generation: 1, baseSha: prepared.baseSha };
+  await assert.rejects(() => checkpointFixtureCandidate(f, workspace, ticketState, f.config.services.app), error => error.code === 'protected_path');
+  assert.equal(git(directory, 'rev-parse', 'HEAD'), prepared.baseSha);
 });
 
 test('managed workspaces preserve pinned asset bytes across checkpoint, delivery, and safe autocrlf migration', { timeout: 90000 }, async t => {
@@ -40,8 +60,9 @@ test('managed workspaces preserve pinned asset bytes across checkpoint, delivery
   assert.deepEqual(blob(prepared.baseSha), canonical);
 
   await writeFile(path.join(directory, 'feature-a.mjs'), 'export const add=(a,b)=>a+b;\n');
-  const candidate = await workspace.checkpoint({ workspace: directory, baseSha: prepared.baseSha, beforeAgentHead: prepared.baseSha,
-    spec: { id: 'a', title: 'Feature a', execution: { ownedPaths: ['feature-a.mjs'] } } }, f.config.services.app);
+  const ticketState = { ...f.store.get(f.config.id).tickets[0], workspace: directory, branch: 'squire/byte-fixture', generation: 1,
+    baseSha: prepared.baseSha, spec: { ...f.store.get(f.config.id).tickets[0].spec, execution: { ownedPaths: ['feature-a.mjs'] } } };
+  const candidate = await checkpointFixtureCandidate(f, workspace, ticketState, f.config.services.app);
   assert.deepEqual(await readFile(path.join(directory, manifest)), canonical);
   assert.deepEqual(blob(candidate.headSha), canonical);
   git(directory, 'push', 'origin', `${candidate.headSha}:refs/heads/main`);

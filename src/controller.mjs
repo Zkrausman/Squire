@@ -154,6 +154,20 @@ export class Controller {
     return this.store.update(this.id, state => { const ticket = state.tickets.find(t => t.spec.id === id); if (!ticket) throw new Blocker('not_found', `Ticket ${id} unavailable`); fn(ticket); }, type, { ticket: id, ...detail });
   }
   transition(id, status, fields = {}) { this.change(id, t => { Object.assign(t, fields); t.status = status; }, 'ticket.transition', { status }); }
+  transitionCandidate(id, status, fields, operationId) {
+    return this.store.update(this.id, state => {
+      const ticket = state.tickets.find(item => item.spec.id === id);
+      if (!ticket) throw new Blocker('not_found', `Ticket ${id} unavailable`);
+      Object.assign(ticket, fields, { candidateCheckpointId: operationId, status });
+    }, 'ticket.transition', { ticket: id, status }, null, operationId);
+  }
+  checkpointJournal(ticket, purpose, { jobId = ticket.activeJob ?? null, recoveryId = null } = {}) {
+    const context = producerContext();
+    if (!context || context.store !== this.store || context.project !== this.id || !context.scopeId) {
+      throw new Blocker('candidate_checkpoint_identity', 'Candidate checkpoint requires the active ticket producer scope');
+    }
+    return { store: this.store, projectId: this.id, scopeId: context.scopeId, purpose, jobId, recoveryId, policyDigest: digest(this.config) };
+  }
   async ensureTicketPreparation() {
     const state = this.store.get(this.id);
     if (!state.tickets.length || state.tickets.every(ticket => ticket.preparation)) return;
@@ -404,8 +418,8 @@ export class Controller {
         const identity = await this.workspace.identity(t.workspace, signal);
         if (identity.headSha !== t.beforeAgentHead) throw new Blocker('agent_changed_history', 'Interrupted agent changed Git history');
         if (identity.dirty) {
-          const candidate = await this.workspace.checkpoint(t, service, signal);
-          this.transition(id, 'verifying', { ...candidate, recovered: true, verification: null, review: null });
+          const candidate = await this.workspace.checkpoint(t, service, signal, this.checkpointJournal(t, 'automatic_recovery'));
+          this.transitionCandidate(id, 'verifying', { ...candidate, recovered: true, verification: null, review: null }, candidate.operationId);
         } else this.transition(id, 'prepared');
         return;
       }
@@ -436,17 +450,20 @@ export class Controller {
           return;
         }
         let candidate;
-        try { candidate = await this.workspace.checkpoint(this.current(id), service, signal); }
+        try { candidate = await this.workspace.checkpoint(this.current(id), service, signal,
+          this.checkpointJournal(this.current(id), 'implementation', { jobId: outcome.jobId })); }
         catch (error) {
+          if (producerContext()?.lifecycle?.persistenceFailed) throw error;
           await recordCandidateDisposition(outcome.evidence, { outcome: error.code === 'no_candidate' ? 'no_change' : 'failed' });
           throw error;
         }
-        await recordCandidateDisposition(outcome.evidence, { outcome: 'candidate', headSha: candidate.headSha, treeSha: candidate.treeSha });
+        await recordCandidateDisposition(outcome.evidence, { outcome: 'candidate', headSha: candidate.headSha, treeSha: candidate.treeSha }, candidate);
         const implementation = { sessionRef: outcome.sessionRef, jobId: outcome.jobId, usage: outcome.usage,
           ...(continuing ? { continuationId: t.interruptedContinuation.continuationId, logicalAttempt: attempt } : {}) };
         const continuationRecord = continuing ? structuredClone(this.current(id).interruptedContinuation) : undefined;
         if (continuationRecord) Object.assign(continuationRecord, { status: 'completed', completedAt: Date.now(), jobId: outcome.jobId, sessionRef: outcome.sessionRef, completedHeadSha: candidate.headSha, completedTreeSha: candidate.treeSha });
-        this.transition(id, 'verifying', { ...candidate, implementation, ...(continuationRecord ? { interruptedContinuation: continuationRecord } : {}), activeJob: null }); return;
+        this.transitionCandidate(id, 'verifying', { ...candidate, implementation,
+          ...(continuationRecord ? { interruptedContinuation: continuationRecord } : {}), activeJob: null }, candidate.operationId); return;
       }
       if (t.status === 'verifying') {
         await this.workspace.assertCandidate(t, signal);
@@ -553,14 +570,16 @@ export class Controller {
           (ticket.headSha != null && (before.headSha !== ticket.headSha || before.treeSha !== ticket.treeSha))) {
         throw new Blocker('partial_recovery_identity_mismatch', 'Workspace must contain dirty partial work on the exact pre-implementation head', before);
       }
-      const candidate = await this.workspace.checkpoint(ticket, service, signal);
-      this.store.completeInterruptedRecovery(this.id, request.ticketId, authorization.recoveryId, candidate, before);
+      const candidate = await this.workspace.checkpoint(ticket, service, signal,
+        this.checkpointJournal(ticket, 'partial_recovery', { recoveryId: authorization.recoveryId }));
+      this.store.completeInterruptedRecovery(this.id, request.ticketId, authorization.recoveryId, candidate, before, candidate.operationId);
       const recovered = this.current(request.ticketId);
       return { recovered: true, project: this.id, ticket: request.ticketId, recoveryId: authorization.recoveryId,
         status: recovered.status, workspace: recovered.workspace, baseSha: recovered.baseSha,
         beforeAgentHead: recovered.beforeAgentHead, headSha: recovered.headSha, treeSha: recovered.treeSha,
         files: candidate.files };
     } catch (error) {
+      if (error.storeTransactionFailed || producerContext()?.lifecycle?.persistenceFailed) throw error;
       this.store.failInterruptedRecovery(this.id, request.ticketId, authorization.recoveryId, error);
       throw error;
     }
@@ -575,13 +594,15 @@ export class Controller {
       if (before.headSha !== record.evidence.beforeAgentHead || before.treeSha !== record.evidence.priorCandidate.treeSha || !before.dirty) {
         throw new Blocker('interrupted_candidate_identity_mismatch', 'Workspace must retain dirty partial work on the exact pre-agent head and tree', before);
       }
-      const candidate = await this.workspace.checkpoint(ticket, service, signal);
-      this.store.completeInterruptedCandidateVerification(this.id, ticket.spec.id, recoveryId, candidate, before);
+      const candidate = await this.workspace.checkpoint(ticket, service, signal,
+        this.checkpointJournal(ticket, 'interrupted_candidate_verification', { recoveryId }));
+      this.store.completeInterruptedCandidateVerification(this.id, ticket.spec.id, recoveryId, candidate, before, candidate.operationId);
       const checked = this.current(ticketId);
       return { checkpointed: true, project: this.id, ticket: ticket.spec.id, recoveryId, status: checked.status,
         workspace: checked.workspace, baseSha: checked.baseSha, priorHeadSha: before.headSha, priorTreeSha: before.treeSha,
         headSha: checked.headSha, treeSha: checked.treeSha, files: candidate.files, implementationCompleted: false };
     } catch (error) {
+      if (error.storeTransactionFailed || producerContext()?.lifecycle?.persistenceFailed) throw error;
       this.store.failInterruptedCandidateVerification(this.id, ticket.spec.id, recoveryId, error);
       throw error;
     }
