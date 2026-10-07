@@ -47,12 +47,12 @@ Prefer a winner that remains attractive across reasonable assumptions. If uncert
 
 ## Research and decision checkpoints
 
-Research earns priority by changing a named upcoming decision. State the uncertain decision, which plausible findings would change the action, the avoidable cost or lost value at stake, and the cheapest sufficient evidence with a stopping condition. Credit the improvement in the decision, less research cost; do not credit a memo with the full payoff of all implementation it describes. If every plausible answer leaves the next action unchanged, stop or defer the study. Unknown execution facts become explicit future verification requirements.
+Research earns priority by changing a named upcoming decision. State the uncertain decision, which plausible findings would change the action, the avoidable cost or lost value at stake, and the cheapest sufficient evidence with a stopping condition. Use the expected improvement in the decision as research benefit and include research effort in full remaining cost, consistently with other outcomes. A separate net-value test can subtract research cost only when benefit and cost share units. Do not credit a memo with the full payoff of all implementation it describes. If every plausible answer leaves the next action unchanged, stop or defer the study. Unknown execution facts become explicit future verification requirements.
 
 At a decision boundary:
 
 1. Refresh the few candidate cards. Exclude done/superseded outcomes and packages with no authorized, ready next slice from execution selection; retain conditional plans separately.
-2. Eliminate dominated choices: no more benefit, at least as much full cost, and no compensating evidence or deadline advantage.
+2. Eliminate dominated choices: no more benefit and at least as much full cost, with at least one strictly worse dimension and no compensating evidence or deadline advantage.
 3. Select the strongest robust value/effort outcome, considering dependencies and real cost of delay. Record the runner-up and decisive assumption.
 4. For practical ties, prefer less owner attention, stronger evidence/lower downside, an earlier verified outcome, lower maintenance/reversal cost, then the existing committed order.
 5. Commit to the next meaningful checkpoint and its closing evidence.
