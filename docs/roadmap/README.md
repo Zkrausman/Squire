@@ -2,6 +2,10 @@
 
 Prioritize dependable delivery for one owner: preserve useful work, report exactly what passed, and ask for input only at real scope, authority or environment boundaries. Keep the single-host controller and fixed-role subscription workflow.
 
+## Selecting the next outcome
+
+At each meaningful decision boundary, choose the feasible outcome with a ready next slice and the strongest expected value for its full remaining constrained effort, including dependencies, validation and owner work. Record the runner-up and decisive assumption; use qualitative ranges when comparable estimates are missing. Preserve required gates and the committed first-outcome order unless material evidence justifies changing it. The [selection method and initial shortlist](../research/factory-value-prioritization.md) cover uncertainty, switching cost and stopping rules.
+
 ## Current foundations and evidence limits
 
 Squire already has durable SQLite state/events and leases, supervised bounded processes, partial-work recovery, controller-owned candidate commits, exact-candidate verification, fresh read-only review, exact GitHub check matching, merge reconciliation and postmerge checks. These are implemented facilities, not wholly unstarted roadmap items.
