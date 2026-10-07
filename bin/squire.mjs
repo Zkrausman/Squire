@@ -6,14 +6,20 @@ import { validateConfig } from '../src/contracts.mjs';
 import { Store } from '../src/store.mjs';
 import { Controller } from '../src/controller.mjs';
 import { createControlServer, publicState } from '../src/api.mjs';
+import { inspectProducers } from '../src/inspect-producers.mjs';
+import { readInspectionConfig, inspectionError } from '../src/inspection-snapshot.mjs';
 
 const [command, filename, ...options] = process.argv.slice(2);
 const print = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 const help = `Squire: durable subscription-backed software delivery\n\nnode bin/squire.mjs validate project.json\nnode bin/squire.mjs doctor project.json\nnode bin/squire.mjs run project.json [--once]\nnode bin/squire.mjs status project.json\nnode bin/squire.mjs events project.json [--after=N]\nnode bin/squire.mjs pause project.json\nnode bin/squire.mjs resume project.json [--retry]\nnode bin/squire.mjs authorize-correction project.json correction.json\nnode bin/squire.mjs adopt-corrective-delivery project.json fulfillment.json\nnode bin/squire.mjs continue-interrupted project.json continuation.json\nnode bin/squire.mjs serve ABSOLUTE_STATE_ROOT [--port=41828]\n\nRun/serve persist checkpoints and wait for work or capacity; Ctrl+C cancels\nactive local jobs and pauses the project. No API key is used by the Codex adapter.\n`;
 async function main() {
+  if (command === 'inspect-producers') {
+    if (!filename || options.length) throw inspectionError('inspection_input');
+    print(inspectProducers(readInspectionConfig(filename))); return;
+  }
   if (!command || ['help', '--help', '-h'].includes(command)) {
     const recoveryUsage = 'node bin/squire.mjs recover-interrupted-implementation project.json recovery.json\nnode bin/squire.mjs checkpoint-interrupted-candidate project.json checkpoint.json\n';
-    process.stdout.write(help.replace('node bin/squire.mjs serve ABSOLUTE_STATE_ROOT', `${recoveryUsage}node bin/squire.mjs serve ABSOLUTE_STATE_ROOT`)); return;
+    process.stdout.write(help.replace('node bin/squire.mjs status project.json', 'node bin/squire.mjs status project.json\nnode bin/squire.mjs inspect-producers project.json').replace('node bin/squire.mjs serve ABSOLUTE_STATE_ROOT', `${recoveryUsage}node bin/squire.mjs serve ABSOLUTE_STATE_ROOT`)); return;
   }
   if (!filename) throw new Error('A project config or state root is required');
   if (command === 'serve') {
