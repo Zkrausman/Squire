@@ -355,7 +355,8 @@ test('interrupted-candidate projection failure leaves the authorized record and 
   const { f, controller, prepared, ticketBefore, request } = await prepareInterruptedCorrection(t, 'export const add=(a,b)=>a+b;\n// interrupted candidate\n');
   f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
     BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
-  await assert.rejects(() => controller.checkpointInterruptedCandidateVerification(request), error => error.storeTransactionFailed === true);
+  await assert.rejects(() => controller.checkpointInterruptedCandidateVerification(request), error =>
+    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
   const saved = f.store.get(f.config.id).tickets[0], intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=? ORDER BY created_at DESC LIMIT 1').get('a');
   assert.equal(saved.status, 'recovering_candidate');
   assert.equal(saved.interruptedCandidateVerification.status, 'authorized');
@@ -473,7 +474,8 @@ test('normal implementation projection failure preserves the candidate intent an
   await statusUntil(f.store, controller, 'prepared');
   f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
     BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
-  await assert.rejects(() => controller.step('a'), error => error.storeTransactionFailed === true);
+  await assert.rejects(() => controller.step('a'), error =>
+    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
   const ticketState = f.store.get(f.config.id).tickets[0];
   const intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=?').get('a');
   assert.equal(ticketState.status, 'implementing'); assert.equal(ticketState.activeJob, intent.job_id);
@@ -489,7 +491,8 @@ test('automatic-recovery projection failure keeps its old job identity and unres
   controller.transition('a', 'recovering', { beforeAgentHead: prepared.baseSha, activeJob: jobId });
   f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
     BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
-  await assert.rejects(() => controller.step('a'), error => error.storeTransactionFailed === true);
+  await assert.rejects(() => controller.step('a'), error =>
+    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
   const saved = f.store.get(f.config.id).tickets[0], intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=?').get('a');
   assert.equal(saved.status, 'recovering'); assert.equal(saved.activeJob, jobId);
   assert.equal(intent.purpose, 'automatic_recovery'); assert.equal(intent.job_id, jobId); assert.equal(intent.phase, 'intent');
@@ -556,7 +559,8 @@ test('partial-recovery projection failure retains the authorized recovery and op
   f.store.db.exec(`CREATE TRIGGER reject_candidate_projection BEFORE UPDATE OF phase ON candidate_checkpoints
     BEGIN SELECT RAISE(ABORT,'fixture projection failure'); END`);
   await assert.rejects(() => controller.recoverInterruptedImplementation({ ticketId: 'a', expectedWorkspace: before.workspace,
-    expectedBaseSha: before.baseSha, expectedBeforeAgentHead: before.beforeAgentHead }), error => error.storeTransactionFailed === true);
+    expectedBaseSha: before.baseSha, expectedBeforeAgentHead: before.beforeAgentHead }), error =>
+    error.storeTransactionFailed === true && error.message.includes('fixture projection failure'));
   const saved = f.store.get(f.config.id).tickets[0], intent = f.store.db.prepare('SELECT * FROM candidate_checkpoints WHERE ticket=?').get('a');
   assert.equal(saved.status, 'recovering_partial'); assert.equal(saved.partialRecovery.status, 'authorized');
   assert.equal(intent.purpose, 'partial_recovery'); assert.equal(intent.recovery_id, saved.partialRecovery.recoveryId); assert.equal(intent.phase, 'intent');

@@ -191,7 +191,8 @@ test('projection failure after ref update leaves ticket unchanged and producer f
   assert.throws(() => withProducer(f.producer, () => f.store.update(f.config.id, state => {
     Object.assign(state.tickets[0], candidate, { candidateCheckpointId: candidate.operationId, status: 'verifying', activeJob: null,
       implementation: { jobId: f.current.activeJob, sessionRef: 'fixture-session', usage: {} } });
-  }, 'ticket.transition', { status: 'verifying' }, null, candidate.operationId)));
+  }, 'ticket.transition', { status: 'verifying' }, null, candidate.operationId)),
+  error => error.message.includes('fixture projection failure'));
   assert.equal(f.sha('HEAD'), candidate.headSha);
   assert.equal(f.store.get(f.config.id).tickets[0].status, 'implementing');
   assert.equal(f.store.candidateCheckpoint(candidate.operationId).phase, 'intent');
