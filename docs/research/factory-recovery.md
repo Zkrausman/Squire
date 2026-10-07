@@ -1,6 +1,6 @@
 # Squire recovery and delivery hardening
 
-Research snapshot: 6 October 2026. Status: proposed hardening, with implemented facilities and static risks distinguished below.
+Research snapshot: 6 October 2026. Implementation update: 7 October 2026. Status: proposed hardening with a narrow R1 process-inventory and malformed-evidence improvement implemented; full registered process identity and the other slices remain proposed.
 
 See the [research index](README.md) for evidence labels and the combined dependency order, and [acceptance design](factory-acceptance.md) for criterion-to-proof resolution.
 
@@ -16,7 +16,7 @@ The highest-priority changes are:
 4. Retain the exact remote check and merge facts used by delivery, rather than only the final ready state.
 5. Make quota waits, unknown usage and restart budgets visible without changing frozen benchmark accounting.
 
-This is an implementation design, not an implementation or reliability result. No provider, application or benchmark execution was performed for this source audit. The proposed fault-injection fixtures were not executed; ordinary repository CI for the documentation PR is separate. The crash windows below are deductions from the pinned code, not reproduced failures.
+This remains an implementation design except for the narrow R1 improvement described below. Its deterministic offline fixtures exercise process inventory, malformed records and controller restart guards; they do not prove live provider recovery or remote-effect settlement. No provider, application or benchmark execution was performed for this source audit or that improvement. The remaining proposed fault-injection fixtures were not executed. The other crash windows below are deductions from the pinned code, not reproduced failures.
 
 ## Source baseline and limits
 
@@ -47,11 +47,17 @@ The controller calls workspace checkpoint and then writes the new head/tree into
 
 Proposed fix: add a candidate operation record before changing the managed branch. Record the exact parent, validated index tree, ticket/workspace generation, job, policy digest and operation ID. Use a prepared commit object plus compare-and-swap ref update, or an equivalently recoverable commit receipt. If commit-object creation is repeatable, freeze its metadata as part of the intent. On restart, only adopt the exact expected object and parent/tree. Any other HEAD remains blocked. Apply this journal to normal, automatic-recovery and explicit-recovery checkpoint paths. This is controller bookkeeping, not permission for agents to commit.
 
-### Reconciliation coverage does not cover every process directory
+### Process inventory now covers planning and GitHub; identity registration remains proposed
 
-The reconciler scans jobs, checks, git-logs, auth-checks and catalog. Planning jobs use planning/<attempt>/job, and GitHub API commands use github-logs. Neither directory is in that list. Parent-death supervision still attempts to terminate those commands, so this is an uncovered settling window rather than proof of duplicate remote effects. [Scanned directories](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/process.mjs#L23-L42), [planning directory](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/controller.mjs#L256-L280), [GitHub directory](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/delivery.mjs#L5-L16).
+The audited baseline scans jobs, checks, git-logs, auth-checks and catalog. Planning jobs use planning/<attempt>/job, and GitHub API commands use github-logs. Neither directory was in that list. Parent-death supervision still attempts to terminate those commands, so this was an uncovered settling window rather than proof of duplicate remote effects. [Baseline scanned directories](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/process.mjs#L23-L42), [planning directory](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/controller.mjs#L256-L280), [GitHub directory](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/delivery.mjs#L5-L16).
 
-First cover both directories with fixtures. This alone does not close the separate spawn-before-active-record window: the supervisor currently starts the child before writing its active file. [Spawn and registration order](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/process.mjs#L83-L102). Then replace the hand-maintained directory list with one registry of supervised operation identities. All operations, including checks and Git commands, must register before spawn and settle through the same path. Keep a bounded refusal if a previous writer remains live or its identity cannot be established.
+Implemented narrow R1 improvement: the [reconciler](../../src/process.mjs) now includes github-logs and the immediate files in planning/<numeric-attempt>/job, and rejects invalid JSON or missing/invalid positive integer supervisor PID, child PID or startedAt fields with the active-file path. A missing child PID, including a launch failure interrupted before its active file is removed, remains unknown and blocks. Only .active.json files in the known process locations are considered; request files, receipts, logs, sibling planning service workspaces and job temporary subdirectories are not process authority. Existing paused/completed-project and controller-lease guards stay in place, as do counters and dispatch policy. [Process fixtures](../../test/process.test.mjs) and [controller restart fixtures](../../test/controller.test.mjs) cover these boundaries and repeated reconciliation.
+
+Reconciliation remains observation-only, with the existing 50-probe bound and 200 ms waits. It never sends a terminating signal or imports a receipt. A live PID, including one that may have been reused or belong to an unrelated process, prevents progress; permission-denied liveness probes also remain live/unknown. A settled or removed record retains the existing behavior. The stored startedAt is validated for shape only: it is **not** an OS process-start identity, ownership proof or executor identity. No PID-reuse detection or full R1 reliability claim is made.
+
+The existing service-name collision with the reserved-in-practice planning job directory is unchanged: a service named job shares its checkout path with planner artifacts. This slice does not add a service-name policy or migrate that namespace.
+
+This does not close the separate spawn-before-active-record window: the supervisor currently starts the child before writing its active file. [Spawn and registration order](https://github.com/Zkrausman/Squire/blob/ec98a61bd6a0fec89246c0b160ca90d2ff363d68/src/process.mjs#L83-L102). A later slice should replace the hand-maintained directory list with one registry of supervised operation identities. All operations, including checks and Git commands, must register before spawn and settle through the same path. Keep a bounded refusal if a previous writer remains live or its identity cannot be established. Candidate settlement, completed-result adoption and remote-write reconciliation are separate work.
 
 ### Completed results and raw events are not a replayable job record
 
@@ -195,12 +201,12 @@ Do not add Temporal for one owner on one host. Its documented activity retries m
 
 ## Dependency sequence and small implementation slices
 
-All slices below are proposed. Each should be a small independently reviewed change with offline tests first; combine only if the resulting diff remains easy to audit. Historical benchmark configurations, outcomes and artifacts stay frozen. The [v0.1 closure record](../releases/0.1/baseline-closure.json) remains closed-incomplete, and the recorded benchmark/comparison hold remains in force. A future baseline or live demonstration needs separate authorization; no run resumes merely because documentation is ready.
+The narrow R1 inventory and malformed-evidence improvement above is implemented; the remaining work in these slices is proposed. Each should be a small independently reviewed change with offline tests first; combine only if the resulting diff remains easy to audit. Historical benchmark configurations, outcomes and artifacts stay frozen. The [v0.1 closure record](../releases/0.1/baseline-closure.json) remains closed-incomplete, and the recorded benchmark/comparison hold remains in force. A future baseline or live demonstration needs separate authorization; no run resumes merely because documentation is ready.
 
 | Slice | Depends on | Narrow implementation | Evidence required to close |
 | --- | --- | --- | --- |
 | R0 Document current contracts | None | Mark existing vs proposed mechanisms; record source pins and invariants; define job/receipt schema without changing behavior | Review confirms no existing delivery or budget gate weakened |
-| R1 Cover process reconciliation | R0 | Include planning and GitHub operations; add registered process identity and unknown-state handling; preserve bounded settling | Kill/settle fixtures cover all command classes, no second writer or unrelated PID termination |
+| R1 Cover process reconciliation (partial) | R0 | Implemented: planning/GitHub inventory, malformed-record refusal, existing bounded observation-only settling. Proposed: registered process identity and pre-spawn registration | Offline inventory/malformed-record/restart guards are covered; full identity and crash-window acceptance remains open, with no unrelated PID termination |
 | R2 Journal candidate checkpoint | R1 | Candidate intent, prepared commit identity, CAS ref transition and restart adoption | Crash at every candidate boundary converges to one authorized candidate or an exact blocker |
 | R3 Make job artifacts immutable | R1 | Unique job directories, atomic terminal manifest, normalized completed result and spool cursor | All outcomes retain usable evidence; corruption/truncation stays explicit |
 | R4 Recover job outcomes and budgets | R2 and R3 | Idempotent receipt import, terminal settlement, quota/logical-attempt distinction, preserved deadlines | No duplicate call debit/import; no restarted budget; bounded capacity hold |
