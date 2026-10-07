@@ -4,6 +4,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Blocker, digest, isSha, VERSION, validateConfig, validateReview } from './contracts.mjs';
 
+import { producerContext } from './producer-context.mjs';
+import * as operations from './operation-store.mjs';
+
 const correctionFields = ['ticketId', 'expectedHeadSha', 'outcome', 'instructions', 'checklist'];
 const checklistFields = ['id', 'assertion', 'steps', 'evidence'];
 const fulfillmentFields = ['ticketId', 'sourceProjectId', 'sourceTicketId', 'expectedHeadSha'];
@@ -138,27 +141,61 @@ export class Store {
       CREATE TABLE IF NOT EXISTS project (id TEXT PRIMARY KEY, config_hash TEXT NOT NULL, state TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events (cursor INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS leases (resource TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`);
+    this.db.exec(operations.operationSchema);
   }
+  ownsProducerLease(resource) {
+    const context = producerContext();
+    if (context?.store !== this || !context.scopeId) return false;
+    const scope = this.db.prepare('SELECT lease_resource,lease_owner,closed_at FROM producer_scopes WHERE id=?').get(context.scopeId);
+    return scope?.closed_at === null && scope.lease_resource === resource &&
+      this.db.prepare('SELECT owner FROM leases WHERE resource=?').get(resource)?.owner === scope.lease_owner;
+  }
+  assertProducerScopesClear(project, except = producerContext()?.store === this ? producerContext().scopeId : null) {
+    const held = this.db.prepare('SELECT id,lane FROM producer_scopes WHERE project=? AND closed_at IS NULL AND id IS NOT ?').all(project, except);
+    if (held.length) throw new Blocker('producer_unresolved', 'Unrecorded producer outcomes remain fenced', { scopes: held });
+  }
+  producerHolds(project, owner) {
+    return this.db.prepare('SELECT id,lane FROM producer_scopes WHERE project=? AND closed_at IS NULL AND lease_owner<>?').all(project, owner);
+  }
+  beginProducer(project, lane, lease, resources = []) { return operations.beginScope(this, project, lane, lease, resources); }
+  reserveProducerCall(scopeId, jobId) { return operations.reserveCall(this, scopeId, jobId); }
+  registerProcess(scopeId, jobId, id, directory, requestDigest) { return operations.registerOperation(this, scopeId, jobId, id, directory, requestDigest); }
+  claimProcess(grant, from, to, requestDigest) { return operations.claimOperation(this, grant, from, to, requestDigest); }
+  finishProcess(grant, phase, record) { return operations.finishOperation(this, grant, phase, record); }
+  processOperation(id) { return operations.operation(this, id); }
   close() { this.db.close(); }
   initialize(config) {
     const previous = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
     const hash = digest(config);
     if (previous && previous.config_hash !== hash) throw new Blocker('config_changed', 'Project policy changed. Use a new project ID/state directory; an active queue cannot silently change authority.');
     if (previous) return this.get(config.id);
-    const state = { version: VERSION, id: config.id, config, status: 'queued', paused: false, createdAt: Date.now(), agentCalls: 0, planningAttempt: 0,
+    const state = { version: VERSION, id: config.id, config, processProtocol: 1, status: 'queued', paused: false, createdAt: Date.now(), agentCalls: 0, planningAttempt: 0,
       tickets: (config.tickets ?? []).map(spec => ({ spec, status: 'queued', attempts: 0, repairs: 0, rebases: 0 })), acceptance: {}, blocker: null };
     this.transaction(() => { this.db.prepare('INSERT INTO project VALUES (?,?,?)').run(config.id, hash, JSON.stringify(state)); this.emit(config.id, 'project.created', { status: 'queued' }); });
     return state;
   }
-  transaction(fn) { this.db.exec('BEGIN IMMEDIATE'); try { const value = fn(); this.db.exec('COMMIT'); return value; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
+  transaction(fn) { try { this.db.exec('BEGIN IMMEDIATE'); const value = fn(); this.db.exec('COMMIT'); return value; } catch (e) {
+    const context = producerContext();
+    if (context?.store === this) context.lifecycle.persistenceFailed = true;
+    e.storeTransactionFailed = true;
+    try { this.db.exec('ROLLBACK'); } catch { /* Preserve the original persistence/validation failure. */ }
+    throw e;
+  } }
   get(id) { const row = this.db.prepare('SELECT state FROM project WHERE id=?').get(id); if (!row) throw new Blocker('not_found', `Project ${id} not found`); return JSON.parse(row.state); }
   list() { return this.db.prepare('SELECT id FROM project').all().map(r => this.get(r.id)); }
-  update(id, fn, type, detail = {}) {
-    return this.transaction(() => {
+  update(id, fn, type, detail = {}, completedScope = null) {
+    const result = this.transaction(() => {
       const state = this.get(id); fn(state); state.updatedAt = Date.now();
       this.db.prepare('UPDATE project SET state=? WHERE id=?').run(JSON.stringify(state), id);
-      if (type) this.emit(id, type, detail); return state;
+      if (type) this.emit(id, type, detail);
+      if (completedScope) {
+        if (producerContext()?.lifecycle?.persistenceFailed) throw new Blocker('producer_unresolved', 'Producer persistence failed; outcome remains fenced');
+        operations.closeScope(this, completedScope, id, state);
+      }
+      return state;
     });
+    if (completedScope && producerContext()?.scopeId === completedScope) producerContext().lifecycle.scopeClosed = true;
+    return result;
   }
   emit(id, type, detail) { this.db.prepare('INSERT INTO events(project,data) VALUES (?,?)').run(id, JSON.stringify({ version: VERSION, project: id, type, at: Date.now(), ...detail })); }
   events(id, cursor = 0, limit = 200) { return this.db.prepare('SELECT cursor,data FROM events WHERE project=? AND cursor>? ORDER BY cursor LIMIT ?').all(id, cursor, limit).map(r => ({ cursor: Number(r.cursor), ...JSON.parse(r.data) })); }
@@ -173,15 +210,17 @@ export class Store {
       }
       this.db.prepare('INSERT INTO leases VALUES (?,?,?)').run(resource, owner, process.pid);
     });
-    return () => { this.db.prepare('DELETE FROM leases WHERE resource=? AND owner=?').run(resource, owner); };
+    const release = () => { this.db.prepare('DELETE FROM leases WHERE resource=? AND owner=?').run(resource, owner); };
+    release.resource = resource; release.owner = owner; return release;
   }
   pause(id) { return this.update(id, s => { s.paused = true; }, 'project.paused'); }
   configureRuntime(expectedConfig, runtime) {
     return this.transaction(() => {
       const state = this.get(expectedConfig.id);
+      this.assertProducerScopesClear(state.id);
       if (!state.paused) throw new Blocker('runtime_change_busy', 'Pause the project before changing model routing');
       const held = this.db.prepare('SELECT pid FROM leases WHERE resource=?').get(`controller:${state.id}`);
-      if (held) {
+      if (held && !this.ownsProducerLease(`controller:${state.id}`)) {
         let alive = true; try { process.kill(held.pid, 0); } catch (e) { alive = e.code !== 'ESRCH'; }
         if (alive) throw new Blocker('runtime_change_busy', 'Wait for the paused controller to settle before changing model routing');
       }
@@ -204,6 +243,7 @@ export class Store {
     validateAgentBudgetIncrease(increase);
     return this.transaction(() => {
       const state = this.get(config.id);
+      this.assertProducerScopesClear(state.id);
       const projectRow = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
       if (!projectRow || projectRow.config_hash !== digest(state.config) || digest(config) !== projectRow.config_hash) {
         throw new Blocker('config_changed', 'Expected configuration does not match durable project policy');
@@ -211,8 +251,8 @@ export class Store {
       if (!state.paused) throw new Blocker('agent_budget_busy', 'Pause the project before increasing its agent-call budget');
       const leaseKey = `controller:${state.id}`;
       const held = this.db.prepare('SELECT pid FROM leases WHERE resource=?').get(leaseKey);
-      if (held && isLivePid(held.pid)) throw new Blocker('agent_budget_busy', 'Wait for the paused controller to settle before increasing its agent-call budget', { pid: held.pid });
-      if (held) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
+      if (held && !this.ownsProducerLease(`controller:${state.id}`) && isLivePid(held.pid)) throw new Blocker('agent_budget_busy', 'Wait for the paused controller to settle before increasing its agent-call budget', { pid: held.pid });
+      if (held && !this.ownsProducerLease(leaseKey)) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
       if (state.tickets.some(ticket => ticket.activeJob || ['implementing', 'reviewing'].includes(ticket.status))) {
         throw new Blocker('agent_budget_busy', 'Wait for active ticket jobs to settle before increasing the agent-call budget');
       }
@@ -242,6 +282,7 @@ export class Store {
     const config = validateConfig(structuredClone(expectedConfig));
     return this.transaction(() => {
       const state = this.get(config.id);
+      this.assertProducerScopesClear(state.id);
       const projectRow = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
       if (!projectRow || projectRow.config_hash !== digest(state.config) || digest(config) !== projectRow.config_hash) {
         throw new Blocker('config_changed', 'Expected configuration does not match durable project policy');
@@ -250,8 +291,8 @@ export class Store {
 
       const leaseKey = `controller:${state.id}`;
       const held = this.db.prepare('SELECT pid FROM leases WHERE resource=?').get(leaseKey);
-      if (held && isLivePid(held.pid)) throw new Blocker('correction_busy', 'Wait for the paused controller to settle before authorizing a correction', { pid: held.pid });
-      if (held) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
+      if (held && !this.ownsProducerLease(`controller:${state.id}`) && isLivePid(held.pid)) throw new Blocker('correction_busy', 'Wait for the paused controller to settle before authorizing a correction', { pid: held.pid });
+      if (held && !this.ownsProducerLease(leaseKey)) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
       if (state.tickets.some(ticket => ticket.activeJob || ['implementing', 'reviewing'].includes(ticket.status))) {
         throw new Blocker('correction_busy', 'Wait for active ticket jobs to settle before authorizing a correction');
       }
@@ -373,6 +414,7 @@ export class Store {
     validatePartialRecovery(request);
     return this.transaction(() => {
       const state = this.get(config.id);
+      this.assertProducerScopesClear(state.id);
       const projectRow = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
       if (!projectRow || projectRow.config_hash !== digest(state.config) || digest(config) !== projectRow.config_hash) {
         throw new Blocker('config_changed', 'Expected configuration does not match durable project policy');
@@ -380,8 +422,8 @@ export class Store {
       if (!state.paused) throw new Blocker('partial_recovery_busy', 'Pause the project before recovering a timed-out implementation');
       const leaseKey = `controller:${state.id}`;
       const held = this.db.prepare('SELECT pid FROM leases WHERE resource=?').get(leaseKey);
-      if (held && isLivePid(held.pid)) throw new Blocker('partial_recovery_busy', 'Wait for the paused controller to settle before recovering partial implementation work', { pid: held.pid });
-      if (held) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
+      if (held && !this.ownsProducerLease(`controller:${state.id}`) && isLivePid(held.pid)) throw new Blocker('partial_recovery_busy', 'Wait for the paused controller to settle before recovering partial implementation work', { pid: held.pid });
+      if (held && !this.ownsProducerLease(leaseKey)) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
       const ticket = state.tickets.find(item => item.spec.id === request.ticketId);
       if (!ticket) throw new Blocker('not_found', `Ticket ${request.ticketId} unavailable`);
       if (ticket.partialRecovery) throw new Blocker('partial_recovery_already_used', 'This ticket already has a partial implementation recovery record');
@@ -477,6 +519,7 @@ export class Store {
     validateInterruptedCandidate(request);
     return this.transaction(() => {
       const state = this.get(config.id);
+      this.assertProducerScopesClear(state.id);
       const projectRow = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
       if (!projectRow || projectRow.config_hash !== digest(state.config) || digest(config) !== projectRow.config_hash) {
         throw new Blocker('config_changed', 'Expected configuration does not match durable project policy');
@@ -484,8 +527,8 @@ export class Store {
       if (!state.paused) throw new Blocker('interrupted_candidate_busy', 'Pause the project before checkpointing an interrupted candidate');
       const leaseKey = `controller:${state.id}`;
       const held = this.db.prepare('SELECT pid FROM leases WHERE resource=?').get(leaseKey);
-      if (held && isLivePid(held.pid)) throw new Blocker('interrupted_candidate_busy', 'Wait for the paused controller to settle before checkpointing an interrupted candidate', { pid: held.pid });
-      if (held) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
+      if (held && !this.ownsProducerLease(`controller:${state.id}`) && isLivePid(held.pid)) throw new Blocker('interrupted_candidate_busy', 'Wait for the paused controller to settle before checkpointing an interrupted candidate', { pid: held.pid });
+      if (held && !this.ownsProducerLease(leaseKey)) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
 
       const ticket = state.tickets.find(item => item.spec.id === request.ticketId);
       if (!ticket) throw new Blocker('not_found', `Ticket ${request.ticketId} unavailable`);
@@ -603,6 +646,7 @@ export class Store {
     validateContinuation(continuation);
     return this.transaction(() => {
       const state = this.get(config.id);
+      this.assertProducerScopesClear(state.id);
       const row = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
       if (!row || row.config_hash !== digest(state.config) || digest(config) !== row.config_hash) {
         throw new Blocker('config_changed', 'Expected configuration does not match durable project policy');
@@ -610,8 +654,8 @@ export class Store {
       if (!state.paused) throw new Blocker('continuation_busy', 'Pause the project before continuing an interrupted attempt');
       const leaseKey = `controller:${state.id}`;
       const held = this.db.prepare('SELECT pid FROM leases WHERE resource=?').get(leaseKey);
-      if (held && isLivePid(held.pid)) throw new Blocker('continuation_busy', 'Wait for the paused controller to settle before continuing an attempt', { pid: held.pid });
-      if (held) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
+      if (held && !this.ownsProducerLease(`controller:${state.id}`) && isLivePid(held.pid)) throw new Blocker('continuation_busy', 'Wait for the paused controller to settle before continuing an attempt', { pid: held.pid });
+      if (held && !this.ownsProducerLease(leaseKey)) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
       if (state.tickets.some(ticket => ticket.activeJob || ['implementing', 'reviewing'].includes(ticket.status))) {
         throw new Blocker('continuation_busy', 'Wait for active ticket jobs to settle before continuing an attempt');
       }
@@ -682,6 +726,7 @@ export class Store {
     validateFulfillmentInput(fulfillment);
     return this.transaction(() => {
       const state = this.get(config.id);
+      this.assertProducerScopesClear(state.id);
       const targetRow = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(config.id);
       if (!targetRow || targetRow.config_hash !== digest(state.config) || digest(config) !== targetRow.config_hash) {
         throw new Blocker('config_changed', 'Expected target configuration does not match durable project policy');
@@ -689,8 +734,8 @@ export class Store {
       if (!state.paused) throw new Blocker('fulfillment_busy', 'Pause the target project before adopting a corrective delivery');
       const leaseKey = `controller:${state.id}`;
       const held = this.db.prepare('SELECT pid FROM leases WHERE resource=?').get(leaseKey);
-      if (held && isLivePid(held.pid)) throw new Blocker('fulfillment_busy', 'Wait for the paused target controller to settle before adoption', { pid: held.pid });
-      if (held) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
+      if (held && !this.ownsProducerLease(`controller:${state.id}`) && isLivePid(held.pid)) throw new Blocker('fulfillment_busy', 'Wait for the paused target controller to settle before adoption', { pid: held.pid });
+      if (held && !this.ownsProducerLease(leaseKey)) this.db.prepare('DELETE FROM leases WHERE resource=?').run(leaseKey);
       if (state.tickets.some(ticket => ticket.activeJob || ['implementing', 'reviewing'].includes(ticket.status))) {
         throw new Blocker('fulfillment_busy', 'Wait for active target ticket jobs to settle before adoption');
       }
@@ -711,6 +756,7 @@ export class Store {
 
       if (fulfillment.sourceProjectId === state.id) throw new Blocker('fulfillment_source_invalid', 'Source project must differ from the target project');
       const sourceState = this.get(fulfillment.sourceProjectId);
+      this.assertProducerScopesClear(sourceState.id);
       const sourceRow = this.db.prepare('SELECT config_hash FROM project WHERE id=?').get(fulfillment.sourceProjectId);
       if (!sourceRow || sourceRow.config_hash !== digest(sourceState.config)) throw new Blocker('fulfillment_source_invalid', 'Source project configuration receipt is inconsistent');
       const source = sourceState.tickets.find(ticket => ticket.spec.id === fulfillment.sourceTicketId);
@@ -832,6 +878,7 @@ export class Store {
   }
   resume(id, retry = false, ticketIds = null) {
     return this.update(id, s => {
+      this.assertProducerScopesClear(id);
       if (s.tickets.some(ticket => ticket.partialRecovery?.status === 'authorized')) {
         throw new Blocker('partial_recovery_busy', 'Finish the authorized partial-recovery checkpoint before resuming the project');
       }

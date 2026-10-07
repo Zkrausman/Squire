@@ -5,6 +5,9 @@ import { randomUUID } from 'node:crypto';
 import { CodexRuntime } from '../src/runtime-codex.mjs';
 import { runProcess } from '../src/process.mjs';
 
+import { withStandaloneProcesses } from '../src/producer-context.mjs';
+
+await withStandaloneProcesses(async () => {
 const root = path.resolve('.squire', `subscription-smoke-${randomUUID()}`), workspace = path.join(root, 'workspace');
 await mkdir(workspace, { recursive: true, mode: 0o700 });
 await writeFile(path.join(workspace, 'README.md'), '# Isolated Codex readiness probe\n');
@@ -23,3 +26,5 @@ else {
   await writeFile(path.join(root, 'readiness.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(receipt)); process.exitCode = ready ? 0 : 2;
 }
+
+});

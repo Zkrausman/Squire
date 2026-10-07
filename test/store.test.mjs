@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Store } from '../src/store.mjs';
@@ -747,4 +747,20 @@ test('adoption rejects wrong target head, altered authority, missing criteria, a
   f.store.update(f.sourceConfig.id, state => { state.tickets[0].spec.execution.checklist.find(item => item.id === 'base-one').assertion = 'Basic behavior works.'; });
   f.store.update(f.sourceConfig.id, state => { state.tickets[0].verification.headSha = 'e'.repeat(40); });
   assert.throws(() => f.store.adoptCorrectiveDelivery(f.config, input), /verification and postmerge receipts/);
+});
+
+
+test('corrective adoption refuses a shipped source with an unclosed producer across reopen', async t => {
+ const f=await correctiveFulfillmentFixture(t);
+ const release=f.store.lease(`controller:${f.sourceConfig.id}`);
+ const scopeId=f.store.beginProducer(f.sourceConfig.id,'ticket:successor',release);release();
+ const before=f.store.get(f.config.id),source=f.store.get(f.sourceConfig.id);
+ for(let i=0;i<2;i++) {
+  const reopened=new Store(f.stateDir);
+  try {
+   assert.throws(()=>reopened.adoptCorrectiveDelivery(f.config,fulfillmentFor(f)),{code:'producer_unresolved'});
+   assert.deepEqual(reopened.get(f.config.id),before);assert.deepEqual(reopened.get(f.sourceConfig.id),source);
+   assert.equal(reopened.db.prepare('SELECT closed_at FROM producer_scopes WHERE id=?').get(scopeId).closed_at,null);
+  } finally {reopened.close();}
+ }
 });

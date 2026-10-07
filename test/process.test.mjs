@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm, mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -204,7 +204,7 @@ if(mode==='timeout'||mode==='interruption')setInterval(()=>{},1000);
  }
 });
 
-test('controller interruption retains streamed usage, model provenance and stopped receipt; retries use distinct job IDs', async t => {
+test('controller interruption retains usage and receipt while an unprojected outcome fences retry', async t => {
  const f=await fixture(t),abort=new AbortController();
  const runtime={version:1,capabilities:{roles:['plan','implement','review'],freshSession:true,subscription:true,artifacts:'workspace',resume:false},async execute(job){
   job.onEvent({type:'runtime.configured',requestedModel:'fixture-interrupted',requestedReasoning:'medium',reportedModel:null,reportedReasoning:null});
@@ -219,12 +219,13 @@ test('controller interruption retains streamed usage, model provenance and stopp
   job.onEvent({type:'runtime.configured',requestedModel:'fixture-retry',requestedReasoning:'low',reportedModel:null,reportedReasoning:null});
   return {outcome:'completed',sessionRef:'same-resumed-session',usage:{input_tokens:8,cached_input_tokens:2,output_tokens:1},result:'synthetic'};
  };
- await controller.callAgent('implement',f.seed,f.root,'retry');
+ await assert.rejects(controller.callAgent('implement',f.seed,f.root,'retry'),{code:'producer_unresolved'});
+ assert.equal(f.store.get(f.config.id).agentCalls,1);
  const events=f.store.events(f.config.id,0,1000),finished=events.filter(e=>e.type==='job.finished');
- assert.equal(finished.length,2);assert.notEqual(finished[0].jobId,finished[1].jobId);
+ assert.equal(finished.length,1);
  assert.equal(finished[0].receipt.stopped,true);assert.equal(finished[0].receipt.timedOut,false);assert.equal(finished[0].requestedModel,'fixture-interrupted');assert.equal(finished[0].reportedModel,null);
- assert.deepEqual(finished[0].usage,{input_tokens:12,output_tokens:3});assert.equal(finished[1].requestedModel,'fixture-retry');
- const summary=summarizeTrace(events);assert.equal(summary.sessions,2);assert.equal(summary.tokens.input,20);assert.equal(summary.tokens.output,4);assert.equal(summary.timeouts,0);assert.equal(summary.unknownUsageSessions,1);
+ assert.deepEqual(finished[0].usage,{input_tokens:12,output_tokens:3});
+ const summary=summarizeTrace(events);assert.equal(summary.sessions,1);assert.equal(summary.tokens.input,12);assert.equal(summary.tokens.output,3);assert.equal(summary.timeouts,0);assert.equal(summary.unknownUsageSessions,1);
  assert.ok(events.some(e=>e.type==='job.event'&&e.eventType==='runtime.configured'));
 });
 
