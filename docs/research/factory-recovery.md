@@ -1,6 +1,6 @@
 # Squire recovery and delivery hardening
 
-Research snapshot: 6 October 2026. Implementation update: 7 October 2026. Status: proposed hardening with R1 active-evidence inventory and a conservative pre-spawn registration/producer-fencing prerequisite implemented. OS process identity, descendant settlement, automatic result reconciliation and the other slices remain proposed.
+Research snapshot: 6 October 2026. Implementation update: 7 October 2026. Status: R1 active-evidence inventory, conservative pre-spawn registration/producer fencing, and bounded R3 physical-job evidence are implemented. OS process identity, descendant settlement, automatic result reconciliation and broader recovery remain proposed.
 
 See the [research index](README.md) for evidence labels and the combined dependency order, and [acceptance design](factory-acceptance.md) for criterion-to-proof resolution.
 
@@ -16,7 +16,7 @@ The highest-priority changes are:
 4. Retain the exact remote check and merge facts used by delivery, rather than only the final ready state.
 5. Make quota waits, unknown usage and restart budgets visible without changing frozen benchmark accounting.
 
-This remains an implementation design except for the R1 inventory and registration/fencing prerequisites described below. Deterministic offline fixtures exercise process inventory, grants, malformed records, accounting, lease turnover and persistence failures; they do not prove live provider recovery or remote-effect settlement. No provider, application or benchmark execution was performed for this source audit or that improvement. The remaining proposed fault-injection fixtures were not executed. The other crash windows below are deductions from the pinned code, not reproduced failures.
+This remains an implementation design except for the R1 inventory/registration prerequisites and the bounded R3 evidence slice described below. Deterministic offline fixtures exercise process inventory, grants, malformed records, accounting, lease turnover and persistence failures; they do not prove live provider recovery or remote-effect settlement. No provider, application or benchmark execution was performed for this source audit or that improvement. The remaining proposed fault-injection fixtures were not executed. The other crash windows below are deductions from the pinned code, not reproduced failures.
 
 ## Source baseline and limits
 
@@ -215,14 +215,14 @@ Do not add Temporal for one owner on one host. Its documented activity retries m
 
 ## Dependency sequence and small implementation slices
 
-The R1 inventory, malformed-evidence refusal and registration/fencing prerequisites above are implemented; the remaining work in these slices is proposed. Each should be a small independently reviewed change with offline tests first; combine only if the resulting diff remains easy to audit. Historical benchmark configurations, outcomes and artifacts stay frozen. The [v0.1 closure record](../releases/0.1/baseline-closure.json) remains closed-incomplete, and the recorded benchmark/comparison hold remains in force. A future baseline or live demonstration needs separate authorization; no run resumes merely because documentation is ready.
+The R1 inventory, malformed-evidence refusal and registration/fencing prerequisites and bounded R3 physical-job evidence above are implemented; the remaining recovery work is proposed. Each should be a small independently reviewed change with offline tests first; combine only if the resulting diff remains easy to audit. Historical benchmark configurations, outcomes and artifacts stay frozen. The [v0.1 closure record](../releases/0.1/baseline-closure.json) remains closed-incomplete, and the recorded benchmark/comparison hold remains in force. A future baseline or live demonstration needs separate authorization; no run resumes merely because documentation is ready.
 
 | Slice | Depends on | Narrow implementation | Evidence required to close |
 | --- | --- | --- | --- |
 | R0 Document current contracts | None | Mark existing vs proposed mechanisms; record source pins and invariants; define job/receipt schema without changing behavior | Review confirms no existing delivery or budget gate weakened |
 | R1 Cover process reconciliation (partial) | R0 | Implemented: planning/GitHub inventory, malformed-record refusal, pre-spawn registration, one-use grants and conservative producer fencing. Proposed: OS identity and descendant settlement | Offline inventory/malformed-record/restart guards are covered; full identity and crash-window acceptance remains open, with no unrelated PID termination |
 | R2 Journal candidate checkpoint | R1 | Candidate intent, prepared commit identity, CAS ref transition and restart adoption | Crash at every candidate boundary converges to one authorized candidate or an exact blocker |
-| R3 Make job artifacts immutable | R1 | Unique job directories, atomic terminal manifest, normalized completed result and spool cursor | All outcomes retain usable evidence; corruption/truncation stays explicit |
+| R3 Make job artifacts immutable (bounded slice implemented) | R1 | Unique physical directories, write-once bounded manifests, normalized result and spool cursor | Offline retention/fencing fixtures implemented; arbitrary workspace/temp snapshots and automatic recovery are not provided |
 | R4 Recover job outcomes and budgets | R2 and R3 | Idempotent receipt import, terminal settlement, quota/logical-attempt distinction, preserved deadlines | No duplicate call debit/import; no restarted budget; bounded capacity hold |
 | R5 Record delivery evidence | R2 and R3 | Publication intent; selected CI check facts; merge provenance and immutable receipt chain | Lost push/PR/merge responses reconcile; stale/wrong-app/check-head evidence blocks |
 | R6 Add exact-boundary readiness | R1 and R3 | Capability/preflight schema and fingerprint; deterministic task-specific probes; explicit native/GUI exclusions | Unsupported route fails before agent dispatch; changes invalidate receipt |
