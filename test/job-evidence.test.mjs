@@ -170,3 +170,22 @@ test('opaque version-1 receipt identifiers do not invent local process provenanc
   assert.equal(terminal.process, null); assert.equal(terminal.spool, null);
   assert.ok(!JSON.stringify(terminal).includes('provider-run-17'));
 });
+
+test('opaque adapter error receipts remain uninterpreted', async t => {
+  const evidence = await evidenceFixture(t);
+  await finishJobEvidence(evidence, { error: { detail: { receipt: { operationId: 'provider-run', timedOut: true } } } });
+  const terminal = await readJobEvidence(evidence.directory, 'job');
+  assert.equal(terminal.outcome, 'failed'); assert.equal(terminal.process, null);
+});
+test('missing adapter outcomes and null throws retain debit and producer fence', async t => {
+  for (const throws of [false, true]) {
+    const f = await fixture(t);
+    const runtime = new FixtureRuntime();
+    runtime.execute = async () => { if (throws) throw null; return null; };
+    const controller = new Controller(f.store, f.config.id, { runtime });
+    await statusUntil(f.store, controller, 'prepared');
+    await assert.rejects(() => controller.step('a'), { code: 'job_evidence_incomplete' });
+    assert.equal(f.store.get(f.config.id).agentCalls, 1);
+    await assert.rejects(() => new Controller(f.store, f.config.id, { runtime }).step('a'), { code: 'producer_unresolved' });
+  }
+});

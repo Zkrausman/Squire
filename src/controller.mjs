@@ -308,16 +308,16 @@ export class Controller {
         }
       }, 'job.event', { jobId: job.id, role, sessionRef: event.sessionRef, eventType: event.type, usage: event.usage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning });
     } })); } catch (error) {
-      const receipt = error.detail?.receipt;
+      const receipt = error?.detail?.receipt;
       const terminal = await finishJobEvidence(evidence, { error, sessionRef: observedSession, models: { requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning } });
       this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, evidence: terminal, outcome: 'failed', code: error.code ?? 'runtime_error', sessionRef: observedSession, usage: observedUsage, requestedModel: reqModel, requestedReasoning: reqReasoning, reportedModel: repModel, reportedReasoning: repReasoning,
         ...(receipt ? { receipt: { startedAt: receipt.startedAt, endedAt: receipt.endedAt, exitCode: receipt.exitCode, stopped: receipt.stopped, timedOut: receipt.timedOut } } : {}) });
       throw error;
     }
-    const finalReqModel = outcome.requestedModel !== undefined ? outcome.requestedModel : reqModel;
-    const finalReqReasoning = outcome.requestedReasoning !== undefined ? outcome.requestedReasoning : reqReasoning;
-    const finalRepModel = outcome.reportedModel !== undefined ? outcome.reportedModel : repModel;
-    const finalRepReasoning = outcome.reportedReasoning !== undefined ? outcome.reportedReasoning : repReasoning;
+    const finalReqModel = outcome?.requestedModel !== undefined ? outcome.requestedModel : reqModel;
+    const finalReqReasoning = outcome?.requestedReasoning !== undefined ? outcome.requestedReasoning : reqReasoning;
+    const finalRepModel = outcome?.reportedModel !== undefined ? outcome.reportedModel : repModel;
+    const finalRepReasoning = outcome?.reportedReasoning !== undefined ? outcome.reportedReasoning : repReasoning;
     const terminal = await finishJobEvidence(evidence, { outcome, models: { requestedModel: finalReqModel, requestedReasoning: finalReqReasoning, reportedModel: finalRepModel, reportedReasoning: finalRepReasoning } });
     this.store.update(this.id, () => {}, 'job.finished', { jobId: job.id, role, evidence: terminal, outcome: outcome.outcome, sessionRef: outcome.sessionRef, usage: outcome.usage, requestedModel: finalReqModel, requestedReasoning: finalReqReasoning, reportedModel: finalRepModel, reportedReasoning: finalRepReasoning });
     if (!['completed', 'waiting_capacity'].includes(outcome?.outcome)) throw new Blocker('runtime_result', 'Runtime returned unsupported job outcome');

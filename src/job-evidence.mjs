@@ -66,7 +66,7 @@ export async function finishJobEvidence(evidence, { outcome, error, sessionRef, 
     const { directory, intent, reference } = evidence;
     const current = await artifact(directory, 'intent.json');
     if (current.sha256 !== reference.sha256) throw fail();
-    const receipt = outcome?.evidenceProcess === true ? outcome.receipt : error?.detail?.receipt;
+    const receipt = outcome?.evidenceProcess === true ? outcome.receipt : error?.evidenceProcess === true ? error.detail?.receipt : undefined;
     const status = receipt?.timedOut ? 'timeout' : receipt?.stopped ? 'cancelled' : error ? 'failed' : outcome?.outcome;
     if (!['completed', 'waiting_capacity', 'failed', 'timeout', 'cancelled'].includes(status)) throw fail();
     if (outcome?.outcome === 'completed' && status !== 'completed') throw fail();
