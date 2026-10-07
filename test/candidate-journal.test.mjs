@@ -46,7 +46,10 @@ test('Windows short workspace spelling is canonicalized before checkpointing', {
     return;
   }
   assert.equal(await realpath(shortWorkspace), canonical, 'the short path must resolve to the fixture checkout');
-  const candidate = await f.checkpoint({ ...f.current, workspace: shortWorkspace });
+  f.current.workspace = shortWorkspace;
+  withProducer(f.producer, () => f.store.update(f.config.id, state => { state.tickets[0].workspace = shortWorkspace; }));
+  assert.equal(f.store.get(f.config.id).tickets[0].workspace, shortWorkspace);
+  const candidate = await f.checkpoint();
   assert.equal(f.sha('HEAD'), candidate.headSha);
   assert.equal(f.store.candidateCheckpoint(candidate.operationId).workspace, shortWorkspace);
 });
