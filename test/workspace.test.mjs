@@ -16,7 +16,7 @@ test('repository aliases share the same target-branch lease identity', async t =
 
 test('protected directory root cannot be replaced with a file', async t => {
   const f = await fixture(t), root = path.join(f.stateDir, 'projects', 'fixture'); await mkdir(root, { recursive: true });
-  const workspace = new GitWorkspace(root), directory = path.join(root, 'candidate');
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
   const prepared = await workspace.prepare(f.config.services.app, directory, 'squire/test');
   await writeFile(path.join(directory, '.github'), 'replacement');
   const ticketState = { ...f.store.get(f.config.id).tickets[0], workspace: directory, branch: prepared.branch, generation: 1, baseSha: prepared.baseSha };

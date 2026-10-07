@@ -1,10 +1,20 @@
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { mkdir, realpath, access, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, access, writeFile, lstat } from 'node:fs/promises';
 import { Blocker, digest, isSha, pathIsOwned } from './contracts.mjs';
 import { runProcess } from './process.mjs';
 import { newCandidateCheckpointId } from './candidate-journal.mjs';
 import { producerContext } from './producer-context.mjs';
+
+async function containsSymlink(directory) {
+  const absolute = path.resolve(directory), root = path.parse(absolute).root;
+  let current = root;
+  for (const part of absolute.slice(root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    if ((await lstat(current)).isSymbolicLink()) return true;
+  }
+  return false;
+}
 
 export class GitWorkspace {
   constructor(root) { this.root = root; this.hooks = path.join(root, 'empty-hooks'); }
@@ -113,14 +123,41 @@ export class GitWorkspace {
         await this.git(ticket.workspace, ['rev-parse', '--verify', branchRef], signal) !== head) {
       throw identityBlocker('Workspace must remain on its exact managed branch and parent');
     }
-    const workspaceRoot = await realpath(ticket.workspace);
+    const expectedWorkspace = path.resolve(this.root, 'workspaces', `${ticket.spec.id}-${ticket.generation}`);
+    let workspaceRoot, expectedWorkspaceRoot;
+    try {
+      workspaceRoot = await realpath(ticket.workspace);
+      expectedWorkspaceRoot = await realpath(expectedWorkspace);
+    } catch {
+      throw identityBlocker('Managed workspace generation could not be resolved');
+    }
     const repository = await this.repositoryIdentity(ticket.workspace, signal);
-    const repositoryRoot = await realpath(repository.topLevel);
-    const gitDir = await realpath(repository.gitDir);
+    let repositoryRoot, gitDir;
+    try {
+      repositoryRoot = await realpath(repository.topLevel);
+      gitDir = await realpath(repository.gitDir);
+    } catch {
+      throw identityBlocker('Managed Git directory could not be resolved');
+    }
     const gitRelative = path.relative(workspaceRoot, gitDir);
-    if (path.resolve(ticket.workspace) !== workspaceRoot || repositoryRoot !== workspaceRoot || !gitRelative || gitRelative === '..' || gitRelative.startsWith(`..${path.sep}`) || path.isAbsolute(gitRelative)) {
+    let redirected;
+    try {
+      redirected = await containsSymlink(ticket.workspace) || await containsSymlink(expectedWorkspace) ||
+        await containsSymlink(repository.topLevel) || await containsSymlink(repository.gitDir);
+    } catch {
+      throw identityBlocker('Managed workspace identity could not be inspected');
+    }
+    let gitMetadata;
+    try { gitMetadata = await lstat(path.join(workspaceRoot, '.git')); }
+    catch { throw identityBlocker('Managed workspace Git metadata is missing'); }
+    if (redirected || !gitMetadata.isDirectory() || gitMetadata.isSymbolicLink() ||
+        workspaceRoot !== expectedWorkspaceRoot || repositoryRoot !== workspaceRoot || !gitRelative ||
+        gitRelative === '..' || gitRelative.startsWith(`..${path.sep}`) || path.isAbsolute(gitRelative)) {
       throw identityBlocker('Workspace must use its own managed Git directory');
     }
+    // Keep the journal paths in the ticket's native spelling so they remain
+    // lexically related on Windows, while the canonical paths above bind CAS.
+    const journalGitDir = path.resolve(ticket.workspace, gitRelative);
     await this.git(ticket.workspace, ['add', '-A'], signal);
     const files = (await this.git(ticket.workspace, ['diff', '--cached', '--no-renames', '--name-only', '-z', ticket.baseSha], signal)).split('\0').filter(Boolean);
     if (files.some(file => service.protectedPaths.some(p => { const root = p.replace(/\/+$/, ''); return file === root || file.startsWith(`${root}/`); }))) throw new Blocker('protected_path', 'Candidate modifies a protected policy path', { files });
@@ -141,7 +178,7 @@ export class GitWorkspace {
     const operationId = newCandidateCheckpointId();
     try {
       journal.store.prepareCandidateCheckpoint({ id: operationId, projectId: journal.projectId, ticketId: ticket.spec.id,
-        scopeId: journal.scopeId, purpose: journal.purpose, workspace: ticket.workspace, gitDir, generation: ticket.generation,
+        scopeId: journal.scopeId, purpose: journal.purpose, workspace: ticket.workspace, gitDir: journalGitDir, generation: ticket.generation,
         branchRef, baseSha: ticket.baseSha, parentSha: head, treeSha, commitSha, policyDigest: journal.policyDigest,
         jobId: journal.jobId ?? null, recoveryId: journal.recoveryId ?? null, files, createdAt });
     } catch (error) {
@@ -151,6 +188,9 @@ export class GitWorkspace {
     try {
       const beforeRefUpdate = await this.identity(ticket.workspace, signal);
       const currentRepository = await this.repositoryIdentity(ticket.workspace, signal);
+      const currentWorkspaceRoot = await realpath(ticket.workspace);
+      const currentRepositoryRoot = await realpath(currentRepository.topLevel);
+      const currentGitDir = await realpath(currentRepository.gitDir);
       const stagedTree = await this.git(ticket.workspace, ['write-tree'], signal);
       const currentBranch = await this.git(ticket.workspace, ['symbolic-ref', '--quiet', 'HEAD'], signal);
       const currentRef = currentBranch === branchRef ? await this.git(ticket.workspace, ['rev-parse', '--verify', branchRef], signal) : null;
@@ -158,7 +198,9 @@ export class GitWorkspace {
       const untracked = await this.git(ticket.workspace, ['ls-files', '--others', '--exclude-standard'], signal);
       const stagedFiles = (await this.git(ticket.workspace, ['diff', '--cached', '--no-renames', '--name-only', '-z', ticket.baseSha], signal)).split('\0').filter(Boolean);
       if (currentRef !== head) throw new Blocker('candidate_ref_conflict', 'Candidate branch changed after its durable intent; producer remains fenced', { operationId });
-      if (path.resolve(currentRepository.topLevel) !== workspaceRoot || path.resolve(currentRepository.gitDir) !== gitDir || beforeRefUpdate.headSha !== head ||
+      if (currentWorkspaceRoot !== workspaceRoot || currentRepositoryRoot !== workspaceRoot || currentGitDir !== gitDir ||
+          await containsSymlink(ticket.workspace) || await containsSymlink(currentRepository.topLevel) || await containsSymlink(currentRepository.gitDir) ||
+          beforeRefUpdate.headSha !== head ||
           beforeRefUpdate.treeSha !== (await this.git(ticket.workspace, ['rev-parse', `${head}^{tree}`], signal)) ||
           stagedTree !== treeSha || unstaged || untracked ||
           JSON.stringify(stagedFiles) !== JSON.stringify(files)) {
@@ -171,7 +213,11 @@ export class GitWorkspace {
       }
       const identity = await this.identity(ticket.workspace, signal);
       const updatedRepository = await this.repositoryIdentity(ticket.workspace, signal);
-      if (path.resolve(updatedRepository.topLevel) !== workspaceRoot || path.resolve(updatedRepository.gitDir) !== gitDir ||
+      const updatedWorkspaceRoot = await realpath(ticket.workspace);
+      const updatedRepositoryRoot = await realpath(updatedRepository.topLevel);
+      const updatedGitDir = await realpath(updatedRepository.gitDir);
+      if (updatedWorkspaceRoot !== workspaceRoot || updatedRepositoryRoot !== workspaceRoot || updatedGitDir !== gitDir ||
+          await containsSymlink(ticket.workspace) || await containsSymlink(updatedRepository.topLevel) || await containsSymlink(updatedRepository.gitDir) ||
           identity.headSha !== commitSha || identity.treeSha !== treeSha || identity.dirty) {
         throw new Blocker('candidate_checkpoint_identity', `Branch ref did not settle at the prepared candidate; producer remains fenced (${operationId})`);
       }

@@ -2,7 +2,7 @@ import test from './standalone.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, realpath, rename, symlink } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { fixture, git } from './support.mjs';
 import { GitWorkspace } from '../src/workspace.mjs';
@@ -35,6 +35,32 @@ async function candidateFixture(t) {
   return { ...f, workspace, directory, prepared, current, scopeId, producer, context, checkpoint, sha, release };
 }
 
+test('native Windows workspace spelling may differ from realpath while naming the same managed checkout', { skip: process.platform !== 'win32' }, async t => {
+  const f = await candidateFixture(t), canonical = await realpath(f.directory);
+  assert.notEqual(path.resolve(f.directory), canonical, 'This Windows runner must expose the short/canonical path spelling difference');
+  assert.equal(await realpath(f.directory), await realpath(path.join(f.workspace.root, 'workspaces', 'a-1')));
+  const candidate = await f.checkpoint();
+  assert.equal(f.sha('HEAD'), candidate.headSha);
+  assert.equal(f.store.candidateCheckpoint(candidate.operationId).workspace, f.directory);
+});
+
+test('candidate checkpoint rejects a different workspace generation even when it is a valid managed clone', async t => {
+  const f = await candidateFixture(t), foreign = path.join(path.dirname(f.directory), 'a-2');
+  await f.workspace.prepare(f.config.services.app, foreign, f.prepared.branch);
+  const before = f.sha('HEAD');
+  await assert.rejects(() => f.checkpoint({ ...f.current, workspace: foreign }), error => error.code === 'candidate_checkpoint_identity');
+  assert.equal(f.sha('HEAD'), before);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM candidate_checkpoints').get().n, 0);
+});
+
+test('candidate checkpoint rejects a junction or symlink replacing its managed workspace', async t => {
+  const f = await candidateFixture(t), redirected = path.join(path.dirname(f.directory), 'redirect-target');
+  await rename(f.directory, redirected);
+  await symlink(redirected, f.directory, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(() => f.checkpoint(), error => error.code === 'candidate_checkpoint_identity');
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM candidate_checkpoints').get().n, 0);
+});
+
 test('candidate intent carries exact identities and projects atomically with its ticket outcome', async t => {
   const f = await candidateFixture(t), candidate = await f.checkpoint();
   assert.match(candidate.operationId, /^[a-f0-9-]{36}$/);
@@ -47,7 +73,7 @@ test('candidate intent carries exact identities and projects atomically with its
   assert.equal(journal.project, f.config.id);
   assert.equal(journal.ticket, 'a');
   assert.equal(journal.workspace, f.directory);
-  assert.equal(journal.gitDir, git(f.directory, 'rev-parse', '--absolute-git-dir'));
+  assert.equal(await realpath(journal.gitDir), await realpath(git(f.directory, 'rev-parse', '--absolute-git-dir')));
   assert.equal(journal.generation, 1);
   assert.equal(journal.jobId, f.current.activeJob);
   assert.equal(journal.policyDigest, digest(f.config));
