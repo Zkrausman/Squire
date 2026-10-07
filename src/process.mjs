@@ -21,20 +21,40 @@ const alive = pid => { if (!Number.isSafeInteger(pid) || pid <= 0) return false;
 
 /** An interrupted controller must not race an old worker still settling. */
 export async function reconcileProcesses(root, signal) {
-  async function scan(directory) {
-    const entries = await readdir(directory, { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
+  const entries = directory => readdir(directory, { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
+  async function scan(directory, recursive = true) {
     const files = [];
-    for (const entry of entries) {
-      if (entry.isDirectory()) files.push(...await scan(path.join(directory, entry.name)));
+    for (const entry of await entries(directory)) {
+      if (recursive && entry.isDirectory()) files.push(...await scan(path.join(directory, entry.name)));
       else if (entry.isFile() && entry.name.endsWith('.active.json')) files.push(path.join(directory, entry.name));
     }
     return files;
   }
-  const files = (await Promise.all(['jobs', 'checks', 'git-logs', 'auth-checks', 'catalog'].map(name => scan(path.join(root, name))))).flat();
+  const files = (await Promise.all(['jobs', 'checks', 'git-logs', 'github-logs', 'auth-checks', 'catalog'].map(name => scan(path.join(root, name))))).flat();
+  // Planning also contains cloned service workspaces. Only the attempt's job
+  // directory owns process records; neither sibling repositories nor job temp
+  // content may become recovery authority merely by containing .active.json.
+  const planning = path.join(root, 'planning');
+  for (const attempt of await entries(planning)) {
+    if (!attempt.isDirectory() || !/^[1-9][0-9]*$/.test(attempt.name)) continue;
+    const directory = path.join(planning, attempt.name);
+    if ((await entries(directory)).some(entry => entry.isDirectory() && entry.name === 'job')) {
+      files.push(...await scan(path.join(directory, 'job'), false));
+    }
+  }
   for (const file of files) {
     for (let attempt = 0; attempt < 50; attempt++) {
-      const data = await readFile(file, 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
-      if (!data || !alive(data.supervisorPid) && !alive(data.childPid)) break;
+      const contents = await readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT') return undefined; throw e; });
+      if (contents === undefined) break;
+      let data;
+      try { data = JSON.parse(contents); } catch (cause) { throw new Error(`Invalid active process record; recovery refused: ${file}`, { cause }); }
+      if (!data || Array.isArray(data) || !Number.isSafeInteger(data.supervisorPid) || data.supervisorPid <= 0 ||
+          !Number.isSafeInteger(data.childPid) || data.childPid <= 0 || !Number.isSafeInteger(data.startedAt) || data.startedAt <= 0) {
+        throw new Error(`Invalid active process record; recovery refused: ${file}`);
+      }
+      // PID liveness is not ownership or process-start identity. Only observe:
+      // a live (possibly reused/foreign) PID must settle or block, never be killed.
+      if (!alive(data.supervisorPid) && !alive(data.childPid)) break;
       if (signal?.aborted) throw new Error('Recovery cancelled');
       if (attempt === 49) throw new Error(`Interrupted job remains live; recovery refused: ${file}`);
       await new Promise(resolve => setTimeout(resolve, 200));

@@ -1,12 +1,70 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { writeFile, readFile } from 'node:fs/promises';
+import { writeFile, readFile, mkdir } from 'node:fs/promises';
 import { Controller } from '../src/controller.mjs';
 import { Blocker, digest } from '../src/contracts.mjs';
 import { LocalDelivery } from '../src/delivery.mjs';
 import { pathToFileURL } from 'node:url';
 import { fixture, ticket, FixtureRuntime, statusUntil, git } from './support.mjs';
+
+test('unsettled planning and GitHub records block repeated startup before preflight or dispatch without spending counters', async t => {
+  for (const directory of ['planning/2/job', 'github-logs']) {
+    await t.test(directory, async t => {
+      const f = await fixture(t), runtime = new FixtureRuntime();
+      const controller = new Controller(f.store, f.config.id, { runtime });
+      const preflight = t.mock.method(runtime, 'preflight');
+      const target = path.join(controller.root, directory, 'previous.active.json');
+      await mkdir(path.dirname(target), { recursive: true });
+      f.store.update(f.config.id, state => {
+        state.agentCalls = 7; state.planningAttempt = 2;
+        Object.assign(state.tickets[0], { attempts: 2, repairs: 1, rebases: 1, reviewAttempts: 1 });
+      });
+      const before = f.store.get(f.config.id);
+      const observed = t.mock.method(process, 'kill', () => true);
+      t.mock.method(globalThis, 'setTimeout', callback => { queueMicrotask(callback); });
+      for (const [record, message] of [
+        [{ supervisorPid: process.pid, childPid: process.pid, startedAt: 1 }, 'Interrupted job remains live'],
+        [{ supervisorPid: process.pid }, 'Invalid active process record']
+      ]) {
+        await writeFile(target, JSON.stringify(record));
+        for (let restart = 0; restart < 2; restart++) {
+          const result = await controller.run(undefined, { wait: false });
+          assert.equal(result.status, 'blocked'); assert.ok(result.blocker.message.startsWith(message));
+          assert.ok(result.blocker.message.endsWith(target));
+          assert.equal(result.agentCalls, before.agentCalls); assert.equal(result.planningAttempt, before.planningAttempt);
+          assert.deepEqual(result.tickets, before.tickets); assert.deepEqual(result.config.limits, before.config.limits);
+          assert.equal(preflight.mock.callCount(), 0); assert.equal(runtime.calls.length, 0);
+          const release = f.store.lease(`controller:${f.config.id}`); release();
+        }
+      }
+      assert.ok(observed.mock.calls.every(call => call.arguments[1] === 0), 'startup must never terminate a discovered process');
+    });
+  }
+});
+test('paused and completed projects retain their state without reconciling or dispatching', async t => {
+  const f = await fixture(t), runtime = new FixtureRuntime(), controller = new Controller(f.store, f.config.id, { runtime });
+  const preflight = t.mock.method(runtime, 'preflight');
+  const directory = path.join(controller.root, 'planning', '1', 'job');
+  await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'old.active.json'), '{}');
+  for (const fields of [{ paused: true }, { paused: false, status: 'completed' }]) {
+    f.store.update(f.config.id, state => Object.assign(state, fields));
+    const before = f.store.get(f.config.id);
+    assert.deepEqual(await controller.run(), before);
+    assert.deepEqual(await controller.run(), before);
+  }
+  assert.equal(preflight.mock.callCount(), 0); assert.equal(runtime.calls.length, 0);
+});
+test('an existing controller lease prevents reconciliation and replacement dispatch', async t => {
+  const f = await fixture(t), runtime = new FixtureRuntime(), controller = new Controller(f.store, f.config.id, { runtime });
+  const directory = path.join(controller.root, 'github-logs');
+  await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'old.active.json'), '{}');
+  const before = f.store.get(f.config.id), release = f.store.lease(`controller:${f.config.id}`);
+  try {
+    await assert.rejects(controller.run(), error => error.code === 'lease_busy');
+    assert.deepEqual(f.store.get(f.config.id), before); assert.equal(runtime.calls.length, 0);
+  } finally { release(); }
+});
 
 test('three dependent tickets automatically verify, review, merge and pass integrated acceptance', { timeout: 120000 }, async t => {
   const f = await fixture(t, [ticket('a'), ticket('b', ['a']), ticket('c', ['b'])]);
