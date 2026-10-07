@@ -4,7 +4,7 @@ Prioritize dependable delivery for one owner: preserve useful work, report exact
 
 ## Selecting the next outcome
 
-At each meaningful decision boundary, choose the ready outcome with the strongest expected value for its full remaining constrained effort, including dependencies, validation and owner work. Record the runner-up and decisive assumption; use qualitative ranges when comparable estimates are missing. Preserve required gates and the committed first-outcome order unless material evidence justifies changing it. The [selection method and initial shortlist](../research/factory-value-prioritization.md) cover uncertainty, switching cost and stopping rules.
+At each meaningful decision boundary, choose the feasible outcome with a ready next slice and the strongest expected value for its full remaining constrained effort, including dependencies, validation and owner work. Record the runner-up and decisive assumption; use qualitative ranges when comparable estimates are missing. Preserve required gates and the committed first-outcome order unless material evidence justifies changing it. The [selection method and initial shortlist](../research/factory-value-prioritization.md) cover uncertainty, switching cost and stopping rules.
 
 ## Current foundations and evidence limits
 

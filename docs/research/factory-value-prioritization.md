@@ -8,7 +8,7 @@ Use a short card for the few credible next outcomes. Do not score every roadmap 
 
 ## Eligibility before ranking
 
-Mark work ready, blocked, held, done or superseded. Only ready work enters the executable queue. Ready requires authority for the specific action, available dependencies, a suitable execution route and room within the applicable time, call, resource and repository-writer limits. Record a blocker explicitly rather than assign it a low score.
+Compare feasible outcome packages with unfinished internal prerequisites included in their cost. Mark each next slice ready, blocked, held, done or superseded; only ready slices enter execution. A ready slice requires authority for the specific action, satisfied immediate dependencies, a suitable execution route and room within the applicable time, call, resource and repository-writer limits. A selected package can therefore start with a ready prerequisite, without pretending the whole package is already dependency-complete. Record external blockers and holds explicitly rather than assign them a low score.
 
 Safety, privacy, evidence and permission requirements are pass/fail gates. Benefit cannot outweigh them. Restored capacity, a planning date or a high ranking grants no new authority. Independently useful authorized work can proceed around a blocked item only when it neither depends on the missing result nor widens scope.
 
@@ -51,7 +51,7 @@ Research earns priority by changing a named upcoming decision. State the uncerta
 
 At a decision boundary:
 
-1. Refresh the few candidate cards and remove done, held or blocked work from execution ranking.
+1. Refresh the few candidate cards. Exclude done/superseded outcomes and packages with no authorized, ready next slice from execution selection; retain conditional plans separately.
 2. Eliminate dominated choices: no more benefit, at least as much full cost, and no compensating evidence or deadline advantage.
 3. Select the strongest robust value/effort outcome, considering dependencies and real cost of delay. Record the runner-up and decisive assumption.
 4. For practical ties, prefer less owner attention, stronger evidence/lower downside, an earlier verified outcome, lower maintenance/reversal cost, then the existing committed order.
@@ -80,7 +80,7 @@ Keep dashboards, hosted metrics, default vector retrieval, skill/team optimizati
 
 ## Minimal decision record
 
-- Outcome, closing evidence and ready/blocked/held status with reason.
+- Outcome, closing evidence and next-slice ready/blocked/held status with reason.
 - Dependencies included and next executable slice.
 - Expected benefit, horizon, sources and plausible range.
 - Full remaining effort range; owner attention, elapsed time and resource constraints.
