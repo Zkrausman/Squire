@@ -54,6 +54,16 @@ Share one small receipt format across recovery, acceptance and preflight. GEPA, 
 - [Self-improving skills](../research/factory-skill-improvement.md) and phase-owned evolving specialist teams, after the authorized larger-benchmark baseline prerequisite.
 - Intelligent task-aware model selection: low priority and exploratory, behind delivery reliability and benchmark work.
 
+## Gemini development tools: planned research
+
+Explore Gemini as an optional advisory research tool behind the committed reliable-delivery outcomes above. Preserve Squire's single-host controller, fixed-role subscription runtime and existing evidence gates.
+
+1. **Review one public Squire code input first.** Freeze one public file or small diff and a specific behavior question. Produce a short advisory finding list with file/line evidence and proposed regression tests. Gate: a maintainer grades each finding as confirmed, unsupported, already covered or unverifiable. A defensible corner case, test proposal or reproducible defect can justify further use; a supported no-issue result can close the task without a superiority claim. Stop at the graded advice; code changes and test execution remain separately scoped.
+2. **Extract one public-PDF methodology card later.** After the code task closes, separately approve an exact public PDF, its canonical identity/version, license and processor. Record method steps, parameters, data requirements, assumptions, limitations and missing details, with page/section, table or equation evidence for consequential claims. Gate: a person checks every decision-changing claim against the exact source, verifies critical equations/tables and leaves missing details unresolved. Stop at the graded card. Paper-to-code conversion and implementation require their own later scope and acceptance.
+3. **Consider an adapter only after useful repeat demand.** Inspect the existing extension contract before proposing one narrow optional provider adapter. Keep policy and tool execution outside model output, validate results and expose timeout, refusal, invalid-output and provider-failure states. Integration remains a future, separately approved decision.
+
+Roadmap publication approves planning only. Select exact public inputs, the processor, deliverable and request bounds before separate approval for API setup or inference. Advice and methodology cards do not satisfy controller checks, independent review, CI, delivery or application-acceptance evidence. The recorded benchmark/comparison hold, historical closure and independent-baseline prerequisites remain in force. No implemented provider, accepted application result or measured quality/savings benefit is claimed here.
+
 ## Self-improving skills — future, unstarted
 
 The [bounded skill-improvement design](../research/factory-skill-improvement.md) proposes one advisory implementation-skill text with fixed models, tools, authority, acceptance and delivery gates. GEPA may propose candidates; independent evaluation and review decide whether an exact revision can be selected for future jobs. Its published benchmark gains do not establish a Squire benefit.
