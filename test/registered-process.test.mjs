@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { readFile, writeFile, access, mkdir, unlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -13,7 +14,7 @@ import { GitWorkspace } from '../src/workspace.mjs';
 import { VerificationRunner } from '../src/verification.mjs';
 import { GitHubClient } from '../src/delivery.mjs';
 import { Controller } from '../src/controller.mjs';
-import { createCancellationGate, runProcess, settleChildBeforeIdentity } from '../src/process.mjs';
+import { createCancellationGate, createTerminationHelperTracker, runProcess, settleChildBeforeIdentity } from '../src/process.mjs';
 import { withProducer } from '../src/producer-context.mjs';
 
 async function setup(t) {
@@ -49,6 +50,7 @@ test('settlement disarms cancellation and cleanup before delayed identity eviden
  const settled=settleChildBeforeIdentity({
   settled:Promise.resolve(7),
   targetIdentity:identityPending.then(evidence=>{identityCompleted=true;order.push('identity');return evidence;}),
+  terminationHelpers:createTerminationHelperTracker(),
   disarmCancellation:()=>{cancellation.disarm();order.push('disarm');},
   cleanup:()=>{deadlineArmed=false;order.push('cleanup');cleanupObserved();}
  });
@@ -61,6 +63,26 @@ test('settlement disarms cancellation and cleanup before delayed identity eviden
  const result=await settled;
  assert.deepEqual(order,['disarm','cleanup','identity']);assert.equal(result.exitCode,7);
  assert.deepEqual(result.targetEvidence,{status:'unknown',reason:'fixture'});
+});
+test('settlement awaits owned termination-helper close before delayed identity evidence', async () => {
+ const order=[];let cleanupObserved;
+ const helper=new EventEmitter(),helperTracker=createTerminationHelperTracker();
+ helper.once('close',()=>order.push('termination-closed'));
+ helperTracker.track(helper);
+ const cleanupStarted=new Promise(resolve=>{cleanupObserved=resolve;});
+ let identityCompleted=false,settlementCompleted=false;
+ const settled=settleChildBeforeIdentity({
+  settled:Promise.resolve(7),
+  targetIdentity:{then(resolve){identityCompleted=true;order.push('identity');resolve({status:'unknown',reason:'fixture'});}},
+  terminationHelpers:helperTracker,
+  cleanup:()=>{order.push('cleanup');cleanupObserved();}
+ }).then(result=>{settlementCompleted=true;return result;});
+ await cleanupStarted;
+ assert.deepEqual(order,['cleanup']);assert.equal(identityCompleted,false);assert.equal(settlementCompleted,false);
+ helper.emit('close');
+ const result=await settled;
+ assert.deepEqual(order,['cleanup','termination-closed','identity']);assert.equal(settlementCompleted,true);
+ assert.equal(result.exitCode,7);assert.deepEqual(result.targetEvidence,{status:'unknown',reason:'fixture'});
 });
 test('production process entry requires an explicit scope before creating evidence', async t => {
  const f = await fixture(t), directory=path.join(f.root,'absent');
