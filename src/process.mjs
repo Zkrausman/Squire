@@ -32,13 +32,14 @@ export function createCancellationGate(onCancel) {
   };
 }
 
-/** Settle the spawned child and restore deadline/output state before awaiting
- * asynchronous process identity evidence. The recorder has no authority to
- * delay lifecycle cleanup or change its timeout outcome. */
-export async function settleChildBeforeIdentity({ settled, targetIdentity, disarmCancellation = () => {}, cleanup }) {
+/** Settle the spawned child, restore deadline/output state, and await owned
+ * termination helpers before asynchronous process identity evidence. The
+ * recorder has no authority to delay lifecycle cleanup or change its timeout outcome. */
+export async function settleChildBeforeIdentity({ settled, targetIdentity, terminationHelpers, disarmCancellation = () => {}, cleanup }) {
   const exitCode = await settled;
   disarmCancellation();
-  cleanup();
+  await cleanup();
+  await terminationHelpers.settle();
   const targetEvidence = await targetIdentity;
   return { exitCode, targetEvidence };
 }
@@ -94,9 +95,31 @@ export async function reconcileProcesses(root, signal, { refuseLegacy = false, s
     }
   }
 }
-function terminate(pid) {
+export function createTerminationHelperTracker() {
+  const ownedHelpers = new Set();
+  return {
+    track(helper) {
+      const settled = new Promise(resolve => {
+        helper.once('error', () => {});
+        helper.once('close', resolve);
+      });
+      ownedHelpers.add(settled);
+      settled.then(() => ownedHelpers.delete(settled));
+    },
+    async settle() {
+      while (ownedHelpers.size) await Promise.all(ownedHelpers);
+    }
+  };
+}
+function terminate(pid, helperTracker) {
   if (!pid) return;
-  if (process.platform === 'win32') spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {});
+  if (process.platform === 'win32') {
+    let helper;
+    try { helper = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); }
+    catch { return; }
+    if (!helperTracker) { helper.on('error', () => {}); return; }
+    helperTracker.track(helper);
+  }
   else { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch {} } }
 }
 
@@ -217,7 +240,9 @@ async function supervise(requestPath) {
     const startedAt = Date.now(); let stopped = false, timedOut = false, outputExceeded = false, bytes = 0, launchError, child, spawned = false;
     const requestDigest = digest(payload);
     let timer;
-    const cancellation = createCancellationGate(() => { stopped = true; terminate(child?.pid); });
+    const ownedTerminationHelpers = createTerminationHelperTracker();
+    const terminateTarget = pid => terminate(pid, ownedTerminationHelpers);
+    const cancellation = createCancellationGate(() => { stopped = true; terminateTarget(child?.pid); });
     const stop = () => cancellation.cancel();
     process.stdin.resume(); process.stdin.on('end', stop); process.on('SIGTERM', stop); process.on('SIGINT', stop);
     const supervisorIdentityStart = await captureProcessIdentity({ operationId: request.id, requestDigest, role: 'supervisor', pid: process.pid });
@@ -253,7 +278,7 @@ async function supervise(requestPath) {
         expectedParentPid: process.pid, launchHandle: child, requireSessionLeader: process.platform !== 'win32' });
       if (stopped) stop();
     });
-    child.on('exit', () => { terminate(child.pid); });
+    child.on('exit', () => { terminateTarget(child.pid); });
     child.stdin.on('error', () => {});
     let closeObserved = false, terminalSignal = null;
     const settled = new Promise(resolve => {
@@ -263,12 +288,12 @@ async function supervise(requestPath) {
     let activeError;
     await activeWriting.catch(error => { activeError = error; stop(); });
     child.stdin.end(request.input);
-    const { exitCode, targetEvidence } = await settleChildBeforeIdentity({ settled, targetIdentity,
+    const { exitCode, targetEvidence } = await settleChildBeforeIdentity({ settled, targetIdentity, terminationHelpers: ownedTerminationHelpers,
       disarmCancellation: () => {
         cancellation.disarm();
         process.stdin.off('end', stop); process.off('SIGTERM', stop); process.off('SIGINT', stop);
       }, cleanup: () => {
-      terminate(child.pid); clearTimeout(timer);
+      terminateTarget(child.pid); clearTimeout(timer);
       fsyncSync(out); fsyncSync(err); closeSync(out); closeSync(err);
     } });
     if (activeError) throw activeError;

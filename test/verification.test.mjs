@@ -85,6 +85,26 @@ test('middle failure stops execution and reports later checks as NOTRUN without 
   ]);
 });
 
+test('first failure reports the complete unrun suffix and leaves later markers absent', async t => {
+  const f = await checkedFixture(t, 0);
+  const result = await new VerificationRunner(f.root).run(f.seed, f.config.services.app.checks, 'first-failure');
+
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.results.map(item => item.name), ['check-1']);
+  assert.equal(result.results[0].passed, false);
+  assert.equal(result.results[0].exitCode, 7);
+  assert.deepEqual(result.notRun, [
+    { name: 'check-2', status: 'NOTRUN' },
+    { name: 'check-3', status: 'NOTRUN' }
+  ]);
+  assert.equal(Object.hasOwn(result.notRun[0], 'exitCode'), false);
+  assert.equal(Object.hasOwn(result.notRun[1], 'operationId'), false);
+
+  assert.equal(await readFile(f.markers[0], 'utf8'), 'ran');
+  await assert.rejects(access(f.markers[1]), { code: 'ENOENT' });
+  await assert.rejects(access(f.markers[2]), { code: 'ENOENT' });
+});
+
 test('all passing checks keep their execution receipts and return an empty NOTRUN list', async t => {
   const f = await checkedFixture(t);
   const result = await new VerificationRunner(f.root).run(f.seed, f.config.services.app.checks, 'all-pass');
