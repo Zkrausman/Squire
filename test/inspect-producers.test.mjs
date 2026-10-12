@@ -26,12 +26,12 @@ function fingerprint(root) {
     return [name, s.size, s.mtimeNs, s.ctimeNs, createHash('sha256').update(readFileSync(file)).digest('hex')];
   });
 }
-function fixture(t) {
+function fixture(t, tickets = [{ id: 'a', dependsOn: [] }]) {
   const cleanup = [];
   const root = directory(t, async () => { for (const close of cleanup.reverse()) await close(); });
   const store = new Store(root); cleanup.push(() => store.close());
   const config = { id: 'fixture', stateDir: root };
-  store.initialize({ ...config, tickets: [{ id: 'a' }] });
+  store.initialize({ ...config, tickets });
   const lease = store.lease('controller:fixture');
   const scope = store.beginProducer('fixture', 'ticket:a', lease, [digest('repository')]);
   const jobId = randomUUID(), operationId = randomUUID();
@@ -78,6 +78,51 @@ test('open and terminal-but-unprojected scopes retain links and fences without c
   }
   assert.deepEqual(fingerprint(f.root), before);
   assert.throws(() => f.store.assertProducerScopesClear('fixture'), { code: 'producer_unresolved' });
+});
+
+test('owner projection identifies one root scope and its transitive descendants with a replay-stable informational decision', t => {
+  const f = fixture(t, [
+    { id: 'a', dependsOn: [] },
+    { id: 'b', dependsOn: ['a'] },
+    { id: 'c', dependsOn: ['b'] },
+    { id: 'independent', dependsOn: [] }
+  ]);
+  f.store.update('fixture', s => { s.blocker = { code: 'producer_unresolved', detail: { scopeId: f.scope } }; });
+  const before = fingerprint(f.root), first = f.inspect(), replay = f.inspect();
+  assert.equal(first.ownerDecisions.length, 1);
+  const decision = first.ownerDecisions[0];
+  assert.equal(decision.rootBlocker.scopeId, f.scope);
+  assert.equal(decision.rootBlocker.lane, 'ticket:a');
+  assert.equal(decision.rootBlocker.ticketId, 'a');
+  assert.deepEqual(decision.descendantTicketIds, ['b', 'c']);
+  assert.equal(decision.descendantsEvidence, 'complete');
+  assert.equal(decision.decisionState, 'pending');
+  assert.deepEqual(decision.choices, ['retain_hold', 'investigate']);
+  assert.equal(decision.retryAuthorized, false);
+  assert.equal(decision.acknowledgmentAuthorizesRetry, false);
+  assert.equal(replay.ownerDecisions.length, 1);
+  assert.equal(replay.ownerDecisions[0].decisionId, decision.decisionId);
+  assert.deepEqual(fingerprint(f.root), before);
+});
+
+test('stale running status does not establish producer liveness or grant retry authority', t => {
+  const f = fixture(t);
+  f.store.update('fixture', s => { s.tickets[0].status = 'running'; s.tickets[0].producerHold.status = 'implementing'; });
+  const view = f.inspect(), decision = view.ownerDecisions[0];
+  assert.equal(view.holds[0].durableStatus, 'running');
+  assert.equal(view.holds[0].priorStatus, 'implementing');
+  assert.equal(decision.liveness, 'unknown');
+  assert.equal(decision.retryAuthorized, false);
+  assert.equal(decision.acknowledgmentAuthorizesRetry, false);
+});
+
+test('missing dependency declarations withhold descendant certainty', t => {
+  const f = fixture(t, [{ id: 'a' }, { id: 'b' }]);
+  const view = f.inspect(), decision = view.ownerDecisions[0];
+  assert.equal(view.evidence, 'partial');
+  assert.ok(view.issues.includes('owner_decision_dependency_graph_invalid'));
+  assert.deepEqual(decision.descendantTicketIds, []);
+  assert.equal(decision.descendantsEvidence, 'unavailable');
 });
 
 for (const phase of ['supervisor', 'target']) test(`${phase} grant is not proof of spawn, liveness or settlement`, t => {
