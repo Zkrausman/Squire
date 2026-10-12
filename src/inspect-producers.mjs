@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { withInspectionSnapshot, inspectionError, inspectionLimits as limits } from './inspection-snapshot.mjs';
+import { projectOwnerDecisions } from './owner-decision.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const uuid = v => typeof v === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v) ? v : null;
@@ -56,18 +57,19 @@ export function inspectProducers({ id, stateDir }) {
       state = parse(row.state);
       if (!state || state.id !== id) { state = null; issue('malformed_or_oversize_project_state'); }
     }
-    const references = new Set(), holds = [];
-    const addReference = value => {
+    const references = new Set(), decisionRoots = new Set(), holds = [];
+    const addReference = (value, decisionRoot = false) => {
       const ref = uuid(value);
-      if (ref) references.add(ref); else issue('malformed_scope_reference');
+      if (ref) { references.add(ref); if (decisionRoot) decisionRoots.add(ref); }
+      else issue('malformed_scope_reference');
       if (references.size > limits.rows) throw inspectionError('inspection_limit');
     };
     const blocker = value => {
       if (value?.code !== 'producer_unresolved') return;
-      if (value.detail?.scopeId !== undefined) addReference(value.detail.scopeId);
+      if (value.detail?.scopeId !== undefined) addReference(value.detail.scopeId, true);
       if (Array.isArray(value.detail?.scopes)) {
         if (value.detail.scopes.length > limits.rows) throw inspectionError('inspection_limit');
-        for (const scope of value.detail.scopes) addReference(scope?.id);
+        for (const scope of value.detail.scopes) addReference(scope?.id, true);
       }
     };
     blocker(state?.blocker);
@@ -77,7 +79,7 @@ export function inspectProducers({ id, stateDir }) {
       for (const ticket of state.tickets) {
         blocker(ticket?.blocker);
         if (!ticket?.producerHold) continue;
-        addReference(ticket.producerHold.scopeId);
+        addReference(ticket.producerHold.scopeId, true);
         const ticketId = identifier(ticket.spec?.id);
         if (!ticketId) issue('malformed_ticket_identity');
         holds.push({ ticketId, scopeId: uuid(ticket.producerHold.scopeId), durableStatus: status(ticket.status),
@@ -158,11 +160,14 @@ export function inspectProducers({ id, stateDir }) {
     }
     if (state?.processProtocol !== 1) issue('legacy_or_unknown_process_protocol');
     const durableStatus = status(state?.status);
+    const ownerProjection = projectOwnerDecisions({ projectId: id, rootScopeIds: [...decisionRoots],
+      tickets: Array.isArray(state?.tickets) ? state.tickets.map(ticket => ({ id: ticket?.spec?.id, dependsOn: ticket?.spec?.dependsOn })) : [], scopes });
+    for (const code of ownerProjection.issues) issue(code);
     return { type: 'squire.producer-inspection', version: 1, projectId: id,
       evidence: issues.size ? 'partial' : 'complete_for_selected_records', issues: [...issues].sort(),
       snapshot: { ...capture, eventHighWater: highWater, eventHistory: 'not_replayed' },
       durableStatus, updatedAt: timestamp(state?.updatedAt),
-      controllerLiveness: 'unknown', usefulProgress: 'not_assessed', holds, scopes,
+      controllerLiveness: 'unknown', usefulProgress: 'not_assessed', holds, scopes, ownerDecisions: ownerProjection.decisions,
       selection: 'open_project_scopes_and_snapshot_hold_references',
       summary: scopes.length ? 'Producer records explain retained fences; no settlement or restart authority is inferred.' :
         'No selected scope records; this does not establish idle, stopped or settled work.',
