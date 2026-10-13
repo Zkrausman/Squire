@@ -167,6 +167,10 @@ export class Store {
   claimProcess(grant, from, to, requestDigest) { return operations.claimOperation(this, grant, from, to, requestDigest); }
   finishProcess(grant, phase, record) { return operations.finishOperation(this, grant, phase, record); }
   processOperation(id) { return operations.operation(this, id); }
+  sealProcessInventory(scopeId) { return operations.sealInventory(this, scopeId); }
+  compareSealedProcessInventory(scopeId, requirements, receipt, priorProjection = null) {
+    return operations.compareSealedInventory(this, scopeId, requirements, receipt, priorProjection);
+  }
   prepareCandidateCheckpoint(record) {
     return this.transaction(() => candidates.prepareCandidateCheckpoint(this, record));
   }
