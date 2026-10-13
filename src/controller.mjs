@@ -360,6 +360,7 @@ export class Controller {
       return false;
     }
     const tickets = validateTickets(result.result?.tickets, this.config.services);
+    if (tickets.some(ticket => ticket.execution?.version === 2)) throw new Blocker('planner_owner_authority', 'Version-2 criterion mappings and check ownership require owner-supplied tickets');
     for (const value of Object.values(paths)) {
       const identity = await this.workspace.identity(value.directory, signal);
       if (identity.dirty || identity.headSha !== value.baseSha) throw new Blocker('planner_mutation', 'Planning modified a workspace or its HEAD');

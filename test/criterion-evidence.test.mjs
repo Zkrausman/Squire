@@ -34,6 +34,23 @@ async function strongFixture(t, { kind, review, repair = false } = {}) {
   return { ...f, controller, runtime };
 }
 
+test('compatible runtime planner cannot admit owner-only version2 criterion authority', async t => {
+  const f = await fixture(t, [], { goal: 'Implement feature a', tickets: undefined });
+  const planned = { ...ticket('a'), execution: execution({ check: 'behavior', kind: 'trusted-node-file', path: f.check, sha256: sha(await readFile(f.check)) }) };
+  assert.equal(validateTickets([planned], f.config.services)[0].execution.version, 2);
+  const runtime = new FixtureRuntime(async (job, _runtime, sessionRef) => {
+    assert.equal(job.role, 'plan');
+    return { outcome: 'completed', sessionRef, result: { tickets: [planned] } };
+  });
+  const controller = new Controller(f.store, f.config.id, { runtime });
+  await assert.rejects(controller.plan(), { code: 'planner_owner_authority' });
+  const saved = f.store.get(f.config.id);
+  assert.deepEqual(saved.tickets, []); assert.equal(saved.plan, undefined);
+  assert.equal(saved.agentCalls, 1); assert.deepEqual(runtime.calls.map(call => call.role), ['plan']);
+  await assert.rejects(readFile(path.join(controller.root, 'ticket-plan.json')), { code: 'ENOENT' });
+  assert.equal(git(f.root, '--git-dir', f.source, 'rev-list', '--count', 'main'), '1');
+});
+
 test('version2 delivers exact reviewed and delivered criterion receipts through actual controller gates', { timeout: 90000 }, async t => {
   const f = await strongFixture(t), result = await f.controller.run();
   assert.equal(result.status, 'completed', JSON.stringify(result));
