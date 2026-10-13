@@ -20,6 +20,6 @@ The bound identity is diagnostic provenance only. It does not change delivery au
 
 ## Local verification gates
 
-The candidate's required local gates are `npm run check`, `npm test`, and a clean `git diff --check`/worktree review on the exact final source. Shipment additionally requires native Linux and Windows CI, ordinary exact-head merge and remote/postmerge verification; local success does not substitute for those gates.
+The candidate's required local gates are `npm run check`, `npm test`, and a clean `git diff --check`/worktree review on the exact final source. Shipment additionally requires native Linux CI on the supported platform, ordinary exact-head merge and remote/postmerge verification; local success does not substitute for those gates.
 
 Rebinding to current main preserves SQF01 NOTRUN result fields and SQF06 delivery receipts. Manifests reuse the existing R3 exclusive atomic publication primitive; private output slots remain bounded and write-once. This additive A2 slice does not implement A3 criterion enforcement or establish SQF02 route parity.

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": "my-project",
-  "stateDir": "C:\\SquireState",
+  "stateDir": "/home/OWNER/.local/state/squire",
   "goal": "Implement the authorized project requirements supplied here as small dependency-correct tickets.",
   "services": {
     "app": {

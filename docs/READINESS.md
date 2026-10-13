@@ -1,5 +1,7 @@
 # Readiness evidence
 
+Current support is Linux-only; Windows/macOS support is deferred. The dated Windows observations below remain historical evidence, not a current supported-route or Linux parity claim. Platform-independent findings still require applicable Linux verification.
+
 **Historical snapshot, 29 September 2026.** The tests, subscription smoke and first-project status below describe that date, not current readiness. Later original trials are recorded in the [v0.1 closure](releases/0.1/baseline-closure.json): closed-incomplete, 0/3 majors accepted, manual harness completion separately unscored, and benchmark/comparative execution on owner hold. That record supersedes the “no application delivery trial” statement below without rewriting its historical evidence. Current proposed readiness work is [R6/P0-P5](research/factory-runtime-preflight.md); neither this old smoke nor the new design authorizes a rerun or proves a present execution route.
 
 The controller rewrite has passed the offline suite on Windows, including real Git commits, dependent delivery, automatic conflict repair and exact postmerge checks. Runtime/delivery regressions separately prove subscription catalog selection, explicit model pin rejection, repository alias lease identity, protected root handling and synthetic merge CI identity.

@@ -1,5 +1,7 @@
 # Operations and integrations
 
+Linux is the supported owner-host platform. Windows/macOS support and validation are deferred; preserved historical receipts do not establish current support. Run the full applicable Linux suite and ordinary exact-head review/CI/merge/postmerge gates. Functional, security, privacy, persistence and cleanup requirements remain in force, including platform-independent bugs first observed on Windows.
+
 ## State and recovery
 
 Use one absolute state root for the host. SQLite (`squire.sqlite`) stores immutable project configuration, ticket checkpoints, leases and ordered events. Project directories store isolated clones, prompts, model outputs, command logs and receipts. Logs may contain proprietary source; retain them privately. Never commit the state root.
