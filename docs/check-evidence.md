@@ -1,6 +1,6 @@
 # Candidate check evidence (A2 diagnostic slice)
 
-This local A2 slice adds immutable, bounded evidence for a ticket's pre-delivery configured checks and a read-only ticket inspector. It is stacked on R2 candidate `716ad2fc0b5cf96b31affae5f987a49bab4548cb`; it remains dependent work until R2 is integrated and the final base is reconciled.
+This local A2 slice adds immutable, bounded evidence for a ticket's pre-delivery configured checks and a read-only ticket inspector. The retained A2 design is rebound to accepted main `38a0054e95aedc864efcd2ea9cd82e5a00ecc13b`, which includes the shipped R2/R3 foundations and SQF06 delivery receipts. Historical candidate reviews remain separate from current integration evidence.
 
 ## Owner inspection
 
@@ -20,6 +20,6 @@ The bound identity is diagnostic provenance only. It does not change delivery au
 
 ## Local verification gates
 
-The candidate's required local gates are `npm run check`, `npm test`, and a clean `git diff --check`/worktree review on the exact final source. Native Linux and Windows CI, R2 integration and final accepted-base reconciliation remain pending; local success does not satisfy them.
+The candidate's required local gates are `npm run check`, `npm test`, and a clean `git diff --check`/worktree review on the exact final source. Shipment additionally requires native Linux and Windows CI, ordinary exact-head merge and remote/postmerge verification; local success does not substitute for those gates.
 
 Rebinding to current main preserves SQF01 NOTRUN result fields and SQF06 delivery receipts. Manifests reuse the existing R3 exclusive atomic publication primitive; private output slots remain bounded and write-once. This additive A2 slice does not implement A3 criterion enforcement or establish SQF02 route parity.
