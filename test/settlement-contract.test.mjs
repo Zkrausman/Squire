@@ -82,3 +82,9 @@ test('non-JSON, cyclic, future, overdeep and UTF-8 oversized evidence stays unkn
  }
  assert.equal(settlementContractDigest(cyclic),null);assert.equal(settlementContractDigest({x:'界'.repeat(50000)}),null);
 });
+
+test('matching invalid generation cannot satisfy the contract', () => {
+ const {requirements,receipt}=fixture();requirements.binding.generation=0;receipt.binding.generation=0;
+ const result=compareSettlementContract(requirements,receipt);
+ assert.equal(result.status,'unknown');assert.ok(result.blockers.includes('binding_unknown'));nonAdmitting(result);
+});

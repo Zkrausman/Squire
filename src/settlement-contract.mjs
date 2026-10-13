@@ -36,7 +36,7 @@ function anchor(value) {
   return keys(value, anchorFields) && integer(value.pid) && value.pid > 0 && typeof value.startTicks === 'string' && /^[0-9]+$/.test(value.startTicks) && text(value.pidNamespace);
 }
 function binding(value) {
-  return keys(value, bindingFields) && ['project', 'ticket', 'job', 'operationId'].every(key => text(value[key])) && integer(value.generation) &&
+  return keys(value, bindingFields) && ['project', 'ticket', 'job', 'operationId'].every(key => text(value[key])) && integer(value.generation) && value.generation > 0 &&
     typeof value.candidateSha === 'string' && /^[a-f0-9]{40}$/.test(value.candidateSha) && ['policyDigest', 'requestDigest'].every(key => hash(value[key]));
 }
 function identity(value) {
