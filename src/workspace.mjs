@@ -34,12 +34,30 @@ export class GitWorkspace {
     try { return (await this.git(directory, ['config', '--local', '--get', 'core.eol'], signal)).toLowerCase(); }
     catch (error) { if (error.code === 'git_failed') return null; throw error; }
   }
+  async localCheckoutSettings(directory, signal) {
+    let output;
+    try { output = await this.git(directory, ['config', '--local', '--null', '--get-regexp', '^core\\.(autocrlf|eol)$'], signal); }
+    catch (error) { if (error.code === 'git_failed') return { autocrlf: null, eol: null }; throw error; }
+    const settings = { autocrlf: null, eol: null };
+    // NUL separates records; a value can itself contain newlines. Like --get,
+    // retain the last local value when the key has multiple entries.
+    for (const record of output.split('\0').filter(Boolean)) {
+      const separator = record.indexOf('\n');
+      const key = separator < 0 ? record : record.slice(0, separator);
+      const value = separator < 0 ? '' : record.slice(separator + 1);
+      if (key === 'core.autocrlf') settings.autocrlf = value.toLowerCase();
+      else if (key === 'core.eol') settings.eol = value.toLowerCase();
+      else throw new Blocker('git_failed', 'Unexpected local checkout setting');
+    }
+    return settings;
+  }
   async normalizeCleanCheckout(directory, expectedHead, expectedTree, signal, before = undefined) {
     const current = before ?? await this.identity(directory, signal);
     if (current.headSha !== expectedHead || current.treeSha !== expectedTree || current.dirty) {
       throw new Blocker('checkout_normalization_blocked', 'Only the exact clean managed checkout can be normalized', current);
     }
-    if ((await this.localAutocrlf(directory, signal)) === 'false' && (await this.localEol(directory, signal)) === 'lf') return { ...current, normalized: false };
+    const settings = await this.localCheckoutSettings(directory, signal);
+    if (settings.autocrlf === 'false' && settings.eol === 'lf') return { ...current, normalized: false };
     await this.git(directory, ['config', '--local', 'core.autocrlf', 'false'], signal);
     await this.git(directory, ['config', '--local', 'core.eol', 'lf'], signal);
     await this.git(directory, ['reset', '--hard', expectedHead], signal);
@@ -89,8 +107,9 @@ export class GitWorkspace {
   }
   async identity(directory, signal) {
     await this.assertDirectory(directory);
-    const headSha = await this.git(directory, ['rev-parse', 'HEAD'], signal);
-    const treeSha = await this.git(directory, ['rev-parse', 'HEAD^{tree}'], signal);
+    const revisions = (await this.git(directory, ['rev-parse', 'HEAD', 'HEAD^{tree}'], signal)).split(/\r?\n/);
+    if (revisions.length !== 2 || !revisions.every(isSha)) throw new Blocker('git_failed', 'Invalid workspace revision identity');
+    const [headSha, treeSha] = revisions;
     const dirty = await this.git(directory, ['status', '--porcelain=v1', '--untracked-files=all'], signal);
     return { headSha, treeSha, dirty };
   }

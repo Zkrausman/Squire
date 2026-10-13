@@ -97,3 +97,39 @@ test('managed workspaces preserve pinned asset bytes across checkpoint, delivery
   assert.equal(await workspace.localAutocrlf(delivered), 'true');
   assert.equal(await readFile(partial, 'utf8'), 'Preserve this interrupted work.\n');
 });
+
+test('workspace identity follows committed ref movement and retains untracked dirt', async t => {
+  const f = await fixture(t), root = path.join(f.stateDir, 'projects', 'fixture');
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
+  const prepared = await workspace.prepare(f.config.services.app, directory, 'squire/identity-reads');
+  const before = await workspace.identity(directory);
+  assert.equal(before.headSha, prepared.baseSha);
+  assert.equal(before.treeSha, git(directory, 'rev-parse', 'HEAD^{tree}'));
+  assert.equal(before.dirty, '');
+  await writeFile(path.join(directory, 'feature-a.mjs'), 'export const add=(a,b)=>a+b;\n');
+  const dirty = await workspace.identity(directory);
+  assert.equal(dirty.headSha, before.headSha); assert.equal(dirty.treeSha, before.treeSha);
+  assert.match(dirty.dirty, /\?\? feature-a\.mjs/);
+  git(directory, 'add', 'feature-a.mjs'); git(directory, 'commit', '-m', 'Move fixture ref');
+  const moved = await workspace.identity(directory);
+  assert.notEqual(moved.headSha, before.headSha); assert.notEqual(moved.treeSha, before.treeSha);
+  assert.equal(moved.headSha, git(directory, 'rev-parse', 'HEAD'));
+  assert.equal(moved.treeSha, git(directory, 'rev-parse', 'HEAD^{tree}')); assert.equal(moved.dirty, '');
+});
+
+test('checkout settings preserve missing, empty, last local and multiline values', async t => {
+  const f = await fixture(t), root = path.join(f.stateDir, 'projects', 'fixture');
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
+  await workspace.prepare(f.config.services.app, directory, 'squire/settings-reads');
+  git(directory, 'config', '--local', '--unset-all', 'core.autocrlf');
+  git(directory, 'config', '--local', '--unset-all', 'core.eol');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: null, eol: null });
+  git(directory, 'config', '--local', 'core.eol', '');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: null, eol: '' });
+  git(directory, 'config', '--local', 'core.autocrlf', 'true');
+  git(directory, 'config', '--local', '--add', 'core.autocrlf', 'false');
+  git(directory, 'config', '--local', '--add', 'core.eol', 'lf');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: 'false', eol: 'lf' });
+  git(directory, 'config', '--local', '--replace-all', 'core.eol', 'LF\ncore.autocrlf\ntrue');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: 'false', eol: 'lf\ncore.autocrlf\ntrue' });
+});
