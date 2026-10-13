@@ -4,7 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../src/store.mjs';
-import { validateConfig } from '../src/contracts.mjs';
+import { digest, validateConfig } from '../src/contracts.mjs';
+import { withProducer } from '../src/producer-context.mjs';
+import { GitWorkspace } from '../src/workspace.mjs';
 
 export const git = (cwd, ...argv) => execFileSync('git', ['-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=', ...argv], { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@localhost', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@localhost' } }).trim();
 export const ticket = (id, dependsOn = [], service = 'app') => ({ id, service, title: `Feature ${id}`, description: `Add independently callable feature ${id}.`, acceptance: ['The feature adds two numeric inputs correctly.'], dependsOn });
@@ -65,4 +67,31 @@ export async function statusUntil(store, controller, status, id = 'a') {
     await controller.step(id);
   }
   throw new Error(`Did not reach ${status}: ${JSON.stringify(store.get('fixture'))}`);
+}
+
+// Build a prior candidate through the same durable journal path used by the
+// controller. Tests that need an existing candidate must not use raw git commit.
+export async function checkpointFixtureCandidate(f, workspace, ticketState, service) {
+  const id = f.config.id, ticketId = ticketState.spec.id, jobId = randomUUID();
+  const before = await workspace.identity(ticketState.workspace);
+  const current = { ...f.store.get(id).tickets.find(item => item.spec.id === ticketId), ...ticketState,
+    status: 'implementing', beforeAgentHead: before.headSha, headSha: before.headSha, treeSha: before.treeSha,
+    activeJob: jobId, generation: ticketState.generation ?? 1 };
+  f.store.update(id, state => { state.tickets.find(item => item.spec.id === ticketId) && Object.assign(state.tickets.find(item => item.spec.id === ticketId), current); });
+  const release = f.store.lease(`controller:${id}`);
+  try {
+    const scopeId = f.store.beginProducer(id, `ticket:${ticketId}`, release, [workspace.key(service)]);
+    return await withProducer({ store: f.store, project: id, scopeId }, async () => {
+      f.store.reserveProducerCall(scopeId, jobId);
+      const candidate = await workspace.checkpoint(current, service, undefined, { store: f.store, projectId: id, scopeId,
+        purpose: 'implementation', policyDigest: digest(f.config), jobId, recoveryId: null });
+      f.store.update(id, state => {
+        const saved = state.tickets.find(item => item.spec.id === ticketId);
+        Object.assign(saved, candidate, { candidateCheckpointId: candidate.operationId, status: 'verifying', activeJob: null,
+          implementation: { jobId, sessionRef: 'fixture-checkpoint', usage: {} } });
+      }, 'ticket.transition', { ticket: ticketId, status: 'verifying' }, null, candidate.operationId);
+      f.store.update(id, () => {}, 'producer.completed', { scopeId, lane: `ticket:${ticketId}` }, scopeId);
+      return candidate;
+    });
+  } finally { release(); }
 }

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { GitWorkspace } from '../src/workspace.mjs';
-import { fixture, git } from './support.mjs';
+import { checkpointFixtureCandidate, fixture, git, ticket } from './support.mjs';
 
 test('repository aliases share the same target-branch lease identity', async t => {
   const f = await fixture(t), alias = path.join(f.root, 'alias');
@@ -16,10 +16,30 @@ test('repository aliases share the same target-branch lease identity', async t =
 
 test('protected directory root cannot be replaced with a file', async t => {
   const f = await fixture(t), root = path.join(f.stateDir, 'projects', 'fixture'); await mkdir(root, { recursive: true });
-  const workspace = new GitWorkspace(root), directory = path.join(root, 'candidate');
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
   const prepared = await workspace.prepare(f.config.services.app, directory, 'squire/test');
   await writeFile(path.join(directory, '.github'), 'replacement');
-  await assert.rejects(() => workspace.checkpoint({ workspace: directory, baseSha: prepared.baseSha, beforeAgentHead: prepared.baseSha, spec: { id: 'a', title: 'Root replacement' } }, f.config.services.app), e => e.code === 'protected_path');
+  const ticketState = { ...f.store.get(f.config.id).tickets[0], workspace: directory, branch: prepared.branch, generation: 1, baseSha: prepared.baseSha };
+  await assert.rejects(() => checkpointFixtureCandidate(f, workspace, ticketState, f.config.services.app), e => e.code === 'protected_path');
+});
+
+test('renaming a protected path remains blocked by its source name', async t => {
+  const f = await fixture(t, [ticket('a')], async ({ seed, source, check }) => {
+    const policy = path.join(seed, 'secret', 'policy.txt');
+    await mkdir(path.dirname(policy), { recursive: true });
+    await writeFile(policy, 'protected policy\n');
+    git(seed, 'add', 'secret/policy.txt'); git(seed, 'commit', '-m', 'Add protected policy'); git(seed, 'push', source, 'main');
+    return { services: { app: { source, branch: 'main', delivery: { kind: 'local' },
+      checks: [{ name: 'behavior', argv: [process.execPath, check], timeoutSeconds: 10 }], protectedPaths: ['secret/'] } } };
+  });
+  const root = path.join(f.stateDir, 'projects', 'fixture'); await mkdir(root, { recursive: true });
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
+  const prepared = await workspace.prepare(f.config.services.app, directory, 'squire/rename-fixture');
+  git(directory, 'mv', 'secret/policy.txt', 'renamed-policy.txt');
+  const ticketState = { ...f.store.get(f.config.id).tickets[0], workspace: directory, branch: prepared.branch,
+    generation: 1, baseSha: prepared.baseSha };
+  await assert.rejects(() => checkpointFixtureCandidate(f, workspace, ticketState, f.config.services.app), error => error.code === 'protected_path');
+  assert.equal(git(directory, 'rev-parse', 'HEAD'), prepared.baseSha);
 });
 
 test('managed workspaces preserve pinned asset bytes across checkpoint, delivery, and safe autocrlf migration', { timeout: 90000 }, async t => {
@@ -40,8 +60,9 @@ test('managed workspaces preserve pinned asset bytes across checkpoint, delivery
   assert.deepEqual(blob(prepared.baseSha), canonical);
 
   await writeFile(path.join(directory, 'feature-a.mjs'), 'export const add=(a,b)=>a+b;\n');
-  const candidate = await workspace.checkpoint({ workspace: directory, baseSha: prepared.baseSha, beforeAgentHead: prepared.baseSha,
-    spec: { id: 'a', title: 'Feature a', execution: { ownedPaths: ['feature-a.mjs'] } } }, f.config.services.app);
+  const ticketState = { ...f.store.get(f.config.id).tickets[0], workspace: directory, branch: 'squire/byte-fixture', generation: 1,
+    baseSha: prepared.baseSha, spec: { ...f.store.get(f.config.id).tickets[0].spec, execution: { ownedPaths: ['feature-a.mjs'] } } };
+  const candidate = await checkpointFixtureCandidate(f, workspace, ticketState, f.config.services.app);
   assert.deepEqual(await readFile(path.join(directory, manifest)), canonical);
   assert.deepEqual(blob(candidate.headSha), canonical);
   git(directory, 'push', 'origin', `${candidate.headSha}:refs/heads/main`);
@@ -75,4 +96,40 @@ test('managed workspaces preserve pinned asset bytes across checkpoint, delivery
   await assert.rejects(() => workspace.assertCandidate({ workspace: delivered, headSha: candidate.headSha, treeSha: candidate.treeSha }), e => e.code === 'candidate_changed');
   assert.equal(await workspace.localAutocrlf(delivered), 'true');
   assert.equal(await readFile(partial, 'utf8'), 'Preserve this interrupted work.\n');
+});
+
+test('workspace identity follows committed ref movement and retains untracked dirt', async t => {
+  const f = await fixture(t), root = path.join(f.stateDir, 'projects', 'fixture');
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
+  const prepared = await workspace.prepare(f.config.services.app, directory, 'squire/identity-reads');
+  const before = await workspace.identity(directory);
+  assert.equal(before.headSha, prepared.baseSha);
+  assert.equal(before.treeSha, git(directory, 'rev-parse', 'HEAD^{tree}'));
+  assert.equal(before.dirty, '');
+  await writeFile(path.join(directory, 'feature-a.mjs'), 'export const add=(a,b)=>a+b;\n');
+  const dirty = await workspace.identity(directory);
+  assert.equal(dirty.headSha, before.headSha); assert.equal(dirty.treeSha, before.treeSha);
+  assert.match(dirty.dirty, /\?\? feature-a\.mjs/);
+  git(directory, 'add', 'feature-a.mjs'); git(directory, 'commit', '-m', 'Move fixture ref');
+  const moved = await workspace.identity(directory);
+  assert.notEqual(moved.headSha, before.headSha); assert.notEqual(moved.treeSha, before.treeSha);
+  assert.equal(moved.headSha, git(directory, 'rev-parse', 'HEAD'));
+  assert.equal(moved.treeSha, git(directory, 'rev-parse', 'HEAD^{tree}')); assert.equal(moved.dirty, '');
+});
+
+test('checkout settings preserve missing, empty, last local and multiline values', async t => {
+  const f = await fixture(t), root = path.join(f.stateDir, 'projects', 'fixture');
+  const workspace = new GitWorkspace(root), directory = path.join(root, 'workspaces', 'a-1');
+  await workspace.prepare(f.config.services.app, directory, 'squire/settings-reads');
+  git(directory, 'config', '--local', '--unset-all', 'core.autocrlf');
+  git(directory, 'config', '--local', '--unset-all', 'core.eol');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: null, eol: null });
+  git(directory, 'config', '--local', 'core.eol', '');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: null, eol: '' });
+  git(directory, 'config', '--local', 'core.autocrlf', 'true');
+  git(directory, 'config', '--local', '--add', 'core.autocrlf', 'false');
+  git(directory, 'config', '--local', '--add', 'core.eol', 'lf');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: 'false', eol: 'lf' });
+  git(directory, 'config', '--local', '--replace-all', 'core.eol', 'LF\ncore.autocrlf\ntrue');
+  assert.deepEqual(await workspace.localCheckoutSettings(directory), { autocrlf: 'false', eol: 'lf\ncore.autocrlf\ntrue' });
 });
