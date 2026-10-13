@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { Blocker, digest } from './contracts.mjs';
+import path from 'node:path';
+import { Blocker, digest, isSha } from './contracts.mjs';
 import { producerContext } from './producer-context.mjs';
 import { compareSettlementContract, settlementContractDigest, SQF04_DESIGN_SHA256 } from './settlement-contract.mjs';
 
@@ -214,7 +215,7 @@ export function sealInventory(store, scopeId) {
  * reservation and request associations come from the store; candidate/policy,
  * observer and host metadata remain supplied assertions, never trusted proof.
  * Reading or matching this record cannot import, close a scope or release gates. */
-export function compareSealedInventory(store, scopeId, requirements, receipt, priorProjection = null) {
+export function compareSealedInventory(store, scopeId, requirements, receipt, priorProjection = null, checkpoint = null) {
  const unknown = code => ({ status: 'unknown', admission: 'not_evaluated', settlement: 'not_evaluated', import: 'not_evaluated', replay: 'not_evaluated', blockers: [code] });
  try {
   return store.transaction(() => {
@@ -232,7 +233,51 @@ export function compareSealedInventory(store, scopeId, requirements, receipt, pr
    const expectedScope = requirements?.scope;
    const orderedScope = value => value && Array.isArray(value.operations) ? { ...value, operations: [...value.operations].sort((a, b) => a?.operationId < b?.operationId ? -1 : a?.operationId > b?.operationId ? 1 : 0) } : value;
    if (settlementContractDigest(orderedScope(expectedScope)) !== settlementContractDigest(orderedScope(durableScope))) return unknown('expected_inventory_seal_changed');
+   if (checkpoint !== null) {
+    const bound = bindCheckpointIdentity(store, scope, binding, checkpoint.checkpointId);
+    if (bound.blocker) return unknown(bound.blocker);
+    return { ...compareSettlementContract(requirements, receipt, priorProjection), checkpoint: bound.reference };
+   }
    return compareSettlementContract(requirements, receipt, priorProjection);
   });
  } catch { return unknown('durable_inventory_unavailable'); }
+}
+
+
+// This binds SQLite identities only; it never reads Git, verifies artifacts or
+// authenticates the observer. Projected implementation is the only supported kind.
+function bindCheckpointIdentity(store, scope, binding, checkpointId) {
+ const unknown = blocker => ({ blocker });
+ const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+ const text = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !value.includes('\0');
+ const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+ if (!uuid(checkpointId)) return unknown('checkpoint_id_missing_or_malformed');
+ const row = store.db.prepare('SELECT * FROM candidate_checkpoints WHERE id=?').get(checkpointId);
+ if (!row) return unknown('checkpoint_missing');
+ if (row.phase !== 'projected' || row.purpose !== 'implementation' || !uuid(row.job_id) || row.recovery_id !== null ||
+     !Number.isSafeInteger(row.created_at) || row.created_at <= 0 || !Number.isSafeInteger(row.projected_at) || row.projected_at < row.created_at ||
+     !hash(row.projected_ticket_digest) || !text(row.projected_status)) return unknown('checkpoint_kind_or_projection_unknown');
+ if (row.scope_id !== scope.id || row.project !== scope.project || row.ticket !== binding.ticket || row.job_id !== binding.job ||
+     row.commit_sha !== binding.candidateSha || row.generation !== binding.generation || row.policy_digest !== binding.policyDigest)
+  return unknown('checkpoint_job_candidate_or_scope_changed');
+ const project = store.db.prepare('SELECT config_hash,state FROM project WHERE id=?').get(scope.project);
+ const state = project && JSON.parse(project.state);
+ const tickets = Array.isArray(state?.tickets) ? state.tickets.filter(ticket => ticket?.spec?.id === row.ticket) : [];
+ if (state?.id !== scope.project || state?.config?.id !== scope.project || tickets.length !== 1 || !hash(project.config_hash) ||
+     project.config_hash !== digest(state.config) || row.policy_digest !== project.config_hash) return unknown('checkpoint_policy_or_project_changed');
+ const ticket = tickets[0];
+ if (!Number.isSafeInteger(row.generation) || row.generation < 1 || ![row.commit_sha,row.tree_sha,row.base_sha,row.parent_sha].every(isSha) ||
+     !text(row.workspace) || !path.isAbsolute(row.workspace) || !text(row.git_dir) || !path.isAbsolute(row.git_dir) || !text(row.branch_ref) || !row.branch_ref.startsWith('refs/heads/') || !text(ticket.branch) ||
+     ticket.candidateCheckpointId !== checkpointId || ticket.implementation?.jobId !== row.job_id || ticket.activeJob != null ||
+     ticket.headSha !== row.commit_sha || ticket.treeSha !== row.tree_sha || ticket.baseSha !== row.base_sha || ticket.beforeAgentHead !== row.parent_sha ||
+     ticket.generation !== row.generation || ticket.workspace !== row.workspace || `refs/heads/${ticket.branch}` !== row.branch_ref)
+  return unknown('checkpoint_durable_ticket_changed');
+ const gitRelative = path.relative(path.resolve(row.workspace), path.resolve(row.git_dir));
+ if (!gitRelative || gitRelative === '..' || gitRelative.startsWith(`..${path.sep}`) || path.isAbsolute(gitRelative)) return unknown('checkpoint_git_directory_changed');
+ // A bounded reference to checked fields, not a native or cryptographic producer proof.
+ const identityDigest = settlementContractDigest({ checkpointId, scopeId: row.scope_id, project: row.project, ticket: row.ticket, jobId: row.job_id,
+  generation: row.generation, commitSha: row.commit_sha, treeSha: row.tree_sha, baseSha: row.base_sha, parentSha: row.parent_sha,
+  workspace: row.workspace, gitDir: row.git_dir, branchRef: row.branch_ref, policyDigest: row.policy_digest });
+ if (!identityDigest) return unknown('checkpoint_identity_reference_unknown');
+ return { reference: { checkpointId, identityDigest, evidence: 'durable_metadata_only' } };
 }

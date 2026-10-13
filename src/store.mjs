@@ -171,6 +171,10 @@ export class Store {
   compareSealedProcessInventory(scopeId, requirements, receipt, priorProjection = null) {
     return operations.compareSealedInventory(this, scopeId, requirements, receipt, priorProjection);
   }
+  /** Explicit existing checkpoint only; matching metadata grants no import or release. */
+  compareCheckpointSettlement(scopeId, checkpointId, requirements, receipt, priorProjection = null) {
+    return operations.compareSealedInventory(this, scopeId, requirements, receipt, priorProjection, { checkpointId });
+  }
   prepareCandidateCheckpoint(record) {
     return this.transaction(() => candidates.prepareCandidateCheckpoint(this, record));
   }
