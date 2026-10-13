@@ -34,7 +34,7 @@ function freezeBinding(value, policyDigest) {
   const missing = [];
   if (!object(value)) return { binding: null, missing: ['controller_context_missing'] };
   const check = (condition, name) => { if (!condition) missing.push(name); };
-  check(value.phase === 'candidate-verification', 'phase');
+  check(['candidate-verification', 'postmerge-verification'].includes(value.phase), 'phase');
   check(identifier(value.projectId), 'project');
   check(identifier(value.ticketId), 'ticket');
   check(identifier(value.serviceId), 'service');

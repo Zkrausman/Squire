@@ -5,6 +5,7 @@ export interface AgentJob {
   timeoutSeconds: number; backoffSeconds: number;
   /** Only the explicitly approved inline public goal; durable job.started records this digest. */
   publicContract?: { sha256: string; bytes: number };
+  provenance?: { reviewExecution?: unknown; [key: string]: unknown };
   signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void;
 }
 export interface RuntimeEvent { version: 1; jobId: string; type: string; sessionRef?: string; usage?: Record<string, number>; requestedModel?: string | null; requestedReasoning?: string | null; reportedModel?: string | null; reportedReasoning?: string | null; }

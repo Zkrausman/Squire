@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Blocker, digest, isSha, VERSION, validateConfig, validateReview } from './contracts.mjs';
+import { Blocker, digest, isSha, VERSION, validateConfig, validateReview, validateExecution } from './contracts.mjs';
 
 import { producerContext } from './producer-context.mjs';
 import * as operations from './operation-store.mjs';
@@ -83,10 +83,11 @@ function validateCorrection(correction, execution, allowEmptyChecklist = false) 
   requireValue(Array.isArray(correction.checklist) && correction.checklist.length >= (allowEmptyChecklist ? 0 : 1) && correction.checklist.length <= additionalCap && correction.checklist.length + execution.checklist.length <= 10,
     `checklist must add ${allowEmptyChecklist ? '0' : '1'}..${additionalCap} criteria (combined review limit is 10)`);
   const ids = new Set(execution.checklist.map(item => item.id));
+  const fields = execution.version === 2 ? [...checklistFields, 'checks', 'evidenceKinds'] : checklistFields;
   for (const [index, item] of correction.checklist.entries()) {
     requireValue(item && typeof item === 'object' && !Array.isArray(item), `checklist[${index}] must be an object`);
-    for (const key of Object.keys(item)) requireValue(checklistFields.includes(key), `Unknown checklist field: ${key}`);
-    for (const key of checklistFields) requireValue(Object.hasOwn(item, key), `Missing checklist field: ${key}`);
+    for (const key of Object.keys(item)) requireValue(fields.includes(key), `Unknown checklist field: ${key}`);
+    for (const key of fields) requireValue(Object.hasOwn(item, key), `Missing checklist field: ${key}`);
     requireValue(typeof item.id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(item.id), `Invalid checklist[${index}].id`);
     requireValue(!ids.has(item.id), `Duplicate checklist criterion id ${item.id}`); ids.add(item.id);
     boundedText(item.assertion, `checklist[${index}].assertion`, 2000);
@@ -94,6 +95,7 @@ function validateCorrection(correction, execution, allowEmptyChecklist = false) 
     item.steps.forEach((step, stepIndex) => boundedText(step, `checklist[${index}].steps[${stepIndex}]`, 2000));
     boundedText(item.evidence, `checklist[${index}].evidence`, 2000);
   }
+  if (execution.version === 2) validateExecution({ ...execution, checklist: [...execution.checklist, ...correction.checklist] });
 }
 
 function validateFulfillmentInput(input) {

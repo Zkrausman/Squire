@@ -67,8 +67,9 @@ function checkOperationTable(db) {
   return columns.every(column => found.includes(column));
 }
 
-function currentBinding(project, ticket, verification) {
-  if (ticket.headSha !== verification.headSha || ticket.treeSha !== verification.treeSha) throw badIdentity();
+function currentBinding(project, ticket, verification, phase) {
+  const headSha = phase === 'postmerge-verification' ? ticket.mergeSha : ticket.headSha;
+  if (headSha !== verification.headSha || ticket.treeSha !== verification.treeSha) throw badIdentity();
   const serviceId = ticket.spec?.service;
   const service = project.config?.services?.[serviceId];
   if (!service || !Array.isArray(service.checks)) throw badIdentity();
@@ -77,9 +78,9 @@ function currentBinding(project, ticket, verification) {
     digest: digest({ outcome: ticket.correctionAdmission.outcome, instructions: ticket.correctionAdmission.instructions, checklist: ticket.correctionAdmission.checklist })
   } : null;
   return {
-    projectId: project.id, ticketId: ticket.spec?.id, serviceId,
+    phase, projectId: project.id, ticketId: ticket.spec?.id, serviceId,
     candidateCheckpointId: ticket.candidateCheckpointId ?? null,
-    baseSha: ticket.baseSha ?? null, headSha: ticket.headSha ?? null, treeSha: ticket.treeSha ?? null,
+    baseSha: ticket.baseSha ?? null, headSha: headSha ?? null, treeSha: ticket.treeSha ?? null,
     attempt: ticket.attempts ?? null, generation: ticket.generation ?? null,
     contractDigest: ticket.spec.execution ? digest(ticket.spec.execution) : null,
     correctionAdmission: correction,
@@ -125,7 +126,7 @@ function checkpointLink(db, project, ticket, binding) {
 }
 
 function matchBinding(actual, expected) {
-  return object(actual) && actual.phase === 'candidate-verification' &&
+  return object(actual) && actual.phase === expected.phase &&
     ['projectId', 'ticketId', 'serviceId', 'candidateCheckpointId', 'baseSha', 'headSha', 'treeSha', 'attempt', 'generation',
       'contractDigest', 'policyDigest', 'implementationJobId'].every(key => actual[key] === expected[key]) &&
     JSON.stringify(actual.correctionAdmission) === JSON.stringify(expected.correctionAdmission);
@@ -239,14 +240,15 @@ function outputTail(runRoot, check, total) {
 }
 
 /** Read from a stable private SQLite snapshot and fixed controller-issued slots. */
-export function inspectChecks({ id, stateDir, ticketId }) {
+export function inspectChecks({ id, stateDir, ticketId, phase = 'candidate-verification' }) {
+  if (!['candidate-verification', 'postmerge-verification'].includes(phase)) throw inspectionError('inspection_input');
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(id ?? '') || typeof stateDir !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(ticketId ?? '')) throw inspectionError('inspection_input');
   return withInspectionSnapshot(stateDir, (db, snapshot) => {
     const project = projectFromSnapshot(db, id);
     const ticket = project.tickets.find(item => item?.spec?.id === ticketId);
     if (!ticket) throw inspectionError('inspection_project');
-    const verification = ticket.verification;
+    const verification = phase === 'postmerge-verification' ? ticket.postmerge : ticket.verification;
     const checkEvidence = verification?.checkEvidence;
     const reference = checkEvidence?.reference;
     const legacy = verification ? { passed: verification.passed === true, headSha: verification.headSha ?? null,
@@ -275,7 +277,7 @@ export function inspectChecks({ id, stateDir, ticketId }) {
         manifest.diagnosticOnly !== true || manifest.acceptance !== 'not_evaluated' || !Array.isArray(manifest.checks) ||
         manifest.checks.length > checkEvidenceLimits.checks || manifest.policyDigest !== verification.policyDigest ||
         !Array.isArray(manifest.issues) || manifest.issues.some(item => typeof item !== 'string' || item.length > 80)) throw badIdentity();
-    const expected = currentBinding(project, ticket, verification);
+    const expected = currentBinding(project, ticket, verification, phase);
     if (expected.policyDigest !== verification.policyDigest || expected.policyDigest !== digest(expected.checks)) throw badIdentity();
     const bound = manifest.binding?.state === 'bound';
     if (bound && (!exactKeys(manifest.binding, ['state', 'value']) ||
@@ -327,6 +329,6 @@ export function inspectChecks({ id, stateDir, ticketId }) {
         contractDigest: expected.contractDigest, correctionAdmission: expected.correctionAdmission,
         policyDigest: expected.policyDigest } : null,
       snapshot: { kind: snapshot.kind, sha256: snapshot.sha256, capturedAt: snapshot.capturedAt },
-      checks: resolvedChecks, issues: uniqueIssues };
+      referenceId: reference.id, checks: resolvedChecks, issues: uniqueIssues };
   });
 }

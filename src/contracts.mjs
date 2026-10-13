@@ -30,10 +30,11 @@ function boundedTextArray(value, label, min, max, itemMax) {
   requireValue(Array.isArray(value) && value.length >= min && value.length <= max, `${label} must contain ${min}..${max} items`);
   value.forEach(item => text(item, label, itemMax));
 }
-function validateExecution(execution) {
-  keys(execution, executionFields, 'ticket execution');
-  for (const field of executionFields) requireValue(Object.hasOwn(execution, field), `Missing ticket execution field: ${field}`);
-  requireValue(execution.version === 1, 'Unsupported ticket execution version');
+export function validateExecution(execution) {
+  const fields = execution?.version === 2 ? [...executionFields, 'checkOwnership'] : executionFields;
+  keys(execution, fields, 'ticket execution');
+  for (const field of fields) requireValue(Object.hasOwn(execution, field), `Missing ticket execution field: ${field}`);
+  requireValue([1, 2].includes(execution.version), 'Unsupported ticket execution version');
   text(execution.outcome, 'execution outcome', 2000);
   requireValue(Array.isArray(execution.ownedPaths) && execution.ownedPaths.length >= 1 && execution.ownedPaths.length <= 50, 'ownedPaths must contain 1..50 paths');
   execution.ownedPaths.forEach(p => relativePath(p, 'owned path'));
@@ -45,13 +46,34 @@ function validateExecution(execution) {
   requireValue(Array.isArray(execution.checklist) && execution.checklist.length >= 1 && execution.checklist.length <= 10, 'checklist must contain 1..10 criteria');
   const ids = new Set();
   for (const criterion of execution.checklist) {
-    keys(criterion, checklistFields, 'checklist criterion');
-    for (const field of checklistFields) requireValue(Object.hasOwn(criterion, field), `Missing checklist criterion field: ${field}`);
+    const criterionFields = execution.version === 2 ? [...checklistFields, 'checks', 'evidenceKinds'] : checklistFields;
+    keys(criterion, criterionFields, 'checklist criterion');
+    for (const field of criterionFields) requireValue(Object.hasOwn(criterion, field), `Missing checklist criterion field: ${field}`);
     identifier(criterion.id, 'checklist criterion id');
     requireValue(!ids.has(criterion.id), `Duplicate checklist criterion id ${criterion.id}`); ids.add(criterion.id);
     text(criterion.assertion, 'checklist assertion', 2000);
     boundedTextArray(criterion.steps, 'checklist steps', 1, 10, 2000);
     text(criterion.evidence, 'checklist evidence', 2000);
+    if (execution.version === 2) {
+      for (const field of ['checks', 'evidenceKinds']) {
+        boundedTextArray(criterion[field], field, 1, 10, 80);
+        criterion[field].forEach(item => identifier(item, field));
+        requireValue(new Set(criterion[field]).size === criterion[field].length, `Duplicate ${field}`);
+      }
+    }
+  }
+  if (execution.version === 2) {
+    requireValue(Array.isArray(execution.checkOwnership) && execution.checkOwnership.length >= 1 && execution.checkOwnership.length <= 30, 'checkOwnership required');
+    const owners = new Set();
+    for (const owner of execution.checkOwnership) {
+      keys(owner, ['check', 'kind', 'path', 'sha256'], 'check ownership');
+      identifier(owner.check, 'owned check'); requireValue(!owners.has(owner.check), 'Duplicate check ownership'); owners.add(owner.check);
+      requireValue(['trusted-inline-node', 'trusted-node-file'].includes(owner.kind), 'Unsupported check ownership');
+      requireValue(typeof owner.sha256 === 'string' && /^[a-f0-9]{64}$/.test(owner.sha256), 'Frozen ownership digest required');
+      if (owner.kind === 'trusted-inline-node') requireValue(owner.path === null, 'Inline ownership path must be null');
+      else { text(owner.path, 'trusted check path', 4096); requireValue(path.isAbsolute(owner.path), 'Trusted check file must be absolute'); }
+    }
+    for (const criterion of execution.checklist) requireValue(criterion.checks.every(name => owners.has(name)), 'Criterion requires frozen check ownership');
   }
   text(execution.stopWhen, 'stopWhen', 2000);
   integer(execution.maxAttempts, 'maxAttempts', 1, 4);
@@ -155,7 +177,10 @@ export function validateTickets(tickets, services) {
     requireValue(Array.isArray(ticket.acceptance) && ticket.acceptance.length > 0 && ticket.acceptance.length <= 30, 'Ticket acceptance criteria required');
     ticket.acceptance.forEach(a => text(a, 'acceptance', 2000));
     requireValue(Array.isArray(ticket.dependsOn) && ticket.dependsOn.length <= 100, 'dependsOn required');
-    if (ticket.execution !== undefined) validateExecution(ticket.execution);
+    if (ticket.execution !== undefined) {
+      validateExecution(ticket.execution);
+      if (ticket.execution.version === 2) requireValue(Array.isArray(services[ticket.service].checks) && ticket.execution.checkOwnership.length === services[ticket.service].checks.length && ticket.execution.checkOwnership.every(owner => services[ticket.service].checks.some(check => check.name === owner.check)), 'Freeze ownership for each configured check');
+    }
   }
   const visited = new Set(), active = new Set(), byId = new Map(tickets.map(t => [t.id, t]));
   function visit(id) {
@@ -176,6 +201,14 @@ export const reviewSchema = {
     }
   } } }
 };
+export function reviewSchemaFor(execution) {
+  if (execution?.version !== 2) return reviewSchema;
+  const schema = structuredClone(reviewSchema);
+  schema.required.push('version'); schema.properties.version = { type: 'integer', const: 2 };
+  const item = schema.properties.checklist.items;
+  item.required.push('observationIds'); item.properties.observationIds = { type: 'array', maxItems: 30, items: { type: 'string', maxLength: 80 } };
+  return schema;
+}
 export const planSchema = {
   type: 'object', additionalProperties: false, required: ['tickets'], properties: { tickets: { type: 'array', items: {
     type: 'object', additionalProperties: false, required: ['id', 'service', 'title', 'description', 'acceptance', 'dependsOn', 'execution'], properties: {
@@ -194,14 +227,16 @@ export const planSchema = {
     }
   } } }
 };
-export function validateReview(value, headSha, execution) {
+export function validateReview(value, headSha, execution, proof) {
+  if (execution?.version === 2) requireValue(value?.version === 2, 'Version-2 evidence review required');
   requireValue(value && value.headSha === headSha && ['pass', 'fail'].includes(value.verdict) && typeof value.summary === 'string' && Array.isArray(value.findings) && value.findings.length <= 100, 'Invalid or wrong-head review');
   for (const f of value.findings) requireValue(['P0', 'P1', 'P2', 'P3'].includes(f.priority) && typeof f.file === 'string' && Number.isSafeInteger(f.line) && f.line >= 0 && typeof f.message === 'string' && f.message.length > 0 && f.message.length < 16000, 'Invalid review finding');
   if (value.checklist !== undefined) {
     requireValue(Array.isArray(value.checklist) && value.checklist.length <= 10, 'Invalid review checklist');
     const ids = new Set(), expectedIds = execution ? new Set(execution.checklist.map(item => item.id)) : undefined;
     for (const item of value.checklist) {
-      keys(item, ['id', 'verdict', 'evidence'], 'review checklist item');
+      keys(item, execution?.version === 2 ? ['id', 'verdict', 'evidence', 'observationIds'] : ['id', 'verdict', 'evidence'], 'review checklist item');
+      if (execution?.version === 2) requireValue(Array.isArray(item.observationIds) && item.observationIds.length <= 30 && item.observationIds.every(id => typeof id === 'string' && /^[a-f0-9-]{36}:[0-9]{1,2}$/.test(id)) && new Set(item.observationIds).size === item.observationIds.length, 'Invalid review observation IDs');
       requireValue(Object.hasOwn(item, 'id') && Object.hasOwn(item, 'verdict') && Object.hasOwn(item, 'evidence'), 'Incomplete review checklist item');
       identifier(item.id, 'review checklist id');
       requireValue(!ids.has(item.id), `Duplicate review checklist id ${item.id}`); ids.add(item.id);
@@ -216,6 +251,13 @@ export function validateReview(value, headSha, execution) {
     const items = new Map(value.checklist.map(item => [item.id, item]));
     requireValue(execution.checklist.every(criterion => items.has(criterion.id)), 'Passing review is missing an execution checklist item');
     requireValue(value.checklist.every(item => item.verdict === 'pass' && item.evidence.trim().length > 0), 'Passing review requires passing checklist evidence');
+  }
+  if (value.verdict === 'pass' && execution?.version === 2) {
+    requireValue(proof?.version === 2 && proof.headSha === headSha && proof.criteria.length === execution.checklist.length, 'Current criterion proof required');
+    for (const item of value.checklist) {
+      const criterion = proof.criteria.find(row => row.id === item.id);
+      requireValue(criterion && JSON.stringify([...item.observationIds].sort()) === JSON.stringify([...criterion.observationIds].sort()), 'Review references nonexistent or incompatible evidence');
+    }
   }
   requireValue(value.verdict !== 'pass' || value.findings.length === 0, 'Passing review has unresolved findings'); return value;
 }
