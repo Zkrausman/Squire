@@ -31,6 +31,10 @@ export const candidateJournalSchema = `
   );
   CREATE INDEX IF NOT EXISTS candidate_checkpoint_project_ticket
     ON candidate_checkpoints(project,ticket,created_at);
+  CREATE TRIGGER IF NOT EXISTS immutable_candidate_checkpoint_insert
+    BEFORE INSERT ON candidate_checkpoints
+    WHEN EXISTS(SELECT 1 FROM candidate_checkpoints WHERE id=NEW.id)
+    BEGIN SELECT RAISE(ABORT,'immutable candidate checkpoint'); END;
   CREATE TRIGGER IF NOT EXISTS immutable_candidate_intent
     BEFORE UPDATE OF id,project,ticket,scope_id,purpose,workspace,git_dir,generation,branch_ref,base_sha,parent_sha,tree_sha,commit_sha,policy_digest,job_id,recovery_id,files_json,created_at
     ON candidate_checkpoints BEGIN SELECT RAISE(ABORT,'immutable candidate checkpoint intent'); END;
