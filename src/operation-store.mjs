@@ -18,12 +18,16 @@ export const operationSchema = `
  terminal TEXT);
  CREATE TABLE IF NOT EXISTS process_inventory_seals (
  scope_id TEXT PRIMARY KEY, payload TEXT NOT NULL, seal_digest TEXT NOT NULL, created_at INTEGER NOT NULL);
+ CREATE TRIGGER IF NOT EXISTS immutable_inventory_seal_insert BEFORE INSERT ON process_inventory_seals
+ WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=NEW.scope_id)
+ BEGIN SELECT RAISE(ABORT,'immutable process inventory seal'); END;
  CREATE TRIGGER IF NOT EXISTS immutable_inventory_seal_update BEFORE UPDATE ON process_inventory_seals
  BEGIN SELECT RAISE(ABORT,'immutable process inventory seal'); END;
  CREATE TRIGGER IF NOT EXISTS immutable_inventory_seal_delete BEFORE DELETE ON process_inventory_seals
  BEGIN SELECT RAISE(ABORT,'immutable process inventory seal'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_operation_insert BEFORE INSERT ON process_operations
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=NEW.scope_id)
+ OR EXISTS(SELECT 1 FROM process_operations o JOIN process_inventory_seals s ON s.scope_id=o.scope_id WHERE o.id=NEW.id)
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_operation_update BEFORE UPDATE ON process_operations
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.scope_id OR scope_id=NEW.scope_id)
@@ -33,6 +37,7 @@ export const operationSchema = `
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_call_insert BEFORE INSERT ON producer_calls
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=NEW.scope_id)
+ OR EXISTS(SELECT 1 FROM producer_calls c JOIN process_inventory_seals s ON s.scope_id=c.scope_id WHERE c.job_id=NEW.job_id)
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_call_update BEFORE UPDATE ON producer_calls
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.scope_id OR scope_id=NEW.scope_id)
@@ -40,6 +45,9 @@ export const operationSchema = `
  CREATE TRIGGER IF NOT EXISTS sealed_call_delete BEFORE DELETE ON producer_calls
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.scope_id)
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
+ CREATE TRIGGER IF NOT EXISTS sealed_scope_insert BEFORE INSERT ON producer_scopes
+ WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=NEW.id)
+ BEGIN SELECT RAISE(ABORT,'sealed scope has no settlement authority'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_scope_update BEFORE UPDATE ON producer_scopes
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.id OR scope_id=NEW.id)
  BEGIN SELECT RAISE(ABORT,'sealed scope has no settlement authority'); END;

@@ -121,3 +121,14 @@ test('canonical malformed terminal shape is not stripped into a valid seal',t=>{
 test('inventory count limit rejects before capturing an oversized seal',t=>{
  const f=fixture(t);for(let i=0;i<100;i++){const grant=f.store.registerProcess(f.scope,null,`helper-${i}`,f.directory,f.requestDigest);f.store.finishProcess(grant,'registered',{kind:'not_started',exitCode:null,endedAt:123,receiptDigest:h('a')});}blocked(f.seal);
 });
+
+test('REPLACE cannot bypass immutable seals or move sealed identities to an unsealed scope',t=>{
+ const f=fixture(t),seal=f.seal(),other=f.store.beginProducer('project','independent',f.lease);
+ for(const [sql,args] of [
+ ['INSERT OR REPLACE INTO process_inventory_seals VALUES (?,?,?,?)',[f.scope,'{}',h('a'),123]],
+ ['INSERT OR REPLACE INTO producer_calls VALUES (?,?)',['job',other]],
+ ['INSERT OR REPLACE INTO process_operations VALUES (?,?,?,?,?,?,?,NULL)',['worker',other,null,'new-token',f.directory,h('a'),'registered']],
+ ['INSERT OR REPLACE INTO producer_scopes(id,project,lane,lease_resource,lease_owner,created_at) VALUES (?,?,?,?,?,?)',[f.scope,'project','independent','controller:project',f.lease.owner,123]]
+ ])assert.throws(()=>f.store.db.prepare(sql).run(...args),/sealed|immutable/);
+ f.reopen();assert.deepEqual(f.seal(),seal);assert.equal(f.store.processOperation('worker').scope_id,f.scope);assert.equal(f.store.db.prepare('SELECT scope_id FROM producer_calls WHERE job_id=?').get('job').scope_id,f.scope);
+});
