@@ -5,6 +5,7 @@ import { writeFile, readFile, mkdir } from 'node:fs/promises';
 import { Controller } from '../src/controller.mjs';
 import { Blocker, digest } from '../src/contracts.mjs';
 import { LocalDelivery } from '../src/delivery.mjs';
+import { inspectChecks } from '../src/inspect-checks.mjs';
 import { pathToFileURL } from 'node:url';
 import { fixture, ticket, FixtureRuntime, statusUntil, git } from './support.mjs';
 import { correctiveExecution, correctiveTicket, correctiveAdmission } from './controller-fixtures.mjs';
@@ -78,6 +79,12 @@ test('three dependent tickets automatically verify, review, merge and pass integ
   const delivered = git(f.root, '--git-dir', f.source, 'rev-parse', 'main'); assert.equal(delivered, result.tickets[2].mergeSha);
   assert.equal(result.acceptance.app.status, 'passed');
   assert.ok(result.tickets.every(t => t.review.headSha === t.headSha && t.verification.passed && t.postmerge.passed));
+  for (const saved of result.tickets) {
+    const report = inspectChecks({ id: f.config.id, stateDir: f.stateDir, ticketId: saved.spec.id });
+    assert.equal(report.status, 'resolved'); assert.equal(report.artifactIntegrity, 'verified');
+    assert.equal(report.identity.headSha, saved.headSha); assert.equal(report.checkpointLink.state, 'current');
+    assert.equal(report.acceptance, 'not_evaluated');
+  }
 });
 test('failed executable check feeds repair, invalidates evidence, then ships new commit', { timeout: 90000 }, async t => {
   const f = await fixture(t); let first = true;
@@ -115,6 +122,13 @@ test('moving base triggers new candidate verification and review before local CA
   await writeFile(path.join(f.seed, 'other.md'), 'Other writer\n'); git(f.seed, 'add', '.'); git(f.seed, 'commit', '-m', 'Other writer'); git(f.seed, 'push', f.source, 'main');
   const result = await controller.run(); assert.equal(result.status, 'completed', JSON.stringify(result));
   assert.equal(result.tickets[0].rebases, 1); assert.notEqual(result.tickets[0].headSha, old.headSha); assert.equal(result.tickets[0].reviewAttempts, 2);
+  const inspection = inspectChecks({ id: f.config.id, stateDir: f.stateDir, ticketId: 'a' });
+  assert.equal(inspection.status, 'incomplete');
+  assert.equal(inspection.checkpointLink.state, 'stale');
+  assert.equal(inspection.checkpointLink.reason, 'checkpoint_candidate_mismatch');
+  assert.equal(inspection.identity.headSha, result.tickets[0].headSha);
+  assert.equal(inspection.identity.treeSha, result.tickets[0].treeSha);
+  assert.equal(inspection.acceptance, 'not_evaluated');
   assert.equal(git(f.root, '--git-dir', f.source, 'show', 'main:other.md'), 'Other writer');
 });
 test('lost merge receipt reconciles committed ref, never repeats implementation', { timeout: 90000 }, async t => {

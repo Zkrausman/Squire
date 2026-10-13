@@ -1,5 +1,7 @@
 # Operations and integrations
 
+Linux is the supported owner-host platform. Windows/macOS support and validation are deferred; preserved historical receipts do not establish current support. Run the full applicable Linux suite and ordinary exact-head review/CI/merge/postmerge gates. Functional, security, privacy, persistence and cleanup requirements remain in force, including platform-independent bugs first observed on Windows.
+
 ## State and recovery
 
 Use one absolute state root for the host. SQLite (`squire.sqlite`) stores immutable project configuration, ticket checkpoints, leases and ordered events. Project directories store isolated clones, prompts, model outputs, command logs and receipts. Logs may contain proprietary source; retain them privately. Never commit the state root.
@@ -66,3 +68,5 @@ Submission requires authorized source/checks/shipping policy. This API intention
 The [versioned runtime contract](../src/ports.d.ts) uses `execute(job)` with fresh role sessions, bounded timeout, events and AbortSignal. The adapter owns provider start/stream/cancel and materializes artifacts in the workspace before completion. A raw model API response requires an adapter-owned tool executor. Providers never directly mutate the controller database or declare tickets shipped. Subscription policy is a project capability requirement rather than a dependency inside the core.
 
 Workspace methods materialize Git identities; the verifier runs trusted commands and returns process receipts; delivery publishes stable identities, checks remote policy and returns exact merge identity. Ticket sources use project JSON through the API. Event sinks consume durable cursors and can notify on completion/blockers. No mandatory ticket vendor, dashboard, Temporal service, or second harness is needed for the initial loop.
+
+For retained configured-check observations, run `node bin/squire.mjs inspect-checks project.json TICKET_ID`. This passive inspection resolves controller-issued candidate/contract/policy-bound references and registered process facts; unavailable or legacy evidence stays explicit and acceptance is never evaluated. See [check evidence](check-evidence.md).

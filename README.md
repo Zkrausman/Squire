@@ -15,15 +15,16 @@ This is a clean rewrite from `origin/main`. The [architecture design](docs/ARCHI
 
 ## Requirements
 
+Linux is the supported development and execution platform. Windows and macOS support are deferred. CI runs the complete Linux suite; historical Windows results remain evidence for their original runs, not a current support promise. Existing compatibility guards remain in source, and platform-independent correctness or safety requirements are unchanged.
+
 - Node 24.14 or newer in the Node 24 series, Git, and Codex CLI signed in with `codex login` using ChatGPT.
 - GitHub delivery also needs `gh auth login` with repository write access and permission to inspect branch protection.
-- On Windows, Codex must have a working native elevated sandbox. Squire explicitly selects this approved mode, retaining workspace boundaries. It does not bypass sandbox failures.
 
 The runtime checks ChatGPT authentication and the account's model catalog. API key environment variables are removed; there is no paid API fallback. An unavailable inherited model preference uses the account default; an unavailable explicit project model blocks. Jobs share your subscription usage limits. Quota exhaustion checkpoints and waits.
 
 ## Run
 
-```powershell
+```sh
 npm ci --ignore-scripts
 npm run check
 npm test
@@ -34,7 +35,7 @@ node bin/squire.mjs run project.json
 
 Copy [examples/project.github.json](examples/project.github.json), replace repository and absolute state path, and choose checks that prove your requirements. `doctor` checks authentication and delivery policy; the optional `npm run smoke:codex` additionally proves a real agent can execute a command and write an isolated file. It consumes subscription usage and makes no delivery commits.
 
-Use `goal` to request planning, or supply `tickets` with explicit dependencies. Checks/setup/acceptance are trusted argv arrays with timeouts, never shell strings. For Windows npm commands the runner resolves npm's Node entrypoint. Source may be GitHub HTTPS or a local **bare** Git repository. State must live outside source. All controllers on a host should share one state root for repository leases.
+Use `goal` to request planning, or supply `tickets` with explicit dependencies. Checks/setup/acceptance are trusted argv arrays with timeouts, never shell strings. The runner resolves npm's Node entrypoint. Source may be GitHub HTTPS or a local **bare** Git repository. State must live outside source. All controllers on a host should share one state root for repository leases.
 
 ## What shipping means
 
@@ -44,7 +45,7 @@ GitHub requires classic strict up-to-date branch protection with administrators 
 
 ## Operate and extend
 
-```powershell
+```sh
 node bin/squire.mjs status project.json
 node bin/squire.mjs events project.json --after=0
 node bin/squire.mjs pause project.json

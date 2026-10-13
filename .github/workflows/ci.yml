@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -24,15 +24,5 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
-      # The real three-ticket Git fixture must retain its 120-second deadline.
-      # Run it without cross-file Git/process contention on Windows, then run
-      # every remaining test normally. Ubuntu keeps the ordinary full suite.
-      - name: Three-ticket integration without cross-file contention
-        if: runner.os == 'Windows'
-        run: node --test --test-name-pattern='^three dependent tickets automatically verify, review, merge and pass integrated acceptance$' test/controller.test.mjs
-      - name: Remaining Windows suite
-        if: runner.os == 'Windows'
-        run: node --test --test-skip-pattern='^three dependent tickets automatically verify, review, merge and pass integrated acceptance$' test/*.test.mjs
       - run: npm test
-        if: runner.os != 'Windows'
       - run: git diff --exit-code

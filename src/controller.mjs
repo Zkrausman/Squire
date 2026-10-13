@@ -7,6 +7,7 @@ import { CodexRuntime } from './runtime-codex.mjs';
 import { VerificationRunner } from './verification.mjs';
 import { LocalDelivery, GitHubDelivery } from './delivery.mjs';
 import { recordDeliveryEvidence } from './delivery-evidence.mjs';
+import { persistCandidateCheckEvidence } from './check-evidence.mjs';
 import { reconcileProcesses } from './process.mjs';
 import { beginJobEvidence, finishJobEvidence, recordCandidateDisposition } from './job-evidence.mjs';
 import { producerContext, withProducer, withProducerJob } from './producer-context.mjs';
@@ -468,10 +469,34 @@ export class Controller {
       }
       if (t.status === 'verifying') {
         await this.workspace.assertCandidate(t, signal);
-        const checks = await this.verifier.run(t.workspace, service.checks, `${id}-${t.headSha}`, signal);
-        await this.workspace.assertCandidate(t, signal);
-        this.change(id, ticket => { ticket.verification = { ...checks, headSha: t.headSha, treeSha: t.treeSha, policyDigest: digest(service.checks) }; });
-        if (!checks.passed) await this.repair(id, checks); else this.transition(id, 'review_ready');
+        const correctionAdmission = t.correctionAdmission ? { admissionId: t.correctionAdmission.admissionId,
+          digest: digest({ outcome: t.correctionAdmission.outcome, instructions: t.correctionAdmission.instructions, checklist: t.correctionAdmission.checklist }) } : null;
+        const binding = { phase: 'candidate-verification', projectId: this.id, ticketId: id, serviceId: t.spec.service,
+          candidateCheckpointId: t.candidateCheckpointId ?? null, baseSha: t.baseSha ?? null, headSha: t.headSha, treeSha: t.treeSha,
+          attempt: t.attempts ?? null, generation: t.generation ?? null, producerScopeId: producerContext()?.scopeId ?? null,
+          contractDigest: t.spec.execution ? digest(t.spec.execution) : null, correctionAdmission,
+          policyDigest: digest(service.checks), implementationJobId: t.implementation?.jobId ?? null };
+        const { evidenceDraft, ...checks } = await this.verifier.runForCandidate(t.workspace, service.checks, `${id}-${t.headSha}`, signal, binding);
+        const asserted = await this.workspace.assertCandidate(t, signal);
+        let checkEvidence;
+        try {
+          const operations = evidenceDraft.checks.filter(check => check.operationId).map(check => {
+            const operation = this.store.processOperation(check.operationId);
+            let terminal = null; try { terminal = JSON.parse(operation.terminal); } catch {}
+            return { id: operation.id, scopeId: operation.scope_id, jobId: operation.job_id,
+              requestDigest: operation.request_digest, phase: operation.phase, terminal };
+          });
+          const reference = await persistCandidateCheckEvidence(this.root, evidenceDraft, operations, asserted);
+          checkEvidence = { state: 'recorded', reference };
+        } catch {
+          // Diagnostic retention is additive; it cannot change the established
+          // verification outcome or its repair/review gates.
+          checkEvidence = { state: 'unavailable', reason: 'retention_failed' };
+        }
+        const legacyChecks = { passed: checks.passed, results: checks.results, notRun: checks.notRun };
+        this.change(id, ticket => { ticket.verification = { ...legacyChecks, headSha: t.headSha, treeSha: t.treeSha,
+          policyDigest: digest(service.checks), checkEvidence }; });
+        if (!checks.passed) await this.repair(id, legacyChecks); else this.transition(id, 'review_ready');
         return;
       }
       if (t.status === 'review_ready') {
