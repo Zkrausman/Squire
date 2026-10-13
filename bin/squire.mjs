@@ -7,6 +7,7 @@ import { Store } from '../src/store.mjs';
 import { Controller } from '../src/controller.mjs';
 import { createControlServer, publicState } from '../src/api.mjs';
 import { inspectProducers } from '../src/inspect-producers.mjs';
+import { inspectChecks } from '../src/inspect-checks.mjs';
 import { readInspectionConfig, inspectionError } from '../src/inspection-snapshot.mjs';
 
 const [command, filename, ...options] = process.argv.slice(2);
@@ -17,9 +18,13 @@ async function main() {
     if (!filename || options.length) throw inspectionError('inspection_input');
     print(inspectProducers(readInspectionConfig(filename))); return;
   }
+  if (command === 'inspect-checks') {
+    if (!filename || options.length !== 1) throw inspectionError('inspection_input');
+    print(inspectChecks({ ...readInspectionConfig(filename), ticketId: options[0] })); return;
+  }
   if (!command || ['help', '--help', '-h'].includes(command)) {
     const recoveryUsage = 'node bin/squire.mjs recover-interrupted-implementation project.json recovery.json\nnode bin/squire.mjs checkpoint-interrupted-candidate project.json checkpoint.json\n';
-    process.stdout.write(help.replace('node bin/squire.mjs status project.json', 'node bin/squire.mjs status project.json\nnode bin/squire.mjs inspect-producers project.json').replace('node bin/squire.mjs serve ABSOLUTE_STATE_ROOT', `${recoveryUsage}node bin/squire.mjs serve ABSOLUTE_STATE_ROOT`)); return;
+    process.stdout.write(help.replace('node bin/squire.mjs status project.json', 'node bin/squire.mjs status project.json\nnode bin/squire.mjs inspect-producers project.json\nnode bin/squire.mjs inspect-checks project.json TICKET_ID').replace('node bin/squire.mjs serve ABSOLUTE_STATE_ROOT', `${recoveryUsage}node bin/squire.mjs serve ABSOLUTE_STATE_ROOT`)); return;
   }
   if (!filename) throw new Error('A project config or state root is required');
   if (command === 'serve') {

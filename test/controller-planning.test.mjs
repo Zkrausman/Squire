@@ -200,13 +200,13 @@ test('completed failed application verification admits a bounded repair and stil
   });
   const controller = new Controller(f.store, f.config.id, { runtime });
   await statusUntil(f.store, controller, 'prepared');
-  const realRun = controller.verifier.run.bind(controller.verifier); let failCandidateCheck = true;
-  controller.verifier.run = async (workspace, checks, label, signal) => {
+  const realRun = controller.verifier.runForCandidate.bind(controller.verifier); let failCandidateCheck = true;
+  controller.verifier.runForCandidate = async (workspace, checks, label, signal, binding) => {
     if (failCandidateCheck && !label.startsWith('delivered-')) {
       failCandidateCheck = false;
       return { passed: false, results: [{ name: checks[0].name, argv: checks[0].argv, passed: false, exitCode: 1, stopped: false, timedOut: false, outputExceeded: false, launchError: null, failureTail: 'Pinned manifest digest did not match.' }] };
     }
-    return realRun(workspace, checks, label, signal);
+    return realRun(workspace, checks, label, signal, binding);
   };
   const stopped = await controller.run();
   const failed = stopped.tickets[0];

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { VerificationRunner } from '../src/verification.mjs';
 import { digest } from '../src/contracts.mjs';
+import { randomUUID } from 'node:crypto';
 import { fixture } from './support.mjs';
 
 const checkNames = ['first', 'middle', 'last'];
@@ -114,4 +115,42 @@ test('all passing checks keep their execution receipts and return an empty NOTRU
   assert.ok(result.results.every(item => item.passed && Number.isSafeInteger(item.exitCode) && item.operationId));
   assert.deepEqual(result.notRun, []);
   for (const marker of f.markers) assert.equal(await readFile(marker, 'utf8'), 'ran');
+});
+
+const binding = { phase: 'candidate-verification', projectId: 'fixture', ticketId: 'ticket', serviceId: 'app',
+  candidateCheckpointId: randomUUID(), baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), treeSha: 'c'.repeat(40),
+  attempt: 1, generation: 1, producerScopeId: randomUUID(), contractDigest: null, correctionAdmission: null,
+  policyDigest: null, implementationJobId: null };
+const checks = ['first', 'second', 'third'].map(name => ({ name, argv: ['node', '-e', name], timeoutSeconds: 1 }));
+const receipt = (operationId, overrides = {}) => ({ operationId, argv: ['/usr/bin/node', '-e', 'check'], startedAt: 10, endedAt: 20,
+  exitCode: 0, stopped: false, timedOut: false, outputExceeded: false, launchError: null, stdout: 'out', stderr: '', ...overrides });
+
+test('legacy verification keeps its result shape while candidate evidence records not_run additively', async () => {
+  const outputs = [receipt(randomUUID()), receipt(randomUUID(), { stopped: true }), receipt(randomUUID())];
+  let index = 0;
+  const runner = new VerificationRunner('/unused', { processRunner: async () => outputs[index++] });
+  const legacy = await runner.run('/workspace', checks, 'legacy');
+  assert.deepEqual(Object.keys(legacy), ['passed', 'results', 'notRun']);
+  assert.equal(legacy.passed, false);
+  assert.equal(legacy.results.length, 2);
+  assert.deepEqual(legacy.results.map(item => item.passed), [true, false]);
+  assert.match(legacy.results[1].failureTail, /out/);
+
+  index = 0;
+  const evidence = await runner.runForCandidate('/workspace', checks, 'candidate', undefined,
+    { ...binding, policyDigest: digest(checks) });
+  assert.equal(evidence.passed, false);
+  assert.equal(evidence.results.length, 2);
+  assert.deepEqual(evidence.evidenceDraft.checks.map(item => item.state), ['passed', 'failed', 'not_run']);
+  assert.equal(evidence.evidenceDraft.checks[2].output.state, 'not_run');
+});
+
+for (const [label, flags] of [
+  ['stopped', { stopped: true }], ['timed out', { timedOut: true }],
+  ['output limited', { outputExceeded: true }], ['launch failed', { launchError: 'missing executable' }]
+]) test(`exit zero with ${label} flags never becomes a passing verification`, async () => {
+  const runner = new VerificationRunner('/unused', { processRunner: async () => receipt(randomUUID(), flags) });
+  const result = await runner.run('/workspace', [checks[0]], 'candidate');
+  assert.equal(result.results[0].exitCode, 0);
+  assert.equal(result.passed, false);
 });
