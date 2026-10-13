@@ -159,7 +159,27 @@ function nativeFileUri(value) {
   try { return typeof value === 'string' && nativePath(fileURLToPath(value)) && pathToFileURL(fileURLToPath(value)).href === value; } catch { return false; }
 }
 function mappingBytes(value) {
-  try { const bytes = JSON.stringify(canonical(value)); return bytes.length <= 128 * 1024 ? bytes : null; } catch { return null; }
+  try { const bytes = JSON.stringify(canonical(value)); return Buffer.byteLength(bytes, 'utf8') <= 128 * 1024 ? bytes : null; } catch { return null; }
+}
+function validPolicyEntry(entry) {
+  if (!onlyKeys(entry, ['path', 'access', 'missing_path_behavior']) || !['read', 'write', 'deny'].includes(entry.access) ||
+      (Object.hasOwn(entry, 'missing_path_behavior') && entry.missing_path_behavior !== 'skip')) return false;
+  const selector = entry.path;
+  if (!record(selector)) return false;
+  const payload = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !value.includes('\0');
+  if (selector.type === 'path') return complete(selector, ['type', 'path']) && (nativePath(selector.path) || nativeFileUri(selector.path));
+  if (selector.type === 'glob_pattern') return complete(selector, ['type', 'pattern']) && payload(selector.pattern) && entry.access === 'deny';
+  if (selector.type !== 'special' || !complete(selector, ['type', 'value']) || !record(selector.value)) return false;
+  const value = selector.value;
+  if (['root', 'minimal', 'tmpdir', 'slash_tmp'].includes(value.kind)) return complete(value, ['kind']);
+  return value.kind === 'project_roots' && onlyKeys(value, ['kind', 'subpath']) &&
+    (!Object.hasOwn(value, 'subpath') || (typeof value.subpath === 'string' && value.subpath.length <= 4096 && !value.subpath.includes('\0')));
+}
+function validManagedProfile(profile) {
+  if (!complete(profile, ['type', 'file_system', 'network']) || profile.type !== 'managed' || !['restricted', 'enabled'].includes(profile.network)) return false;
+  const fs = profile.file_system;
+  return onlyKeys(fs, ['type', 'entries', 'glob_scan_max_depth']) && fs.type === 'restricted' && Array.isArray(fs.entries) && fs.entries.every(validPolicyEntry) &&
+    (!Object.hasOwn(fs, 'glob_scan_max_depth') || (Number.isSafeInteger(fs.glob_scan_max_depth) && fs.glob_scan_max_depth > 0));
 }
 function validMappingRecord(value) {
   if (!complete(value, mappingFields) || value.version !== 1 || !sha256(value.intentDigest) || !mappingBytes(value)) return false;
@@ -169,7 +189,7 @@ function validMappingRecord(value) {
     complete(t, mappingToolFields) && t.version === '0.160.0' && sha256(t.executableSha256) && isSha(t.releaseSourceSha) &&
     complete(p, ['id', 'operationId', 'receiptDigest']) && token(p.id) && token(p.operationId) && sha256(p.receiptDigest) &&
     complete(l, loaderFields) && l.ignoreUserConfig === true && l.ignoreProjectConfig === false && l.ignoreRules === false && ['layersDigest', 'requirementsDigest', 'projectLayersDigest', 'execpolicyDigest'].every(key => sha256(l[key])) &&
-    complete(s, stateFields) && record(s.permissionProfile) && s.permissionProfile.type === 'managed' && onlyKeys(s.permissionProfile, ['type', 'file_system', 'network']) && record(s.permissionProfile.file_system) && s.permissionProfile.file_system.type === 'restricted' && Array.isArray(s.permissionProfile.file_system.entries) && s.permissionProfile.file_system.entries.every(entry => record(entry) && record(entry.path) && ['path', 'special', 'glob'].includes(entry.path.type) && ['read', 'write', 'none'].includes(entry.access)) && ['restricted', 'enabled'].includes(s.permissionProfile.network) &&
+    complete(s, stateFields) && validManagedProfile(s.permissionProfile) &&
     nativeFileUri(s.sandboxCwd) && nativePath(s.codexLinuxSandboxExe) && typeof s.useLegacyLandlock === 'boolean' &&
     complete(e, environmentFields) && sha256(e.policyDigest) && sha256(e.inheritedDigest) && record(e.overrides) &&
     complete(n, networkFields) && sha256(n.configurationDigest) && sha256(n.requirementsDigest) && Array.isArray(n.caRoots) && n.caRoots.every(nativePath) &&

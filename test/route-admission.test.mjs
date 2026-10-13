@@ -161,7 +161,7 @@ function mappingFixture() {
   const expected = { version: 1, binding, tool, workerProducerId: 'worker-producer', helperProducerId: 'helper-producer' };
   const worker = { version: 1, intentDigest: routeRequirementsDigest(intent), binding: structuredClone(binding), tool: structuredClone(tool), producer: { id: 'worker-producer', operationId: 'worker-op', receiptDigest: sha256('c') },
     loader: { ignoreUserConfig: true, ignoreProjectConfig: false, ignoreRules: false, layersDigest: sha256('d'), requirementsDigest: sha256('e'), projectLayersDigest: sha256('f'), execpolicyDigest: sha256('1') },
-    state: { permissionProfile: { type: 'managed', file_system: { type: 'restricted', entries: [{ path: { type: 'special', value: { kind: 'root' } }, access: 'read' }, { path: { type: 'path', path: 'file:///fixture/workspace/.git' }, access: 'none', missing_path_behavior: 'skip' }] }, network: 'restricted' }, sandboxCwd: 'file:///fixture/workspace', codexLinuxSandboxExe: '/fixture/codex', useLegacyLandlock: false },
+    state: { permissionProfile: { type: 'managed', file_system: { type: 'restricted', entries: [{ path: { type: 'special', value: { kind: 'root' } }, access: 'read' }, { path: { type: 'path', path: 'file:///fixture/workspace/.git' }, access: 'deny', missing_path_behavior: 'skip' }] }, network: 'restricted' }, sandboxCwd: 'file:///fixture/workspace', codexLinuxSandboxExe: '/fixture/codex', useLegacyLandlock: false },
     environment: { policyDigest: sha256('2'), inheritedDigest: sha256('3'), overrides: structuredClone(intent.env) },
     network: { configurationDigest: sha256('4'), requirementsDigest: sha256('5'), caRoots: [] }, backend: { platform: 'linux', helperSha256: sha256('6') }, transformations: [] };
   const helper = structuredClone(worker); helper.producer = { ...worker.producer, id: 'helper-producer', operationId: 'helper-op' };
@@ -203,8 +203,8 @@ test('opaque policy rules retain order, deny entries, missing-path behavior and 
   for (const change of [
     f => { f.helper.state.permissionProfile.file_system.entries.reverse(); },
     f => { f.helper.state.permissionProfile.file_system.entries.pop(); },
-    f => { f.helper.state.permissionProfile.file_system.entries[1].missing_path_behavior = 'error'; },
-    f => { f.helper.state.permissionProfile.file_system.entries[0].path.value.kind = 'workspace_roots'; },
+    f => { delete f.helper.state.permissionProfile.file_system.entries[1].missing_path_behavior; },
+    f => { f.helper.state.permissionProfile.file_system.entries[0].path.value.kind = 'project_roots'; },
     f => { f.helper.state.useLegacyLandlock = true; }, f => { f.helper.backend.helperSha256 = sha256('e'); },
     f => { f.helper.network.caRoots = ['/fixture/ca']; }, f => { f.helper.network.requirementsDigest = sha256('e'); },
     f => { f.helper.loader.layersDigest = sha256('e'); }
@@ -221,4 +221,28 @@ test('unsupported, transformed, inferred or malformed state stays unknown', () =
     f => { f.worker.binding.workspaceClean = false; }, f => { f.helper.extra = 'unsupported'; },
     f => { f.intent.env.TMPDIR = '/other'; }, f => { f.helper.state.permissionProfile.self = f.helper.state.permissionProfile; }
   ]) { const f = mappingFixture(); change(f); assert.equal(compare(f).state, 'unknown'); }
+});
+
+
+test('missing selector payloads, unsupported special paths and malformed rule shapes stay unknown', () => {
+  for (const selector of [{ type: 'path' }, { type: 'glob_pattern' }, { type: 'special' }, { type: 'special', value: {} },
+    { type: 'special', value: { kind: 'unknown', path: ':future' } }, { type: 'path', path: 'relative' },
+    { type: 'glob_pattern', pattern: '' }]) {
+    const f = mappingFixture(); f.worker.state.permissionProfile.file_system.entries[1].path = selector;
+    f.helper.state = structuredClone(f.worker.state); assert.equal(compare(f).state, 'unknown');
+  }
+  const glob = mappingFixture(); glob.worker.state.permissionProfile.file_system.entries[1].path = { type: 'glob_pattern', pattern: '/fixture/**/private' };
+  glob.helper.state = structuredClone(glob.worker.state); assert.equal(compare(glob).state, 'mapping_matches');
+  glob.helper.state.permissionProfile.file_system.entries[1].path.pattern = '/fixture/**/other'; assert.equal(compare(glob).state, 'mismatch');
+  const f = mappingFixture(); f.worker.state.permissionProfile.file_system.entries[1].missing_path_behavior = 'error';
+  f.helper.state = structuredClone(f.worker.state); assert.equal(compare(f).state, 'unknown');
+});
+
+test('mapping record bound uses UTF-8 bytes for opaque multibyte policy content', () => {
+  const f = mappingFixture(); const entries = f.worker.state.permissionProfile.file_system.entries;
+  for (let i = 0; i < 16; i++) entries.push({ path: { type: 'glob_pattern', pattern: '/fixture/' + '界'.repeat(3000) + i }, access: 'deny' });
+  f.helper.state = structuredClone(f.worker.state);
+  assert.ok(JSON.stringify(f.worker).length < 128 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(f.worker), 'utf8') > 128 * 1024);
+  assert.equal(compare(f).state, 'unknown');
 });
