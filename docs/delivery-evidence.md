@@ -1,0 +1,11 @@
+# Remote delivery facts (SQF06)
+
+The GitHub adapter records bounded immutable observations under the existing producer scope: publication intent before push/PR creation, exact observed PR identity, selected latest required check-run/app/head/status/conclusion, synthetic merge identity, merge intent before PUT, verified merge tree/ordered ancestry, and controller postmerge results (including failure). Local delivery remains unchanged.
+
+Receipts reuse the physical-job evidence writer's exclusive atomic hard-link publication and file/byte/SHA-256 references. Each contains the durable project/ticket/service/repository, generation, candidate/base/tree, frozen configuration digest, scope and registered process-operation identities. Existing ticket state and the event transaction retain the latest reference; receipts retain previous references. No second database or evidence framework is introduced. The private directory must remain available for readers.
+
+`readDeliveryEvidence(root, reference, expectedIdentity)` checks bounded bytes, hashes, file/directory links and caller-supplied identity fields without changing state or running operations. Callers must supply their expected candidate/policy/scope when using an observation for inspection. It returns observations, never an acceptance verdict or execution authority. Integrity hashes are not a hostile-owner security boundary.
+
+Lost PR creation responses are resolved through the unique stable branch and exact PR identity. A matching already-merged PR additionally requires the existing merge tree/ancestry check and still enters the controller's postmerge verification. Lost merge responses use the existing exact PR/commit query without another PUT. Unknown/mismatched remote outcomes remain blocked. Existing latest-check, app/head, moved-base, permission, review, merge and postmerge gates are preserved.
+
+Recording/projection failure marks producer persistence failed and retains its fence. Reopening does not replay, adopt, release a scope, refund accounting or retry a mutation. Candidate checkpoint recording and these delivery facts do not establish process-tree settlement or autonomous delivery. Tests use offline clients and disposable SQLite state; ordinary repository PR shipment is separate from the automated adapter's policy admission.

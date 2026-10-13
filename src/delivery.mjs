@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { Blocker, isSha } from './contracts.mjs';
 import { runProcess } from './process.mjs';
+import { recordDeliveryEvidence } from './delivery-evidence.mjs';
 
 export class GitHubClient {
   constructor(root) { this.root = root; }
@@ -51,6 +52,7 @@ export class LocalDelivery {
 
 export class GitHubDelivery {
   constructor(workspace, client = new GitHubClient(workspace.root)) { this.workspace = workspace; this.client = client; }
+  record(ticket, service, fact) { return recordDeliveryEvidence(this.workspace.root, ticket, service, fact); }
   prefix(service) { return `repos/${service.delivery.repository}`; }
   async preflight(service) {
     const prefix = this.prefix(service);
@@ -71,6 +73,7 @@ export class GitHubDelivery {
   }
   async publish(ticket, service, signal) {
     await this.workspace.assertCandidate(ticket, signal);
+    await this.record(ticket, service, { kind: 'publication.intent' });
     const remote = await this.workspace.git(ticket.workspace, ['ls-remote', '--refs', 'origin', `refs/heads/${ticket.branch}`], signal);
     const existingSha = remote.split('\t')[0];
     if (remote && existingSha !== ticket.headSha && existingSha !== ticket.publication?.headSha) throw new Blocker('publication_conflict', 'Stable publication branch has an unexpected head');
@@ -80,18 +83,20 @@ export class GitHubDelivery {
     const matching = prs.filter(pr => pr.head?.ref === ticket.branch && pr.base?.ref === service.branch);
     if (matching.length > 1) throw new Blocker('publication_conflict', 'Multiple PRs match the stable ticket branch');
     let pr = matching[0];
-    if (pr && pr.state === 'closed') throw new Blocker('publication_conflict', 'Ticket PR was already closed; reconcile its outcome before retrying publication');
     if (!pr) pr = await this.client.api(`${prefix}/pulls`, 'POST', {
       title: `${ticket.spec.id}: ${ticket.spec.title}`, head: ticket.branch, base: service.branch, draft: false,
       body: `## Result\n\n${ticket.spec.description}\n\n## Acceptance\n\n${ticket.spec.acceptance.map(a => `- ${a}`).join('\n')}\n\nVerified and freshly reviewed by Squire at \`${ticket.headSha}\`.\nProject: ${ticket.projectId}. Controller evidence is retained in its private state directory.`
     });
     if (!Number.isSafeInteger(pr.number) || pr.head?.sha !== ticket.headSha) throw new Blocker('publication_identity', 'Published PR does not match verified candidate');
+    pr = await this.pull({ ...ticket, publication: { number: pr.number } }, service);
+    if (pr.merged) await this.verifyMerge(ticket, service, pr.merge_commit_sha);
     return { kind: 'github', number: pr.number, url: pr.html_url, branch: ticket.branch, headSha: ticket.headSha };
   }
   async pull(ticket, service) {
     const pr = await this.client.api(`${this.prefix(service)}/pulls/${ticket.publication.number}`);
     if (pr.head?.sha !== ticket.headSha || pr.head?.ref !== ticket.branch || pr.base?.ref !== service.branch || pr.base?.repo?.full_name?.toLowerCase() !== service.delivery.repository.toLowerCase()) throw new Blocker('publication_identity', 'PR identity changed since verification');
     if (pr.state === 'closed' && !pr.merged) throw new Blocker('publication_closed', 'PR closed without merging');
+    await this.record(ticket, service, { kind: 'publication.observed', number: ticket.publication.number, headSha: pr.head.sha, branch: pr.head.ref, baseSha: pr.base.sha ?? null, baseBranch: pr.base.ref, repository: pr.base.repo.full_name, state: pr.state, merged: pr.merged === true, mergeSha: pr.merge_commit_sha ?? null });
     return pr;
   }
   async inspect(ticket, service) {
@@ -104,6 +109,7 @@ export class GitHubDelivery {
       mergeChecks = await this.client.pages(`${this.prefix(service)}/commits/${pr.merge_commit_sha}/check-runs`, 'check_runs');
       if (mergeChecks.length) {
         const candidate = await this.client.api(`${this.prefix(service)}/git/commits/${pr.merge_commit_sha}`);
+        await this.record(ticket, service, { kind: 'ci.merge_candidate', sha: candidate.sha, treeSha: candidate.tree?.sha ?? null, parents: candidate.parents?.map(p => p.sha) ?? [] });
         if (candidate.sha !== pr.merge_commit_sha || candidate.tree?.sha !== ticket.treeSha || candidate.parents?.length !== 2 || candidate.parents[0].sha !== ticket.baseSha || candidate.parents[1].sha !== ticket.headSha) return { state: 'base_moved' };
       }
     }
@@ -112,6 +118,7 @@ export class GitHubDelivery {
       const mergeMatches = matching(mergeChecks, pr.merge_commit_sha);
       const matches = mergeMatches.length ? mergeMatches : matching(checks, ticket.headSha);
       const check = matches[0];
+      await this.record(ticket, service, { kind: 'ci.selected', required: expected, selected: check ? { id: check.id, name: check.name, appId: check.app.id, headSha: check.head_sha, status: check.status, conclusion: check.conclusion ?? null } : null });
       if (!check || check.status !== 'completed') return { state: 'pending', reason: `Waiting for ${expected.name}` };
       if (check.conclusion !== 'success') return { state: 'failed', reason: `${expected.name}: ${check.conclusion}`, checkUrl: check.html_url };
     }
@@ -126,6 +133,7 @@ export class GitHubDelivery {
     const parents = commit.parents?.map(p => p.sha);
     const ancestry = (service.delivery.mergeMethod ?? 'squash') === 'squash' ? parents?.length === 1 && parents[0] === ticket.baseSha : parents?.length === 2 && parents[0] === ticket.baseSha && parents[1] === ticket.headSha;
     if (commit.sha !== mergeSha || commit.tree?.sha !== ticket.treeSha || !ancestry) throw new Blocker('merge_identity', 'Merge tree or ancestry differs from verified candidate/base', { mergeSha, actualTree: commit.tree?.sha });
+    await this.record(ticket, service, { kind: 'merge.verified', mergeSha, treeSha: commit.tree.sha, parents });
     return { mergeSha, treeSha: commit.tree.sha };
   }
   async merge(ticket, service, signal) {
@@ -136,6 +144,7 @@ export class GitHubDelivery {
     if (await this.workspace.remoteHead(service, signal) !== ticket.baseSha) return { state: 'base_moved' };
     const gate = await this.inspect(ticket, service);
     if (gate.state !== 'ready') return gate;
+    await this.record(ticket, service, { kind: 'merge.intent', number: ticket.publication.number, headSha: ticket.headSha, method: service.delivery.mergeMethod ?? 'squash' });
     let response;
     try { response = await this.client.api(`${this.prefix(service)}/pulls/${ticket.publication.number}/merge`, 'PUT', { sha: ticket.headSha, merge_method: service.delivery.mergeMethod ?? 'squash' }); }
     catch (e) {
