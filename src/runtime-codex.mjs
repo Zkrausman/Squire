@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { access, readFile, writeFile, mkdir } from 'node:fs/promises';
-import { Blocker, VERSION, planSchema, reviewSchema } from './contracts.mjs';
+import { Blocker, VERSION, planSchema, reviewSchemaFor } from './contracts.mjs';
 import { runProcess } from './process.mjs';
 import { readCatalog } from './codex-catalog.mjs';
 
@@ -79,7 +79,7 @@ export class CodexRuntime {
     job.onEvent?.({ version: VERSION, jobId: job.id, type: 'runtime.configured', requestedModel: settings.model ?? null, requestedReasoning: settings.reasoning ?? null, reportedModel: null, reportedReasoning: null });
     if (job.role !== 'implement') {
       const schema = path.join(job.directory, 'schema.json');
-      await writeFile(schema, JSON.stringify(job.role === 'plan' ? planSchema : reviewSchema), { mode: 0o600, flag: 'wx' });
+      await writeFile(schema, JSON.stringify(job.role === 'plan' ? planSchema : reviewSchemaFor(job.provenance?.reviewExecution)), { mode: 0o600, flag: 'wx' });
       evidenceArtifacts.push('schema.json');
       argv.push('--output-schema', schema);
     }
