@@ -59,7 +59,9 @@ test('missing, corrupt, wrong candidate/policy/scope and symlink references refu
   const bytes = await readFile(f.file(ref)); await writeFile(f.file(ref), Buffer.alloc(bytes.length));
   await assert.rejects(readDeliveryEvidence(f.root, ref), { code: 'delivery_evidence_incomplete' });
   await unlink(f.file(ref)); await assert.rejects(readDeliveryEvidence(f.root, ref), { code: 'delivery_evidence_incomplete' });
-  const outside = path.join(f.directory, 'outside'); await writeFile(outside, bytes); await symlink(outside, f.file(ref));
+  const outside = path.join(f.directory, 'outside'); await mkdir(outside); await writeFile(path.join(outside, ref.file), bytes);
+  const scopeDirectory = path.dirname(f.file(ref)); await rm(scopeDirectory, { recursive: true });
+  await symlink(outside, scopeDirectory, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(readDeliveryEvidence(f.root, ref), { code: 'delivery_evidence_incomplete' });
 });
 
