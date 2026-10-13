@@ -27,7 +27,7 @@ async function fixture(t) {
   f.reopen = () => { f.store.close(); f.store = new Store(directory); };
   const pr = { number: 1, html_url: 'https://github.com/owner/repo/pull/1', state: 'open', merged: false, head: { sha: H, ref: f.ticket().branch }, base: { sha: B, ref: 'main', repo: { full_name: 'owner/repo' } }, mergeable: true, mergeable_state: 'clean' };
   f.pr = pr; f.check = { id: 10, name: 'test', app: { id: 1 }, head_sha: H, status: 'completed', conclusion: 'success' }; f.calls = [];
-  f.client = { pages: async endpoint => endpoint.includes('check-runs') ? [f.check] : f.prExists ? [pr] : [], api: async (endpoint, method = 'GET') => {
+  f.client = { pages: async endpoint => endpoint.includes('check-runs') ? [f.check] : f.prExists ? [{ number: pr.number, head: pr.head, base: pr.base, state: pr.state }] : [], api: async (endpoint, method = 'GET') => {
     f.calls.push({ endpoint, method });
     if (method === 'POST') { f.prExists = true; if (f.losePR) throw Error('response lost'); return pr; }
     if (method === 'PUT') { pr.merged = true; pr.state = 'closed'; pr.merge_commit_sha = M; if (f.loseMerge) throw Error('response lost'); return { merged: true, sha: M }; }

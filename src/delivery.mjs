@@ -83,13 +83,12 @@ export class GitHubDelivery {
     const matching = prs.filter(pr => pr.head?.ref === ticket.branch && pr.base?.ref === service.branch);
     if (matching.length > 1) throw new Blocker('publication_conflict', 'Multiple PRs match the stable ticket branch');
     let pr = matching[0];
-    if (pr && pr.state === 'closed' && !pr.merged) throw new Blocker('publication_conflict', 'Ticket PR was already closed; reconcile its outcome before retrying publication');
     if (!pr) pr = await this.client.api(`${prefix}/pulls`, 'POST', {
       title: `${ticket.spec.id}: ${ticket.spec.title}`, head: ticket.branch, base: service.branch, draft: false,
       body: `## Result\n\n${ticket.spec.description}\n\n## Acceptance\n\n${ticket.spec.acceptance.map(a => `- ${a}`).join('\n')}\n\nVerified and freshly reviewed by Squire at \`${ticket.headSha}\`.\nProject: ${ticket.projectId}. Controller evidence is retained in its private state directory.`
     });
     if (!Number.isSafeInteger(pr.number) || pr.head?.sha !== ticket.headSha) throw new Blocker('publication_identity', 'Published PR does not match verified candidate');
-    await this.pull({ ...ticket, publication: { number: pr.number } }, service);
+    pr = await this.pull({ ...ticket, publication: { number: pr.number } }, service);
     if (pr.merged) await this.verifyMerge(ticket, service, pr.merge_commit_sha);
     return { kind: 'github', number: pr.number, url: pr.html_url, branch: ticket.branch, headSha: ticket.headSha };
   }
