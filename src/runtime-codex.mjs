@@ -4,8 +4,9 @@ import { access, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { Blocker, VERSION, planSchema, reviewSchemaFor } from './contracts.mjs';
 import { runProcess } from './process.mjs';
 import { readCatalog } from './codex-catalog.mjs';
+import { buildWorkerPolicyIntent, codexSubscriptionEnvironment } from './route-admission.mjs';
 
-export const subscriptionEnvironment = () => ({ OPENAI_API_KEY: null, CODEX_API_KEY: null, CODEX_ACCESS_TOKEN: null, GH_TOKEN: null, GITHUB_TOKEN: null });
+export const subscriptionEnvironment = codexSubscriptionEnvironment;
 const authArgs = ['-c', 'forced_login_method="chatgpt"'];
 const capacityText = /\b(?:usage\s+(?:limits?|capacity)|quotas?\s+(?:exceeded|reached|exhausted)|rate[- ]limits?(?:\s+(?:exceeded|reached))?|too many requests)\b/i;
 const explicit429 = /\b(?:http(?:\/\d+(?:\.\d+)?)?\s+429|(?:http[_ -]?)?status(?:[_ -]?code)?(?:\s*[:=]\s*|\s+)429|response\s+status(?:\s+code)?\s*[:=]?\s*429)\b/i;
@@ -67,12 +68,10 @@ export class CodexRuntime {
     await this.preflight(job.signal);
     await mkdir(job.directory, { recursive: true, mode: 0o700 });
     const output = path.join(job.directory, 'result.txt');
-    const workerTemp = job.role === 'implement' ? path.join(job.directory, 'worker-temp') : null;
+    const intent = buildWorkerPolicyIntent({ role: job.role, workspace: job.workspace, directory: job.directory, command: await this.command() });
+    const workerTemp = intent.workerTemp;
     if (workerTemp) await mkdir(workerTemp, { recursive: true, mode: 0o700 });
-    const argv = [...await this.command(), ...authArgs, 'exec', '--ignore-user-config', '--json', '--ephemeral', '--color', 'never', '-C', job.workspace,
-      '--sandbox', job.role === 'implement' ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', '-o', output];
-    if (workerTemp) argv.push('--add-dir', workerTemp);
-    if (process.platform === 'win32') argv.push('-c', 'windows.sandbox="elevated"');
+    const argv = [...intent.argv];
     const settings = await this.settings(job.role);
     if (settings.model) argv.push('-m', settings.model);
     if (settings.reasoning) argv.push('-c', `model_reasoning_effort="${settings.reasoning}"`);
@@ -100,7 +99,7 @@ export class CodexRuntime {
     evidenceArtifacts.push('result.txt');
     let sessionRef, usage, completed = false, errorMessage = '';
     const failureEvents = [];
-    const env = workerTemp ? { ...subscriptionEnvironment(), TEMP: workerTemp, TMP: workerTemp, TMPDIR: workerTemp } : subscriptionEnvironment();
+    const env = intent.env;
     const receipt = await runProcess({ argv, cwd: job.workspace, directory: job.directory, timeoutSeconds: job.timeoutSeconds, input: instructions,
       env, signal: job.signal, onLine: line => {
         let event; try { event = JSON.parse(line); } catch { return; }

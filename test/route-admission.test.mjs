@@ -1,6 +1,6 @@
 import test from './standalone.mjs';
 import assert from 'node:assert/strict';
-import { evaluateRouteAdmission, routeRequirementsDigest } from '../src/route-admission.mjs';
+import { evaluateRouteAdmission, routeRequirementsDigest, buildWorkerPolicyIntent, compareWorkerPolicyMapping } from '../src/route-admission.mjs';
 
 const sha1 = 'a'.repeat(40);
 const sha256 = value => value.repeat(64);
@@ -151,4 +151,74 @@ test('requirements digest is key-order independent and changes with admission in
   };
   assert.equal(routeRequirementsDigest(reordered), routeRequirementsDigest(requirements));
   assert.notEqual(routeRequirementsDigest({ ...requirements, role: 'review' }), routeRequirementsDigest(requirements));
+});
+
+
+function mappingFixture() {
+  const intent = buildWorkerPolicyIntent({ role: 'implement', workspace: '/fixture/workspace', directory: '/fixture/job', command: ['codex'], platform: 'linux' });
+  const binding = { project: 'p', ticket: 't', job: 'j', generation: 1, role: 'implement', source: 'fixture-source', baseSha: sha1, headSha: sha1, treeSha: sha1, workspace: intent.workspace, workspaceClean: true };
+  const tool = { version: '0.160.0', executableSha256: sha256('b'), releaseSourceSha: sha1 };
+  const expected = { version: 1, binding, tool, workerProducerId: 'worker-producer', helperProducerId: 'helper-producer' };
+  const worker = { version: 1, intentDigest: routeRequirementsDigest(intent), binding: structuredClone(binding), tool: structuredClone(tool), producer: { id: 'worker-producer', operationId: 'worker-op', receiptDigest: sha256('c') },
+    loader: { ignoreUserConfig: true, ignoreProjectConfig: false, ignoreRules: false, layersDigest: sha256('d'), requirementsDigest: sha256('e'), projectLayersDigest: sha256('f'), execpolicyDigest: sha256('1') },
+    state: { permissionProfile: { type: 'managed', file_system: { type: 'restricted', entries: [{ path: { type: 'special', value: { kind: 'root' } }, access: 'read' }, { path: { type: 'path', path: 'file:///fixture/workspace/.git' }, access: 'none', missing_path_behavior: 'skip' }] }, network: 'restricted' }, sandboxCwd: 'file:///fixture/workspace', codexLinuxSandboxExe: '/fixture/codex', useLegacyLandlock: false },
+    environment: { policyDigest: sha256('2'), inheritedDigest: sha256('3'), overrides: structuredClone(intent.env) },
+    network: { configurationDigest: sha256('4'), requirementsDigest: sha256('5'), caRoots: [] }, backend: { platform: 'linux', helperSha256: sha256('6') }, transformations: [] };
+  const helper = structuredClone(worker); helper.producer = { ...worker.producer, id: 'helper-producer', operationId: 'helper-op' };
+  return { intent, expected, worker, helper };
+}
+const compare = f => compareWorkerPolicyMapping(f.intent, f.expected, f.worker, f.helper);
+
+test('complete synthetic mapping matches content only and never grants admission or parity', () => {
+  const result = compare(mappingFixture());
+  assert.deepEqual(result, { state: 'mapping_matches', admission: 'not_evaluated', missing: [], mismatches: [] });
+  for (const key of ['eligible', 'dispatch', 'parity', 'capability', 'cleanup']) assert.equal(Object.hasOwn(result, key), false);
+});
+
+test('mapping requires complete provenance even when intent and raw state match', () => {
+  for (const field of ['producer', 'loader', 'environment', 'network', 'backend']) {
+    const f = mappingFixture(); delete f.helper[field]; assert.equal(compare(f).state, 'unknown', field);
+  }
+  for (const field of ['projectLayersDigest', 'execpolicyDigest', 'requirementsDigest']) {
+    const f = mappingFixture(); delete f.worker.loader[field]; assert.equal(compare(f).state, 'unknown', field);
+  }
+  const f = mappingFixture(); f.worker.network.configurationDigest = null; f.helper.network.configurationDigest = null;
+  assert.equal(compare(f).state, 'unknown');
+  assert.equal(compareWorkerPolicyMapping(f.intent, undefined, f.worker, f.helper).state, 'unknown');
+});
+
+test('mapping refuses wrong identities, stale generations, producer, tools and environment', () => {
+  for (const change of [
+    f => { f.helper.binding.role = 'review'; }, f => { f.helper.binding.source = 'other'; },
+    f => { f.helper.binding.baseSha = 'e'.repeat(40); }, f => { f.helper.binding.treeSha = 'e'.repeat(40); },
+    f => { f.helper.binding.generation++; }, f => { f.helper.binding.workspace = '/other'; },
+    f => { f.helper.tool.executableSha256 = sha256('e'); }, f => { f.helper.tool.releaseSourceSha = 'e'.repeat(40); },
+    f => { f.helper.producer.id = 'unrecognized'; }, f => { f.helper.environment.inheritedDigest = sha256('e'); },
+    f => { f.helper.environment.overrides.TMPDIR = '/other'; }
+  ]) { const f = mappingFixture(); change(f); assert.equal(compare(f).state, 'mismatch'); }
+  const f = mappingFixture(); f.helper.tool.version = '0.161.0'; assert.equal(compare(f).state, 'unknown');
+});
+
+test('opaque policy rules retain order, deny entries, missing-path behavior and backend', () => {
+  for (const change of [
+    f => { f.helper.state.permissionProfile.file_system.entries.reverse(); },
+    f => { f.helper.state.permissionProfile.file_system.entries.pop(); },
+    f => { f.helper.state.permissionProfile.file_system.entries[1].missing_path_behavior = 'error'; },
+    f => { f.helper.state.permissionProfile.file_system.entries[0].path.value.kind = 'workspace_roots'; },
+    f => { f.helper.state.useLegacyLandlock = true; }, f => { f.helper.backend.helperSha256 = sha256('e'); },
+    f => { f.helper.network.caRoots = ['/fixture/ca']; }, f => { f.helper.network.requirementsDigest = sha256('e'); },
+    f => { f.helper.loader.layersDigest = sha256('e'); }
+  ]) { const f = mappingFixture(); change(f); assert.equal(compare(f).state, 'mismatch'); }
+});
+
+test('unsupported, transformed, inferred or malformed state stays unknown', () => {
+  for (const change of [
+    f => { f.helper.state.permissionProfile = { type: 'external', network: 'restricted' }; },
+    f => { f.helper.state.permissionProfile = { type: 'disabled' }; },
+    f => { f.helper.transformations = ['external-to-read-only']; },
+    f => { delete f.helper.state.useLegacyLandlock; }, f => { f.helper.state.permissionProfile.file_system = {}; },
+    f => { f.helper.state.sandboxCwd = '/fixture/../workspace'; },
+    f => { f.worker.binding.workspaceClean = false; }, f => { f.helper.extra = 'unsupported'; },
+    f => { f.intent.env.TMPDIR = '/other'; }, f => { f.helper.state.permissionProfile.self = f.helper.state.permissionProfile; }
+  ]) { const f = mappingFixture(); change(f); assert.equal(compare(f).state, 'unknown'); }
 });
