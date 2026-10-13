@@ -109,7 +109,7 @@ test('inventory insertion at the persistence boundary rolls back seal and insert
  const f=fixture(t);
  f.store.db.exec(`CREATE TRIGGER inject_sibling BEFORE INSERT ON process_inventory_seals BEGIN
  INSERT INTO process_operations VALUES ('sibling',NEW.scope_id,NULL,'token','/offline','${h('a')}','registered','{"kind":"not_started","exitCode":null,"endedAt":123,"receiptDigest":"${h('b')}"}'); END`);
- assert.throws(f.seal,/inventory changed during seal persistence/);f.reopen();
+ assert.throws(f.seal,/inventory or scope changed during seal persistence/);f.reopen();
  assert.equal(f.store.db.prepare('SELECT count(*) n FROM process_inventory_seals').get().n,0);
  assert.equal(f.store.db.prepare("SELECT count(*) n FROM process_operations WHERE id='sibling'").get().n,0);
  assert.equal(f.store.get('project').agentCalls,1);
@@ -131,4 +131,18 @@ test('REPLACE cannot bypass immutable seals or move sealed identities to an unse
  ['INSERT OR REPLACE INTO producer_scopes(id,project,lane,lease_resource,lease_owner,created_at) VALUES (?,?,?,?,?,?)',[f.scope,'project','independent','controller:project',f.lease.owner,123]]
  ])assert.throws(()=>f.store.db.prepare(sql).run(...args),/sealed|immutable/);
  f.reopen();assert.deepEqual(f.seal(),seal);assert.equal(f.store.processOperation('worker').scope_id,f.scope);assert.equal(f.store.db.prepare('SELECT scope_id FROM producer_calls WHERE job_id=?').get('job').scope_id,f.scope);
+});
+
+for(const [name,effect] of [
+ ['project',"UPDATE producer_scopes SET project='foreign' WHERE id=NEW.scope_id;"],
+ ['lane',"UPDATE producer_scopes SET lane='foreign' WHERE id=NEW.scope_id;"],
+ ['closed scope',"UPDATE producer_scopes SET closed_at=123 WHERE id=NEW.scope_id;"],
+ ['lease owner',"UPDATE leases SET owner='foreign' WHERE resource='controller:project';"]
+])test(`scope/lease ${name} mutation at seal persistence rolls back`,t=>{
+ const f=fixture(t),before=f.store.db.prepare('SELECT * FROM producer_scopes WHERE id=?').get(f.scope);
+ f.store.db.exec(`CREATE TRIGGER inject_scope BEFORE INSERT ON process_inventory_seals BEGIN ${effect} END`);
+ blocked(f.seal);f.reopen();assert.equal(f.store.db.prepare('SELECT count(*) n FROM process_inventory_seals').get().n,0);
+ assert.deepEqual(f.store.db.prepare('SELECT * FROM producer_scopes WHERE id=?').get(f.scope),before);
+ assert.equal(f.store.db.prepare('SELECT owner FROM leases WHERE resource=?').get('controller:project').owner,f.lease.owner);
+ assert.equal(f.store.get('project').agentCalls,1);
 });

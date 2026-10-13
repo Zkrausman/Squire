@@ -202,7 +202,9 @@ export function sealInventory(store, scopeId) {
    store.db.prepare('INSERT INTO process_inventory_seals VALUES (?,?,?,?)').run(scopeId, JSON.stringify(payload), sealDigest, createdAt);
    row = { scope_id: scopeId, seal_digest: sealDigest, created_at: createdAt };
   }
-  if (settlementContractDigest(inventoryPayload(store, scope)) !== sealDigest) throw blocked('Process inventory changed during seal persistence', { scopeId });
+  const currentScope = scopeRow(store, scopeId); assertOwner(store, currentScope);
+  if (context.project !== currentScope.project || context.scopeId !== currentScope.id || context.lifecycle?.persistenceFailed || currentScope.lease_resource !== scope.lease_resource ||
+      settlementContractDigest(inventoryPayload(store, currentScope)) !== sealDigest) throw blocked('Process inventory or scope changed during seal persistence', { scopeId });
   return sealedReference(row, payload);
  });
 }
