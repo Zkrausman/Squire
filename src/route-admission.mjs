@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { digest, isSha, VERSION } from './contracts.mjs';
 
 const roles = new Set(['plan', 'implement', 'review']);
@@ -124,4 +126,96 @@ export function evaluateRouteAdmission(requirements, observation) {
   }
 
   return { eligible: blockers.length === 0, blockers };
+}
+
+
+export const codexSubscriptionEnvironment = () => ({ OPENAI_API_KEY: null, CODEX_API_KEY: null, CODEX_ACCESS_TOKEN: null, GH_TOKEN: null, GITHUB_TOKEN: null });
+
+/** Requested worker construction only; no filesystem, configuration or capability observation. */
+export function buildWorkerPolicyIntent({ role, workspace, directory, command, platform = process.platform }) {
+  if (!roles.has(role) || ![workspace, directory].every(value => typeof value === 'string' && value.length && !value.includes('\0')) ||
+      !Array.isArray(command) || !command.length || command.some(value => typeof value !== 'string' || !value.length || value.includes('\0'))) throw new TypeError('Invalid worker intent inputs');
+  const workerTemp = role === 'implement' ? path.join(directory, 'worker-temp') : null;
+  const argv = [...command, '-c', 'forced_login_method="chatgpt"', 'exec', '--ignore-user-config', '--json', '--ephemeral', '--color', 'never', '-C', workspace,
+    '--sandbox', workerTemp ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', '-o', path.join(directory, 'result.txt')];
+  if (workerTemp) argv.push('--add-dir', workerTemp);
+  if (platform === 'win32') argv.push('-c', 'windows.sandbox="elevated"');
+  return { version: 1, role, platform, workspace, directory, command: [...command], workerTemp, argv,
+    env: workerTemp ? { ...codexSubscriptionEnvironment(), TEMP: workerTemp, TMP: workerTemp, TMPDIR: workerTemp } : codexSubscriptionEnvironment(),
+    configuration: { ignoreUserConfig: true, ignoreProjectConfig: false, ignoreRules: false, approvalPolicy: 'never', authentication: 'chatgpt', inheritance: 'process.env-then-explicit-overrides-null-unsets' } };
+}
+
+const mappingFields = ['version', 'intentDigest', 'binding', 'tool', 'producer', 'loader', 'state', 'environment', 'network', 'backend', 'transformations'];
+const bindingFields = ['project', 'ticket', 'job', 'generation', 'role', 'source', 'baseSha', 'headSha', 'treeSha', 'workspace', 'workspaceClean'];
+const mappingToolFields = ['version', 'executableSha256', 'releaseSourceSha'];
+const loaderFields = ['ignoreUserConfig', 'ignoreProjectConfig', 'ignoreRules', 'layersDigest', 'requirementsDigest', 'projectLayersDigest', 'execpolicyDigest'];
+const stateFields = ['permissionProfile', 'sandboxCwd', 'codexLinuxSandboxExe', 'useLegacyLandlock'];
+const environmentFields = ['policyDigest', 'inheritedDigest', 'overrides'];
+const networkFields = ['configurationDigest', 'requirementsDigest', 'caRoots'];
+const backendFields = ['platform', 'helperSha256'];
+const complete = (value, fields) => onlyKeys(value, fields) && fields.every(field => Object.hasOwn(value, field));
+const nativePath = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !value.includes('\0') && path.posix.isAbsolute(value) && path.posix.normalize(value) === value;
+function nativeFileUri(value) {
+  try { return typeof value === 'string' && nativePath(fileURLToPath(value)) && pathToFileURL(fileURLToPath(value)).href === value; } catch { return false; }
+}
+function mappingBytes(value) {
+  try { const bytes = JSON.stringify(canonical(value)); return Buffer.byteLength(bytes, 'utf8') <= 128 * 1024 ? bytes : null; } catch { return null; }
+}
+function validPolicyEntry(entry) {
+  if (!onlyKeys(entry, ['path', 'access', 'missing_path_behavior']) || !['read', 'write', 'deny'].includes(entry.access) ||
+      (Object.hasOwn(entry, 'missing_path_behavior') && entry.missing_path_behavior !== 'skip')) return false;
+  const selector = entry.path;
+  if (!record(selector)) return false;
+  const payload = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !value.includes('\0');
+  if (selector.type === 'path') return complete(selector, ['type', 'path']) && (nativePath(selector.path) || nativeFileUri(selector.path));
+  if (selector.type === 'glob_pattern') return complete(selector, ['type', 'pattern']) && payload(selector.pattern) && entry.access === 'deny';
+  if (selector.type !== 'special' || !complete(selector, ['type', 'value']) || !record(selector.value)) return false;
+  const value = selector.value;
+  if (['root', 'minimal', 'tmpdir', 'slash_tmp'].includes(value.kind)) return complete(value, ['kind']);
+  return value.kind === 'project_roots' && onlyKeys(value, ['kind', 'subpath']) &&
+    (!Object.hasOwn(value, 'subpath') || (typeof value.subpath === 'string' && value.subpath.length <= 4096 && !value.subpath.includes('\0')));
+}
+function validManagedProfile(profile) {
+  if (!complete(profile, ['type', 'file_system', 'network']) || profile.type !== 'managed' || !['restricted', 'enabled'].includes(profile.network)) return false;
+  const fs = profile.file_system;
+  return onlyKeys(fs, ['type', 'entries', 'glob_scan_max_depth']) && fs.type === 'restricted' && Array.isArray(fs.entries) && fs.entries.every(validPolicyEntry) &&
+    (!Object.hasOwn(fs, 'glob_scan_max_depth') || (Number.isSafeInteger(fs.glob_scan_max_depth) && fs.glob_scan_max_depth > 0));
+}
+function validMappingRecord(value) {
+  if (!complete(value, mappingFields) || value.version !== 1 || !sha256(value.intentDigest) || !mappingBytes(value)) return false;
+  const { binding: b, tool: t, producer: p, loader: l, state: s, environment: e, network: n, backend: k } = value;
+  return complete(b, bindingFields) && ['project', 'ticket', 'job', 'source'].every(key => typeof b[key] === 'string' && b[key].length > 0) &&
+    Number.isSafeInteger(b.generation) && b.generation > 0 && roles.has(b.role) && ['baseSha', 'headSha', 'treeSha'].every(key => isSha(b[key])) && nativePath(b.workspace) && b.workspaceClean === true &&
+    complete(t, mappingToolFields) && t.version === '0.160.0' && sha256(t.executableSha256) && isSha(t.releaseSourceSha) &&
+    complete(p, ['id', 'operationId', 'receiptDigest']) && token(p.id) && token(p.operationId) && sha256(p.receiptDigest) &&
+    complete(l, loaderFields) && l.ignoreUserConfig === true && l.ignoreProjectConfig === false && l.ignoreRules === false && ['layersDigest', 'requirementsDigest', 'projectLayersDigest', 'execpolicyDigest'].every(key => sha256(l[key])) &&
+    complete(s, stateFields) && validManagedProfile(s.permissionProfile) &&
+    nativeFileUri(s.sandboxCwd) && nativePath(s.codexLinuxSandboxExe) && typeof s.useLegacyLandlock === 'boolean' &&
+    complete(e, environmentFields) && sha256(e.policyDigest) && sha256(e.inheritedDigest) && record(e.overrides) &&
+    complete(n, networkFields) && sha256(n.configurationDigest) && sha256(n.requirementsDigest) && Array.isArray(n.caRoots) && n.caRoots.every(nativePath) &&
+    complete(k, backendFields) && k.platform === 'linux' && sha256(k.helperSha256) && Array.isArray(value.transformations) && value.transformations.length === 0;
+}
+
+/** Compare supplied source-level mapping records only. IDs/hashes do not authenticate
+ * a producer; callers must verify provenance separately. Even a match never admits
+ * execution or establishes effective-policy parity, capability or cleanup. */
+export function compareWorkerPolicyMapping(intent, expected, worker, helper) {
+  const missing = [], mismatches = [];
+  const result = () => ({ state: missing.length ? 'unknown' : mismatches.length ? 'mismatch' : 'mapping_matches', admission: 'not_evaluated', missing, mismatches });
+  let rebuilt;
+  try { rebuilt = buildWorkerPolicyIntent(intent); } catch {}
+  if (!rebuilt || intent.platform !== 'linux' || mappingBytes(rebuilt) !== mappingBytes(intent)) missing.push('intent');
+  if (!complete(expected, ['version', 'binding', 'tool', 'workerProducerId', 'helperProducerId']) || expected.version !== 1 || !complete(expected.binding, bindingFields) || !complete(expected.tool, mappingToolFields) || !token(expected.workerProducerId) || !token(expected.helperProducerId)) missing.push('expected');
+  for (const [name, record] of [['worker', worker], ['helper', helper]]) if (!validMappingRecord(record)) missing.push(name);
+  if (missing.length) return result();
+  for (const [name, observed] of [['worker', worker], ['helper', helper]]) {
+    if (observed.intentDigest !== routeRequirementsDigest(intent)) mismatches.push(`${name}.intentDigest`);
+    if (mappingBytes(observed.binding) !== mappingBytes(expected.binding) || observed.binding.role !== intent.role || observed.binding.workspace !== intent.workspace) mismatches.push(`${name}.binding`);
+    if (mappingBytes(observed.tool) !== mappingBytes(expected.tool)) mismatches.push(`${name}.tool`);
+    if (observed.producer.id !== expected[`${name}ProducerId`]) mismatches.push(`${name}.producer`);
+    if (observed.state.sandboxCwd !== pathToFileURL(intent.workspace).href) mismatches.push(`${name}.state.sandboxCwd`);
+    if (mappingBytes(observed.environment.overrides) !== mappingBytes(intent.env)) mismatches.push(`${name}.environment.overrides`);
+  }
+  for (const field of ['loader', 'state', 'environment', 'network', 'backend']) if (mappingBytes(worker[field]) !== mappingBytes(helper[field])) mismatches.push(field);
+  return result();
 }

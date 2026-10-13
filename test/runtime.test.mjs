@@ -6,6 +6,7 @@ import { Controller } from '../src/controller.mjs';
 import { readJobEvidence } from '../src/job-evidence.mjs';
 import { CodexRuntime } from '../src/runtime-codex.mjs';
 import { fixture } from './support.mjs';
+import { buildWorkerPolicyIntent } from '../src/route-admission.mjs';
 
 const fakeCli = `import {readFile,writeFile,access} from 'node:fs/promises';
 const args=process.argv.slice(2), value=k=>args[args.indexOf(k)+1];
@@ -157,4 +158,25 @@ test('controller retains immutable Codex artifact and process provenance using o
   const before = await readFile(path.join(result.evidence.directory, 'prompt.txt'));
   await assert.rejects(() => f.runtime.execute({ id: result.jobId, role: 'implement', workspace: f.seed, directory: result.evidence.directory, instructions: 'replacement', timeoutSeconds: 10 }), { code: 'EEXIST' });
   assert.deepEqual(await readFile(path.join(result.evidence.directory, 'prompt.txt')), before);
+});
+
+
+test('shared intent preserves complete actual worker argv and explicit environment for every role', async t => {
+  const f = await runtimeFixture(t), original = {};
+  for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']) { original[key] = process.env[key]; process.env[key] = 'fixture-secret'; }
+  t.after(() => { for (const [key, value] of Object.entries(original)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  for (const role of ['plan', 'implement', 'review']) {
+    const directory = path.join(f.runtimeRoot, `intent-${role}`), output = path.join(directory, 'result.txt');
+    const result = await f.runtime.execute({ id: role, role, workspace: f.seed, directory, instructions: 'Offline construction audit', timeoutSeconds: 10, backoffSeconds: 60 });
+    const expected = [process.execPath, path.join(f.root, 'codex-fixture.mjs'), '-c', 'forced_login_method="chatgpt"', 'exec', '--ignore-user-config', '--json', '--ephemeral', '--color', 'never', '-C', f.seed, '--sandbox', role === 'implement' ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', '-o', output];
+    if (role === 'implement') expected.push('--add-dir', path.join(directory, 'worker-temp'));
+    if (process.platform === 'win32') expected.push('-c', 'windows.sandbox="elevated"');
+    expected.push('-m', 'fixture-model', '-c', 'model_reasoning_effort="low"');
+    if (role !== 'implement') expected.push('--output-schema', path.join(directory, 'schema.json'));
+    expected.push('-'); assert.deepEqual(result.receipt.argv, expected);
+    const audit = JSON.parse((await readFile(result.receipt.stdoutPath, 'utf8')).split('\n')[0]); assert.equal(audit.envSecretsPresent, false);
+    const intent = buildWorkerPolicyIntent({ role, workspace: f.seed, directory, command: [process.execPath, path.join(f.root, 'codex-fixture.mjs')] });
+    assert.equal(intent.configuration.ignoreProjectConfig, false); assert.equal(intent.configuration.ignoreRules, false);
+    assert.deepEqual(intent.argv, expected.slice(0, expected.indexOf('-m')));
+  }
 });
