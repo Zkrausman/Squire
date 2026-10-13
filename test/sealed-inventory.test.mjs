@@ -146,3 +146,12 @@ for(const [name,effect] of [
  assert.equal(f.store.db.prepare('SELECT owner FROM leases WHERE resource=?').get('controller:project').owner,f.lease.owner);
  assert.equal(f.store.get('project').agentCalls,1);
 });
+
+test('UPDATE OR REPLACE cannot rekey unsealed operations/calls onto sealed identities',t=>{
+ const f=fixture(t),seal=f.seal(),other=f.store.beginProducer('project','independent',f.lease);
+ f.store.reserveProducerCall(other,'other-job');f.store.registerProcess(other,null,'unsealed-op',f.directory,f.requestDigest);
+ assert.throws(()=>f.store.db.prepare("UPDATE OR REPLACE process_operations SET id='worker' WHERE id='unsealed-op'").run(),/sealed/);
+ assert.throws(()=>f.store.db.prepare("UPDATE OR REPLACE producer_calls SET job_id='job' WHERE job_id='other-job'").run(),/sealed/);
+ f.reopen();assert.deepEqual(f.seal(),seal);assert.equal(f.store.processOperation('worker').scope_id,f.scope);assert.equal(f.store.processOperation('unsealed-op').scope_id,other);
+ assert.equal(f.store.db.prepare('SELECT scope_id FROM producer_calls WHERE job_id=?').get('job').scope_id,f.scope);assert.equal(f.store.db.prepare('SELECT scope_id FROM producer_calls WHERE job_id=?').get('other-job').scope_id,other);
+});

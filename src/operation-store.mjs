@@ -31,6 +31,7 @@ export const operationSchema = `
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_operation_update BEFORE UPDATE ON process_operations
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.scope_id OR scope_id=NEW.scope_id)
+ OR EXISTS(SELECT 1 FROM process_operations r JOIN process_inventory_seals s ON s.scope_id=r.scope_id WHERE r.id=NEW.id)
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_operation_delete BEFORE DELETE ON process_operations
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.scope_id)
@@ -41,6 +42,7 @@ export const operationSchema = `
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_call_update BEFORE UPDATE ON producer_calls
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.scope_id OR scope_id=NEW.scope_id)
+ OR EXISTS(SELECT 1 FROM producer_calls r JOIN process_inventory_seals s ON s.scope_id=r.scope_id WHERE r.job_id=NEW.job_id)
  BEGIN SELECT RAISE(ABORT,'sealed process inventory'); END;
  CREATE TRIGGER IF NOT EXISTS sealed_call_delete BEFORE DELETE ON producer_calls
  WHEN EXISTS(SELECT 1 FROM process_inventory_seals WHERE scope_id=OLD.scope_id)
