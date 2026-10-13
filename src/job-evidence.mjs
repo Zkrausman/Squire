@@ -182,3 +182,6 @@ export async function readJobEvidence(directory, jobId, expectedTerminal = null)
     return { ...terminal, disposition };
   });
 }
+
+// Reuse the same bounded, exclusive publication primitive for delivery receipts.
+export { publish as publishEvidence };

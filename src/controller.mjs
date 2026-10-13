@@ -6,6 +6,7 @@ import { GitWorkspace } from './workspace.mjs';
 import { CodexRuntime } from './runtime-codex.mjs';
 import { VerificationRunner } from './verification.mjs';
 import { LocalDelivery, GitHubDelivery } from './delivery.mjs';
+import { recordDeliveryEvidence } from './delivery-evidence.mjs';
 import { reconcileProcesses } from './process.mjs';
 import { beginJobEvidence, finishJobEvidence, recordCandidateDisposition } from './job-evidence.mjs';
 import { producerContext, withProducer, withProducerJob } from './producer-context.mjs';
@@ -536,6 +537,7 @@ export class Controller {
         await this.verifier.setup(directory, service.setup, `delivered-${id}`, signal);
         const checks = await this.verifier.run(directory, service.checks, `delivered-${id}-${t.mergeSha}`, signal);
         const after = await this.workspace.identity(directory, signal);
+        await recordDeliveryEvidence(this.root, t, service, { kind: 'postmerge.observed', mergeSha: t.mergeSha, treeSha: identity.treeSha, after: { headSha: after.headSha, treeSha: after.treeSha, dirty: after.dirty }, passed: checks.passed, results: checks.results });
         if (!checks.passed || after.dirty || after.headSha !== t.mergeSha) throw new Blocker('postmerge_failed', 'Postmerge verification failed; repository lane halted', checks);
         this.transition(id, 'shipped', { postmerge: { ...checks, headSha: t.mergeSha, treeSha: identity.treeSha },
           ...(t.spec.execution ? { checklistEvidence: { headSha: t.mergeSha, reviewedHeadSha: t.review.headSha, contractDigest: digest(t.spec.execution), items: t.review.checklist, verification: t.verification.results, postmerge: checks.results,
