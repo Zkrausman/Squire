@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Store } from '../src/store.mjs';
 import { digest } from '../src/contracts.mjs';
-import { withProducer } from '../src/producer-context.mjs';
+import { producerContext, withProducer } from '../src/producer-context.mjs';
 import { recordDeliveryEvidence, readDeliveryEvidence } from '../src/delivery-evidence.mjs';
 import { GitHubDelivery } from '../src/delivery.mjs';
 const H = 'a'.repeat(40), B = 'b'.repeat(40), T = 'c'.repeat(40), M = 'd'.repeat(40);
@@ -63,6 +63,26 @@ test('missing, corrupt, wrong candidate/policy/scope and symlink references refu
   const scopeDirectory = path.dirname(f.file(ref)); await rm(scopeDirectory, { recursive: true });
   await symlink(outside, scopeDirectory, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(readDeliveryEvidence(f.root, ref), { code: 'delivery_evidence_incomplete' });
+});
+
+test('changed prior receipt blocks the next publication before remote action and retains the producer fence', async t => {
+  const f = await fixture(t), ref = await f.record({ kind: 'publication.intent' });
+  await writeFile(f.file(ref), Buffer.alloc(ref.bytes));
+  const callsBefore = f.calls.length;
+  const eventsBefore = f.store.events('project');
+  let workspaceGitCalls = 0;
+  const workspaceGit = f.delivery.workspace.git;
+  f.delivery.workspace.git = async (...args) => { workspaceGitCalls++; return workspaceGit(...args); };
+  await f.run(async () => {
+    const lifecycle = producerContext().lifecycle;
+    await assert.rejects(f.delivery.publish(f.ticket(), f.service), { code: 'delivery_evidence_incomplete' });
+    assert.equal(lifecycle.persistenceFailed, true);
+    assert.throws(() => f.store.update('project', () => {}, 'done', {}, f.scope), { code: 'producer_unresolved' });
+  });
+  assert.equal(f.calls.length, callsBefore);
+  assert.equal(workspaceGitCalls, 0);
+  assert.deepEqual(f.ticket().deliveryEvidence, ref);
+  assert.deepEqual(f.store.events('project'), eventsBefore);
 });
 
 test('failed projection retains immutable artifact, rolls back reference/event and fences closure', async t => {
