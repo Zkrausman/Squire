@@ -47,6 +47,7 @@ GitHub requires classic strict up-to-date branch protection with administrators 
 
 ```sh
 node bin/squire.mjs status project.json
+node bin/squire-status.mjs project.json TICKET_ID [--watch=SECONDS]
 node bin/squire.mjs events project.json --after=0
 node bin/squire.mjs pause project.json
 node bin/squire.mjs resume project.json --retry
@@ -57,6 +58,8 @@ node bin/squire.mjs serve C:\SquireState --port=41828
 `run` waits through capacity and CI. `--once` advances available work and returns without waiting. Ctrl+C cancels active jobs and pauses; `resume` reactivates persisted work. `--retry` retries blockers with new evidence; it does not reset exhausted budgets. Preserve state for diagnosis, and explicitly start a new project for changed scope/budgets. A postmerge failure halts the repository lane and is never hidden by a rollback claim.
 
 See [operator/API guide](docs/OPERATIONS.md) and [adapter contracts](src/ports.d.ts). Another harness can call the versioned control API; a future runtime adapter can supply agent execution independently. The initial executable installs only the Codex subscription adapter.
+
+The standalone [terminal status reader](docs/terminal-status.md) shows selected persisted statuses and always labels OS liveness `UNKNOWN`; it is not integrated with Herdr's managed pane.
 
 ## Verification and limits
 
