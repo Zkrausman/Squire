@@ -12,6 +12,7 @@ import { assertCriterionDefinitions, resolveCriterionEvidence } from './criterio
 import { reconcileProcesses } from './process.mjs';
 import { beginJobEvidence, finishJobEvidence, recordCandidateDisposition } from './job-evidence.mjs';
 import { producerContext, withProducer, withProducerJob } from './producer-context.mjs';
+import { repairReasonForPrompt } from './verification-feedback.mjs';
 
 const sleep = (ms, signal) => new Promise(resolve => {
   if (signal?.aborted) return resolve();
@@ -460,7 +461,10 @@ export class Controller {
         if (before.dirty && t.status === 'prepared' && !t.capacity) throw new Blocker('dirty_workspace', 'Trusted setup changed source before implementation');
         if (continuing && (before.headSha !== t.headSha || before.treeSha !== t.treeSha || before.dirty)) throw new Blocker('continuation_identity_mismatch', 'Recovered partial candidate changed or became dirty before its continuation', before);
         const attempt = continuing ? t.attempts : t.attempts + 1, repairing = t.status === 'repairing';
-        const reason = repairing || continuing ? `\n${continuing ? 'Continue the same logical implementation attempt' : 'Repair these verified failures/findings'} within this ticket: ${JSON.stringify(t.repairReason)}\nPreserve existing useful work. Every edit will receive fresh tests and review.` : '';
+        const safeRepairReason = repairReasonForPrompt(t.repairReason, service.checks, {
+          headSha: t.headSha, treeSha: t.treeSha, policyDigest: digest(service.checks)
+        });
+        const reason = repairing || continuing ? `\n${continuing ? 'Continue the same logical implementation attempt' : 'Repair these verified failures/findings'} within this ticket: ${JSON.stringify(safeRepairReason)}\nPreserve existing useful work. Every edit will receive fresh tests and review.` : '';
         const instructions = `Implement the following authorized ticket in this workspace. Read applicable AGENTS.md. Do the work and meaningful tests; do not merely propose a plan.\n${ticketPrompt(t)}\nBase: ${t.baseSha}.\nProtected paths: ${JSON.stringify(service.protectedPaths)}.\nDo not commit, rewrite Git history, publish, merge, access credentials or modify controller policy/evidence. Squire owns those actions. Stay within the ticket. Your final message should summarize the concrete change and validation.${reason}`;
         const jobDirectory = continuing ? `${attempt}-continuation-1-implement` : `${attempt}-implement`;
         const outcome = await this.callAgent('implement', t.workspace, path.join(this.root, 'jobs', id, jobDirectory), instructions, signal, (s, job) => {
@@ -493,7 +497,7 @@ export class Controller {
       if (t.status === 'verifying') {
         await this.workspace.assertCandidate(t, signal);
         const binding = this.checkBinding(t, service);
-        const { evidenceDraft, ...checks } = await this.verifier.runForCandidate(t.workspace, service.checks, `${id}-${t.headSha}`, signal, binding);
+        const { evidenceDraft, diagnosticFeedbackV1, ...checks } = await this.verifier.runForCandidate(t.workspace, service.checks, `${id}-${t.headSha}`, signal, binding);
         const asserted = await this.workspace.assertCandidate(t, signal);
         let checkEvidence;
         try {
@@ -504,9 +508,10 @@ export class Controller {
           checkEvidence = { state: 'unavailable', reason: 'retention_failed' };
         }
         const legacyChecks = { passed: checks.passed, results: checks.results, notRun: checks.notRun };
-        this.change(id, ticket => { ticket.verification = { ...legacyChecks, headSha: t.headSha, treeSha: t.treeSha,
-          policyDigest: digest(service.checks), checkEvidence }; });
-        if (!checks.passed) await this.repair(id, legacyChecks); else {
+        this.change(id, ticket => { ticket.verification = { ...legacyChecks, ...(diagnosticFeedbackV1 ? { diagnosticFeedbackV1 } : {}),
+          headSha: t.headSha, treeSha: t.treeSha, policyDigest: digest(service.checks), checkEvidence }; });
+        if (!checks.passed) await this.repair(id, { code: 'verification_failed', ...legacyChecks,
+          diagnosticFeedbackV1: diagnosticFeedbackV1 ?? null }); else {
           const proof = await resolveCriterionEvidence(this.store, this.id, id);
           this.transition(id, 'review_ready', proof ? { criterionEvidence: { candidate: proof } } : {});
         }

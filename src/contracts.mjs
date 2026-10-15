@@ -112,11 +112,21 @@ export function pathIsOwned(candidatePath, ownedPaths) {
   if (!pathText(candidatePath) || candidatePath.endsWith('/') || !Array.isArray(ownedPaths)) return false;
   return ownedPaths.some(entry => pathText(entry) && (entry.endsWith('/') ? candidatePath.startsWith(entry) : candidatePath === entry));
 }
-export function commands(value, label, required = true) {
+function validateDiagnosticDisclosure(value, label) {
+  keys(value, ['version', 'stdout', 'stderr', 'metadata'], `${label} diagnosticDisclosureV1`);
+  requireValue(value.version === 1, `${label} diagnosticDisclosureV1.version must be 1`);
+  for (const field of ['stdout', 'stderr', 'metadata']) {
+    if (Object.hasOwn(value, field)) requireValue(['approved', 'withheld'].includes(value[field]), `${label} diagnosticDisclosureV1.${field} must be approved or withheld`);
+  }
+  return value;
+}
+export function commands(value, label, required = true, { allowDiagnosticDisclosure = false } = {}) {
   requireValue(Array.isArray(value) && value.length <= 30 && (!required || value.length > 0), `${label} must contain ${required ? '1' : '0'}..30 commands`);
   const names = new Set();
   for (const command of value) {
-    keys(command, ['name', 'argv', 'timeoutSeconds'], label); identifier(command.name, 'check name');
+    const allowedFields = allowDiagnosticDisclosure ? ['name', 'argv', 'timeoutSeconds', 'diagnosticDisclosureV1'] : ['name', 'argv', 'timeoutSeconds'];
+    keys(command, allowedFields, label); identifier(command.name, 'check name');
+    if (Object.hasOwn(command, 'diagnosticDisclosureV1')) validateDiagnosticDisclosure(command.diagnosticDisclosureV1, command.name);
     requireValue(!names.has(command.name), `Duplicate check ${command.name}`); names.add(command.name);
     requireValue(Array.isArray(command.argv) && command.argv.length > 0 && command.argv.length <= 100, 'argv must be a nonempty array');
     for (const arg of command.argv) requireValue(typeof arg === 'string' && !arg.includes('\0') && arg.length <= 16000, 'Invalid command argument');
@@ -149,7 +159,7 @@ export function validateConfig(input) {
     requireValue(path.isAbsolute(service.source) || /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?$/.test(service.source), 'source must be an absolute Git path or GitHub HTTPS URL');
     const rel = path.relative(service.source, input.stateDir);
     if (path.isAbsolute(service.source)) requireValue(rel && (rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)), 'stateDir must be outside source repository');
-    commands(service.checks, `${name} checks`); commands(service.setup ?? [], `${name} setup`, false); commands(service.acceptance ?? [], `${name} acceptance`, false);
+    commands(service.checks, `${name} checks`, true, { allowDiagnosticDisclosure: true }); commands(service.setup ?? [], `${name} setup`, false); commands(service.acceptance ?? [], `${name} acceptance`, false);
     keys(service.delivery, ['kind', 'repository', 'requiredChecks', 'mergeMethod'], 'delivery');
     requireValue(['local', 'github'].includes(service.delivery.kind), 'Unsupported delivery kind');
     if (service.delivery.kind === 'local') requireValue(path.isAbsolute(service.source), 'Local delivery requires a local bare Git repository');

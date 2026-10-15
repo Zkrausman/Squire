@@ -81,9 +81,9 @@ test('middle failure stops execution and reports later checks as NOTRUN without 
   assert.equal(f.store.authorizeCorrection(f.config, correction).status, 'repairing');
   const saved = f.store.get(f.config.id).tickets[0];
   assert.deepEqual(saved.correctionAdmission.evidence.originalVerification.notRun, result.notRun);
-  assert.deepEqual(saved.repairReason.actualFailure.failedChecks, [
-    { name: 'check-2', exitCode: 7, failureTail: verification.results[1].failureTail }
-  ]);
+  assert.deepEqual(saved.repairReason.actualFailure, {
+    kind: 'failed_verification', diagnosticFeedbackV1: null
+  });
 });
 
 test('first failure reports the complete unrun suffix and leaves later markers absent', async t => {

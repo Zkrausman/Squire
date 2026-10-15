@@ -75,4 +75,10 @@ Workspace methods materialize Git identities; the verifier runs trusted commands
 
 For retained configured-check observations, run `node bin/squire.mjs inspect-checks project.json TICKET_ID`. This passive inspection resolves controller-issued candidate/contract/policy-bound references and registered process facts; unavailable or legacy evidence stays explicit and acceptance is never evaluated. See [check evidence](check-evidence.md).
 
+### Repair diagnostic disclosure
+
+Configured service checks may carry an optional `diagnosticDisclosureV1` classification object with `version: 1` and any of `stdout`, `stderr`, and `metadata`, each set to `approved` or `withheld`. Omitted fields mean `withheld`. This field is accepted only on `service.checks`; setup and acceptance commands reject it. No configured check is opted in by default.
+
+The classification controls only which in-memory failed-check streams and fixed status fields can enter the shared automatic-repair and explicitly admitted correction projection. It is not destination or runtime authorization, and it does not authorize public GitHub, owner-status, or receipt-reader disclosure. With both streams withheld, the repair receives only a fixed withheld indication, even when metadata is classified approved. Approved diagnostics are clipped into one UTF-8 JSON payload capped at 8 KiB per handoff; that is not a cap on the whole ticket prompt, other context, or the existing 16 MiB process capture. Historical raw receipts and `failureTail` remain local and unchanged. Old or malformed records do not fall back to raw legacy text. The excerpt remains untrusted input, not a redaction or model-immunity guarantee.
+
 Owner-supplied version-2 execution contracts can enforce configured-check criterion proof through fresh review and delivered observations. See [criterion evidence](criterion-evidence.md) for frozen check ownership, exact reference IDs, unsupported kinds and retained limits. Version-1 behavior and A2 passive inspection remain unchanged.
