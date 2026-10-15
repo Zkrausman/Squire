@@ -44,6 +44,8 @@ Limits: 1 MiB config, 64 MiB combined DB/WAL, 2-second cooperative capture budge
 
 Inspection creates no source database/schema, migrations, checkpoints, leases, events or reservations. It clears no fences and performs no import, recovery, retry, subprocess, provider query, process/PID probe or benchmark. Controller liveness is always unknown and useful progress is not assessed. Better explanation alone establishes neither improved recovery nor measured time savings. The deterministic fixtures use only disposable SQLite state and fake evidence.
 
+For the selected ticket's retained delivery receipt chain, run `node bin/squire.mjs inspect-delivery project.json TICKET_ID`. This is a separate passive projection with its own receipt, identity, and output limits; see [passive delivery receipt inspection](inspect-delivery.md).
+
 `pause` takes effect at the next boundary; Ctrl+C cancels local jobs and records pause. `resume --retry`, when no producer scope is held, can re-enter verification or postmerge checks after the owner resolves a blocker. Budget ceilings remain durable; changing config for an existing project ID is rejected. Use a new explicitly authorized project when changing scope or budget, preserving the old evidence. Quota waits are automatic and charge neither repair nor rebase counters, but dispatched model calls count against the total call ceiling.
 
 Shipping authorizes merges, not production deployment. Postmerge failure requires owner reconciliation because the branch already contains that commit.
