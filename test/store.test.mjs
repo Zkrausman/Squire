@@ -270,9 +270,7 @@ test('correction admission accepts an exact completed application-check failure 
   assert.equal(audit.verificationDigest, digest(before.verification));
   assert.equal(audit.originalBlocker.code, 'repair_budget');
   assert.deepEqual(saved.repairReason.actualFailure, {
-    kind: 'failed_verification', verificationDigest: digest(before.verification), headSha, treeSha,
-    policyDigest: before.verification.policyDigest,
-    failedChecks: [{ name: 'behavior', exitCode: 1, failureTail: 'Pinned manifest assertion failed.' }]
+    kind: 'failed_verification', diagnosticFeedbackV1: null
   });
   assert.equal(saved.correctionAdmission.ceilings.implementAttempts, 2);
   assert.equal(saved.correctionAdmission.ceilings.repairs, 1);

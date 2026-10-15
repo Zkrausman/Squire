@@ -393,9 +393,7 @@ export class Store {
         kind: 'failed_review', reviewDigest, headSha: ticket.headSha, summary: review.summary,
         findings: review.findings, checklist: review.checklist ?? []
       } : {
-        kind: 'failed_verification', verificationDigest, headSha: ticket.headSha, treeSha: ticket.treeSha,
-        policyDigest: originalVerification.policyDigest,
-        failedChecks: originalVerification.results.filter(result => !result.passed).map(result => ({ name: result.name, exitCode: result.exitCode, failureTail: result.failureTail ?? '' }))
+        kind: 'failed_verification', diagnosticFeedbackV1: originalVerification.diagnosticFeedbackV1 ?? null
       };
       ticket.repairReason = {
         code: 'authorized_correction',

@@ -95,7 +95,9 @@ test('failed executable check feeds repair, invalidates evidence, then ships new
   assert.equal(result.status, 'completed', JSON.stringify(result)); assert.equal(result.tickets[0].repairs, 1);
   assert.equal(runtime.calls.filter(c => c.role === 'implement').length, 2);
   assert.equal(runtime.calls.filter(c => c.role === 'review').length, 1);
-  assert.match(runtime.calls.filter(c => c.role === 'implement')[1].instructions, /Incorrect feature/);
+  const repairInstructions = runtime.calls.filter(c => c.role === 'implement')[1].instructions;
+  assert.match(repairInstructions, /Verification diagnostics withheld by configured disclosure policy/);
+  assert.doesNotMatch(repairInstructions, /Incorrect feature/);
 });
 test('review rejection requires new candidate, checks and fresh review', { timeout: 90000 }, async t => {
   const f = await fixture(t); let rejected = false;
