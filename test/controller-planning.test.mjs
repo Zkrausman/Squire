@@ -227,7 +227,9 @@ test('completed failed application verification admits a bounded repair and stil
   assert.equal(saved.verification.passed, true); assert.equal(saved.verification.headSha, saved.headSha);
   assert.equal(saved.review.verdict, 'pass'); assert.equal(saved.review.headSha, saved.headSha);
   assert.deepEqual(saved.checklistEvidence.items.map(item => item.id), ['base-one', 'base-two', 'corrective-one']);
-  assert.match(implementationPrompt, /Pinned manifest digest did not match/);
+  assert.equal(saved.correctionAdmission.evidence.originalVerification.results[0].failureTail, 'Pinned manifest digest did not match.');
+  assert.match(implementationPrompt, /Verification diagnostics withheld by configured disclosure policy/);
+  assert.doesNotMatch(implementationPrompt, /Pinned manifest digest did not match/);
   assert.equal(runtime.calls.filter(call => call.role === 'implement').length, 2);
   assert.equal(runtime.calls.filter(call => call.role === 'review').length, 1);
 });
