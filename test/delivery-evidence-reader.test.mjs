@@ -205,10 +205,16 @@ test('allows a sibling scope directory entry change while checking the selected 
   assert.equal((await lstat(sibling)).isDirectory(), true);
 });
 
-test('rejects references above the byte bound before opening a file', async t => {
-  const f = await fixture(t);
+test('rejects a valid 131,073-byte receipt with matching reference before opening', async t => {
+  const value = { version: 1, identity: { scopeId }, fact: { kind: 'publication.intent' }, operations: [], previous: null };
+  const bytes = Buffer.alloc(131_073, 32);
+  bytes.write(JSON.stringify(value));
+  const f = await fixture(t, bytes);
+  assert.equal(f.ref.bytes, 131_073);
+  assert.equal((await lstat(f.file)).size, 131_073);
+  assert.deepEqual(JSON.parse(f.bytes), value);
   let opened = false;
-  const io = { lstat, async open() { opened = true; throw new Error('unexpected open'); } };
-  await assert.rejects(readDeliveryEvidence(f.root, { ...f.ref, bytes: LIMIT + 1 }, {}, io), { code: 'delivery_evidence_incomplete' });
+  const io = { lstat, async open(...args) { opened = true; return open(...args); } };
+  await assert.rejects(readDeliveryEvidence(f.root, f.ref, {}, io), { code: 'delivery_evidence_incomplete' });
   assert.equal(opened, false);
 });
