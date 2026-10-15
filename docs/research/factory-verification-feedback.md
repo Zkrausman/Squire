@@ -1,0 +1,70 @@
+# Bounded verification failure feedback
+
+Research date: 15 October 2026. Source snapshot: [`fe87da7`](https://github.com/Zkrausman/Squire/commit/fe87da73798d327ac3557d2d245146c6dd12ef3f). This is a narrow refinement of the existing T1 bounded repair-diagnostic projection, reused by T3's correction export in the [trust and privacy design](factory-trust-boundaries.md). It is not a parallel roadmap, an implementation report, or evidence of a reproduced defect.
+
+## Decision
+
+Specify one stream-separated, byte-bounded projection for failed verification feedback. The current formatter joins standard output, a newline, and standard error, then keeps the final 6,000 JavaScript string code units. That can omit an early assertion or compiler error; a long standard-error stream can also displace all standard output. The proposed head-and-tail projection makes early and final diagnostics available from each approved stream within an explicit serialized-payload bound.
+
+This is a static information-loss finding, not a measured incident rate or a claim that repairs currently fail. Retained command logs and candidate evidence already preserve useful source material. The proposed change concerns the bounded text sent into repair; it does not add a receipt reader, evidence store, replay mechanism, status surface, or new repair authority.
+
+This source check is supplemental to the older pins in the cumulative roadmap and trust memo. The feedback gap is distinct from delivered terminal status, A3 declared inputs, bounded receipt reading/boundaries, and passive inspect-delivery work in PRs 133–138. It refines the existing T1/T3 ownership to expose approved diagnostics already present in check results.
+
+The refinement stays inside the existing T1/T3 work. It does not reorder the roadmap's committed owner outcomes: recovery, then preflight, then an accepted delivery. No research-based efficiency or savings claim supports moving it ahead of that order.
+
+## Pinned source evidence
+
+All source references below use the inspected `fe87da7` snapshot rather than the older pins in cumulative research documents.
+
+| Observation | Evidence | What it establishes |
+| --- | --- | --- |
+| Verification status uses exit and process flags; on failure, feedback concatenates both streams and applies `.slice(-6000)`. Raw `stdout` and `stderr` are removed from the returned result. | [`verification.mjs`, lines 17–21](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/src/verification.mjs#L17-L21) | Direct source evidence of suffix-only truncation and stream competition. It does not establish failure frequency or repair outcomes. |
+| When candidate evidence is retained, the runner keeps streams separate in that evidence; a failed check stops later checks, marking them not run. | [`verification.mjs`, lines 22–51](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/src/verification.mjs#L22-L51) | A formatter can use the existing in-memory process result without changing evidence retention, check ordering, or not-run semantics. |
+| Process capture stores separate stream logs under a combined 16 MiB ceiling; a chunk crossing the ceiling is not written. | [`process.mjs`, line 14](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/src/process.mjs#L14), [`process.mjs`, lines 267–273](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/src/process.mjs#L267-L273) | A projection describes retained output, not necessarily every byte emitted by a child. Existing output-limit facts must remain visible. |
+| The controller stores failed verification results for repair, and the implementation prompt serializes `repairReason`. | [`controller.mjs`, lines 463 and 493–509](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/src/controller.mjs#L463-L509) | The formatter feeds an information bottleneck used by automatic repair. It does not establish that the worker cannot inspect other permitted evidence. |
+| Explicit corrective admission separately copies only the check name, exit code, and `failureTail`. | [`store.mjs`, lines 395–398](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/src/store.mjs#L395-L398) | A formatter-only update would leave the correction path with the old projection. Both consumers belong in the complete work estimate. |
+| Existing verification fixtures assert result shape and a short `failureTail`; the correction fixture expects the same field. | [`verification.test.mjs`, lines 84–86](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/test/verification.test.mjs#L84-L86) and [lines 128–145](https://github.com/Zkrausman/Squire/blob/fe87da73798d327ac3557d2d245146c6dd12ef3f/test/verification.test.mjs#L128-L145) | These are existing fixture sources, not fresh execution results; the cited assertions do not establish long-stream, byte-boundary, or Unicode coverage. |
+
+## Research context and limits
+
+Fan et al., [*An Empirical Study of Harness Design for Coding Agents*](https://arxiv.org/html/2609.20804v1) (v1, checked 15 October 2026), discusses tool-result limits and studies staged elision and summarization policies in Sections 2.3 and 3.1–3.2. It motivates examining bounded feedback, but does not isolate Squire's 6,000-code-unit suffix, separate-stream head-and-tail allocation, or this proposed formatter. Its reported efficiency effects do not estimate Squire outcomes, savings, or call reduction; its limitations include one run per task and bundled interventions. It supplies no authority to remove checks, change models, add summarizer calls, or run a comparison.
+
+The [Node 24 `Buffer.byteLength` documentation](https://nodejs.org/docs/latest-v24.x/api/buffer.html#static-method-bufferbytelengthstring-encoding), checked 15 October 2026, supports measuring UTF-8 bytes rather than treating JavaScript string length as a byte bound. It does not supply a diagnostic selection rule or guarantee token counts, confidentiality, or model effectiveness. Pin and validate the actual supported Node 24 version during any separately authorized implementation.
+
+## Proposed contract — not implemented
+
+- Format only the already admitted in-memory check result. Do not open receipt-supplied paths, raise process output limits, or change canonical raw evidence, candidate binding, or operation identity.
+- Keep standard output and standard error separate and labeled. For each nonempty approved stream, retain an initial and final segment within one fixed total serialized-diagnostic-payload cap, counting labels, omission markers, and JSON escaping. A short stream fits intact; deterministic unused allowance may flow to the other stream. Choose and document the allocation and cap before coding. Do not treat the old 6,000 code units as a byte limit.
+- Measure shown and omitted UTF-8 bytes from the decoded stream strings available to the formatter. Preserve Unicode scalar values at clipping boundaries, including supplementary characters; do not duplicate overlapping head and tail segments. Since process output has already been decoded, this does not reconstruct the original bytes when invalid UTF-8 was replaced upstream.
+- Record the formatter version and, for approved input after policy filtering, UTF-8 byte counts for available stream text and shown and omitted retained bytes. Stream labels, availability and counters are diagnostic metadata governed by the same destination policy; do not expose lengths for excluded material. Also record whether process capture exceeded its ceiling. Count only text available after filtering; never infer total child-emitted bytes. Mark capped or otherwise incomplete process capture explicitly.
+- **Before implementation, define and approve a per-destination diagnostic-input and disclosure policy. Only approved inputs may reach selection; missing or uncertain policy blocks export of newly exposed prefixes.** This is an unresolved prerequisite, not a claim that an existing redactor or export policy is implemented. Apply the chosen policy before selecting text, and retain explicit filtered or incomplete state.
+- Frame the excerpt as untrusted diagnostic data. A head-and-tail formatter is not redaction, private-grader isolation, prompt-injection protection, or a way to grant authority. Do not add raw absolute paths, arbitrary reader handles, or automatic recall authority.
+- Keep exit, timeout, stop, launch, output-limit, check ordering, and not-run facts independent of the excerpt. A pass result adds no diagnostic. Formatter failure reports unavailable feedback while preserving the original verification outcome and candidate identity; it does not reserve a call or trigger a retry. Diagnostic text never becomes argv or policy.
+- Add a versioned field and one shared projection for automatic repair and explicitly admitted correction. Preserve historical `failureTail` values and receipts. Define which field new consumers use, label any legacy fallback honestly, and avoid serializing duplicate old and new diagnostics into a prompt. Do not rewrite historical state or accepted schemas.
+
+## Ticket refinement and complete remaining effort
+
+**Existing T1 ticket, with reuse in T3 correction export.** Status: proposed design refinement; approved for documentation only. Implementation and acceptance fixtures are `PROPOSED_NOT_RUN`. Source evidence is the pinned code table above; the paper is contextual motivation only. Expected benefit hypothesis: access to the first error and final summary from both approved streams may reduce owner reconstruction and some misdirected repairs. Frequency, repair quality, elapsed-time effect, and token or call savings are unknown. The hypothesis is about information fidelity at a chosen bound, not demonstrated efficiency.
+
+**Full remaining effort:** qualitatively small to medium for this projection and both consumers; no defensible numeric estimate is available. Include settling the disclosure inputs, cap, allocation, and version; implementing Unicode-safe formatting and serialized accounting; threading the versioned result through verification, automatic repair, and corrective-admission mapping; preventing duplicate prompt serialization; preserving old state; adding meaningful offline fixtures; inspecting the exact diff; updating contracts and operations text; and obtaining maintainer review. Future implementation checks require separate execution authorization. Broader T1 environment-profile work and T3 publication-policy work remain separate obligations; this refinement does not complete either ticket.
+
+**Dependencies:** existing process/check result facts; an approved T1/T3 diagnostic disclosure decision; compatibility with correction admission and retained evidence. R1–R6 completion and a benchmark baseline are not dependencies for specifying this bounded projection. An immutable reference, if later needed, should reuse R3/A2 identity; a new artifact reader is outside the first slice.
+
+**Blockers:** implementation authorization; the total serialized bound and allocation; the approved per-destination input policy; and agreement on legacy result compatibility. No host capability probe, live provider call, model download, held benchmark, or Herdr/Gelt/Pith work is needed to resolve this research decision.
+
+**Proposed acceptance fixtures — all `PROPOSED_NOT_RUN`:**
+
+1. Synthetic early standard-output error, long output noise, and a distinct final summary: both useful regions survive with exact omission counts and a fixed serialized bound.
+2. Both streams long with separately marked heads and tails: all four markers survive, labels remain correct, and neither stream displaces the other; no cross-stream chronology is implied.
+3. Empty, short, exact-boundary, and overlapping segments: short text stays intact, segments do not duplicate, and omission markers appear only when content is omitted.
+4. Multibyte and supplementary characters at clipping boundaries, plus JSON-escaped control characters: output remains valid and the cap applies after intended serialization.
+5. Timeout, cancellation, launch error, output-limit excess, and truncated capture: flags and failed status stay unchanged; the excerpt never claims complete emitted output; later checks remain not run.
+6. Pass result and formatter failure: pass adds no diagnostic; failure reports unavailable feedback while preserving the result and candidate identity, with no additional reservation or retry.
+7. Automatic repair and admitted correction: both receive the same versioned projection; old persisted `failureTail` remains readable and unchanged; prompts contain no duplicate old/new text.
+8. Inert instruction-like, secret-shaped, and private-grader markers: excluded inputs are blocked before clipping, and diagnostic text cannot change commands, scope, budgets, or gates. This tests deterministic policy behavior only; it cannot prove model immunity.
+
+## Runner-up, assumption, and stop condition
+
+The runner-up is further failed-output retention or recall integration under R3/A2. It may improve provenance, but it adds reader, identity, and export compatibility already partly covered by recent delivery work and does not address the current repair-text bottleneck as directly. Reuse delivered evidence facilities; do not create another reader in this slice.
+
+The decisive assumption is that the next useful planning decision concerns loss of actionable, approved diagnostics rather than missing raw evidence. Source establishes the lossy projection; it does not establish how often this matters. If the disclosure policy cannot approve newly visible prefixes, or owner evidence shows complete receipts are the recurring bottleneck, defer this refinement and resolve that prerequisite. Stop research at this contract and fixture set; the next step needs separate implementation scope and authorization. Preserve the execution holds and the committed roadmap order.

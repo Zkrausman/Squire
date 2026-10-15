@@ -30,6 +30,8 @@ The design work is documented. R1 process inventory and fencing prerequisites, t
 
 10. **Make trust and disclosure boundaries explicit (T0-T3).** Document the trusted-owner host-process limit, then separate verifier environments and diagnostic authority, constrain R3 artifact readers/collectors and review destination-specific repair/PR/owner exports. Reuse P-series profiles, A2 references and O-series projections. Gate: inert synthetic markers and wrong-path/link fixtures cannot silently cross the declared boundary; no claim of hostile-code isolation, secret-free output or prompt-injection immunity. These controls and fixtures remain proposed.
 
+The [bounded verification failure-feedback refinement](../research/factory-verification-feedback.md) records a 15 October 2026 source check at [fe87da7](https://github.com/Zkrausman/Squire/commit/fe87da73798d327ac3557d2d245146c6dd12ef3f). It narrows one T1 repair-diagnostic projection, reused by T3's explicit correction export, and is distinct from delivered terminal status, A3 declared inputs, bounded receipt reading, and passive inspect-delivery work in PRs 133–138. It remains a proposed design: implementation and all acceptance fixtures are `PROPOSED_NOT_RUN`, disclosure-policy and compatibility decisions remain open, and this work does not change the committed recovery → preflight → accepted-delivery outcome order.
+
 Detailed dependencies, negative cases and unresolved choices:
 - [Recovery, artifact retention and delivery receipts](../research/factory-recovery.md)
 - [Acceptance, visual evidence and controlled comparisons](../research/factory-acceptance.md)
