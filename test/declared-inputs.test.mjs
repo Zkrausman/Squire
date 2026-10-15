@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, open, realpath, rm, symlink, link, writeFile, lstat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { digest, validateDeclaredInputs, validateExecution, MAX_DECLARED_INPUT_FILE_BYTES, MAX_DECLARED_INPUT_TOTAL_BYTES } from '../src/contracts.mjs';
+import { digest, validateDeclaredInputs, validateExecution, MAX_DECLARED_INPUT_TOTAL_BYTES } from '../src/contracts.mjs';
 import { verifyDeclaredInputs } from '../src/declared-inputs.mjs';
 import { assertCriterionDefinitions } from '../src/criterion-evidence.mjs';
 
@@ -122,14 +122,23 @@ test('managed-root overlap is rejected symmetrically, including filesystem root'
   await assert.rejects(verifyDeclaredInputs(manifestFor('/', 'tmp/fixture', content), f.project), { code: 'criterion_inputs_changed' });
 });
 
-test('per-file and aggregate size ceilings are checked before opening any content', async t => {
-  const f = await dirs(t), oversized = Buffer.alloc(MAX_DECLARED_INPUT_FILE_BYTES + 1, 7);
-  await writeFile(path.join(f.inputs, 'oversized.bin'), oversized);
+test('independent per-file boundary accepts 1,048,576 bytes and rejects 1,048,577 before opening', async t => {
+  const f = await dirs(t), exact = Buffer.alloc(1_048_576, 7), oversized = Buffer.alloc(1_048_577, 7);
   const openCalls = { count: 0 };
   const io = { open: async (...args) => { openCalls.count++; return open(...args); }, lstat, realpath };
+  await writeFile(path.join(f.inputs, 'exact.bin'), exact);
+  assert.equal(await verifyDeclaredInputs(manifestFor(f.inputs, 'exact.bin', exact), f.project, io), true);
+  assert.equal(openCalls.count, 1);
+
+  openCalls.count = 0;
+  await writeFile(path.join(f.inputs, 'oversized.bin'), oversized);
   await assert.rejects(verifyDeclaredInputs(manifestFor(f.inputs, 'oversized.bin', oversized), f.project, io), { code: 'criterion_inputs_changed' });
   assert.equal(openCalls.count, 0);
+});
 
+test('aggregate size ceiling is checked before opening any content', async t => {
+  const f = await dirs(t), openCalls = { count: 0 };
+  const io = { open: async (...args) => { openCalls.count++; return open(...args); }, lstat, realpath };
   const bytes = Buffer.alloc(1024 * 1024, 9), files = [];
   for (let i = 0; i < 5; i++) {
     const name = `bounded-${i}.bin`; await writeFile(path.join(f.inputs, name), bytes);
