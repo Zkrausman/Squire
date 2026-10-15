@@ -4,6 +4,18 @@ A3 builds on the shipped A2 producer and passive inspector. Owner-supplied `exec
 
 A `trusted-inline-node` binding uses `path: null` and the SHA-256 returned by `digest(checkDefinition)` for frozen `node -e CODE` or `node --input-type=module -e CODE` argv. A `trusted-node-file` binding names the exact absolute Node script argv path outside the managed project root and the file's raw SHA-256. The controller rejects aliases, candidate-relative/controlled scripts, nonregular or oversized files and changed bytes; definitions are checked before dispatch and again when resolving observations. Trusted files are bounded to 1 MiB. These are owner-reviewed definitions, not automatic guarantees of oracle quality, immutable imported dependencies or hostile same-user isolation. Required oracle dependencies must remain independently controlled by the owner.
 
+Version 2 may optionally include an owner-declared `declaredInputs` manifest with `version: 1`, a canonical absolute `root`, and 1–32 `{path, sha256}` entries. Each listed file is limited to 1 MiB and the aggregate to 4 MiB. The controller rejects hidden or nonnormalized relative paths, credential/control roots, overlap with the managed project, symlinks, aliases, nonregular files, hard links, denied reads and changed bytes. It checks only listed files using bounded no-follow reads; it does not discover, import or execute them. Verification runs before worker dispatch and again during current candidate and delivered proof resolution. The existing execution contract digest binds the complete manifest to A2 observations. Opt-in proof and accepted-criteria projections add `oracleAssurance` with the label `declared inputs verified`, the manifest digest, and `dependencyCoverage` and `loaderEnvironment` both set to `UNKNOWN`. The owner's inventory relevance and completeness assumptions remain owner-reviewed; unlisted helpers/data, dynamic loads, runtime and effective loader environment remain unknown. Omitting the manifest preserves the entry-only projection exactly, and planner/version-1 authority is unchanged. See the [frozen A3 contract](research/a3-declared-input-contract.md) for exact shape and validation rules.
+
+For example, this is the optional field within an owner-supplied version-2 execution contract; replace the sample root and digest with the canonical directory and bytes you reviewed:
+
+```json
+"declaredInputs": {
+  "version": 1,
+  "root": "/srv/squire-owner-inputs",
+  "files": [{ "path": "fixtures/math.txt", "sha256": "<64 lowercase hex characters>" }]
+}
+```
+
 Passing configured checks produce ordinary A2 immutable manifests. Version-2 proof uses only verified current candidate/tree, contract/correction, check-policy, artifact and registered-process identities. Each admissible observation is identified as `MANIFEST_UUID:CHECK_INDEX`. Failed, NOTRUN, missing, omitted, altered or incompatible observations cannot satisfy a criterion. Fresh version-2 review adds `version: 2` and `observationIds` on each checklist result; persuasive prose or unknown/unmapped IDs cannot pass. The runtime receives the schema from the controller's frozen review contract. The same implementation-session rejection remains in force.
 
 The controller re-resolves proof before review, after review and through publication/CI/merge. Repairs, normalization and candidate/base changes invalidate the current projection; immutable historical observations remain retained. Authorized correction criteria must carry the same version-2 mapping fields and use the frozen ownership definitions. Delivery retains existing exact-head checks, review, CI, ancestry/tree and postmerge gates.

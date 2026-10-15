@@ -4,6 +4,7 @@ import { open, lstat, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { Blocker, digest } from './contracts.mjs';
 import { inspectChecks } from './inspect-checks.mjs';
+import { verifyDeclaredInputs } from './declared-inputs.mjs';
 
 const blocked = (code, message) => new Blocker(code, message);
 const statKey = s => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs, s.nlink].join(':');
@@ -54,6 +55,7 @@ export async function assertCriterionDefinitions(execution, service, projectRoot
       }
     }
   }
+  if (Object.hasOwn(execution, 'declaredInputs')) await verifyDeclaredInputs(execution.declaredInputs, projectRoot);
 }
 
 export async function resolveCriterionEvidence(store, projectId, ticketId, phase = 'candidate-verification') {
@@ -82,10 +84,15 @@ export async function resolveCriterionEvidence(store, projectId, ticketId, phase
     });
     return { id: item.id, kind: 'configured-check', checks: item.checks, observationIds: observations };
   });
+  const oracleAssurance = execution.declaredInputs ? {
+    label: 'declared inputs verified', manifestDigest: digest(execution.declaredInputs),
+    dependencyCoverage: 'UNKNOWN', loaderEnvironment: 'UNKNOWN'
+  } : undefined;
   // A journal cross-link is a separate diagnostic. Current command identities,
   // bytes and process links are independently verified; no old row is adopted.
   return { version: 2, phase, headSha: selected.headSha, treeSha: selected.treeSha,
     contractDigest: report.identity.contractDigest, correctionAdmission: report.identity.correctionAdmission,
     policyDigest: report.identity.policyDigest, reference: selected.checkEvidence.reference, criteria,
+    ...(oracleAssurance ? { oracleAssurance } : {}),
     checkpointLink: report.checkpointLink, limitations: ['trusted owner-host checks; no hostile-code isolation or process-tree settlement', 'configured-command proof does not establish browser/native or human acceptance'] };
 }

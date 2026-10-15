@@ -16,6 +16,32 @@ export function identifier(value, label = 'id') { text(value, label, 80); requir
 function integer(value, label, min, max) { requireValue(Number.isSafeInteger(value) && value >= min && value <= max, `${label} must be ${min}..${max}`); }
 const executionFields = ['version', 'outcome', 'ownedPaths', 'contextPaths', 'invariants', 'checklist', 'stopWhen', 'maxAttempts'];
 const checklistFields = ['id', 'assertion', 'steps', 'evidence'];
+export const MAX_DECLARED_INPUT_FILE_BYTES = 1024 * 1024;
+export const MAX_DECLARED_INPUT_TOTAL_BYTES = 4 * 1024 * 1024;
+const protectedInputRootComponents = new Set(['.ssh', '.aws', '.gnupg', '.codex', '.agents', '.git']);
+const declaredInputFailure = () => requireValue(false, 'Invalid declaredInputs manifest');
+export function validateDeclaredInputs(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return declaredInputFailure();
+  const fields = Object.keys(value);
+  if (fields.length !== 3 || fields.some(field => !['version', 'root', 'files'].includes(field)) ||
+      value.version !== 1 || typeof value.root !== 'string' || value.root.length < 1 || value.root.length > 4096 || value.root.includes('\0') ||
+      !path.posix.isAbsolute(value.root) || path.posix.resolve(value.root) !== value.root || path.posix.normalize(value.root) !== value.root ||
+      value.root.split('/').some(component => protectedInputRootComponents.has(component.toLowerCase())) ||
+      !Array.isArray(value.files) || value.files.length < 1 || value.files.length > 32) return declaredInputFailure();
+  const paths = new Set();
+  for (const file of value.files) {
+    if (!file || typeof file !== 'object' || Array.isArray(file)) return declaredInputFailure();
+    const fileFields = Object.keys(file);
+    if (fileFields.length !== 2 || fileFields.some(field => !['path', 'sha256'].includes(field)) ||
+        typeof file.path !== 'string' || file.path.length < 1 || file.path.length > 500 || file.path.includes('\0') ||
+        file.path.includes('\\') || file.path.startsWith('/') || /^[a-zA-Z]:/.test(file.path) || /[:*?"<>|]/.test(file.path) ||
+        path.posix.normalize(file.path) !== file.path || file.path.endsWith('/') ||
+        file.path.split('/').some(component => !component || component === '.' || component === '..' || component.startsWith('.')) ||
+        typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256) || paths.has(file.path)) return declaredInputFailure();
+    paths.add(file.path);
+  }
+  return value;
+}
 // Provider JSON-schema regexes do not support lookaround. Strict whitespace,
 // NUL and relative-path semantics remain enforced by controller validation.
 const nonblankTextSchema = maxLength => ({ type: 'string', minLength: 1, maxLength });
@@ -31,9 +57,10 @@ function boundedTextArray(value, label, min, max, itemMax) {
   value.forEach(item => text(item, label, itemMax));
 }
 export function validateExecution(execution) {
-  const fields = execution?.version === 2 ? [...executionFields, 'checkOwnership'] : executionFields;
+  const fields = execution?.version === 2 ? [...executionFields, 'checkOwnership', 'declaredInputs'] : executionFields;
   keys(execution, fields, 'ticket execution');
-  for (const field of fields) requireValue(Object.hasOwn(execution, field), `Missing ticket execution field: ${field}`);
+  const requiredFields = execution?.version === 2 ? [...executionFields, 'checkOwnership'] : executionFields;
+  for (const field of requiredFields) requireValue(Object.hasOwn(execution, field), `Missing ticket execution field: ${field}`);
   requireValue([1, 2].includes(execution.version), 'Unsupported ticket execution version');
   text(execution.outcome, 'execution outcome', 2000);
   requireValue(Array.isArray(execution.ownedPaths) && execution.ownedPaths.length >= 1 && execution.ownedPaths.length <= 50, 'ownedPaths must contain 1..50 paths');
@@ -74,6 +101,7 @@ export function validateExecution(execution) {
       else { text(owner.path, 'trusted check path', 4096); requireValue(path.isAbsolute(owner.path), 'Trusted check file must be absolute'); }
     }
     for (const criterion of execution.checklist) requireValue(criterion.checks.every(name => owners.has(name)), 'Criterion requires frozen check ownership');
+    if (Object.hasOwn(execution, 'declaredInputs')) validateDeclaredInputs(execution.declaredInputs);
   }
   text(execution.stopWhen, 'stopWhen', 2000);
   integer(execution.maxAttempts, 'maxAttempts', 1, 4);
