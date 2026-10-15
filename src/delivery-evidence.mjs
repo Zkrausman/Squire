@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { mkdir, lstat, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, lstat, open } from 'node:fs/promises';
 import { randomUUID, createHash } from 'node:crypto';
 import { Blocker, digest, isSha } from './contracts.mjs';
 import { producerContext } from './producer-context.mjs';
@@ -10,6 +11,7 @@ const LIMIT = 128 * 1024;
 const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const invalid = () => new Blocker('delivery_evidence_incomplete', 'Delivery evidence is incomplete; no replay or settlement is authorized');
+const readerIO = Object.freeze({ lstat, open });
 async function directory(root, scopeId, create = false) {
   if (!uuid(scopeId)) throw invalid();
   let current = root;
@@ -20,6 +22,27 @@ async function directory(root, scopeId, create = false) {
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw invalid();
   }
   return current;
+}
+async function readDirectoryIdentity(file, io) {
+  const stat = await io.lstat(file, { bigint: true });
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw invalid();
+  return { dev: stat.dev, ino: stat.ino, mode: stat.mode };
+}
+async function readDirectoryIdentities(root, scopeId, io) {
+  const evidence = path.join(root, 'delivery-evidence');
+  const scope = path.join(evidence, scopeId);
+  return [await readDirectoryIdentity(evidence, io), await readDirectoryIdentity(scope, io)];
+}
+function sameDirectoryIdentities(left, right) {
+  return left.length === right.length && left.every((identity, index) =>
+    identity.dev === right[index].dev && identity.ino === right[index].ino && identity.mode === right[index].mode);
+}
+function regularSingleLink(stat, bytes) {
+  return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size === BigInt(bytes);
+}
+function sameFileMetadata(left, right) {
+  return ['dev', 'ino', 'mode', 'nlink', 'uid', 'gid', 'size', 'mtimeNs', 'ctimeNs']
+    .every(key => left[key] === right[key]);
 }
 function binding(state, ticket, service, scopeId) {
   const current = state.tickets.find(t => t.spec.id === ticket.spec.id);
@@ -62,13 +85,36 @@ export async function recordDeliveryEvidence(root, ticket, service, fact) {
 }
 // Integrity resolution is read-only. Facts, including successes, never grant
 // dispatch, retry, debit, merge, adoption or producer-fence release authority.
-export async function readDeliveryEvidence(root, ref, expected = {}) {
+export async function readDeliveryEvidence(root, ref, expected = {}, io = readerIO) {
   try {
     if (!ref || !uuid(ref.scopeId) || !uuid(ref.file?.slice(0, -5)) || !ref.file.endsWith('.json') ||
         !Number.isSafeInteger(ref.bytes) || ref.bytes <= 0 || ref.bytes > LIMIT || !/^[a-f0-9]{64}$/.test(ref.sha256)) throw invalid();
-    const file = path.join(await directory(root, ref.scopeId), ref.file), stat = await lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== ref.bytes) throw invalid();
-    const bytes = await readFile(file);
+    if (!io || typeof io.lstat !== 'function' || typeof io.open !== 'function' || !constants.O_NOFOLLOW) throw invalid();
+    const directoriesBefore = await readDirectoryIdentities(root, ref.scopeId, io);
+    const file = path.join(root, 'delivery-evidence', ref.scopeId, ref.file);
+    const pathBefore = await io.lstat(file, { bigint: true });
+    if (!regularSingleLink(pathBefore, ref.bytes)) throw invalid();
+    const handle = await io.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let bytes;
+    try {
+      const handleBefore = await handle.stat({ bigint: true });
+      if (!regularSingleLink(handleBefore, ref.bytes) || !sameFileMetadata(pathBefore, handleBefore)) throw invalid();
+      // The allocation and every read are bounded by the validated reference size.
+      bytes = Buffer.alloc(ref.bytes);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const remaining = bytes.length - offset;
+        const result = await handle.read(bytes, offset, remaining, offset);
+        if (!result || !Number.isInteger(result.bytesRead) || result.bytesRead <= 0 || result.bytesRead > remaining) throw invalid();
+        offset += result.bytesRead;
+      }
+      const handleAfter = await handle.stat({ bigint: true });
+      const pathAfter = await io.lstat(file, { bigint: true });
+      if (!regularSingleLink(handleAfter, ref.bytes) || !regularSingleLink(pathAfter, ref.bytes) ||
+          !sameFileMetadata(pathBefore, handleAfter) || !sameFileMetadata(handleAfter, pathAfter)) throw invalid();
+      const directoriesAfter = await readDirectoryIdentities(root, ref.scopeId, io);
+      if (!sameDirectoryIdentities(directoriesBefore, directoriesAfter)) throw invalid();
+    } finally { await handle.close(); }
     if (bytes.length !== ref.bytes || hash(bytes) !== ref.sha256) throw invalid();
     const value = JSON.parse(bytes);
     if (value.version !== 1 || value.identity?.scopeId !== ref.scopeId ||
