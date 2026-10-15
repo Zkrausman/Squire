@@ -33,6 +33,7 @@ The design work is documented. R1 process inventory and fencing prerequisites, t
 Detailed dependencies, negative cases and unresolved choices:
 - [Recovery, artifact retention and delivery receipts](../research/factory-recovery.md)
 - [Acceptance, visual evidence and controlled comparisons](../research/factory-acceptance.md)
+- [A3 oracle assurance](../research/a3-oracle-assurance.md): entry-definition hashes do not attest dependency closures; bounded owner-declared input binding remains proposed and changes no current acceptance or execution hold.
 - [Execution-boundary admission and bounded capability probes](../research/factory-runtime-preflight.md)
 - [Operator visibility, exact decisions and quiet notifications](../research/factory-operator-workflow.md)
 - [Trust, privacy and safe disclosure boundaries](../research/factory-trust-boundaries.md)
