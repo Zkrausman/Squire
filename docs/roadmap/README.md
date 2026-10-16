@@ -34,6 +34,7 @@ The [bounded verification failure-feedback refinement](../research/factory-verif
 
 Detailed dependencies, negative cases and unresolved choices:
 - [Recovery, artifact retention and delivery receipts](../research/factory-recovery.md)
+- [SQF04 authority evidence and anchor/worker contract](../research/sqf04-authority-evidence-contract.md): planning-only authority/provenance contract. The current adapter still lacks an authenticated authority producer and protected anchor/worker transition; host availability is unevaluated, and there is no runtime admission.
 - [Acceptance, visual evidence and controlled comparisons](../research/factory-acceptance.md)
 - [A3 oracle assurance](../research/a3-oracle-assurance.md): entry-definition hashes do not attest dependency closures. [Bounded declared-input verification](../research/a3-declared-input-contract.md) is opt-in; complete dependency and loader coverage remain UNKNOWN. Existing acceptance and execution holds remain.
 - [Execution-boundary admission and bounded capability probes](../research/factory-runtime-preflight.md)
