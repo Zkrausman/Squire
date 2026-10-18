@@ -46,9 +46,15 @@ Inspection creates no source database/schema, migrations, checkpoints, leases, e
 
 For the selected ticket's retained delivery receipt chain, run `node bin/squire.mjs inspect-delivery project.json TICKET_ID`. This is a separate passive projection with its own receipt, identity, and output limits; see [passive delivery receipt inspection](inspect-delivery.md).
 
-`pause` takes effect at the next boundary; Ctrl+C cancels local jobs and records pause. `resume --retry`, when no producer scope is held, can re-enter verification or postmerge checks after the owner resolves a blocker. Budget ceilings remain durable; changing config for an existing project ID is rejected. Use a new explicitly authorized project when changing scope or budget, preserving the old evidence. Quota waits are automatic and charge neither repair nor rebase counters, but dispatched model calls count against the total call ceiling.
+`pause` takes effect at the next boundary; Ctrl+C cancels local jobs and records pause. `resume --retry`, when no producer scope is held, can re-enter verification or postmerge checks after the owner resolves a blocker. Budget ceilings remain durable. Ordinary initialization rejects changed configuration for an existing project, while separate guarded operations support model-routing changes and a one-time agent-call-cap increase under their own pause and settlement requirements. These paths do not authorize other scope/check changes or clear a producer hold. Use only the applicable explicit authority for changed scope/checks; never use a new project to evade an unresolved producer. Quota waits are automatic and charge neither repair nor rebase counters, but dispatched model calls count against the total call ceiling.
 
 Shipping authorizes merges, not production deployment. Postmerge failure requires owner reconciliation because the branch already contains that commit.
+
+### Project acceptance after ticket shipment
+
+All tickets being `shipped` starts integrated project acceptance; it does not itself complete the project. For each configured service without a reusable passing result at the observed branch head, the controller materializes that head, runs setup, service checks and optional acceptance commands, and checks for a clean matching checkout. A retained passing service result at the same head skips fresh setup, checks and checkout-identity validation. Before recording completion, the controller rereads the service heads and refuses changed-head evidence. These sequential observations are not an atomic snapshot across repositories or continuous monitoring after completion.
+
+Passing service records do not clear an unresolved acceptance producer. Completion and producer closure must persist successfully; an interrupted or failed acceptance path can remain fenced even with passing retained checks. `resume --retry` checks producer scopes before changing retry state and cannot clear that fence. Preserve the existing state and holds. Existing guarded routing and call-cap amendments remain subject to their own preconditions and producer-scope checks; they do not provide a retry or new-project workaround. See the [project acceptance decision](research/project-acceptance-decisions.md) for the distinction between ticket evidence, configured integrated checks and actual application acceptance.
 
 ## Control API version 1
 
