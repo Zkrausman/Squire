@@ -18,7 +18,15 @@ Use the existing SQLite store, process supervisor, workspace and delivery adapte
 
 [Delivery interruption and postmerge decisions](delivery-reconciliation-decisions.md) distinguishes unknown remote effects, verified merges, postmerge failures and unresolved producers. It describes source behavior without authorizing a recovery or retry.
 
+[Policy amendments and retained evidence](policy-amendment-evidence.md) records the source decision on scoped routing invalidation and the distinct identity scopes used by delivery inspection and criterion evidence; proposed negative cases remain unrun.
+
+[Retained delivery-history envelope](delivery-history-envelope.md) explains how routine observations can exceed passive inspection bounds and why an incomplete read does not establish delivery failure.
+
 For choosing what to work on next, use the [value/effort selection method and qualitative shortlist](factory-value-prioritization.md). Rank complete eligible outcomes at decision boundaries, include full remaining verification and owner effort, and stop research once the next decision is supported. This planning rule changes neither the dependencies nor the execution hold below.
+
+The [project acceptance decision](project-acceptance-decisions.md) documents that shipping every ticket starts configured integrated checks but does not establish project completion or application acceptance; its operational outcome remains unestablished.
+
+Four source-based documentation decisions record existing semantics and safe reporting boundaries: the [call-reservation ledger](call-reservation-ledger.md) distinguishes committed reservations, logical attempts and reported usage; [pause/admission boundaries](pause-admission-boundaries.md) document pause acknowledgment separately from cancellation and settlement; [pre-merge policy capabilities](premerge-policy-capabilities.md) map adapter observations against server-enforced policy; and the [trace reportability contract](trace-reportability-contract.md) limits summary claims to supplied events, separates those claims from complete trace coverage, and links the companion [empty comparison scaffold](../benchmarks/trace-report-scaffold.md). These pages describe source and fixture definitions without asserting an actual runtime, benchmark or acceptance result; proposed validation of uncovered negative cases and stronger automated enforcement remain separately scoped. The existing execution and benchmark holds are unchanged.
 
 ## Evidence vocabulary
 
