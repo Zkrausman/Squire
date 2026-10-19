@@ -1,10 +1,10 @@
-# SQ-02 new native acceptance: operation specification only
+# SQ-02 new native acceptance: source harness, execution held
 
-**Unexecuted. No runtime authorization or native qualification is claimed.** This is the concrete next operation scope for a later specific execution decision, not an executable admission or a claim that its cleanup precondition is already established. The exact harness command and source hash must be bound after a concrete qualified control implementation exists; none is fabricated here.
+**Unexecuted. No runtime authorization or native qualification is claimed.** This is the concrete next operation scope for a later specific execution decision, not an executable admission or a claim that its cleanup precondition is already established. The source harness is `test/support/direct-child-acceptance.mjs`, exported as `runDirectChildAcceptance({executable, jobs, port, clock})`. It has no CLI, default native port or default clock. Its exact activation command and qualified control implementation remain unselected; source availability does not admit execution.
 
 ## Proposed operation
 
-Run at most two new direct-child correctness cases against the rebuilt Node launcher and execution wrapper, stopping before the second case if the first fails. Use the same declared supported Node24 executable; do not substitute a binary after denial. Each child uses a new admitted job identity and owned temporary directory, an explicit minimal environment (TMPDIR/LANG/TZ), no shell, and stdio `[ignore, ignore, ignore]`. No Node options, input payload, model, credential, network, artifact export or provider is involved.
+Run at most two new direct-child correctness cases against the rebuilt Node launcher and execution wrapper, stopping before the second case if the first fails. Use the same declared supported Node24 executable; do not substitute a binary after denial. Each child uses a new admitted job identity and owned temporary directory, an explicit minimal environment (TMPDIR/LANG/TZ), no shell, and stdio `[ignore, ignore, ignore]`. The only Node option is the fixed `-e` program selector; no additional options, input payload, model, credential, network, artifact export or provider is involved.
 
 | Case | Exact inert child program | Requested check |
 | --- | --- | --- |
@@ -26,3 +26,11 @@ Any actual denial, signal error, unqualified observation, timeout or missing evi
 ## Exact source successor
 
 Preserve Section2 Step5's full spawned-descendant custody. Select and qualify a concrete ownership/observation/control mechanism that can supply the current group interface truthfully. PGID absence and leader exit alone cannot supply full coverage; numeric token matching alone cannot provide atomic signal safety. No mechanism is selected or claimed sufficient here. Meanwhile SQ-04 depends only on completed SQ-01 and advances as physical local verification source with deterministic file fixtures. SQ-02 remains incomplete.
+
+## Source and fake-test contract
+
+The harness fixes both program strings, budgets, environment keys and ignored streams. Callers must supply distinct admitted job identities/scopes and explicit injected execution and clock ports. It validates the narrow job budgets before launch, runs cases sequentially and stops before the second after failure. Its frozen result contains case metadata only and always states `NOT_ESTABLISHED_BY_HARNESS` for runtime qualification. It emits no terminal JobRecord or artifact success.
+
+The three-second race bounds the harness result, not native process liveness. On expiry it reports missing evidence and does not dispatch an alternate cleanup action. An already active wrapper can remain pending; independently qualified external bounded cleanup is a precondition, not supplied by this timer. There is no retry or recovery path.
+
+`test/direct-child-acceptance.test.mjs` uses injected fake processes and a simulated clock to check sequence, exact invocation, exit mismatch, unknown coverage, signal denial, spawn failure, overall timeout and prelaunch scope rejection. These tests launch no native child and establish neither full descendant custody nor runtime authorization.
