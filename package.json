@@ -1,6 +1,6 @@
 {
   "name": "squire",
-  "version": "0.2.0-sq02-source",
+  "version": "0.2.0-sq04-source",
   "private": true,
   "type": "module",
   "engines": {"node": ">=24 <25"},
@@ -9,9 +9,11 @@
     "./job-record": "./src/job-record.mjs",
     "./lifecycle": "./src/lifecycle.mjs",
     "./execution-wrapper": "./src/execution-wrapper.mjs",
-    "./node-process-port": "./src/node-process-port.mjs"
+    "./node-process-port": "./src/node-process-port.mjs",
+    "./artifact-verifier": "./src/artifact-verifier.mjs",
+    "./owned-group": "./src/owned-group.mjs"
   },
   "scripts": {
-    "test": "node --test --test-isolation=none test/job-spec.test.mjs test/job-record.test.mjs test/lifecycle.test.mjs test/execution-wrapper.test.mjs"
+    "test": "node --test --test-isolation=none test/job-spec.test.mjs test/job-record.test.mjs test/lifecycle.test.mjs test/execution-wrapper.test.mjs test/artifact-verifier.test.mjs test/owned-group.test.mjs"
   }
 }

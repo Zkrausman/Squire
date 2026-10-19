@@ -1,7 +1,8 @@
 import {validateJobSpec, closed, object, own, fail, text, nonnegative, artifactPath} from './job-spec.mjs';
 
 export const TERMINAL_STATUSES = Object.freeze(['SUCCESS', 'FAILED', 'CANCELED']);
-export const SETTLEMENT_STATUSES = Object.freeze(['CLEAN', 'ORPHAN_KILLED', 'DIRTY_LEAK']);
+export const OBSERVED_SETTLEMENT_STATUSES = Object.freeze(['CLEAN', 'ORPHAN_KILLED', 'DIRTY_LEAK']);
+export const SETTLEMENT_STATUSES = Object.freeze([...OBSERVED_SETTLEMENT_STATUSES, 'UNKNOWN']);
 export const USAGE_FIELDS = Object.freeze(['input', 'output', 'cache_read', 'thinking', 'total']);
 const required = ['job_id', 'reported_model', 'lifecycle_status', 'process_exit_code',
   'process_wall_ms', 'inference_time_ms', 'usage_tokens', 'artifact_witness', 'settlement_status'];
@@ -15,10 +16,11 @@ export function validateJobRecord(specification, input, observations) {
   if (observations.process_exit_code !== null && !Number.isSafeInteger(observations.process_exit_code)) fail('process_exit_code');
   if (input.process_exit_code !== observations.process_exit_code) fail('process_exit_code', 'observation_conflict');
   if (observations.process_group_allocated) {
-    if (observations.settlement_status === null) fail('settlement_status', 'unrepresentable_settlement');
-    if (!SETTLEMENT_STATUSES.includes(observations.settlement_status)) fail('settlement_status');
+    if (observations.settlement_status !== null && !OBSERVED_SETTLEMENT_STATUSES.includes(observations.settlement_status)) fail('settlement_status');
   } else if (observations.process_exit_code !== null || observations.settlement_status !== null) fail('pre_spawn_observations');
-  if (input.settlement_status !== observations.settlement_status) fail('settlement_status', 'observation_conflict');
+  // UNKNOWN is a fail-closed wire representation, never a positive cleanup observation.
+  const settlement = observations.process_group_allocated && observations.settlement_status === null ? 'UNKNOWN' : observations.settlement_status;
+  if (input.settlement_status !== settlement) fail('settlement_status', 'observation_conflict');
   if (input.job_id !== spec.job_id) fail('job_id');
   if (!text(input.reported_model)) fail('reported_model');
   if (!TERMINAL_STATUSES.includes(input.lifecycle_status)) fail('lifecycle_status');

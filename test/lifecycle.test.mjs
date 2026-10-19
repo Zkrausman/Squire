@@ -11,7 +11,7 @@ const settling = () => advance(verifying(), 'EVENT_ARTIFACTS_VERIFIED', {artifac
 const settlementEvents = ['EVENT_DESCENDANTS_OBSERVED_CLEAN', 'EVENT_DESCENDANTS_OBSERVED_ORPHAN_KILLED', 'EVENT_SETTLEMENT_LIMIT_EXCEEDED_LEAK'];
 const settlements = ['CLEAN', 'ORPHAN_KILLED', 'DIRTY_LEAK'];
 const terminal = () => advance(settling(), settlementEvents[0]);
-const finalInput = current => ({...record(), lifecycle_status: current.terminal_intent, process_exit_code: current.process_exit_code, settlement_status: current.settlement_status});
+const finalInput = current => ({...record(), lifecycle_status: current.terminal_intent, process_exit_code: current.process_exit_code, settlement_status: current.process_group_allocated && current.settlement_status === null ? 'UNKNOWN' : current.settlement_status});
 const emit = current => finalize(current, finalInput(current));
 
 test('immutable identity and deterministic success require verified artifacts and observed complete settlement', () => {
@@ -89,14 +89,20 @@ test('late zero and artifact events cannot restart verification or overwrite can
   assert.equal(emit(advance(canceled, settlementEvents[1])).record.lifecycle_status, 'CANCELED');
   assert.throws(() => advance(canceled, 'EVENT_PROCESS_EXIT_NONZERO', {process_exit_code: 8}), e => e.code === 'observation_conflict');
 });
-test('post-spawn observation failure fails closed and withholds unrepresentable record', () => {
+test('post-spawn observation failure emits approved UNKNOWN while preserving failure or cancellation', () => {
   for (const initial of [settling(), advance(running(), 'EVENT_USER_ABORT')]) {
     const end = advance(initial, 'EVENT_SETTLEMENT_OBSERVATION_FAILED');
     assert.equal(end.lifecycle_status, 'TERMINAL_SETTLEMENT'); assert.equal(end.settlement_status, null);
     assert.equal(end.terminal_intent, initial.terminal_intent === 'CANCELED' ? 'CANCELED' : 'FAILED');
-    for (const settlement_status of [null, ...settlements, 'UNKNOWN']) {
-      assert.throws(() => finalize(end, {...finalInput(end), settlement_status}), e => e.code === 'unrepresentable_settlement');
+    const done = emit(end);
+    assert.equal(done.record.settlement_status, 'UNKNOWN'); assert.equal(done.record.lifecycle_status, end.terminal_intent);
+    assert.equal(done.record.process_exit_code, end.process_exit_code);
+    for (const settlement_status of [null, ...settlements]) {
+      assert.throws(() => finalize(end, {...finalInput(end), settlement_status}), e => e.code === 'observation_conflict');
     }
+    assert.throws(() => finalize(end, {...finalInput(end), lifecycle_status: 'SUCCESS'}));
+    assert.throws(() => advance(done, settlementEvents[0]), e => e.code === 'illegal_transition');
+    assert.throws(() => { done.record.settlement_status = 'CLEAN'; }, TypeError);
   }
 });
 test('dirty leak forbids success and cannot erase a cancellation arriving before emission', () => {
@@ -123,4 +129,12 @@ test('malformed observations cannot mint success or change already returned stat
   assert.throws(() => advance(first, 'EVENT_PROCESS_SIGNAL_TERMINATED', {process_exit_code: 137}));
   assert.throws(() => advance(verifying(), 'EVENT_ARTIFACTS_VERIFIED', {artifact_witness: {}}));
   assert.equal(first.lifecycle_status, 'RUNNING'); assert.equal(first.terminal_intent, null);
+});
+test('cancellation before UNKNOWN emission wins without rewriting earlier final records', () => {
+  const unknown = advance(settling(), 'EVENT_SETTLEMENT_OBSERVATION_FAILED');
+  const failed = emit(unknown);
+  const canceled = emit(advance(unknown, 'EVENT_USER_ABORT'));
+  assert.equal(failed.record.lifecycle_status, 'FAILED'); assert.equal(failed.record.settlement_status, 'UNKNOWN');
+  assert.equal(canceled.record.lifecycle_status, 'CANCELED'); assert.equal(canceled.record.settlement_status, 'UNKNOWN');
+  assert.throws(() => advance(failed, 'EVENT_USER_ABORT'), e => e.code === 'illegal_transition');
 });
