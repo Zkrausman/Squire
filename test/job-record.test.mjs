@@ -48,7 +48,7 @@ test('JobRecord nullable observations are explicit and pre-spawn settlement alon
     const pre = {process_group_allocated: false, process_exit_code: null, settlement_status: null};
     assert.equal(validateJobRecord(spec(), input, pre).process_exit_code, null);
     assert.equal(JSON.parse(JSON.stringify(validateJobRecord(spec(), input, pre))).settlement_status, null);
-    assert.throws(() => validateJobRecord(spec(), input, {...pre, process_group_allocated: true}), e => e.code === 'unrepresentable_settlement');
+    assert.throws(() => validateJobRecord(spec(), input, {...pre, process_group_allocated: true}), e => e.code === 'observation_conflict');
     assert.throws(() => validateJobRecord(spec(), {...input, settlement_status: 'CLEAN'}, {...pre, settlement_status: 'CLEAN'}));
     const post = {...input, settlement_status: 'CLEAN'};
     assert.equal(validateJobRecord(spec(), post, {...pre, process_group_allocated: true, settlement_status: 'CLEAN'}).process_exit_code, null);
@@ -81,4 +81,16 @@ test('JobRecord freezes copies and error projection allows only metadata keys', 
   const hiddenInvalid = {};
   Object.defineProperty(hiddenInvalid, 'code', {value: {privatePayload: 'PRIVATE_FIXTURE'}});
   assert.throws(() => validateJobRecord(spec(), {...input, error_details: hiddenInvalid}));
+});
+test('approved UNKNOWN wire emission is fail-closed and separate from native null observations', () => {
+  for (const lifecycle_status of ['FAILED', 'CANCELED']) for (const process_exit_code of [null, 0, 7]) {
+    const observations = {process_group_allocated: true, process_exit_code, settlement_status: null};
+    const input = {...record(), lifecycle_status, process_exit_code, settlement_status: 'UNKNOWN'};
+    const result = validateJobRecord(spec(), input, observations);
+    assert.equal(result.settlement_status, 'UNKNOWN'); assert.equal(result.process_exit_code, process_exit_code);
+    assert.equal(result.lifecycle_status, lifecycle_status); assert.equal(Object.hasOwn(result, 'error_details'), false);
+    assert.throws(() => validateJobRecord(spec(), {...input, lifecycle_status: 'SUCCESS'}, observations));
+    assert.throws(() => validateJobRecord(spec(), input, {...observations, settlement_status: 'UNKNOWN'}));
+    assert.throws(() => validateJobRecord(spec(), input, {...observations, process_group_allocated: false}));
+  }
 });

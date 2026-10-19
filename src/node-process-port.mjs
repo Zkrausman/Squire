@@ -1,6 +1,7 @@
 import {spawn as nativeSpawn} from 'node:child_process';
 import {hrtime, platform} from 'node:process';
 import {closed, fail} from './job-spec.mjs';
+import {requireSignalGuard} from './owned-group.mjs';
 
 // Importing this module launches nothing. No implicit environment, shell, pipes or retry.
 // Required ownedGroup controls must establish identity and complete descendant coverage;
@@ -29,9 +30,8 @@ export function createNodeProcessPort(ownedGroup, operations = {spawn: nativeSpa
     return Object.freeze({pid, identity,
       observe: () => observe(group),
       sendSignal: (signal, observation) => {
-        if (!['SIGTERM', 'SIGKILL'].includes(signal) || observation.identity !== identity ||
-            observation.pgid !== pid || observation.job_id !== spec.job_id || observation.signal_safe !== true) fail('signal_target');
-        return send(group, signal, observation);
+        const accepted = requireSignalGuard(group, signal, observation);
+        return send(group, signal, accepted);
       },
       release() { released = true; child.removeListener('spawn', onSpawn); child.removeListener('exit', onExit); }
     });

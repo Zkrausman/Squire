@@ -242,3 +242,14 @@ test('malformed reentrant exit ends control before any further signal dispatch',
   assert.equal(result.settlement_status, null); assert.equal(result.termination_reason, 'control_failed');
   assert.equal(f.signals.length, 0);
 });
+test('incomplete coverage permits separately qualified safe signals but never proves clean settlement', async () => {
+  const f = fixture({observe({identity, live}) {
+    return {job_id: spec().job_id, pgid: 1234, identity, live_count: live, coverage_complete: false, signal_safe: true};
+  }});
+  f.spawn(); f.session.abort(); assert.deepEqual(f.signals, [{signal: 'SIGTERM', time: 0}]);
+  f.time.advance(5); assert.deepEqual(f.signals[1], {signal: 'SIGKILL', time: 5});
+  f.exit(null, 'SIGKILL'); f.setLive(0); f.time.advance(6);
+  const result = await f.session.result;
+  assert.equal(result.settlement_status, null); assert.equal(result.canceled, true);
+  assert.equal(result.failure_codes.includes('settlement_coverage_incomplete'), true);
+});

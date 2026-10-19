@@ -1,5 +1,6 @@
 import {validateJobSpec, closed, object, own, fail, text, nonnegative} from './job-spec.mjs';
 import {types} from 'node:util';
+import {captureGroupObservation, requireSignalGuard} from './owned-group.mjs';
 
 function dataArray(value, field) {
   if (types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) fail(field);
@@ -141,15 +142,13 @@ export function startProcess(specification, invocation, options) {
     if (time > stopDeadline) { failures.add('settlement_observation_late'); finish(null, 'shutdown_limit'); return; }
     let observed;
     try {
-      observed = handle.observe();
-      closed(observed, ['job_id', 'pgid', 'identity', 'live_count', 'coverage_complete', 'signal_safe'], [], 'owned_group_observation');
-      if (observed.job_id !== spec.job_id || observed.pgid !== pid || observed.identity !== handle.identity ||
-          !nonnegative(observed.live_count) || observed.coverage_complete !== true || typeof observed.signal_safe !== 'boolean') fail('owned_group_observation');
+      observed = captureGroupObservation({job_id: spec.job_id, pgid: pid, identity: handle.identity}, handle.observe());
     } catch { failures.add('settlement_observation_failed'); finish(null, 'observation_failed'); return; }
     if (completed || finishing) return;
     const observedAt = now();
     if (observedAt > stopDeadline) { failures.add('settlement_observation_late'); finish(null, 'shutdown_limit'); return; }
     if (observed.live_count === 0) {
+      if (!observed.coverage_complete) { failures.add('settlement_coverage_incomplete'); finish(null, 'observation_failed'); return; }
       if (exitValue !== null || observedAt >= stopDeadline) finish(termSent || killSent ? 'ORPHAN_KILLED' : 'CLEAN', stopReason);
       else schedule(Math.min(stopDeadline, observedAt + policy.poll_interval_ms));
       return;
@@ -159,6 +158,7 @@ export function startProcess(specification, invocation, options) {
     if (desired) {
       if (!observed.signal_safe) { failures.add('signal_ownership_unconfirmed'); finish(null, 'observation_failed'); return; }
       try {
+        requireSignalGuard({job_id: spec.job_id, pgid: pid, identity: handle.identity}, desired, observed);
         if (handle.sendSignal(desired, observed) !== true) throw new Error('signal_unconfirmed');
       } catch { failures.add('signal_failed'); finish(null, 'signal_failed'); return; }
       if (completed || finishing) return;
