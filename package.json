@@ -1,15 +1,17 @@
 {
   "name": "squire",
-  "version": "0.2.0-sq01",
+  "version": "0.2.0-sq02-source",
   "private": true,
   "type": "module",
   "engines": {"node": ">=24 <25"},
   "exports": {
     "./job-spec": "./src/job-spec.mjs",
     "./job-record": "./src/job-record.mjs",
-    "./lifecycle": "./src/lifecycle.mjs"
+    "./lifecycle": "./src/lifecycle.mjs",
+    "./execution-wrapper": "./src/execution-wrapper.mjs",
+    "./node-process-port": "./src/node-process-port.mjs"
   },
   "scripts": {
-    "test": "node --test --test-isolation=none test/job-spec.test.mjs test/job-record.test.mjs test/lifecycle.test.mjs"
+    "test": "node --test --test-isolation=none test/job-spec.test.mjs test/job-record.test.mjs test/lifecycle.test.mjs test/execution-wrapper.test.mjs"
   }
 }

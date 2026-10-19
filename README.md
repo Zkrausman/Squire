@@ -1,8 +1,8 @@
-# Squire replacement — SQ-01 pure core
+# Squire replacement — core and SQ-02 source candidate
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
 
-This replacement implements the pure SQ-01 library from the owner-approved Lore plan and independently reviewed internal contract: JobSpec validation, final-only JobRecord validation, immutable lifecycle values, permanent cancellation and guarded settlement/final emission. It is not a usable task runner. No CLI, process launcher, provider adapter, artifact reader, telemetry writer or automatic publication is included.
+This replacement implements the pure SQ-01 library from the owner-approved Lore plan and independently reviewed internal contract: JobSpec validation, final-only JobRecord validation, immutable lifecycle values, permanent cancellation and guarded settlement/final emission. SQ-02 adds a metadata-only execution wrapper and Linux Node launcher candidate, exercised here only through injected operations. It requires supplied owned-group controls; no native descendant observer or signalling implementation is supplied. It is not a usable task runner. No CLI, provider adapter, artifact reader, telemetry writer or automatic publication is included.
 
 With Node24, run `npm test`. No install or dependencies are needed. The selected tests run in one Node test process and launch no child processes, models, authentication flows, apps or benchmark workloads.
 
@@ -16,4 +16,4 @@ const canceled = advanceLifecycle(submitted, 'EVENT_USER_ABORT');
 // canceled.terminal_intent === 'CANCELED'; canceled.record === null
 ```
 
-See [the contract and emission boundary](docs/SQ-01.md) before using these APIs. Caller-supplied observations and digests remain assertions, not runtime or custody proof. Unknown post-spawn settlement blocks final record emission pending a wire-schema decision. The host child-output incident remains unresolved; all runtime and diagnostic holds remain. Benchmarking and hill climbing are deferred.
+See [the pure core contract](docs/SQ-01.md) and [SQ-02 source and acceptance boundary](docs/SQ-02.md) before using these APIs. Caller-supplied observations and digests remain assertions, not runtime or custody proof. Unknown post-spawn settlement blocks final record emission pending a wire-schema decision. The host child-output incident remains unresolved; all runtime and diagnostic holds remain. Benchmarking and hill climbing are deferred.
