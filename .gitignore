@@ -1,6 +1,2 @@
 node_modules/
-.squire/
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
 *.log
