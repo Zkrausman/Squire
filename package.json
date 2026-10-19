@@ -1,6 +1,6 @@
 {
   "name": "squire",
-  "version": "0.2.0-sq01-partial",
+  "version": "0.2.0-sq01",
   "private": true,
   "type": "module",
   "engines": {"node": ">=24 <25"},

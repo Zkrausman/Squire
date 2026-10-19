@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateJobRecord, TERMINAL_STATUSES} from '../src/job-record.mjs';
+import {validateJobRecord as validateRecord, TERMINAL_STATUSES} from '../src/job-record.mjs';
 import {spec, record} from './fixtures.mjs';
+const validateJobRecord = (specification, input, observations = {process_group_allocated: true, process_exit_code: 0, settlement_status: 'CLEAN'}) => validateRecord(specification, input, observations);
 
 test('JobRecord accepts only final status values and binds the original job identity', () => {
   for (const lifecycle_status of TERMINAL_STATUSES) assert.equal(validateJobRecord(spec(), {...record(), lifecycle_status}).lifecycle_status, lifecycle_status);
-  for (const lifecycle_status of ['SUBMITTED', 'RUNNING', 'VERIFYING_ARTIFACTS', 'SETTLING_DESCENDANTS', 'UNKNOWN']) {
+  for (const lifecycle_status of ['SUBMITTED', 'RUNNING', 'VERIFYING_ARTIFACTS', 'SETTLING_DESCENDANTS', 'TERMINAL_SETTLEMENT', 'UNKNOWN']) {
     assert.throws(() => validateJobRecord(spec(), {...record(), lifecycle_status}));
   }
   assert.throws(() => validateJobRecord(spec(), {...record(), job_id: 'other'}));
@@ -41,11 +42,30 @@ test('JobRecord success needs exit0 declared nonempty artifact assertions and se
   }
   assert.equal(validateJobRecord(spec(), {...record(), lifecycle_status: 'FAILED', artifact_witness: {}}).lifecycle_status, 'FAILED');
 });
-test('JobRecord does not choose absent exit or no-descendant enum conventions', () => {
-  for (const value of [undefined, null, 'UNKNOWN']) {
-    assert.throws(() => validateJobRecord(spec(), {...record(), process_exit_code: value}), error => error.code === 'pending_design_decision');
+test('JobRecord nullable observations are explicit and pre-spawn settlement alone is null', () => {
+  for (const lifecycle_status of ['FAILED', 'CANCELED']) {
+    const input = {...record(), lifecycle_status, process_exit_code: null, settlement_status: null};
+    const pre = {process_group_allocated: false, process_exit_code: null, settlement_status: null};
+    assert.equal(validateJobRecord(spec(), input, pre).process_exit_code, null);
+    assert.equal(JSON.parse(JSON.stringify(validateJobRecord(spec(), input, pre))).settlement_status, null);
+    assert.throws(() => validateJobRecord(spec(), input, {...pre, process_group_allocated: true}), e => e.code === 'unrepresentable_settlement');
+    assert.throws(() => validateJobRecord(spec(), {...input, settlement_status: 'CLEAN'}, {...pre, settlement_status: 'CLEAN'}));
+    const post = {...input, settlement_status: 'CLEAN'};
+    assert.equal(validateJobRecord(spec(), post, {...pre, process_group_allocated: true, settlement_status: 'CLEAN'}).process_exit_code, null);
+  }
+  for (const process_exit_code of [undefined, 'UNKNOWN', 1.5]) {
+    assert.throws(() => validateJobRecord(spec(), {...record(), process_exit_code}));
   }
   assert.throws(() => validateJobRecord(spec(), {...record(), settlement_status: 'NOT_APPLICABLE'}));
+  assert.throws(() => validateRecord(spec(), record()));
+});
+test('JobRecord preserves supplied observed raw integers and rejects synthesized or mismatched values', () => {
+  for (const process_exit_code of [-1, 1, 137, 255]) {
+    const input = {...record(), lifecycle_status: 'FAILED', process_exit_code};
+    assert.equal(validateJobRecord(spec(), input, {process_group_allocated: true, process_exit_code, settlement_status: 'CLEAN'}).process_exit_code, process_exit_code);
+    assert.throws(() => validateJobRecord(spec(), input, {process_group_allocated: true, process_exit_code: null, settlement_status: 'CLEAN'}), e => e.code === 'observation_conflict');
+  }
+  assert.equal(validateJobRecord(spec(), {...record(), settlement_status: 'ORPHAN_KILLED'}, {process_group_allocated: true, process_exit_code: 0, settlement_status: 'ORPHAN_KILLED'}).lifecycle_status, 'SUCCESS');
 });
 test('JobRecord freezes copies and error projection allows only metadata keys', () => {
   const input = {...record(), lifecycle_status: 'FAILED', error_details: {classification: 'fixture_failure', code: 1, signal: 'SIGTERM'}};
