@@ -1,0 +1,14 @@
+{
+  "clarification_id": "SPEC-CLARIFICATION-FIX-08-V1",
+  "reviewed_amendment_sha256": "3462ded29d220eeabc19f57e7403b262aa7ef72d162777cf02bb49de65140cef",
+  "original_freeze_sha256": "7c133ceaae9ca7466689f5e612dbd46fd8f0a300bb7fa7807d6c5cbacd4cccc7",
+  "window_start": "1790812800000",
+  "window_end": "1790899200000",
+  "utc_interval": "[2026-10-01T00:00:00Z,2026-10-02T00:00:00Z)",
+  "normative_precedence": "Original frozen numeric parameters and oracle bytes; conflicting descriptive October 2-3 prose is clarified only by this new erratum.",
+  "expected_summary_bytes": 757,
+  "expected_summary_sha256": "32aabc3ed8d7b0e31f0bcfe78b57a0e4d8907d922cfd268f740349ec67323add",
+  "valid_records": 5,
+  "in_window_INFO_count": 1,
+  "original_fixture_argv_oracle_scoring_bytes_changed": false
+}

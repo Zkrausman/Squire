@@ -47,3 +47,5 @@ The [fake task integration path](docs/SQ-06-injected-task-path.md) exercises acc
 The [injected source task coordinator](docs/SQ-06-injected-task-coordinator.md) now composes the accepted provider, custody, output, artifact and lifecycle interfaces under one original deadline. It requires explicit admission and quiescence evidence, withholds unrepresentable records and adds no real dispatch or runtime admission.
 
 The additive [Q218 public coding preparation](docs/Q218-source-only-coding.md) supplies source-format collection, injected staging/execution seams and 17 frozen public fixture scenarios. Generation and generated-program execution remain unadmitted.
+
+[Q218A bounded source/config preparation](docs/Q218A-source-preparation.md) adds a disabled-by-default explicit native adapter and frozen one-case operation recipe. Provider, syntax and generated-program operations still require the exact scoped operator admission; source/fake tests do not grant it.

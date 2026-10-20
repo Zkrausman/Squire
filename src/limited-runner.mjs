@@ -1,3 +1,4 @@
+import {generationEnvironment} from './bounded-codegen-plan.mjs';
 import {createCodegenStreamCollector} from './limited-stream-collector.mjs';
 import {stageGeneratedSource} from './limited-source-staging.mjs';
 import {spawn} from 'node:child_process';
@@ -89,12 +90,15 @@ export async function runBoundedCodegenTask(specification, runtimeOptions, ports
   const parent = await fsPort.lstat(join(spec.task_scope,'output'));
   if(!parent.isDirectory() || parent.isSymbolicLink()) fail('codegen_output_parent');
   await fsPort.mkdir(run,{mode:0o700}); // fresh, no recursive EEXIST acceptance
+  try {await fsPort.mkdir(join(spec.task_scope,'.tmp'),{mode:0o700});} catch(e) {if(e.code!=='EEXIST')throw e;}
+  const tmpStat=await fsPort.lstat(join(spec.task_scope,'.tmp'));
+  if(!tmpStat.isDirectory()||tmpStat.isSymbolicLink())fail('codegen_tmp_directory');
   let witness = null;
   const persist = async (bytes,signal) => {witness = await stageGeneratedSource({run_root:run,source_bytes:bytes,signal},
     {fs:fsPort,clock:opts.clock,validateSyntax:ports.validateSyntax});};
   const prompt = new TextDecoder('utf-8',{fatal:true}).decode(spec.prompt_bytes);
   const result = await runForeground({...spec,task_class:'BOUNDED_CODEGEN_SUMMARIZER_V5'},
     {executable:EXECUTABLE,args:['--prompt',prompt,'--output-format','json','--model',MODEL,'--effort','high','--print-timeout','1m','--sandbox','--disable-slash-commands']},opts,
-    {clock:opts.clock,spawn:ports.spawn,persist,environment:{},createCollector:createCodegenStreamCollector});
+    {clock:opts.clock,spawn:ports.spawn,persist,environment:generationEnvironment(spec.task_scope,process.env),createCollector:createCodegenStreamCollector});
   return Object.freeze({...result,physical_source_witness:result.record.output_custody.persisted ? witness : null,runtime_admitted:false});
 }
