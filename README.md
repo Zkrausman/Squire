@@ -21,3 +21,5 @@ See [the pure core contract](docs/SQ-01.md) and [SQ-02 source and acceptance bou
 The owner-approved conditional [systemd manager custody source contract](docs/SQ-02-manager-custody.md) adds injected service interfaces and synthetic tests. It has no real manager transport or host qualification and is separate from the legacy process-group candidate.
 
 The [asynchronous observation bridge](docs/SQ-02-observation-bridge.md) consumes one injected event at a time after custody acknowledgement. It supplies no bus transport, service creation or runtime qualification.
+
+The injected [deadline driver](docs/SQ-02-deadline-driver.md) drives the original custody budget while observation reads are idle. This is fake-tested scheduling source, not host qualification or a runnable native task coordinator.
