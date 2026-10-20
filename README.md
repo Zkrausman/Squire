@@ -39,3 +39,5 @@ SQ-03 now includes [pure provider metadata decoders](docs/SQ-03-provider-metadat
 The first [AGY source profile](docs/SQ-03-agy-profile.md) prepares fixed-cap, version-matched argument data with original deadlines and `runtime_admitted=false`. It includes no launcher or output collector; native startup stays disabled.
 
 An [injected output collector](docs/SQ-03-output-collector.md) now models bounded AGY chunks, EOF and raw exit with original-deadline and callback-reentrancy guards. It contains no native producer, async pump or custody action.
+
+The [fake task integration path](docs/SQ-06-injected-task-path.md) exercises accepted AGY, ownership, output, artifact and lifecycle interfaces together with explicit synthetic observations. It adds no production runner or runtime qualification.
