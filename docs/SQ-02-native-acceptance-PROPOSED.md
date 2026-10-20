@@ -25,7 +25,7 @@ Any actual denial, signal error, unqualified observation, timeout or missing evi
 
 ## Exact source successor
 
-Preserve Section2 Step5's full spawned-descendant custody. Select and qualify a concrete ownership/observation/control mechanism that can supply the current group interface truthfully. PGID absence and leader exit alone cannot supply full coverage; numeric token matching alone cannot provide atomic signal safety. No mechanism is selected or claimed sufficient here. Meanwhile SQ-04 depends only on completed SQ-01 and advances as physical local verification source with deterministic file fixtures. SQ-02 remains incomplete.
+Preserve Section2 Step5's full spawned-descendant custody. Select and qualify a concrete ownership/observation/control mechanism that can supply the current group interface truthfully. PGID absence and leader exit alone cannot supply full coverage; numeric token matching alone cannot provide atomic signal safety. The later owner-approved conditional systemd manager branch selects a source-level custody approach; actual controls and host guarantees remain unqualified. SQ-04 local physical verification is already delivered with deterministic file fixtures. SQ-02 native acceptance remains incomplete.
 
 ## Source and fake-test contract
 
@@ -34,3 +34,7 @@ The harness fixes both program strings, budgets, environment keys and ignored st
 The three-second race bounds the harness result, not native process liveness. On expiry it reports missing evidence and does not dispatch an alternate cleanup action. An already active wrapper can remain pending; independently qualified external bounded cleanup is a precondition, not supplied by this timer. There is no retry or recovery path.
 
 `test/direct-child-acceptance.test.mjs` uses injected fake processes and a simulated clock to check sequence, exact invocation, exit mismatch, unknown coverage, signal denial, spawn failure, overall timeout and prelaunch scope rejection. These tests launch no native child and establish neither full descendant custody nor runtime authorization.
+
+## Conditional manager amendment
+
+The approved systemd custody branch is documented in [SQ-02-manager-custody.md](SQ-02-manager-custody.md). This older direct-child harness targets the signal-based wrapper. It is not wired to the new manager interface and is not a manager acceptance command; any manager-backed successor must bind the reviewed adapter, host gates and exact separately authorized operation. No native activation follows this source amendment.

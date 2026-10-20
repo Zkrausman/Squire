@@ -17,3 +17,5 @@ const canceled = advanceLifecycle(submitted, 'EVENT_USER_ABORT');
 ```
 
 See [the pure core contract](docs/SQ-01.md) and [SQ-02 source and acceptance boundary](docs/SQ-02.md), plus [SQ-04 physical verification](docs/SQ-04.md) before using these APIs. The pure core treats supplied observations and digests as assertions; SQ-04 reads actual bytes within its documented staging-tree limits. Neither supplies trusted custody. The approved amendment represents unobserved post-spawn settlement as UNKNOWN in fail-closed final records; pre-spawn settlement remains null. This grants no cleanup assurance or retry. The host child-output incident remains unresolved; all runtime and diagnostic holds remain. Benchmarking and hill climbing are deferred.
+
+The owner-approved conditional [systemd manager custody source contract](docs/SQ-02-manager-custody.md) adds injected service interfaces and synthetic tests. It has no real manager transport or host qualification and is separate from the legacy process-group candidate.
