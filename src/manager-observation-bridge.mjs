@@ -127,6 +127,13 @@ export function createManagerObservationBridge(options) {
       } catch { finish(active, 'READ_FAILED', failRead().state); }
       return promise;
     },
+    close() {
+      // Passive read closure is distinct from task abort. The injected read's
+      // AbortSignal is cooperative observer cancellation, never native cleanup.
+      stopped = true;
+      if (pending) finish(pending, 'CLOSED', call.snapshot());
+      return result('CLOSED', call.snapshot());
+    },
     abort() {
       const state = call.abort(); stopped = true;
       if (pending) finish(pending, 'CANCELED', state);

@@ -16,7 +16,7 @@ const canceled = advanceLifecycle(submitted, 'EVENT_USER_ABORT');
 // canceled.terminal_intent === 'CANCELED'; canceled.record === null
 ```
 
-See [the pure core contract](docs/SQ-01.md) and [SQ-02 source and acceptance boundary](docs/SQ-02.md), plus [SQ-04 physical verification](docs/SQ-04.md) before using these APIs. The pure core treats supplied observations and digests as assertions; SQ-04 reads actual bytes within its documented staging-tree limits. Neither supplies trusted custody. The approved amendment represents unobserved post-spawn settlement as UNKNOWN in fail-closed final records; pre-spawn settlement remains null. This grants no cleanup assurance or retry. The host child-output incident remains unresolved; all runtime and diagnostic holds remain. Benchmarking and hill climbing are deferred.
+See [the pure core contract](docs/SQ-01.md) and [SQ-02 source and acceptance boundary](docs/SQ-02.md), plus [SQ-04 physical verification](docs/SQ-04.md) before using these APIs. The pure core treats supplied observations and digests as assertions; SQ-04 reads actual bytes within its documented staging-tree limits. Neither supplies trusted custody. The approved amendment represents unobserved post-spawn settlement as UNKNOWN in fail-closed final records; pre-spawn settlement remains null. This grants no cleanup assurance or retry. The host child-output incident remains unresolved; all runtime and diagnostic holds remain. Benchmarking is conditional on a completed, qualified MVP; hill climbing remains deferred.
 
 The owner-approved conditional [systemd manager custody source contract](docs/SQ-02-manager-custody.md) adds injected service interfaces and synthetic tests. It has no real manager transport or host qualification and is separate from the legacy process-group candidate.
 
@@ -29,3 +29,5 @@ The [asynchronous StopUnit acknowledgement branch](docs/SQ-02-async-stop-acknowl
 The [pure StopUnit message codec](docs/SQ-02-stop-unit-codec.md) validates supplied message correlation after known custody. It supplies no bus connection or independent InvocationID attestation.
 
 The [conservative startup-operation model](docs/SQ-02-startup-operation.md) separates a retained unresolved operation from a bounded passive caller wait. It has no dispatch port, emits no JobRecord and does not enable unsafe/native startup.
+
+The [known-custody coordinator and readiness map](docs/SQ-02-known-custody-coordinator.md) join the existing observation and deadline pieces after acknowledgement under injected operations. Startup-owner adoption and the full task path remain incomplete.
