@@ -4,7 +4,8 @@ import {captureInvocation} from './execution-wrapper.mjs';
 
 export const CUSTODY_AMENDMENT = 'SQ-AMEND-2026-10-CUSTODY-03';
 export const HOST_GATES = Object.freeze(['stable_manager_lifetime', 'failed_nonempty_unit_retention',
-  'exclusive_epoch_authority', 'launch_inside_cgroup', 'cgroup_v2_descendant_coverage']);
+  'exclusive_epoch_authority', 'launch_inside_cgroup', 'cgroup_v2_descendant_coverage',
+  'non_adversarial_workload_no_escape', 'no_external_cgroup_admission']);
 
 function binding(value) {
   closed(value, ['job_id', 'unit_name', 'invocation_id'], [], 'unit_binding');
