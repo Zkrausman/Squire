@@ -33,3 +33,5 @@ The [conservative startup-operation model](docs/SQ-02-startup-operation.md) sepa
 The [known-custody coordinator and readiness map](docs/SQ-02-known-custody-coordinator.md) join the existing observation and deadline pieces after acknowledgement under injected operations. The full task path remains incomplete.
 
 The [source-only startup adoption path](docs/SQ-02-startup-adoption.md) connects an acknowledged operation to the existing session/coordinator through one private lexical core. It preserves original deadline/identity and coordinates local reservations without a second start RPC.
+
+SQ-03 now includes [pure provider metadata decoders](docs/SQ-03-provider-metadata.md) for bounded AGY JSON and Codex JSONL bytes. These seams preserve reported counter provenance and wrapper observations without invoking a provider or determining task outcome. AGY one-shot JSON is the first selected source-only profile; invocation encoding and all runtime qualification remain separate.
