@@ -26,11 +26,15 @@ export function createLocalRejectedRetention({fs,root,uid,now,randomUUID,job_id}
   const h=await fs.open(p,'wx',0o600);onOpened?.();try{check(signal);await h.writeFile(bytes);check(signal);}finally{await h.close();bytes.fill(0);}
  };
  const directory=async(p,exact=false)=>{const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink()||![0,uid].includes(s.uid)||(s.mode&0o022)!==0||exact&&(s.uid!==uid||(s.mode&0o777)!==0o700))throw Error('RETENTION_PRIVATE_ROOT_UNAVAILABLE');};
- async function directories(){
-  const ancestors=[];for(let p=dirname(root);;p=dirname(p)){ancestors.unshift(p);if(p===parse(p).root)break;}
-  for(const p of ancestors)await directory(p);
+ async function directories(signal){
+  const parent=dirname(root);if(parent===parse(parent).root)throw Error('RETENTION_PRIVATE_ROOT_UNAVAILABLE');
+  const ancestors=[];for(let p=dirname(parent);;p=dirname(p)){ancestors.unshift(p);if(p===parse(p).root)break;}
+  for(const p of ancestors){check(signal);await directory(p);check(signal);}
+  check(signal);try{await fs.mkdir(parent,{mode:0o700});}catch(e){if(e?.code!=='EEXIST')throw e;}
+  check(signal);await directory(parent);check(signal);
   for(const p of [root,...Array.from({length:SLOTS},(_,i)=>join(root,'slot-'+i))]){
-   try{await fs.mkdir(p,{mode:0o700});}catch(e){if(e?.code!=='EEXIST')throw e;}await directory(p,true);
+   check(signal);try{await fs.mkdir(p,{mode:0o700});}catch(e){if(e?.code!=='EEXIST')throw e;}
+   check(signal);await directory(p,true);check(signal);
   }
  }
  async function names(slot){
@@ -69,7 +73,7 @@ export function createLocalRejectedRetention({fs,root,uid,now,randomUUID,job_id}
  }
  async function prepare(signal){
   try{
-   check(signal);if(fences.has(root))throw Error('RETENTION_IO_FAILED');await directories();check(signal);
+   check(signal);if(fences.has(root))throw Error('RETENTION_IO_FAILED');await directories(signal);check(signal);
    let available=0;for(let i=0;i<SLOTS;i++)if((await inspect(i,signal)).available)available++;
    check(signal);if(fences.has(root))throw Error('RETENTION_IO_FAILED');
    return Object.freeze({capability_status:available?'READY':'CAPACITY_EXCEEDED',available_slots:available});
@@ -78,7 +82,7 @@ export function createLocalRejectedRetention({fs,root,uid,now,randomUUID,job_id}
  async function retainRejected(capture,signal){
   let slot=null,stage=null,handle=null,claimed=false,ownedStage=false,bytes=null,token=null;
   try{
-   check(signal);if(fences.has(root))throw Error('RETENTION_IO_FAILED');await directories();check(signal);
+   check(signal);if(fences.has(root))throw Error('RETENTION_IO_FAILED');await directories(signal);check(signal);
    // These are internally minted captures; own-data reads still reject hostile injected ports.
    const input=ownData(capture,'response_bytes'),length=ownData(capture,'exact_response_bytes');
    if(!types.isUint8Array(input)||!Number.isSafeInteger(length)||length<0||length>1048576||Reflect.apply(byteLength,input,[])!==Math.min(length,MAX))throw Error('RETENTION_IO_FAILED');
