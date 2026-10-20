@@ -1,3 +1,4 @@
+import {diagnosticReport as makeReport,legacyDiagnostic} from './internal/limited-diagnostics.mjs';
 import {AGY_BYTE_LIMITS, decodeAgyJson} from './agy-profile.mjs';
 import {createHash} from 'node:crypto';
 import {fail} from './job-spec.mjs';
@@ -28,7 +29,7 @@ export function validateTaskPayloadJson(bytes) {
 export function createLimitedStreamCollector() {return collect(validateTaskPayloadJson);}
 function collect(validatePayload) {
   let arena = new Uint8Array(AGY_BYTE_LIMITS.max_stdout_bytes), length = 0, out = 0, err = 0;
-  let outEof = false, errEof = false, failed = false, sealed = false;
+  let outEof = false, errEof = false, failed = false, sealed = false, report = null;
   return Object.freeze({
     chunk(stream, bytes) {
       if (sealed) return false;
@@ -42,16 +43,27 @@ function collect(validatePayload) {
     eof(stream) {if (!sealed) {if (stream === 'stdout') outEof = true; else if (stream === 'stderr') errEof = true; else fail('limited_stream');}},
     snapshot: () => Object.freeze({stdout_bytes_observed: out, stderr_bytes_observed: err,
       stdout_eof: outEof, stderr_eof: errEof, io_drained: outEof && errEof && !failed}),
+    diagnosticReport: () => report,
     decode(raw) {
-      if (sealed || failed || !outEof || !errEof || !arena) fail('limited_collection');
-      const bytes = arena.slice(0, length), metadata = decode(bytes, raw);
-      if (metadata.parser_status === 'PARSE_ERROR' || metadata.provider_reported_status !== 'SUCCESS') fail('limited_envelope');
-      const envelope = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes));
-      if (typeof envelope.response !== 'string') fail('limited_response');
-      const payload = validatePayload(new TextEncoder().encode(envelope.response), envelope.response);
-      return {bytes, metadata, payload};
+      report = null;
+      try {
+        if (sealed || failed || !outEof || !errEof || !arena) {report=makeReport('COLLECTION','COLLECTION_FAILED');fail('limited_collection');}
+        const bytes = arena.slice(0, length), metadata = decode(bytes, raw);
+        if (metadata.parser_status === 'PARSE_ERROR') {
+          const known=['PAYLOAD_SIZE_EXCEEDED','MALFORMED_UTF8','MALFORMED_JSON','DUPLICATE_KEY_CONFLICT','INVALID_ROOT_SHAPE'];
+          const reason=known.includes(metadata.diagnostic_code)?metadata.diagnostic_code:'ENVELOPE_PARSE_ERROR';
+          report=makeReport('ENVELOPE',reason);fail(reason==='ENVELOPE_PARSE_ERROR'?'limited_envelope':reason);
+        }
+        if (metadata.provider_reported_status !== 'SUCCESS') {report=makeReport('PROVIDER_STATUS','PROVIDER_NON_SUCCESS',metadata);fail('PROVIDER_NON_SUCCESS');}
+        const envelope = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes));
+        if (typeof envelope.response !== 'string') {report=makeReport('RESPONSE','RESPONSE_STRING_REQUIRED',metadata);fail('limited_response');}
+        let payload;
+        try {payload=validatePayload(new TextEncoder().encode(envelope.response), envelope.response);}
+        catch(error) {const mapped=legacyDiagnostic(error);report=makeReport(mapped.stage,mapped.reason,metadata);throw error;}
+        return {bytes, metadata, payload};
+      } catch(error) {report ??= legacyDiagnostic(error);throw error;}
     },
-    close() {sealed = true; arena = null; length = 0;}
+    close() {sealed = true; arena = null; length = 0; report = null;}
   });
 }
 

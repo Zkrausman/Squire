@@ -25,7 +25,7 @@ export function validateOperationConfig(c){
 }
 export const SOURCE_FILES=Object.freeze([
  'src/bounded-codegen-plan.mjs','src/bounded-codegen-configuration.mjs','src/bounded-codegen-campaign.mjs',
- 'src/limited-runner.mjs','src/internal/limited-core.mjs','src/limited-generated-executor.mjs','src/limited-source-staging.mjs','src/limited-stream-collector.mjs','src/limited-job-record.mjs',
+ 'src/limited-runner.mjs','src/internal/limited-core.mjs','src/internal/limited-diagnostics.mjs','src/limited-generated-executor.mjs','src/limited-source-staging.mjs','src/limited-stream-collector.mjs','src/limited-job-record.mjs',
  'src/job-spec.mjs','src/agy-profile.mjs','src/provider-metadata.mjs','src/node-process-port.mjs','src/owned-group.mjs',
  'fixtures/q218/public-fixtures.mjs','fixtures/q218/reference-summarizer.mjs','fixtures/q218/verify-result.mjs','fixtures/q218/freeze.mjs',
  'fixtures/q218/SPEC-CLARIFICATION-FIX-08-V1.json','acceptance/bounded-codegen-entrypoint.mjs','acceptance/prepare-bounded-codegen.mjs'

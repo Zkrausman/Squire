@@ -1,7 +1,10 @@
+import {types} from 'node:util';
+import {collectorDiagnostic,sanitizeDiagnosticMetadata} from './limited-diagnostics.mjs';
 import {createLimitedStreamCollector} from '../limited-stream-collector.mjs';
 import {validateLimitedJobRecord} from '../limited-job-record.mjs';
 
 const passiveError = () => {};
+const byteLengthOf = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength').get;
 const retained = new Set();
 // Explicit ports for synthetic tests; this module has no native defaults or public argv entrypoint.
 export function runForeground(spec, invocation, options, ports) {
@@ -131,20 +134,37 @@ export function runForeground(spec, invocation, options, ports) {
     if (!status && (code !== 0 || signal !== null)) latch('LIMITED_PROCESS_FAILED');
     if (!status && !io.io_drained) latch('LIMITED_INTERNAL_ERROR', 'IO_INCOMPLETE');
     if (!status && ['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'BOUNDED_CODEGEN_SUMMARIZER_V5'].includes(spec.task_class)) {
-      let parsed;
-      try {parsed = collector.decode({exit_code: code, exit_signal: signal, process_wall_ms: wall}); metadata = parsed.metadata; payloadValid = true;}
-      catch {payloadValid = false; latch('LIMITED_PARSER_ERROR');}
-      if (parsed) {
+      let parsed, parsedBytes, parsedLength;
+      try {
+        parsed = collector.decode({exit_code: code, exit_signal: signal, process_wall_ms: wall});
+        if (!parsed || typeof parsed !== 'object' || types.isProxy(parsed)) throw Error('INVALID_DECODE_RESULT');
+        const metadataField = Object.getOwnPropertyDescriptor(parsed, 'metadata'), bytesField = Object.getOwnPropertyDescriptor(parsed, 'bytes');
+        if (!metadataField || !Object.hasOwn(metadataField, 'value') || !bytesField || !Object.hasOwn(bytesField, 'value')) throw Error('INVALID_DECODE_RESULT');
+        const safeMetadata = sanitizeDiagnosticMetadata(metadataField.value);
+        parsedBytes = bytesField.value;
+        if (!safeMetadata || safeMetadata.provider_reported_status !== 'SUCCESS' || !types.isUint8Array(parsedBytes)) throw Error('INVALID_DECODE_RESULT');
+        parsedLength = Reflect.apply(byteLengthOf, parsedBytes, []);
+        metadata = safeMetadata; payloadValid = true;
+      }
+      catch(error) {
+        parsed = null; parsedBytes = null; metadata = null; payloadValid = false;
+        if (!status) {
+          const report=collectorDiagnostic(collector,error);
+          // A report method may reenter cancellation. Never overwrite that primary status.
+          if (!status) {latch('LIMITED_PARSER_ERROR', `${report.stage}:${report.reason}`);metadata=report.metadata;}
+        }
+      }
+      if (parsed && !status) {
         persistenceController = new AbortController();
         try {
           await new Promise((accept, reject) => {
             arm('persist', shutdown.persistence_timeout_ms, () => {persistenceController.abort(); reject(Error('PERSISTENCE_TIMEOUT'));});
-            Promise.resolve().then(() => persist(parsed.bytes, persistenceController.signal)).then(accept, reject);
+            Promise.resolve().then(() => persist(parsedBytes, persistenceController.signal)).then(accept, reject);
           });
           cancel('persist'); checkDeadline();
-          persisted = {persisted: true, path: options.output_path, byte_count: parsed.bytes.byteLength, persistence_error: null};
+          persisted = {persisted: true, path: options.output_path, byte_count: parsedLength, persistence_error: null};
         } catch {cancel('persist'); persisted.persistence_error = 'PERSISTENCE_FAILED_OR_UNCERTAIN'; latch('LIMITED_PERSISTENCE_FAILED');}
-        parsed.bytes.fill(0);
+        try {Uint8Array.prototype.fill.call(parsedBytes, 0);} catch {latch('LIMITED_INTERNAL_ERROR', 'BUFFER_CLEAR_FAILED');}
       }
     }
     if (!status) status = spec.task_class === 'INERT_TIMEOUT_ACCEPTANCE_PROBE' ? 'LIMITED_PROCESS_FAILED' : 'LIMITED_SUCCESS';
