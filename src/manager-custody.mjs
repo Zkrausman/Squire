@@ -1,5 +1,6 @@
 import {validateJobSpec, closed, fail, nonnegative} from './job-spec.mjs';
 import {resolve} from 'node:path';
+import {observeStopAcknowledgement} from './stop-acknowledgement.mjs';
 import {captureInvocation} from './execution-wrapper.mjs';
 
 export const CUSTODY_AMENDMENT = 'SQ-AMEND-2026-10-CUSTODY-03';
@@ -21,8 +22,21 @@ function matches(expected, input) {
 
 // Source-injected contract only: no bus connection, native implementation, timers,
 // enumeration, pidfds or process-group signalling. Ports must be bounded synchronous
-// operations; their actual transport and host qualification remain unimplemented.
-export function createManagerCustodyFactory(options) {
+// calls; the optional async-stop branch observes its response separately.
+// Actual transport and host qualification remain unimplemented.
+export function createManagerCustodyFactory(options) { return custodyFactory(options, null); }
+
+// Start still requires the original verified synchronous custody acknowledgement.
+export function createAsyncStopManagerCustodyFactory(options) {
+  closed(options, ['manager', 'clock', 'qualification', 'stop_ack_timeout_ms'], [], 'async_stop_factory');
+  closed(options.clock, ['now', 'schedule'], [], 'async_stop_clock');
+  if (typeof options.clock.now !== 'function' || typeof options.clock.schedule !== 'function' ||
+      !Number.isSafeInteger(options.stop_ack_timeout_ms) || options.stop_ack_timeout_ms <= 0) fail('async_stop_factory');
+  return custodyFactory({manager: options.manager, clock: {now: options.clock.now.bind(options.clock)}, qualification: options.qualification},
+    {schedule: options.clock.schedule.bind(options.clock), timeout: options.stop_ack_timeout_ms});
+}
+
+function custodyFactory(options, asyncStop) {
   closed(options, ['manager', 'clock', 'qualification'], [], 'custody_factory');
   const {manager, clock, qualification} = options;
   closed(manager, ['startTransientUnit', 'stopUnit'], [], 'manager');
@@ -58,23 +72,50 @@ export function createManagerCustodyFactory(options) {
     let epoch = null, started = false, busy = false, stopAttempted = false, stopAcknowledged = false;
     let canceled = false, reason = null, unknownLatched = false, custody = false, exitObserved = false, exitCode = null;
     let settlement = null, count = null, populated = null, emptyProved = false, returned = false, released = false;
+    let ackObserver = null, ackResult = null, ackPending = false;
     const failures = new Set();
     function snapshot() {
       return Object.freeze({job_id: spec.job_id, unit: epoch, started, task_deadline_ms: deadline, custody_acknowledged: custody,
         canceled, cancellation_reason: reason, coordinator_returned: returned,
         process_exit_code: exitCode, settlement_status: settlement, live_count: count,
-        stop_attempted: stopAttempted, stop_job_acknowledged: stopAcknowledged,
-        workspace_reuse_blocked: !emptyProved || unknownLatched, local_workspace_released: released,
+        stop_attempted: stopAttempted, stop_job_acknowledged: stopAcknowledged, stop_ack_pending: ackPending,
+        workspace_reuse_blocked: !emptyProved || unknownLatched || ackPending, local_workspace_released: released,
         admission_quarantined: unknownLatched, failure_codes: Object.freeze([...failures]),
         runtime_qualification: 'NOT_ESTABLISHED_BY_SOURCE'});
     }
     function unknown(code) {
       unknownLatched = true; custody = false; emptyProved = false;
       populated = null; count = null; settlement = 'UNKNOWN'; failures.add(code);
+      ackPending = false; const observer = ackObserver; ackObserver = null; observer?.cancel();
     }
     function stop() {
       if (stopAttempted || !epoch || unknownLatched) return;
       stopAttempted = true;
+      if (asyncStop) {
+        ackPending = true; emptyProved = false; populated = null; count = null; settlement = 'UNKNOWN';
+        try {
+          const ackDeadline = now() + asyncStop.timeout;
+          if (!Number.isSafeInteger(ackDeadline)) fail('stop_ack_budget');
+          const observer = observeStopAcknowledgement({clock: {now, schedule: asyncStop.schedule}, deadline_ms: ackDeadline,
+            dispatch: () => stopUnit(Object.freeze({binding: epoch})),
+            acknowledged(response) {
+              if (unknownLatched || released) return false;
+              closed(response, ['binding', 'job_acknowledged'], [], 'stop_response'); matches(epoch, response.binding);
+              if (response.job_acknowledged !== true) fail('stop_response');
+              stopAcknowledged = true; ackPending = false; ackObserver = null;
+              // Require a fresh empty observation after acknowledgement; never
+              // promote an earlier queued empty sample into post-stop proof.
+              if (emptyProved) {emptyProved = false; populated = null; count = null; settlement = 'UNKNOWN';}
+              return true;
+            },
+            failed(code) {ackPending = false; ackObserver = null; unknown(code);}
+          });
+          ackResult = observer.result;
+          if (unknownLatched) observer.cancel();
+          if (observer.pending()) ackObserver = observer;
+        } catch {unknown('stop_ack_setup_failed');}
+        return;
+      }
       try {
         const response = stopUnit(Object.freeze({binding: epoch}));
         closed(response, ['binding', 'job_acknowledged'], [], 'stop_response'); matches(epoch, response.binding);
@@ -99,8 +140,9 @@ export function createManagerCustodyFactory(options) {
       return snapshot();
     }
     return Object.freeze({snapshot,
+      stopAcknowledgement: () => ackResult,
       releaseWorkspace() {
-        if (!emptyProved || unknownLatched || !custody || busy) return false;
+        if (!emptyProved || unknownLatched || !custody || busy || ackPending) return false;
         workspaces.delete(spec.task_scope); released = true; return true;
       },
       start() {
@@ -142,7 +184,7 @@ export function createManagerCustodyFactory(options) {
           populated = covered ? input.populated : null;
           count = covered ? input.exact_live_count : null;
           emptyProved = covered && populated === 0;
-          if (emptyProved) { count = 0; settlement = stopAttempted ? 'ORPHAN_KILLED' : 'CLEAN'; }
+          if (emptyProved) { count = 0; settlement = ackPending ? 'UNKNOWN' : stopAttempted ? 'ORPHAN_KILLED' : 'CLEAN'; }
           else { settlement = canceled && now() >= deadline && populated === 1 ? 'DIRTY_LEAK' : 'UNKNOWN'; }
         });
       },

@@ -19,6 +19,6 @@
     "./manager-deadline-driver": "./src/manager-deadline-driver.mjs"
   },
   "scripts": {
-    "test": "node --test --test-isolation=none test/job-spec.test.mjs test/job-record.test.mjs test/lifecycle.test.mjs test/execution-wrapper.test.mjs test/artifact-verifier.test.mjs test/owned-group.test.mjs test/direct-child-acceptance.test.mjs test/manager-custody.test.mjs test/manager-observation-bridge.test.mjs test/manager-deadline-driver.test.mjs"
+    "test": "node --test --test-isolation=none test/job-spec.test.mjs test/job-record.test.mjs test/lifecycle.test.mjs test/execution-wrapper.test.mjs test/artifact-verifier.test.mjs test/owned-group.test.mjs test/direct-child-acceptance.test.mjs test/manager-custody.test.mjs test/manager-observation-bridge.test.mjs test/manager-deadline-driver.test.mjs test/async-stop-acknowledgement.test.mjs"
   }
 }

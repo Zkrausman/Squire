@@ -30,6 +30,8 @@ This is a one-read-at-a-time adapter, not an autonomous scheduler. When no read 
 
 ## Remaining source and runtime work
 
-Asynchronous observation delivery is fake-tested. Asynchronous StartTransientUnit/StopUnit acknowledgements, actual bus serialization/subscriptions, authoritative cgroup observations and an autonomous task coordinator are not implemented. The separate deadline driver supplies source-only scheduling while reads are idle. This bridge deliberately requires already acknowledged custody; a pending service-start response cannot be passed off as an acknowledgement. No new policy for an unacknowledged timed-out start is invented here.
+Asynchronous observation delivery is fake-tested. Asynchronous StartTransientUnit acknowledgement, actual bus serialization/subscriptions, authoritative cgroup observations and an autonomous task coordinator are not implemented. The separate deadline driver supplies source-only scheduling while reads are idle. This bridge deliberately requires already acknowledged custody; a pending service-start response cannot be passed off as an acknowledgement. No new policy for an unacknowledged timed-out start is invented here.
 
 Real execution remains disabled/unqualified. Host lifetime, failed/non-empty retention, workload/coverage, exclusive identity authority, stop behavior and admission fences still require separately authorized qualification. Native children, services, probes, held diagnostics, benchmark/model campaigns and denied operation retries are outside this source-only delivery.
+
+Bounded asynchronous StopUnit acknowledgement after known custody is delivered by the separate [async-stop branch](SQ-02-async-stop-acknowledgement.md); this observation adapter does not synthesize that acknowledgement.

@@ -20,4 +20,6 @@ Timer/clock failures use the additive `session.schedulingFailed()` entrypoint, l
 
 Fake tests cover an idle deadline with no observation read, early wakeups, no reset on reconciliation, abort/clock races, verified-empty versus explicit release, disconnect, later immutable custody evidence, scheduling/stop failures, duplicate drivers and coexistence with the observation bridge. The suite launches no native child and performs no bus, service, probe, credential, model or benchmark operation.
 
-This completes source-only deadline scheduling, not an autonomous task runner. Asynchronous StartTransientUnit/StopUnit acknowledgements, real transport/event producers, coordinator integration and host qualification remain incomplete. A pending start cannot be passed off as acknowledged custody. No host guarantee or architecture is expanded, and actual execution remains disabled/unqualified under the existing approval boundary.
+This completes source-only deadline scheduling, not an autonomous task runner. Asynchronous StartTransientUnit acknowledgement, real transport/event producers, coordinator integration and host qualification remain incomplete. A pending start cannot be passed off as acknowledged custody. No host guarantee or architecture is expanded, and actual execution remains disabled/unqualified under the existing approval boundary.
+
+The [async-stop branch](SQ-02-async-stop-acknowledgement.md) can continue a bounded stop acknowledgement observation after this driver returns its original deadline snapshot; no task deadline is extended.

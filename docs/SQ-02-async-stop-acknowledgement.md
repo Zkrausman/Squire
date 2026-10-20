@@ -1,0 +1,19 @@
+# Bounded asynchronous StopUnit acknowledgement — source only
+
+`createAsyncStopManagerCustodyFactory({manager, clock, qualification, stop_ack_timeout_ms})` preserves the conditional custody architecture and existing host gates. StartTransientUnit still requires the existing verified synchronous response; a Promise is not custody. Only StopUnit may return an asynchronously settled response in this branch. There is no transport or clock default, bus access or native operation.
+
+The explicit positive `stop_ack_timeout_ms` bounds observation of the StopUnit transaction acknowledgement. It does not reset the task deadline, change the manager's explicit stop grace or delay the deadline driver's return. It starts when the one-shot stop request begins. A manager already acknowledged as custodian remains responsible under the unchanged host guarantees while this bounded response observer is pending; this does not establish host qualification.
+
+The manager stop port must produce the existing exact `{binding, job_acknowledged: true}` record only after its qualified transaction evidence. A raw D-Bus method reply containing a queued job path is not this evidence and is rejected. InvocationID/job/unit must match the admitted epoch. A pending Promise sets `stop_ack_pending: true`, never `stop_job_acknowledged: true`.
+
+`session.stopAcknowledgement()` returns null when no async observer was created, or a Promise resolving to a frozen `{status: 'ACKNOWLEDGED' | 'UNKNOWN'}`. The ordinary synchronous factory also exposes the additive method, returning null. Session snapshots remain metadata only and always label runtime qualification unestablished.
+
+Only matching, closed/full-coverage populated0 proves an empty cgroup. While a stop acknowledgement is pending, an observed zero count does not establish post-stop settlement or allow workspace release. After a valid acknowledgement, an earlier empty sample is invalidated for settlement: a fresh matching empty observation is required. A positive post-task-timeout survivor observation remains DIRTY_LEAK even while the acknowledgement is pending; it does not supply an invented exact count. Cancellation and observed raw exit codes are preserved.
+
+Timeout, rejection, invalid response, conflicting epoch, scheduling failure or manager disconnect permanently fences the session as UNKNOWN. There is no retry, alternate unit or fallback signalling. A disconnect cancels the local acknowledgement timer; later outcomes are consumed without restoring custody or rewriting a prior snapshot. Inline timers fail closed with their returned handle canceled. Clock regression and time consumed by cancellation callbacks cannot turn a late response into a timely acknowledgement.
+
+This observer has no polling loop, indefinite guardian or durable host ledger. It cannot preempt a blocking injected function, stalled event loop or failed scheduler. Canceling its timer does not cancel the manager transaction or qualify native cleanup. Synthetic tests exercise pending/acknowledged/unknown states, original deadlines, missing/late/invalid ACKs, fresh empty proof, disconnect and reentrant failure. They use no service, bus, child, credential, model or benchmark.
+
+## Unresolved start boundary
+
+This implementation does not resolve StartTransientUnit submitted but verified custody/InvocationID absent at the original deadline. The accepted contract conditions bounded coordinator return on acknowledged custody; UNKNOWN/quarantine does not itself prove custody or authorize a guessed-epoch StopUnit. No new late-start cancellation, lease, host escrow, RuntimeMaxSec, reconciliation, retry or unbounded wait policy is supplied. Real async start/coordinator integration remains dependent on the exact reviewed decision for that case. Actual execution stays disabled/unqualified.
