@@ -27,3 +27,5 @@ The injected [deadline driver](docs/SQ-02-deadline-driver.md) drives the origina
 The [asynchronous StopUnit acknowledgement branch](docs/SQ-02-async-stop-acknowledgement.md) is source/fake-tested after known custody. Async start-deadline policy and all real transport/native qualification remain incomplete.
 
 The [pure StopUnit message codec](docs/SQ-02-stop-unit-codec.md) validates supplied message correlation after known custody. It supplies no bus connection or independent InvocationID attestation.
+
+The [conservative startup-operation model](docs/SQ-02-startup-operation.md) separates a retained unresolved operation from a bounded passive caller wait. It has no dispatch port, emits no JobRecord and does not enable unsafe/native startup.
