@@ -26,7 +26,7 @@ function boundConfig(c,spec){
  c.agy.path!==AGY_RUNTIME.path||c.agy.sha256!==AGY_RUNTIME.sha256||c.agy.bytes!==AGY_RUNTIME.bytes||
  c.fixtures.sha256!==FIXTURE_FREEZE_SHA256||c.outer_observation_ms!==250000||c.fixture_aggregate_ms!==85000||
  c.max_direct_child_spawns!==19||c.prompt.sha256!==hash(spec.prompt_bytes)||c.prompt.bytes!==spec.prompt_bytes.length||
- c.scope!=='/home/zack/Documents/Codex/2026-10-19/squire-q218-onecase-c1793094-dc46-476b-b7b9-0ee7127899b6')throw Error('FROZEN_CONFIG_MISMATCH');
+ c.scope!=='/home/zack/Documents/Codex/2026-10-19/squire-q218-onecase-34b08360-13d8-402d-97d9-653cfe803013')throw Error('FROZEN_CONFIG_MISMATCH');
 }
 export async function runBoundedCodegenOneCaseNative(specification,runtimeOptions,admissionBundle){
  // Absent admission rejects before even reading a config or touching a native port.

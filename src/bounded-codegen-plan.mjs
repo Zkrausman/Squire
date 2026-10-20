@@ -33,8 +33,8 @@ export function requireAdmission(bundle,config,configBytes){
   throw Error('UNADMITTED_NATIVE_OPERATION');
  return Object.freeze({...bundle,preflight:Object.freeze({...bundle.preflight})});
 }
-export const Q218_SCOPE='/home/zack/Documents/Codex/2026-10-19/squire-q218-onecase-c1793094-dc46-476b-b7b9-0ee7127899b6';
-export const Q218_JOB='c1793094-dc46-476b-b7b9-0ee7127899b6';
+export const Q218_SCOPE='/home/zack/Documents/Codex/2026-10-19/squire-q218-onecase-34b08360-13d8-402d-97d9-653cfe803013';
+export const Q218_JOB='34b08360-13d8-402d-97d9-653cfe803013';
 export const GENERATION_SHUTDOWN=Object.freeze({term_grace_ms:3000,kill_grace_ms:2000,poll_interval_ms:200,stream_drain_timeout_ms:1000,persistence_timeout_ms:2000});
 export function generationEnvironment(scope,ambient){
  const env={...ambient,TMPDIR:join(scope,'.tmp')};for(const key of ['GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL'])delete env[key];return env;
