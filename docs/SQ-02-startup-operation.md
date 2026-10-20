@@ -1,6 +1,6 @@
 # Conservative startup operation — pure source model
 
-`src/startup-operation.mjs` separates retained startup uncertainty from a bounded caller observation. This implements the independently reviewed conservative source-only contract; it does not enable startup or resolve host custody. The six existing core/custody/observation/deadline modules and the JobSpec/JobRecord wire schemas remain unchanged.
+`src/startup-operation.mjs` separates retained startup uncertainty from a bounded caller observation. This implements the independently reviewed conservative source-only contract; it does not enable startup or resolve host custody. The JobSpec/JobRecord wire schemas remain unchanged. The later [source-only adoption slice](SQ-02-startup-adoption.md) consolidates startup and manager internals behind their public compatibility facades.
 
 ## Operation owner
 
@@ -14,7 +14,7 @@ Abort and the original task deadline permanently latch cancellation. A valid lat
 
 ## Local retention and reservations
 
-A private module-local registry strongly retains owners and reserves job identity, unit name and overlapping scopes. Creation rejects conflicts within this one loaded module instance. A locally asserted NOT_ADMITTED transition releases its undispatched reservation; after possible dispatch or fencing this slice provides no release, reset, recovery or discharge API. Caller response completion does not remove the owner. Retention is deliberately in-memory and can consume memory; it is not a background guardian or bounded host cleanup policy.
+A private module-local registry strongly retains owners and reserves job identity, unit name and overlapping scopes. Creation rejects conflicts within this one loaded module instance. A locally asserted NOT_ADMITTED transition releases its undispatched reservation; after possible dispatch or fencing the startup API provides no public release, reset, recovery or discharge operation. The later adoption slice permits target-private coordinated scope release only after canonical empty proof. Caller response completion does not remove the owner. Retention is deliberately in-memory and can consume memory; it is not a background guardian or bounded host cleanup policy.
 
 These reservations cannot prevent other processes, module instances or host tools from accessing a workspace. Process exit/crash loses the registry and its guarantees; it is not an authorized resolution. There is no durable custody, filesystem marker, cross-process admission fence or automatic recovery. No host resolution path is implemented here.
 

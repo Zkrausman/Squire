@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createAsyncStopManagerCustodyFactory, HOST_GATES} from '../src/manager-custody.mjs';
 import {createManagerDeadlineDriver} from '../src/manager-deadline-driver.mjs';
-import {spec} from './fixtures.mjs';
+import {spec, managerSpec} from './fixtures.mjs';
 
 function fixture(options = {}) {
   let time = 0, resolve, reject; const timers = [], calls = [];
@@ -12,8 +12,8 @@ function fixture(options = {}) {
     if (options.inline) callback();
     return () => {timer.canceled = true; options.cancelHook?.();};
   }};
-  const job = {...spec(), max_wall_clock_sec: 1};
-  const binding = {job_id: job.job_id, unit_name: 'squire-async-stop.service', invocation_id: '1'.repeat(32)};
+  const job = {...managerSpec(), max_wall_clock_sec: 1};
+  const binding = {job_id: job.job_id, unit_name: `squire-async-stop-${job.job_id}.service`, invocation_id: '1'.repeat(32)};
   const response = new Promise((yes, no) => {resolve = yes; reject = no;});
   const manager = {startTransientUnit() {calls.push('start'); return {binding, custody_acknowledged: true, worker_in_cgroup_before_exec: true};},
     stopUnit(request) {calls.push({method: 'stop', binding: request.binding}); options.stopHook?.();

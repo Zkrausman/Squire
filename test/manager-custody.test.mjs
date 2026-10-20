@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createManagerCustodyFactory, HOST_GATES} from '../src/manager-custody.mjs';
-import {spec} from './fixtures.mjs';
+import {spec, managerSpec} from './fixtures.mjs';
 
 function fixture(config = {}) {
   let time = 0; const calls = [];
-  const job = {...spec(), max_wall_clock_sec: 1};
-  const identity = {job_id: job.job_id, unit_name: 'squire-fixture-1.service', invocation_id: '1'.repeat(32)};
+  const job = {...managerSpec(), max_wall_clock_sec: 1};
+  const identity = {job_id: job.job_id, unit_name: `squire-fixture-${job.job_id}.service`, invocation_id: '1'.repeat(32)};
   const manager = {
     startTransientUnit(request) {
       calls.push({method: 'StartTransientUnit', request});

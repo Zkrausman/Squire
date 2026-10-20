@@ -30,4 +30,6 @@ The [pure StopUnit message codec](docs/SQ-02-stop-unit-codec.md) validates suppl
 
 The [conservative startup-operation model](docs/SQ-02-startup-operation.md) separates a retained unresolved operation from a bounded passive caller wait. It has no dispatch port, emits no JobRecord and does not enable unsafe/native startup.
 
-The [known-custody coordinator and readiness map](docs/SQ-02-known-custody-coordinator.md) join the existing observation and deadline pieces after acknowledgement under injected operations. Startup-owner adoption and the full task path remain incomplete.
+The [known-custody coordinator and readiness map](docs/SQ-02-known-custody-coordinator.md) join the existing observation and deadline pieces after acknowledgement under injected operations. The full task path remains incomplete.
+
+The [source-only startup adoption path](docs/SQ-02-startup-adoption.md) connects an acknowledged operation to the existing session/coordinator through one private lexical core. It preserves original deadline/identity and coordinates local reservations without a second start RPC.
