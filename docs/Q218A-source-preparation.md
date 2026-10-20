@@ -23,3 +23,15 @@ The new `SPEC-CLARIFICATION-FIX-08-V1.json` makes the original numeric October1â
 Actual generation, `--check` and generated-program execution remain unadmitted. The remaining owner decision is one exact frozen operation in the dedicated disposable scope, including FIX17, accepting ambient same-user filesystem authority, no hostile containment or descendant tracking, conditional event-loop deadlines, no crash recovery/durability/reuse and no hard250s cleanup/inference guarantee. No broader access grant or manual task selection is requested.
 
 Reviewed Q218A scope SHA256 `3462ded29d220eeabc19f57e7403b262aa7ef72d162777cf02bb49de65140cef`; handoff `aab45b82b8c639ab201d0fe22623515600cbe0e1245c364391f3d22ff2e50b48`; final independent Gemini review `fde6312580f54b5aad08dbc581f869ed8848e19ed5c2502d5fd8841abebe1b20`. Exact field replacements were mechanically composed; no separate post-composition inference is claimed.
+
+
+The versioned `Q218A_PROMPT_CHANNEL_CLARIFICATION_V1` preparation uses
+`buildClarifiedCodegenPrompt`: the exact reviewed 902-byte instruction prefix plus
+the unchanged canonical five-key task projection. The approved public task yields
+9,640 bytes, SHA256 `59e66a70be86c590458838d92da08fda2691d0bc681924527217d355b9ab1c8d`.
+The prefix requests raw source in the final response; Squire writes the validated
+source file. Its generation-only tool/file restriction leaves the generated
+program's required CLI and filesystem behavior intact. Dynamic config/manifest
+hashes bind these actual prompt bytes. Existing prompt/config/attempts remain
+frozen; this coherence correction does not establish why an earlier response was
+empty. Runtime flags, validation bounds, fixtures and resource limits are unchanged.

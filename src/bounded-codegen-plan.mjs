@@ -14,6 +14,13 @@ export function buildCodegenPrompt(task){
  const selected=Object.fromEntries(TASK_KEYS.map(k=>{if(!Object.hasOwn(task,k))throw Error('TASK_KEY_MISSING');return [k,task[k]];}));
  const bytes=canonicalBytes(selected);if(bytes.length<1||bytes.length>32768)throw Error('PROMPT_BOUND');return bytes;
 }
+export const CODEGEN_PROMPT_PROFILE = 'Q218A_PROMPT_CHANNEL_CLARIFICATION_V1';
+const CHANNEL_PREFIX = "[OUTPUT CHANNEL INSTRUCTION]\nDuring provider generation, return solely the raw, runnable Node.js source code for src/summarizer.mjs directly in your final response string.\nDo not attempt tool calls or filesystem operations during generation; the host execution environment will write your response string directly to src/summarizer.mjs.\nWhen executed, your delivered Node.js program must implement all CLI interface and filesystem operations (reading input, writing summary and manifest) specified in the task description.\nDo not include markdown formatting or code fences (no triple backticks ```).\nDo not include outer JSON envelopes or JSON-quoted strings (the CLI owns JSON output serialization).\nDo not include explanations, conversational prose, or precomputed summary outputs.\nThe response must be valid UTF-8 source code between 100 and 65,536 bytes implementing the task specification below:\n\n";
+export function buildClarifiedCodegenPrompt(task) {
+ const projection=buildCodegenPrompt(task), prefix=new TextEncoder().encode(CHANNEL_PREFIX);
+ const bytes=new Uint8Array(prefix.length+projection.length);bytes.set(prefix);bytes.set(projection,prefix.length);
+ if(bytes.length>32768)throw Error('PROMPT_BOUND');return bytes;
+}
 export function programEnvironment(sourcePath){return Object.freeze({PATH:'/bin:/usr/bin',LANG:'C.UTF-8',TMPDIR:join(dirname(dirname(dirname(sourcePath))),'.tmp')});}
 export async function verifyExactFile(identity,ports){
  const st=await ports.lstat(identity.path);
@@ -33,8 +40,8 @@ export function requireAdmission(bundle,config,configBytes){
   throw Error('UNADMITTED_NATIVE_OPERATION');
  return Object.freeze({...bundle,preflight:Object.freeze({...bundle.preflight})});
 }
-export const Q218_SCOPE='/home/zack/Documents/Codex/2026-10-19/squire-q218-onecase-34b08360-13d8-402d-97d9-653cfe803013';
-export const Q218_JOB='34b08360-13d8-402d-97d9-653cfe803013';
+export const Q218_SCOPE='/home/zack/Documents/Codex/2026-10-19/squire-q218-onecase-5d907cf7-8120-4ca5-8135-322865ea9684';
+export const Q218_JOB='5d907cf7-8120-4ca5-8135-322865ea9684';
 export const GENERATION_SHUTDOWN=Object.freeze({term_grace_ms:3000,kill_grace_ms:2000,poll_interval_ms:200,stream_drain_timeout_ms:1000,persistence_timeout_ms:2000});
 export function generationEnvironment(scope,ambient){
  const env={...ambient,TMPDIR:join(scope,'.tmp')};for(const key of ['GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL'])delete env[key];return env;

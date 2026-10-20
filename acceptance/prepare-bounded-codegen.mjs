@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {dirname,join,resolve} from 'node:path';
-import {NODE_RUNTIME,AGY_RUNTIME,Q218_SCOPE,Q218_JOB,GENERATION_SHUTDOWN,buildCodegenPrompt,hash,canonicalBytes,verifyExactFile} from '../src/bounded-codegen-plan.mjs';
+import {NODE_RUNTIME,AGY_RUNTIME,Q218_SCOPE,Q218_JOB,GENERATION_SHUTDOWN,buildClarifiedCodegenPrompt,hash,canonicalBytes,verifyExactFile} from '../src/bounded-codegen-plan.mjs';
 import {SOURCE_FILES,ENVIRONMENT_POLICY,PUBLIC_FREEZE_ROOT,fixtureConfigurations,validateOperationConfig} from '../src/bounded-codegen-configuration.mjs';
 import {fixtureArgv} from '../fixtures/q218/public-fixtures.mjs';
 const sourceRoot=dirname(dirname(fileURLToPath(import.meta.url)));
@@ -15,7 +15,7 @@ export async function prepareBoundedCodegen(root,source_commit){
  const reads={lstat:fs.lstat,readChunks:path=>createReadStream(path)};
  await verifyExactFile(NODE_RUNTIME,reads);await verifyExactFile(AGY_RUNTIME,reads);
  const taskBytes=await fs.readFile(taskPath);if(hash(taskBytes)!==taskSHA)throw Error('TASK_PREIMAGE_CHANGED');
- const prompt=buildCodegenPrompt(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(taskBytes)));
+ const prompt=buildClarifiedCodegenPrompt(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(taskBytes)));
  const receipt=JSON.parse(await fs.readFile(join(PUBLIC_FREEZE_ROOT,'physical-freeze-receipt.json'),'utf8'));
  for(const pin of receipt.artifacts)await verifyExactFile({path:join(PUBLIC_FREEZE_ROOT,pin.path),bytes:pin.bytes,sha256:pin.sha256},reads);
  for(const pin of receipt.source_pins)await verifyExactFile({path:join(sourceRoot,pin.path),bytes:pin.bytes,sha256:pin.sha256},reads);
