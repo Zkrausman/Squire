@@ -20,11 +20,12 @@ export function admitLimitedAgyTask(specification, bounds = AGY_BYTE_LIMITS) {
   return Object.freeze({...s, prompt_bytes: new Uint8Array(s.prompt_bytes)});
 }
 function options(value, probe = false) {
-  closed(value, ['clock', 'shutdown', ...(probe ? ['task_scope'] : ['output_path'])], ['abortSignal'], 'limited_options');
+  closed(value, ['clock', 'shutdown', ...(probe ? ['task_scope'] : ['output_path'])], ['abortSignal','enableDiagnosticRetention'], 'limited_options');
   closed(value.clock, ['now', 'schedule'], [], 'limited_clock');
   if (typeof value.clock.now !== 'function' || typeof value.clock.schedule !== 'function') fail('limited_clock');
   closed(value.shutdown, ['term_grace_ms', 'kill_grace_ms', 'poll_interval_ms', 'stream_drain_timeout_ms', 'persistence_timeout_ms'], [], 'limited_shutdown');
   if (Object.values(value.shutdown).some(v => !Number.isSafeInteger(v) || v <= 0 || v > 10000)) fail('limited_shutdown');
+  if(value.enableDiagnosticRetention!==undefined&&typeof value.enableDiagnosticRetention!=='boolean')fail('limited_retention_option');
   if (value.abortSignal !== undefined && !(value.abortSignal instanceof AbortSignal)) fail('limited_abort');
   return {...value, clock: {now: value.clock.now.bind(value.clock), schedule: value.clock.schedule.bind(value.clock)}, shutdown: {...value.shutdown}};
 }
@@ -99,6 +100,6 @@ export async function runBoundedCodegenTask(specification, runtimeOptions, ports
   const prompt = new TextDecoder('utf-8',{fatal:true}).decode(spec.prompt_bytes);
   const result = await runForeground({...spec,task_class:'BOUNDED_CODEGEN_SUMMARIZER_V5'},
     {executable:EXECUTABLE,args:['--prompt',prompt,'--output-format','json','--model',MODEL,'--effort','high','--print-timeout','1m','--sandbox','--disable-slash-commands']},opts,
-    {clock:opts.clock,spawn:ports.spawn,persist,environment:generationEnvironment(spec.task_scope,process.env),createCollector:createCodegenStreamCollector});
+    {clock:opts.clock,spawn:ports.spawn,persist,environment:generationEnvironment(spec.task_scope,process.env),createCollector:createCodegenStreamCollector,retainRejected:ports.retainRejected});
   return Object.freeze({...result,physical_source_witness:result.record.output_custody.persisted ? witness : null,runtime_admitted:false});
 }

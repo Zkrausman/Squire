@@ -51,3 +51,5 @@ The additive [Q218 public coding preparation](docs/Q218-source-only-coding.md) s
 [Q218A bounded source/config preparation](docs/Q218A-source-preparation.md) adds a disabled-by-default explicit native adapter and frozen one-case operation recipe. Provider, syntax and generated-program operations still require the exact scoped operator admission; source/fake tests do not grant it.
 
 [Finite safe decode diagnostics](docs/limited-safe-diagnostics.md) retain bounded rejection codes and validated metadata without raw transport/error retention or weaker validation. This cannot recover the original stopped attempt's cause or reopen it.
+
+[Local rejected-response diagnostics](docs/local-rejected-retention.md) add bounded private capture and exact response lengths, with closed public metadata, original-deadline handling and no raw model-tool access. Historical attempts remain frozen; fresh execution requires the existing scoped gates.

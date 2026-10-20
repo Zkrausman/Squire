@@ -27,9 +27,10 @@ export function validateTaskPayloadJson(bytes) {
 }
 
 export function createLimitedStreamCollector() {return collect(validateTaskPayloadJson);}
-function collect(validatePayload) {
+function collect(validatePayload, captureCodegen = false) {
   let arena = new Uint8Array(AGY_BYTE_LIMITS.max_stdout_bytes), length = 0, out = 0, err = 0;
-  let outEof = false, errEof = false, failed = false, sealed = false, report = null;
+  let outEof = false, errEof = false, failed = false, sealed = false, report = null, rejected = null;
+  const clearCapture=()=>{if(rejected?.response_bytes)rejected.response_bytes.fill(0);rejected=null;};
   return Object.freeze({
     chunk(stream, bytes) {
       if (sealed) return false;
@@ -44,11 +45,12 @@ function collect(validatePayload) {
     snapshot: () => Object.freeze({stdout_bytes_observed: out, stderr_bytes_observed: err,
       stdout_eof: outEof, stderr_eof: errEof, io_drained: outEof && errEof && !failed}),
     diagnosticReport: () => report,
+    diagnosticCapture: () => rejected ? Object.freeze({...rejected,response_bytes:rejected.response_bytes===null?null:new Uint8Array(rejected.response_bytes)}) : null,
     decode(raw) {
-      report = null;
+      report = null; clearCapture();let decodedBytes=null;
       try {
         if (sealed || failed || !outEof || !errEof || !arena) {report=makeReport('COLLECTION','COLLECTION_FAILED');fail('limited_collection');}
-        const bytes = arena.slice(0, length), metadata = decode(bytes, raw);
+        const bytes = decodedBytes = arena.slice(0, length), metadata = decode(bytes, raw);
         if (metadata.parser_status === 'PARSE_ERROR') {
           const known=['PAYLOAD_SIZE_EXCEEDED','MALFORMED_UTF8','MALFORMED_JSON','DUPLICATE_KEY_CONFLICT','INVALID_ROOT_SHAPE'];
           const reason=known.includes(metadata.diagnostic_code)?metadata.diagnostic_code:'ENVELOPE_PARSE_ERROR';
@@ -59,11 +61,21 @@ function collect(validatePayload) {
         if (typeof envelope.response !== 'string') {report=makeReport('RESPONSE','RESPONSE_STRING_REQUIRED',metadata);fail('limited_response');}
         let payload;
         try {payload=validatePayload(new TextEncoder().encode(envelope.response), envelope.response);}
-        catch(error) {const mapped=legacyDiagnostic(error);report=makeReport(mapped.stage,mapped.reason,metadata);throw error;}
+        catch(error) {const mapped=legacyDiagnostic(error);report=makeReport(mapped.stage,mapped.reason,metadata);
+          if(captureCodegen&&mapped.stage==='PAYLOAD'){
+            const eligible=['CODEGEN_PAYLOAD_TOO_SMALL','CODEGEN_MARKDOWN_REJECTED','CODEGEN_PAYLOAD_TOO_LARGE'].includes(mapped.reason)&&
+              !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(envelope.response);
+            const encoded=eligible?new TextEncoder().encode(envelope.response):null;
+            rejected=Object.freeze({eligible,stage:'PAYLOAD',reason:mapped.reason,exact_response_bytes:encoded?.length??null,
+              response_bytes:encoded?encoded.slice(0,65536):null});
+            encoded?.fill(0);
+          }
+          throw error;
+        }
         return {bytes, metadata, payload};
-      } catch(error) {report ??= legacyDiagnostic(error);throw error;}
+      } catch(error) {try{decodedBytes?.fill(0);}catch{}report ??= legacyDiagnostic(error);throw error;}
     },
-    close() {sealed = true; arena = null; length = 0; report = null;}
+    close() {sealed = true; arena?.fill(0); arena = null; length = 0; report = null; clearCapture();}
   });
 }
 
@@ -79,7 +91,7 @@ export function validateGeneratedSourcePayload(response) {
     source_byte_count: source_bytes.length, format_status: 'FORMAT_VALID'});
 }
 export function createCodegenStreamCollector() {
-  const base = collect((bytes, response) => validateGeneratedSourcePayload(response));
+  const base = collect((bytes, response) => validateGeneratedSourcePayload(response), true);
   return Object.freeze({...base, decode(raw) {
     const parsed = base.decode(raw);
     // Persistence receives source bytes, never an envelope or precomputed summary.

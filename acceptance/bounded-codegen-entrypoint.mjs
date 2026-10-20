@@ -1,3 +1,4 @@
+import {createNativeRejectedRetention} from '../src/local-rejected-retention.mjs';
 // Additive explicit entrypoint. Import/default/dry run launch nothing and write nothing.
 import {spawn} from 'node:child_process';
 import * as fs from 'node:fs/promises';
@@ -46,6 +47,8 @@ export async function runBoundedCodegenOneCaseNative(specification,runtimeOption
  const fixtures=JSON.parse(new TextDecoder().decode(await regularBytes(config.fixtures.path,65536))).fixtures;
  if(fixtures.length!==17)throw Error('FINITE_FIXTURE_MATRIX');
  consumed.add(spec.job_id);consumed.add(spec.task_scope);
+ const retention=createNativeRejectedRetention(spec.job_id),captureGate=await retention.prepare();
+ if(captureGate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
  const clock=createMonotonicClock(),controller=new AbortController();
  const signal=runtimeOptions.abortSignal?AbortSignal.any([controller.signal,runtimeOptions.abortSignal]):controller.signal;
  const cancelOuter=clock.schedule(config.outer_observation_ms,()=>controller.abort());
@@ -69,7 +72,7 @@ export async function runBoundedCodegenOneCaseNative(specification,runtimeOption
   };
   const cfg=(id,timeout_ms=5000,deadline_ms)=>({...config.fixture_configs[id-1],timeout_ms,...(deadline_ms===undefined?{}:{deadline_ms})});
   const result=await runCodegenCampaign({fixtures},{clock,abortSignal:signal,
-    generate:()=>runBoundedCodegenTask(spec,{clock,shutdown:config.generation_shutdown,output_path:sourcePath,abortSignal:signal},{spawn:launch('generation'),fs}),
+    generate:()=>runBoundedCodegenTask(spec,{clock,shutdown:config.generation_shutdown,output_path:sourcePath,abortSignal:signal,enableDiagnosticRetention:true},{spawn:launch('generation'),fs,retainRejected:retention.retainRejected}),
     inspectSource,
     syntax:async()=>{await fs.mkdir(join(run,'.tmp'),{mode:0o700});return executeGeneratedSyntax(cfg(1),{clock,spawn:launch('syntax'),abortSignal:signal});},
     prepareFixture:async(f,index)=>{
