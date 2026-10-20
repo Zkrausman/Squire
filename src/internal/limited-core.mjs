@@ -6,7 +6,7 @@ const retained = new Set();
 // Explicit ports for synthetic tests; this module has no native defaults or public argv entrypoint.
 export function runForeground(spec, invocation, options, ports) {
   const {clock, spawn, persist, environment} = ports, shutdown = options.shutdown;
-  const collector = createLimitedStreamCollector(), timers = new Map(), attempts = [];
+  const collector = spec.task_class === 'BOUNDED_CODEGEN_SUMMARIZER_V5' ? ports.createCollector() : createLimitedStreamCollector(), timers = new Map(), attempts = [];
   let spawnAttempted = false, child = null, startedAt = null, lastNow = -1, deadline = null, pid = null;
   let exited = false, code = null, signal = null, wall = null, status = null, diagnostic = null;
   let done = false, completing = false, finishing = false, drainingForced = false, stopping = false, spawned = false;
@@ -130,7 +130,7 @@ export function runForeground(spec, invocation, options, ports) {
     finishing = true; cancel('drain'); checkDeadline();
     if (!status && (code !== 0 || signal !== null)) latch('LIMITED_PROCESS_FAILED');
     if (!status && !io.io_drained) latch('LIMITED_INTERNAL_ERROR', 'IO_INCOMPLETE');
-    if (!status && spec.task_class === 'PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND') {
+    if (!status && ['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'BOUNDED_CODEGEN_SUMMARIZER_V5'].includes(spec.task_class)) {
       let parsed;
       try {parsed = collector.decode({exit_code: code, exit_signal: signal, process_wall_ms: wall}); metadata = parsed.metadata; payloadValid = true;}
       catch {payloadValid = false; latch('LIMITED_PARSER_ERROR');}

@@ -1,3 +1,5 @@
+import {createCodegenStreamCollector} from './limited-stream-collector.mjs';
+import {stageGeneratedSource} from './limited-source-staging.mjs';
 import {spawn} from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
@@ -70,4 +72,29 @@ export async function runInertTimeoutAcceptanceProbe(runtimeOptions) {
   return runForeground({job_id, task_scope: scope, requested_model: 'NONE', max_wall_clock_sec: 1, task_class: 'INERT_TIMEOUT_ACCEPTANCE_PROBE'},
     {executable: '/bin/sleep', args: ['30']}, opts,
     {clock: opts.clock, spawn, persist: () => {throw Error('NO_PROBE_PERSISTENCE');}, environment: childEnvironment(scope)});
+}
+
+// Q218 source-only seam. Required explicit ports: no native generation default.
+export const admitBoundedCodegenTask = admitLimitedAgyTask;
+export async function runBoundedCodegenTask(specification, runtimeOptions, ports) {
+  const spec = admitBoundedCodegenTask(specification), opts = options(runtimeOptions);
+  if (!ports || typeof ports.spawn !== 'function' || !ports.fs) fail('codegen_injected_ports_required');
+  const run = join(spec.task_scope,'output','run-' + spec.job_id), expected = join(run,'workspace','src','summarizer.mjs');
+  if(opts.output_path !== expected) fail('codegen_output_path');
+  claim(spec.job_id,run);
+  const fsPort = ports.fs;
+  const scopeStat = await fsPort.lstat(spec.task_scope);
+  if(!scopeStat.isDirectory() || scopeStat.isSymbolicLink()) fail('codegen_scope');
+  try {await fsPort.mkdir(join(spec.task_scope,'output'),{mode:0o700});} catch(e) {if(e.code !== 'EEXIST') throw e;}
+  const parent = await fsPort.lstat(join(spec.task_scope,'output'));
+  if(!parent.isDirectory() || parent.isSymbolicLink()) fail('codegen_output_parent');
+  await fsPort.mkdir(run,{mode:0o700}); // fresh, no recursive EEXIST acceptance
+  let witness = null;
+  const persist = async (bytes,signal) => {witness = await stageGeneratedSource({run_root:run,source_bytes:bytes,signal},
+    {fs:fsPort,clock:opts.clock,validateSyntax:ports.validateSyntax});};
+  const prompt = new TextDecoder('utf-8',{fatal:true}).decode(spec.prompt_bytes);
+  const result = await runForeground({...spec,task_class:'BOUNDED_CODEGEN_SUMMARIZER_V5'},
+    {executable:EXECUTABLE,args:['--prompt',prompt,'--output-format','json','--model',MODEL,'--effort','high','--print-timeout','1m','--sandbox','--disable-slash-commands']},opts,
+    {clock:opts.clock,spawn:ports.spawn,persist,environment:{},createCollector:createCodegenStreamCollector});
+  return Object.freeze({...result,physical_source_witness:result.record.output_custody.persisted ? witness : null,runtime_admitted:false});
 }

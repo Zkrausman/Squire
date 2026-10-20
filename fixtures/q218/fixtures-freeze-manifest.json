@@ -1,0 +1,726 @@
+{
+  "fixtures": [
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "1790812800000",
+        "--window-end",
+        "1790985600000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 787,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 5,
+            "max_duration_ms": 4985,
+            "mean_duration_ms": "3980.40",
+            "min_duration_ms": 10,
+            "total_duration_ms": 19902
+          },
+          "ERROR": {
+            "count": 4,
+            "max_duration_ms": 4990,
+            "mean_duration_ms": "4978.00",
+            "min_duration_ms": 4966,
+            "total_duration_ms": 19912
+          },
+          "INFO": {
+            "count": 6,
+            "max_duration_ms": 5000,
+            "mean_duration_ms": "4978.00",
+            "min_duration_ms": 4956,
+            "total_duration_ms": 29868
+          },
+          "WARN": {
+            "count": 5,
+            "max_duration_ms": 4995,
+            "mean_duration_ms": "4977.40",
+            "min_duration_ms": 4955,
+            "total_duration_ms": 24887
+          }
+        },
+        "total_processed_lines": 50,
+        "unparsed_lines": 0,
+        "valid_records": 50
+      },
+      "expected_summary_sha256": "6f7d6ef93b783d0c0014667ecb91913a51dccec7d0a5ae2eb4061dfa2ad66ad8",
+      "fixture_id": "FIX-01",
+      "input_bytes": 5198,
+      "input_sha256": "f1bbda9a59bebf856091a77533a79bc544969683e8f32e5fed38d06d1aebaf9d",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "1000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 759,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 0,
+        "unparsed_lines": 0,
+        "valid_records": 0
+      },
+      "expected_summary_sha256": "9616e56058c7f16c02a1480e3b3e051f1e06f7e4e5176f7b44249e0687846d0c",
+      "fixture_id": "FIX-02",
+      "input_bytes": 0,
+      "input_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 758,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 5,
+            "max_duration_ms": 10,
+            "mean_duration_ms": "10.00",
+            "min_duration_ms": 10,
+            "total_duration_ms": 50
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 10,
+        "unparsed_lines": 5,
+        "valid_records": 5
+      },
+      "expected_summary_sha256": "3f46cde705594a0acf1b0eee5623a48a67ae63538681ab2b2f0618c75e3f2008",
+      "fixture_id": "FIX-03",
+      "input_bytes": 1125,
+      "input_sha256": "92014856b4ebc023e7321c46e3fd06672d62f0bb2db2d1a6220a90d46ae418b4",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 758,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 8,
+            "max_duration_ms": 10,
+            "mean_duration_ms": "10.00",
+            "min_duration_ms": 10,
+            "total_duration_ms": 80
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 10,
+        "unparsed_lines": 2,
+        "valid_records": 8
+      },
+      "expected_summary_sha256": "d4ea46a6ac5b66d31faf17509f651187a212f6cbb4c478bae8982a5abe5c3fa4",
+      "fixture_id": "FIX-04",
+      "input_bytes": 1016,
+      "input_sha256": "ba85ed0832107c6c1274a5bae1cb90a2552ba8ffa90dece222cc7b4515929e0c",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 757,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 4,
+            "max_duration_ms": 10,
+            "mean_duration_ms": "10.00",
+            "min_duration_ms": 10,
+            "total_duration_ms": 40
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 8,
+        "unparsed_lines": 4,
+        "valid_records": 4
+      },
+      "expected_summary_sha256": "5f8c0e43aec0ea60153e042469ebec43aa021963cfc9716d8bd583b11ae2e56b",
+      "fixture_id": "FIX-05",
+      "input_bytes": 720,
+      "input_sha256": "a643bbf3d24d1de1e28c9da1a4ba1f9e0249e369d469d8eae76f87cd00c2a58b",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 757,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 2,
+            "max_duration_ms": 10,
+            "mean_duration_ms": "10.00",
+            "min_duration_ms": 10,
+            "total_duration_ms": 20
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 6,
+        "unparsed_lines": 3,
+        "valid_records": 3
+      },
+      "expected_summary_sha256": "9008f0c465c6dd387cbd35aa06dcb745afc8cb52388a3008b2a4ed811685a45f",
+      "fixture_id": "FIX-06",
+      "input_bytes": 611,
+      "input_sha256": "55908cea27db9605acfa32a10ba5c81ee2fcc39aba91ae3e75e52035bf60701c",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 775,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 2,
+            "max_duration_ms": 86400000,
+            "mean_duration_ms": "43200000.00",
+            "min_duration_ms": 0,
+            "total_duration_ms": 86400000
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 10,
+        "unparsed_lines": 8,
+        "valid_records": 2
+      },
+      "expected_summary_sha256": "5a25a43f54c5b7898913ee6aef2e32dc4a1779daeb93ab4ddce3c8b1e2e9f291",
+      "fixture_id": "FIX-07",
+      "input_bytes": 1031,
+      "input_sha256": "726654839f2419509c98e0240a1d2cac7c3f72c6e22db9b5cf80f1414e9d7a6d",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "1790812800000",
+        "--window-end",
+        "1790899200000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 757,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 1,
+            "max_duration_ms": 10,
+            "mean_duration_ms": "10.00",
+            "min_duration_ms": 10,
+            "total_duration_ms": 10
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 5,
+        "unparsed_lines": 0,
+        "valid_records": 5
+      },
+      "expected_summary_sha256": "32aabc3ed8d7b0e31f0bcfe78b57a0e4d8907d922cfd268f740349ec67323add",
+      "fixture_id": "FIX-08",
+      "input_bytes": 505,
+      "input_sha256": "6ac724c4055ca1c8d4cabe97d6d6dedf93bb9b8abcc7d818a50494dc69dc1647",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 757,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "ERROR": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          },
+          "INFO": {
+            "count": 2,
+            "max_duration_ms": 10,
+            "mean_duration_ms": "10.00",
+            "min_duration_ms": 10,
+            "total_duration_ms": 20
+          },
+          "WARN": {
+            "count": 0,
+            "max_duration_ms": null,
+            "mean_duration_ms": "0.00",
+            "min_duration_ms": null,
+            "total_duration_ms": 0
+          }
+        },
+        "total_processed_lines": 5,
+        "unparsed_lines": 3,
+        "valid_records": 2
+      },
+      "expected_summary_sha256": "51e671a5b746bc23783eca87aa3b5ece80dd30250aa89dd95f4bb022b53449b6",
+      "fixture_id": "FIX-09",
+      "input_bytes": 310,
+      "input_sha256": "4e8739678da483165d398d5275ae21fdbf063a3a50536e98c97107fc9804b59b",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 0,
+      "expected_summary_bytes": 739,
+      "expected_summary_json": {
+        "by_severity": {
+          "DEBUG": {
+            "count": 3,
+            "max_duration_ms": 10,
+            "mean_duration_ms": "3.33",
+            "min_duration_ms": 0,
+            "total_duration_ms": 10
+          },
+          "ERROR": {
+            "count": 8,
+            "max_duration_ms": 3,
+            "mean_duration_ms": "0.38",
+            "min_duration_ms": 0,
+            "total_duration_ms": 3
+          },
+          "INFO": {
+            "count": 2,
+            "max_duration_ms": 5,
+            "mean_duration_ms": "2.50",
+            "min_duration_ms": 0,
+            "total_duration_ms": 5
+          },
+          "WARN": {
+            "count": 8,
+            "max_duration_ms": 1,
+            "mean_duration_ms": "0.13",
+            "min_duration_ms": 0,
+            "total_duration_ms": 1
+          }
+        },
+        "total_processed_lines": 21,
+        "unparsed_lines": 0,
+        "valid_records": 21
+      },
+      "expected_summary_sha256": "1ace53136f8474a872a9b602f205901cbc7c314ade6966a65466013f6679fcf7",
+      "fixture_id": "FIX-10",
+      "input_bytes": 2112,
+      "input_sha256": "8880c07feccad9be2edfab01f42d0e453736c74d217ba45c31d5970ba57cd7ac",
+      "zero_files_required": false
+    },
+    {
+      "argv": [
+        "--input=/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "1000"
+      ],
+      "expected_exit_code": 2,
+      "expected_summary_bytes": null,
+      "expected_summary_json": null,
+      "expected_summary_sha256": null,
+      "fixture_id": "FIX-11",
+      "input_bytes": 1010,
+      "input_sha256": "b8c8f36341756c290665aab60afd43206f6d81a80a4cd4ec78b7988ba2c6081c",
+      "zero_files_required": true
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "5000000",
+        "--window-end",
+        "1000000"
+      ],
+      "expected_exit_code": 2,
+      "expected_summary_bytes": null,
+      "expected_summary_json": null,
+      "expected_summary_sha256": null,
+      "fixture_id": "FIX-12",
+      "input_bytes": 1010,
+      "input_sha256": "b8c8f36341756c290665aab60afd43206f6d81a80a4cd4ec78b7988ba2c6081c",
+      "zero_files_required": true
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson.missing",
+        "--output",
+        "/f/summary.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "1000"
+      ],
+      "expected_exit_code": 2,
+      "expected_summary_bytes": null,
+      "expected_summary_json": null,
+      "expected_summary_sha256": null,
+      "fixture_id": "FIX-13",
+      "input_bytes": null,
+      "input_sha256": null,
+      "zero_files_required": true
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "1000000"
+      ],
+      "expected_exit_code": 3,
+      "expected_summary_bytes": null,
+      "expected_summary_json": null,
+      "expected_summary_sha256": null,
+      "fixture_id": "FIX-14",
+      "input_bytes": 2,
+      "input_sha256": "ea5dbf9596d187e9500f23e9a680109475341cf4e81f7e043f7d97152c10772f",
+      "zero_files_required": true
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 3,
+      "expected_summary_bytes": null,
+      "expected_summary_json": null,
+      "expected_summary_sha256": null,
+      "fixture_id": "FIX-15",
+      "input_bytes": 1010101,
+      "input_sha256": "78ddfb0ffaa267400a80da07fe88257a38a89d451d86ae9ac25e22389c147450",
+      "zero_files_required": true
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/f/summary.json",
+        "--manifest",
+        "/f/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "2000000000000"
+      ],
+      "expected_exit_code": 3,
+      "expected_summary_bytes": null,
+      "expected_summary_json": null,
+      "expected_summary_sha256": null,
+      "fixture_id": "FIX-16",
+      "input_bytes": 5242881,
+      "input_sha256": "0dfe91c1523276cb57173a627b31502cba3d10d606ad32573494f6e134d8b1b0",
+      "zero_files_required": true
+    },
+    {
+      "argv": [
+        "--input",
+        "/f/input.ndjson",
+        "--output",
+        "/proc/nonexistent-dir/summary.json",
+        "--manifest",
+        "/proc/nonexistent-dir/manifest.json",
+        "--window-start",
+        "0",
+        "--window-end",
+        "1000"
+      ],
+      "expected_exit_code": 4,
+      "expected_summary_bytes": null,
+      "expected_summary_json": null,
+      "expected_summary_sha256": null,
+      "fixture_id": "FIX-17",
+      "input_bytes": 1010,
+      "input_sha256": "b8c8f36341756c290665aab60afd43206f6d81a80a4cd4ec78b7988ba2c6081c",
+      "zero_files_required": false
+    }
+  ],
+  "manifest_recipe": {
+    "manifest_version": "1.0",
+    "serialization": "ASCII_RECURSIVE_SORT_2_SPACES_FINAL_LF",
+    "source_sha256": "BIND_ACTUAL_DELIVERED_SOURCE_AFTER_GENERATION",
+    "summary_bytes": "FROZEN_EXACT_BYTE_COUNT",
+    "summary_sha256": "FROZEN_EXACT_BYTES_SHA256"
+  },
+  "oracle_role": "PUBLIC_REFERENCE_BYTE_TRANSFORM_NOT_GENERATED_SOLUTION",
+  "runtime_admitted": false,
+  "schema": "Q218_PUBLIC_FIXTURE_FREEZE_V1",
+  "task": "ndjson-log-summarizer"
+}
