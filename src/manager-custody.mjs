@@ -8,14 +8,14 @@ export const HOST_GATES = Object.freeze(['stable_manager_lifetime', 'failed_none
   'exclusive_epoch_authority', 'launch_inside_cgroup', 'cgroup_v2_descendant_coverage',
   'non_adversarial_workload_no_escape', 'no_external_cgroup_admission']);
 
-function binding(value) {
+export function captureUnitBinding(value) {
   closed(value, ['job_id', 'unit_name', 'invocation_id'], [], 'unit_binding');
   if (typeof value.job_id !== 'string' || typeof value.unit_name !== 'string' || !/^squire-[a-zA-Z0-9-]+\.service$/.test(value.unit_name) ||
       typeof value.invocation_id !== 'string' || !/^[a-fA-F0-9]{32}$/.test(value.invocation_id) || /^0+$/.test(value.invocation_id)) fail('unit_binding');
   return Object.freeze({...value});
 }
 function matches(expected, input) {
-  const actual = binding(input);
+  const actual = captureUnitBinding(input);
   if (Object.keys(expected).some(key => actual[key] !== expected[key])) fail('unit_epoch_conflict');
   return actual;
 }
@@ -155,7 +155,7 @@ function custodyFactory(options, asyncStop) {
                 KillMode: 'control-group', Restart: 'no', KillSignal: 'SIGTERM', SendSIGKILL: true,
                 FinalKillSignal: 'SIGKILL', TimeoutStopSec: grace / 1000})}));
             closed(response, ['binding', 'custody_acknowledged', 'worker_in_cgroup_before_exec'], [], 'start_response');
-            const candidate = binding(response.binding);
+            const candidate = captureUnitBinding(response.binding);
             if (candidate.job_id !== spec.job_id || candidate.unit_name !== unitName ||
                 response.custody_acknowledged !== true || response.worker_in_cgroup_before_exec !== true) fail('start_response');
             if (unknownLatched) return;

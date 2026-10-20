@@ -25,3 +25,5 @@ The [asynchronous observation bridge](docs/SQ-02-observation-bridge.md) consumes
 The injected [deadline driver](docs/SQ-02-deadline-driver.md) drives the original custody budget while observation reads are idle. This is fake-tested scheduling source, not host qualification or a runnable native task coordinator.
 
 The [asynchronous StopUnit acknowledgement branch](docs/SQ-02-async-stop-acknowledgement.md) is source/fake-tested after known custody. Async start-deadline policy and all real transport/native qualification remain incomplete.
+
+The [pure StopUnit message codec](docs/SQ-02-stop-unit-codec.md) validates supplied message correlation after known custody. It supplies no bus connection or independent InvocationID attestation.
