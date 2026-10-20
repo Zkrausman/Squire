@@ -1,4 +1,5 @@
 import {AGY_BYTE_LIMITS, decodeAgyJson} from './agy-profile.mjs';
+import {createHash} from 'node:crypto';
 import {fail} from './job-spec.mjs';
 
 const decode = (bytes, raw = {}) => decodeAgyJson({raw_payload_bytes: bytes,
@@ -24,7 +25,8 @@ export function validateTaskPayloadJson(bytes) {
   return Object.freeze({...value, enforced_limits: Object.freeze(value.enforced_limits), known_limitations: Object.freeze(value.known_limitations)});
 }
 
-export function createLimitedStreamCollector() {
+export function createLimitedStreamCollector() {return collect(validateTaskPayloadJson);}
+function collect(validatePayload) {
   let arena = new Uint8Array(AGY_BYTE_LIMITS.max_stdout_bytes), length = 0, out = 0, err = 0;
   let outEof = false, errEof = false, failed = false, sealed = false;
   return Object.freeze({
@@ -46,9 +48,36 @@ export function createLimitedStreamCollector() {
       if (metadata.parser_status === 'PARSE_ERROR' || metadata.provider_reported_status !== 'SUCCESS') fail('limited_envelope');
       const envelope = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes));
       if (typeof envelope.response !== 'string') fail('limited_response');
-      const payload = validateTaskPayloadJson(new TextEncoder().encode(envelope.response));
+      const payload = validatePayload(new TextEncoder().encode(envelope.response), envelope.response);
       return {bytes, metadata, payload};
     },
     close() {sealed = true; arena = null; length = 0;}
   });
+}
+
+// Cooperative format checks only. This deliberately makes no syntax or safety claim.
+export function validateGeneratedSourcePayload(response) {
+  if (typeof response !== 'string') fail('CODEGEN_SOURCE_STRING_REQUIRED');
+  if (response.includes('```')) fail('CODEGEN_MARKDOWN_REJECTED');
+  if (/[\u0000\uFEFF]/u.test(response) || /[\uD800-\uDFFF]/u.test(response)) fail('CODEGEN_ENCODING_REJECTED');
+  const source_bytes = new TextEncoder().encode(response);
+  if (source_bytes.length < 100) fail('CODEGEN_PAYLOAD_TOO_SMALL');
+  if (source_bytes.length > 65536) fail('CODEGEN_PAYLOAD_TOO_LARGE');
+  return Object.freeze({source_code: response, source_bytes, source_sha256: createHash('sha256').update(source_bytes).digest('hex'),
+    source_byte_count: source_bytes.length, format_status: 'FORMAT_VALID'});
+}
+export function createCodegenStreamCollector() {
+  const base = collect((bytes, response) => validateGeneratedSourcePayload(response));
+  return Object.freeze({...base, decode(raw) {
+    const parsed = base.decode(raw);
+    // Persistence receives source bytes, never an envelope or precomputed summary.
+    parsed.bytes.fill(0);
+    return {bytes: parsed.payload.source_bytes, metadata: parsed.metadata, payload: parsed.payload};
+  }});
+}
+export function observeGeneratedSyntax(source, ports = {}) {
+  const value = ports.validateSyntax ? ports.validateSyntax(source) : {syntax_status:'UNESTABLISHED_NO_NATIVE_PARSER', syntax_valid:null};
+  const allowed = {UNESTABLISHED_NO_NATIVE_PARSER:null, SYNTAX_VALID:true, SYNTAX_ERROR:false};
+  if (!value || !Object.hasOwn(allowed,value.syntax_status) || allowed[value.syntax_status] !== value.syntax_valid) fail('CODEGEN_SYNTAX_OBSERVATION');
+  return Object.freeze({syntax_status:value.syntax_status,syntax_valid:value.syntax_valid});
 }
