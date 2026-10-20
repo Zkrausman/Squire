@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {readFile} from 'node:fs/promises';
-import {generationEnvironment,NODE_RUNTIME,buildCodegenPrompt,TASK_KEYS,verifyExactFile,hash,canonicalBytes,programEnvironment,requireAdmission} from '../src/bounded-codegen-plan.mjs';
+import {generationEnvironment,NODE_RUNTIME,buildCodegenPrompt,buildClarifiedCodegenPrompt,CODEGEN_PROMPT_PROFILE,TASK_KEYS,verifyExactFile,hash,canonicalBytes,programEnvironment,requireAdmission} from '../src/bounded-codegen-plan.mjs';
 import {runCodegenCampaign} from '../src/bounded-codegen-campaign.mjs';
 import {observeGeneratedSyntax} from '../src/limited-stream-collector.mjs';
 import {executeGeneratedSummarizer,executeGeneratedSyntax} from '../src/limited-generated-executor.mjs';
@@ -97,4 +97,24 @@ test('syntax success remains UNKNOWN until post-check source identity is verifie
 test('last post-verification clock abort cannot grant campaign PASS',async()=>{
  const f=campaign(),controller=new AbortController();let reads=0;f.ports.abortSignal=controller.signal;f.ports.clock.now=()=>{if(++reads===52)controller.abort();return 0;};
  const r=await runCodegenCampaign({fixtures:f.fixtures},f.ports);assert.equal(f.order.length,17);assert.equal(r.status,'FAIL');assert.equal(r.reason,'CANCELED');
+});
+
+
+test('versioned channel prefix preserves the canonical task bytes and fresh output ownership',()=>{
+ const task=Object.fromEntries(TASK_KEYS.map(k=>[k,{public:'synthetic task',a:1}]));
+ task.private_fixture='excluded synthetic sentinel';
+ const before=JSON.stringify(task),projection=buildCodegenPrompt(task),prompt=buildClarifiedCodegenPrompt(task);
+ assert.equal(CODEGEN_PROMPT_PROFILE,'Q218A_PROMPT_CHANNEL_CLARIFICATION_V1');
+ assert.equal(hash(prompt.slice(0,902)),'1322bf70e4425c0c9223d44c422a4e8235fe617b0a9e7a5565dc8385bc1a2399');
+ assert.deepEqual(prompt.slice(902),projection);assert.equal(prompt.at(-1),10);
+ assert.equal(new TextDecoder('utf-8',{fatal:true}).decode(prompt).includes('excluded synthetic sentinel'),false);
+ assert.equal(JSON.stringify(task),before);prompt.fill(0);
+ assert.deepEqual(buildCodegenPrompt(task),projection);
+ assert.deepEqual(buildClarifiedCodegenPrompt(task).slice(902),projection);
+});
+test('clarified prefix counts toward the existing prompt bound without changing canonical builder',()=>{
+ const task=Object.fromEntries(TASK_KEYS.map(k=>[k,'x']));task.task_specification='x'.repeat(32000);
+ assert.ok(buildCodegenPrompt(task).length<=32768);
+ assert.throws(()=>buildClarifiedCodegenPrompt(task),/PROMPT_BOUND/);
+ assert.throws(()=>buildClarifiedCodegenPrompt({}),/TASK_KEY_MISSING/);
 });
