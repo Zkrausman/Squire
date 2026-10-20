@@ -41,3 +41,5 @@ The first [AGY source profile](docs/SQ-03-agy-profile.md) prepares fixed-cap, ve
 An [injected output collector](docs/SQ-03-output-collector.md) now models bounded AGY chunks, EOF and raw exit with original-deadline and callback-reentrancy guards. It contains no native producer, async pump or custody action.
 
 The [fake task integration path](docs/SQ-06-injected-task-path.md) exercises accepted AGY, ownership, output, artifact and lifecycle interfaces together with explicit synthetic observations. It adds no production runner or runtime qualification.
+
+The [injected source task coordinator](docs/SQ-06-injected-task-coordinator.md) now composes the accepted provider, custody, output, artifact and lifecycle interfaces under one original deadline. It requires explicit admission and quiescence evidence, withholds unrepresentable records and adds no real dispatch or runtime admission.
