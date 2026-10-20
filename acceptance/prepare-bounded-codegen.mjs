@@ -1,3 +1,4 @@
+import {RETENTION_POLICY,createNativeRejectedRetention} from '../src/local-rejected-retention.mjs';
 // Source/config preparation only. No subprocess/provider/syntax/program invocation.
 import * as fs from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
@@ -23,7 +24,7 @@ export async function prepareBoundedCodegen(root,source_commit){
  prompt:{path:join(root,'prompt.utf8'),bytes:prompt.length,sha256:hash(prompt)},
  fixtures:{path:join(PUBLIC_FREEZE_ROOT,'fixtures-freeze-manifest.json'),bytes:20720,sha256:'7c133ceaae9ca7466689f5e612dbd46fd8f0a300bb7fa7807d6c5cbacd4cccc7'},
  fixture_inputs:Array.from({length:17},(_,i)=>join(PUBLIC_FREEZE_ROOT,`fixture-${String(i+1).padStart(2,'0')}`,'input.ndjson')),
- fixture_configs:fixtureConfigurations(),generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,
+ fixture_configs:fixtureConfigurations(),diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,
  outer_observation_ms:250000,fixture_aggregate_ms:85000,max_direct_child_spawns:19,environment_policy:ENVIRONMENT_POLICY,
  task_input:{path:taskPath,bytes:taskBytes.length,sha256:taskSHA}};
  validateOperationConfig(config);
@@ -36,11 +37,13 @@ export async function prepareBoundedCodegen(root,source_commit){
  fix17_disclosure:['/proc/nonexistent-dir/summary.json','/proc/nonexistent-dir/manifest.json'],
  admission_required:'Exact scoped operator runtime decision including FIX17; fresh effective provider preflight receipt bound to config hash; no retries.',
  residual_risks:['Ambient same-user filesystem access; no hostile containment','Direct child only; descendants untracked','Responsive parent event loop required','Signal attempt not termination proof','No crash recovery, durability or workspace reuse','Outer250s target not hard terminality/cleanup/inference guarantee']};
+ const captureGate=await createNativeRejectedRetention(Q218_JOB).prepare();
+ if(captureGate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
  await fs.mkdir(root,{mode:0o700}); // fail closed on any existing directory
  for(const [name,bytes]of [['prompt.utf8',prompt],['config.json',canonicalBytes(config)],['operation-manifest.json',canonicalBytes(manifest)]]){
   await fs.writeFile(join(root,name),bytes,{flag:'wx',mode:0o600});if(hash(await fs.readFile(join(root,name)))!==hash(bytes))throw Error('PREPARATION_READBACK');
  }
- return {root,prompt:{bytes:prompt.length,sha256:hash(prompt)},config_sha256:hash(canonicalBytes(config)),manifest_sha256:hash(canonicalBytes(manifest)),source_pin_count:SOURCE_FILES.length,runtime_admitted:false};
+ return {root,prompt:{bytes:prompt.length,sha256:hash(prompt)},config_sha256:hash(canonicalBytes(config)),manifest_sha256:hash(canonicalBytes(manifest)),source_pin_count:SOURCE_FILES.length,diagnostic_capture_gate:captureGate,runtime_admitted:false};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  const args=process.argv.slice(2);if(args.length!==3||args[0]!=='--prepare')throw Error('EXACT_SOURCE_PREPARATION_ARGS_REQUIRED');

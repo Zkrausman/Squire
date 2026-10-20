@@ -1,3 +1,4 @@
+import {RETENTION_POLICY} from './local-rejected-retention.mjs';
 import {join} from 'node:path';
 import {closed} from './job-spec.mjs';
 import {canonicalBytes,hash,NODE_RUNTIME,AGY_RUNTIME,FIXTURE_FREEZE_SHA256,Q218_JOB,Q218_SCOPE,GENERATION_SHUTDOWN} from './bounded-codegen-plan.mjs';
@@ -11,10 +12,10 @@ export function fixtureConfigurations(){
 const same=(a,b)=>hash(canonicalBytes(a))===hash(canonicalBytes(b));
 export function validateOperationConfig(c){
  closed(c,['schema','runtime_admitted','job_id','scope','source_commit','source_pins','node','agy','prompt','fixtures','fixture_inputs','fixture_configs',
- 'generation_shutdown','preflight_freshness_ms','outer_observation_ms','fixture_aggregate_ms','max_direct_child_spawns','environment_policy','task_input'],[],'operation_config');
+ 'diagnostic_retention','generation_shutdown','preflight_freshness_ms','outer_observation_ms','fixture_aggregate_ms','max_direct_child_spawns','environment_policy','task_input'],[],'operation_config');
  if(c.schema!=='Q218A_OPERATION_V1'||c.runtime_admitted!==false||c.job_id!==Q218_JOB||c.scope!==Q218_SCOPE||c.preflight_freshness_ms!==300000||
  c.outer_observation_ms!==250000||c.fixture_aggregate_ms!==85000||c.max_direct_child_spawns!==19||
- !same(c.fixture_configs,fixtureConfigurations())||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||
+ !same(c.diagnostic_retention,RETENTION_POLICY)||!same(c.fixture_configs,fixtureConfigurations())||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||
  !same(c.node,NODE_RUNTIME)||!same(c.agy,AGY_RUNTIME)||
  c.fixtures.sha256!==FIXTURE_FREEZE_SHA256||c.fixtures.bytes!==20720||
  c.fixtures.path!==join(PUBLIC_FREEZE_ROOT,'fixtures-freeze-manifest.json')||
@@ -25,7 +26,7 @@ export function validateOperationConfig(c){
 }
 export const SOURCE_FILES=Object.freeze([
  'src/bounded-codegen-plan.mjs','src/bounded-codegen-configuration.mjs','src/bounded-codegen-campaign.mjs',
- 'src/limited-runner.mjs','src/internal/limited-core.mjs','src/internal/limited-diagnostics.mjs','src/limited-generated-executor.mjs','src/limited-source-staging.mjs','src/limited-stream-collector.mjs','src/limited-job-record.mjs',
+ 'src/local-rejected-retention.mjs','src/internal/local-rejected-retention.mjs','src/internal/rejected-capture.mjs','src/limited-runner.mjs','src/internal/limited-core.mjs','src/internal/limited-diagnostics.mjs','src/limited-generated-executor.mjs','src/limited-source-staging.mjs','src/limited-stream-collector.mjs','src/limited-job-record.mjs',
  'src/job-spec.mjs','src/agy-profile.mjs','src/provider-metadata.mjs','src/node-process-port.mjs','src/owned-group.mjs',
  'fixtures/q218/public-fixtures.mjs','fixtures/q218/reference-summarizer.mjs','fixtures/q218/verify-result.mjs','fixtures/q218/freeze.mjs',
  'fixtures/q218/SPEC-CLARIFICATION-FIX-08-V1.json','acceptance/bounded-codegen-entrypoint.mjs','acceptance/prepare-bounded-codegen.mjs'

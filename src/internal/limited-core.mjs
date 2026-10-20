@@ -1,3 +1,4 @@
+import {publicRetention,takeRejectedCapture,retentionResult,ownData} from './rejected-capture.mjs';
 import {types} from 'node:util';
 import {collectorDiagnostic,sanitizeDiagnosticMetadata} from './limited-diagnostics.mjs';
 import {createLimitedStreamCollector} from '../limited-stream-collector.mjs';
@@ -15,7 +16,8 @@ export function runForeground(spec, invocation, options, ports) {
   let done = false, completing = false, finishing = false, drainingForced = false, stopping = false, spawned = false;
   let abortLatched = false, timeoutLatched = false, metadata = null, payloadValid = null;
   let persisted = {persisted: false, path: null, byte_count: null, persistence_error: null};
-  let persistenceController = null, resolve;
+  let persistenceController = null, retentionController = null, resolve;
+  let diagnosticRetention = publicRetention();
   const result = new Promise(complete => {resolve = complete;});
   const late = []; // At most one actual late child exit; never rewrites the record.
   const now = () => {
@@ -36,7 +38,7 @@ export function runForeground(spec, invocation, options, ports) {
   }
   function latch(next, detail = next) {
     if (next === 'LIMITED_USER_ABORT') {abortLatched = true; if (!timeoutLatched) status = next;}
-    else if (next === 'LIMITED_TIMEOUT') {timeoutLatched = true; if (!abortLatched) status = next; persistenceController?.abort();}
+    else if (next === 'LIMITED_TIMEOUT') {timeoutLatched = true; if (!abortLatched) status = next; persistenceController?.abort(); retentionController?.abort();}
     else status ??= next;
     diagnostic ??= detail;
   }
@@ -89,7 +91,7 @@ export function runForeground(spec, invocation, options, ports) {
       output_custody: persisted, task_outcome_evaluated: false, task_payload_valid: payloadValid,
       error_details: {code: diagnostic, classification: status === 'LIMITED_SUCCESS' ? null : status, message: null}});
     done = true; teardown();
-    resolve(Object.freeze({record, runtime_evidence: Object.freeze({deadline_ms: deadline, timeout_latched: timeoutLatched,
+    resolve(Object.freeze({record, diagnostic_retention: diagnosticRetention, runtime_evidence: Object.freeze({deadline_ms: deadline, timeout_latched: timeoutLatched,
       abort_latched: abortLatched, signal_attempts: Object.freeze(attempts.map(x => Object.freeze({...x}))),
       event_loop_condition: 'RESPONSIVE_PARENT_EVENT_LOOP', workspace_reuse: 'NOT_AUTHORIZED',
       workspace_disposition: status === 'LIMITED_SUCCESS' ? 'DEDICATED_NOT_REUSED' : 'QUARANTINED', max_steps: 'UNSUPPORTED'}),
@@ -119,12 +121,50 @@ export function runForeground(spec, invocation, options, ports) {
   }
   function onAbort() {
     if (done) return;
-    latch('LIMITED_USER_ABORT'); persistenceController?.abort(); beginStop();
+    latch('LIMITED_USER_ABORT'); persistenceController?.abort(); retentionController?.abort(); beginStop();
     if (exited) void finalize();
   }
   function checkDeadline() {
-    try {if (now() >= deadline) {latch('LIMITED_TIMEOUT'); beginStop();}}
-    catch {latch('LIMITED_INTERNAL_ERROR', 'CLOCK_UNAVAILABLE'); beginStop();}
+    try {if (now() >= deadline) {latch('LIMITED_TIMEOUT'); beginStop();return false;}return true;}
+    catch {latch('LIMITED_INTERNAL_ERROR', 'CLOCK_UNAVAILABLE'); beginStop();return false;}
+  }
+  async function retainRejected() {
+    if (options.enableDiagnosticRetention !== true || status !== 'LIMITED_PARSER_ERROR') return;
+    let capture;
+    try {capture = takeRejectedCapture(collector);} catch {diagnosticRetention=publicRetention('FAILED',null,'RETENTION_INVALID_CAPTURE');return;}
+    if (!capture?.eligible) {diagnosticRetention=publicRetention('NOT_ELIGIBLE',capture);return;}
+    const clear=()=>{try{capture.response_bytes.fill(0);}catch{}};
+    let remaining;
+    try {remaining=deadline-now();} catch {latch('LIMITED_INTERNAL_ERROR','CLOCK_UNAVAILABLE');clear();return;}
+    if (options.abortSignal?.aborted) onAbort();
+    if (remaining<=0) latch('LIMITED_TIMEOUT');
+    if (status!=='LIMITED_PARSER_ERROR') {clear();return;}
+    let retainPort;try{retainPort=ownData(ports,'retainRejected');}catch{}
+    if(typeof retainPort!=='function'||types.isProxy(retainPort)){diagnosticRetention=publicRetention('FAILED',capture,'RETENTION_IO_FAILED');clear();return;}
+    retentionController=new AbortController();
+    let abortListener, settled=false;
+    const aborted=new Promise((_,reject)=>{abortListener=()=>reject(Error('RETENTION_ABORTED'));retentionController.signal.addEventListener('abort',abortListener,{once:true});});
+    aborted.catch(()=>{});
+    let operation;
+    try {
+      arm('retention',remaining,()=>{latch('LIMITED_TIMEOUT');retentionController.abort();});
+      // schedule()/clock callbacks may reenter abort: register first, then check again before calling the port.
+      if(!checkDeadline())retentionController.abort();
+      if(options.abortSignal?.aborted)onAbort();
+      if(status!=='LIMITED_PARSER_ERROR')retentionController.abort();
+      operation=Promise.resolve().then(()=>{if(retentionController.signal.aborted)throw Error('RETENTION_ABORTED');return Reflect.apply(retainPort,ports,[capture,retentionController.signal]);});
+      operation.then(()=>{settled=true;clear();},()=>{settled=true;clear();});
+      const value=await Promise.race([operation,aborted]);
+      if(!checkDeadline())retentionController.abort();
+      diagnosticRetention=retentionController.signal.aborted?publicRetention('UNKNOWN',capture,'RETENTION_TIMEOUT_OR_ABORTED'):retentionResult(value,capture);
+    } catch {
+      diagnosticRetention=publicRetention(retentionController.signal.aborted?'UNKNOWN':'FAILED',capture,retentionController.signal.aborted?'RETENTION_TIMEOUT_OR_ABORTED':'RETENTION_IO_FAILED');
+      if(!operation)clear();
+    } finally {
+      cancel('retention');retentionController.signal.removeEventListener('abort',abortListener);
+      // A pending port owns its copy until observed settlement, even after bounded caller return.
+      if(settled)clear();
+    }
   }
   async function finalize() {
     if (done || finishing || !exited) return;
@@ -167,6 +207,7 @@ export function runForeground(spec, invocation, options, ports) {
         try {Uint8Array.prototype.fill.call(parsedBytes, 0);} catch {latch('LIMITED_INTERNAL_ERROR', 'BUFFER_CLEAR_FAILED');}
       }
     }
+    await retainRejected();
     if (!status) status = spec.task_class === 'INERT_TIMEOUT_ACCEPTANCE_PROBE' ? 'LIMITED_PROCESS_FAILED' : 'LIMITED_SUCCESS';
     complete();
   }
