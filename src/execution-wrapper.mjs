@@ -14,7 +14,7 @@ function dataArray(value, field) {
   }
   return result;
 }
-function invocationData(input) {
+export function captureInvocation(input) {
   closed(input, ['executable', 'args', 'env', 'stdio'], [], 'invocation');
   if (!text(input.executable) || !input.executable.startsWith('/')) fail('executable');
   const args = dataArray(input.args, 'args');
@@ -39,7 +39,7 @@ function methods(value, keys, field) {
 // This wrapper records metadata only. Trusted ports must return bounded synchronous observations.
 // It does not instantiate a native port, inspect payloads, verify artifacts or emit a JobRecord.
 export function startProcess(specification, invocation, options) {
-  const spec = validateJobSpec(specification); const request = invocationData(invocation);
+  const spec = validateJobSpec(specification); const request = captureInvocation(invocation);
   closed(options, ['port', 'clock', 'shutdown'], ['signal'], 'execution_options');
   methods(options.port, ['spawn'], 'port'); methods(options.clock, ['now', 'schedule'], 'clock');
   const {shutdown, signal} = options;
