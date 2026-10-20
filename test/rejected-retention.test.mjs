@@ -167,3 +167,56 @@ test('empty capture publishes zero bytes; partial claim writes are UNKNOWN and f
   const opendir=s.fs.opendir;s.fs.opendir=async p=>{const d=await opendir(p);if(p.endsWith('/slot-4')){const close=d.close;d.close=async()=>{await close();controller.abort();};}return d;};
   assert.equal((await s.adapter.prepare()).capability_status,'UNAVAILABLE');
  });
+function bootstrapFixture(){
+ const f=fakeFS(),root='/private/application-'+(++rootId)+'/diagnostics',parent=dirname(root),controller=new AbortController();
+ const adapter=createLocalRejectedRetention({fs:f.fs,root,uid:42,now:()=>0,randomUUID:()=>token(1),job_id:job});
+ return {...f,root,parent,controller,adapter};
+}
+test('bootstrap creates only the one absent app parent then strict root and five slots',async()=>{
+ const f=bootstrapFixture();assert.equal((await f.adapter.prepare()).capability_status,'READY');
+ assert.equal(f.nodes.get(f.parent).mode,0o700);assert.equal(f.nodes.get(f.parent).uid,42);
+ assert.deepEqual(f.calls.filter(x=>x[0]==='mkdir').map(x=>x[1]),[f.parent,f.root,...Array.from({length:5},(_,i)=>f.root+'/slot-'+i)]);
+});
+test('missing or unsafe higher ancestor prevents all mkdir and cannot trigger recursive repair',async()=>{
+ for(const change of ['missing','symlink','unsafe','foreign']){
+  const f=bootstrapFixture();if(change==='missing')f.nodes.delete('/private');else Object.assign(f.nodes.get('/private'),change==='symlink'?{symlink:true}:change==='unsafe'?{mode:0o777}:{uid:999});
+  assert.equal((await f.adapter.prepare()).capability_status,'UNAVAILABLE');assert.equal(f.calls.filter(x=>x[0]==='mkdir').length,0);
+ }
+});
+test('existing valid app parent ownership and mode are preserved without stricter 0700 requirement',async()=>{
+ for(const uid of [0,42])for(const mode of [0o700,0o755]){
+  const f=bootstrapFixture();f.addDir(f.parent);Object.assign(f.nodes.get(f.parent),{uid,mode});const original={...f.nodes.get(f.parent)};
+  assert.equal((await f.adapter.prepare()).capability_status,'READY');assert.deepEqual(f.nodes.get(f.parent),original);assert.equal(f.calls.filter(x=>x[0]==='mkdir'&&x[1]===f.parent).length,1);
+ }
+});
+test('unsafe existing app parent fails as-is without chmod/chown/unlink or child creation',async()=>{
+ for(const change of [{mode:0o777},{mode:0o775},{uid:999},{symlink:true},{dir:false}]){
+  const f=bootstrapFixture();f.addDir(f.parent);Object.assign(f.nodes.get(f.parent),change);const original={...f.nodes.get(f.parent)};
+  assert.equal((await f.adapter.prepare()).capability_status,'UNAVAILABLE');assert.deepEqual(f.nodes.get(f.parent),original);assert.equal(f.calls.filter(x=>x[0]==='mkdir').length,1);assert.ok(!f.calls.some(x=>x[0]==='unlink'));
+ }
+});
+test('concurrent parent EEXIST permits one validation only; valid and unsafe racers remain distinct',async()=>{
+ for(const safe of [true,false]){
+  const f=bootstrapFixture(),mkdir=f.fs.mkdir;let parentCalls=0;
+  f.fs.mkdir=async(p,opts)=>{if(p===f.parent){parentCalls++;f.addDir(p);if(!safe)f.nodes.get(p).mode=0o777;throw Object.assign(Error('synthetic race'),{code:'EEXIST'});}return mkdir(p,opts);};
+  assert.equal((await f.adapter.prepare()).capability_status,safe?'READY':'UNAVAILABLE');assert.equal(parentCalls,1);
+ }
+});
+test('parent EACCES/EPERM fences initialization with no second mkdir or fallback',async()=>{
+ for(const code of ['EACCES','EPERM']){
+  const f=bootstrapFixture();let attempts=0;f.fs.mkdir=async()=>{attempts++;throw Object.assign(Error('synthetic denial'),{code});};
+  assert.equal((await f.adapter.prepare()).capability_status,'UNAVAILABLE');assert.equal(attempts,1);assert.equal((await f.adapter.prepare()).capability_status,'UNAVAILABLE');assert.equal(attempts,1);
+ }
+});
+test('filesystem-root parent is never a bootstrap target',async()=>{
+ const f=fakeFS(),adapter=createLocalRejectedRetention({fs:f.fs,root:'/diagnostics',uid:42,now:()=>0,randomUUID:()=>token(1),job_id:job});
+ assert.equal((await adapter.prepare()).capability_status,'UNAVAILABLE');assert.equal(f.calls.length,0);
+});
+test('abort before or during parent bootstrap prevents every later creation',async()=>{
+ for(const point of ['already','ancestor','parent']){
+  const f=bootstrapFixture();if(point==='already')f.controller.abort();
+  if(point==='ancestor'){const lstat=f.fs.lstat;f.fs.lstat=async p=>{const s=await lstat(p);if(p==='/private')f.controller.abort();return s;};}
+  if(point==='parent'){const mkdir=f.fs.mkdir;f.fs.mkdir=async(p,opts)=>{await mkdir(p,opts);if(p===f.parent)f.controller.abort();};}
+  assert.equal((await f.adapter.prepare(f.controller.signal)).capability_status,'UNAVAILABLE');assert.equal(f.calls.filter(x=>x[0]==='mkdir').length,point==='parent'?1:0);
+ }
+});
