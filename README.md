@@ -35,3 +35,5 @@ The [known-custody coordinator and readiness map](docs/SQ-02-known-custody-coord
 The [source-only startup adoption path](docs/SQ-02-startup-adoption.md) connects an acknowledged operation to the existing session/coordinator through one private lexical core. It preserves original deadline/identity and coordinates local reservations without a second start RPC.
 
 SQ-03 now includes [pure provider metadata decoders](docs/SQ-03-provider-metadata.md) for bounded AGY JSON and Codex JSONL bytes. These seams preserve reported counter provenance and wrapper observations without invoking a provider or determining task outcome. AGY one-shot JSON is the first selected source-only profile; invocation encoding and all runtime qualification remain separate.
+
+The first [AGY source profile](docs/SQ-03-agy-profile.md) prepares fixed-cap, version-matched argument data with original deadlines and `runtime_admitted=false`. It includes no launcher or output collector; native startup stays disabled.
