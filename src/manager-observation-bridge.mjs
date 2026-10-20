@@ -11,7 +11,7 @@ export function createManagerObservationBridge(options) {
   closed(clock, ['now', 'schedule'], [], 'observation_clock');
   const sessionKeys = ['snapshot', 'start', 'abort', 'tick', 'settle', 'observe', 'nativeExit',
     'disconnected', 'observationFailed', 'releaseWorkspace'];
-  closed(session, sessionKeys, ['schedulingFailed'], 'custody_session');
+  closed(session, sessionKeys, ['schedulingFailed', 'stopAcknowledgement'], 'custody_session');
   if (sessionKeys.some(key => typeof session[key] !== 'function') || typeof source.nextEvent !== 'function' ||
       typeof clock.now !== 'function' || typeof clock.schedule !== 'function' ||
       !Number.isSafeInteger(options.read_timeout_ms) || options.read_timeout_ms <= 0) fail('observation_bridge');

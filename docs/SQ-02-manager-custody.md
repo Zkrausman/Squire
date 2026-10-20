@@ -39,3 +39,5 @@ The source-only asynchronous observation bridge is delivered separately; remaini
 The snapshot now exposes its original `task_deadline_ms` for same-clock observation wiring. `observationFailed()` latches UNKNOWN/quarantine for an untrusted or missing observation stream without asserting an actual manager disconnect; released sessions ignore this late event like other operations.
 
 `schedulingFailed()` classifies untrusted deadline scheduling as UNKNOWN/quarantine without inventing a manager disconnect. The observation bridge accepts this additive session entrypoint; it still calls no scheduler or transport by default.
+
+The [asynchronous StopUnit branch](SQ-02-async-stop-acknowledgement.md) now observes bounded transaction acknowledgement after known custody. It retains synchronous verified start admission; a pending start is still not custody.

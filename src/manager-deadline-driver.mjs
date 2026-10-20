@@ -9,7 +9,7 @@ export function createManagerDeadlineDriver(options) {
   const {session, clock} = options;
   const keys = ['snapshot', 'start', 'abort', 'tick', 'settle', 'observe', 'nativeExit',
     'disconnected', 'observationFailed', 'schedulingFailed', 'releaseWorkspace'];
-  closed(session, keys, [], 'custody_session');
+  closed(session, keys, ['stopAcknowledgement'], 'custody_session');
   closed(clock, ['now', 'schedule'], [], 'deadline_clock');
   if (keys.some(key => typeof session[key] !== 'function') || typeof clock.now !== 'function' ||
       typeof clock.schedule !== 'function') fail('deadline_driver');

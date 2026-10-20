@@ -23,3 +23,5 @@ The owner-approved conditional [systemd manager custody source contract](docs/SQ
 The [asynchronous observation bridge](docs/SQ-02-observation-bridge.md) consumes one injected event at a time after custody acknowledgement. It supplies no bus transport, service creation or runtime qualification.
 
 The injected [deadline driver](docs/SQ-02-deadline-driver.md) drives the original custody budget while observation reads are idle. This is fake-tested scheduling source, not host qualification or a runnable native task coordinator.
+
+The [asynchronous StopUnit acknowledgement branch](docs/SQ-02-async-stop-acknowledgement.md) is source/fake-tested after known custody. Async start-deadline policy and all real transport/native qualification remain incomplete.
