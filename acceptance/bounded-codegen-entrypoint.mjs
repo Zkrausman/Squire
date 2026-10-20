@@ -6,11 +6,11 @@ import {createReadStream} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createMonotonicClock} from '../src/node-process-port.mjs';
-import {admitBoundedCodegenTask,runBoundedCodegenTask} from '../src/limited-runner.mjs';
+import {admitBoundedCodegenCodexTask,runBoundedCodegenCodexTask} from '../src/limited-runner.mjs';
 import {executeGeneratedSummarizer,executeGeneratedSyntax} from '../src/limited-generated-executor.mjs';
 import {validateGeneratedSourcePayload} from '../src/limited-stream-collector.mjs';
-import {NODE_RUNTIME,AGY_RUNTIME,FIXTURE_FREEZE_SHA256,GENERATION_SHUTDOWN,Q218_JOB,Q218_SCOPE,verifyExactFile,hash,canonicalBytes,requireAdmission} from '../src/bounded-codegen-plan.mjs';
-import {SOURCE_FILES,validateOperationConfig} from '../src/bounded-codegen-configuration.mjs';
+import {NODE_RUNTIME,FIXTURE_FREEZE_SHA256,GENERATION_SHUTDOWN,verifyExactFile,hash,canonicalBytes,requireCodexAdmission,validateCodexPreflight} from '../src/bounded-codegen-plan.mjs';
+import {SOURCE_FILES,validateCodexOperationConfig} from '../src/bounded-codegen-configuration.mjs';
 import {runCodegenCampaign} from '../src/bounded-codegen-campaign.mjs';
 const consumed=new Set();
 const nativeReads={lstat:fs.lstat,readChunks:path=>createReadStream(path)};
@@ -18,32 +18,24 @@ export const entrypointMode=args=>args.length===3&&args[0]==='--run-admitted'?'E
 async function regularBytes(path,max){const st=await fs.lstat(path);if(!st.isFile()||st.isSymbolicLink()||st.size>max)throw Error('REGULAR_BOUNDED_FILE_REQUIRED');const chunks=[];let count=0;for await(const chunk of createReadStream(path)){count+=chunk.length;if(count>max)throw Error('REGULAR_BOUNDED_FILE_REQUIRED');chunks.push(chunk);}
  return Buffer.concat(chunks,count);}
 async function absent(path){try{await fs.lstat(path);return false;}catch(e){if(e.code==='ENOENT')return true;throw e;}}
-function boundConfig(c,spec){
- validateOperationConfig(c);
-
- if(!/^[a-f0-9]{40}$/.test(c.source_commit)||c.schema!=='Q218A_OPERATION_V1'||c.runtime_admitted!==false||c.scope!==spec.task_scope||c.job_id!==spec.job_id||
- c.node.path!==NODE_RUNTIME.path||c.node.sha256!==NODE_RUNTIME.sha256||c.node.bytes!==NODE_RUNTIME.bytes||
- c.agy.path!==AGY_RUNTIME.path||c.agy.sha256!==AGY_RUNTIME.sha256||c.agy.bytes!==AGY_RUNTIME.bytes||
- c.fixtures.sha256!==FIXTURE_FREEZE_SHA256||c.outer_observation_ms!==250000||c.fixture_aggregate_ms!==85000||
- c.max_direct_child_spawns!==19||c.prompt.sha256!==hash(spec.prompt_bytes)||c.prompt.bytes!==spec.prompt_bytes.length||
- c.scope!=='/home/zack/Documents/Codex/2026-10-19/squire-q218-onecase-5d907cf7-8120-4ca5-8135-322865ea9684')throw Error('FROZEN_CONFIG_MISMATCH');
+export function boundCodexConfig(c,spec){
+ validateCodexOperationConfig(c);
+ if(c.scope!==spec.task_scope||c.job_id!==spec.job_id||c.requested_model!==spec.requested_model||c.effort!==spec.effort||c.prompt.sha256!==hash(spec.prompt_bytes)||c.prompt.bytes!==spec.prompt_bytes.length)throw Error('FROZEN_CODEX_CONFIG_MISMATCH');
 }
-export async function runBoundedCodegenOneCaseNative(specification,runtimeOptions,admissionBundle){
+export async function runBoundedCodegenOneCaseNativeCodex(specification,runtimeOptions,admissionBundle){
  // Absent admission rejects before even reading a config or touching a native port.
  if(!admissionBundle)throw Error('UNADMITTED_NATIVE_OPERATION');
  const configBytes=new Uint8Array(runtimeOptions.config_bytes),config=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(configBytes));
- const admitted=requireAdmission(admissionBundle,config,configBytes),spec=admitBoundedCodegenTask(specification);boundConfig(config,spec);
+ const admitted=requireCodexAdmission(admissionBundle,config,configBytes),spec=admitBoundedCodegenCodexTask(specification);boundCodexConfig(config,spec);
  if(consumed.has(spec.job_id)||consumed.has(spec.task_scope))throw Error('NATIVE_OPERATION_ALREADY_CONSUMED');
  const sourceRoot=dirname(dirname(fileURLToPath(import.meta.url)));
  const required=SOURCE_FILES.map(name=>join(sourceRoot,name)).sort();
  if(JSON.stringify(Object.keys(config.source_pins).sort())!==JSON.stringify(required))throw Error('SOURCE_FREEZE_REQUIRED');
  for(const [path,pin] of Object.entries(config.source_pins))await verifyExactFile({path,bytes:pin.bytes,sha256:pin.sha256},nativeReads);
- await verifyExactFile(NODE_RUNTIME,nativeReads);await verifyExactFile(AGY_RUNTIME,nativeReads);
+ await verifyExactFile(NODE_RUNTIME,nativeReads);await verifyExactFile(config.codex,nativeReads);
  await verifyExactFile(config.prompt,nativeReads);await verifyExactFile(config.fixtures,nativeReads);
  const proofBytes=await regularBytes(admitted.preflight.evidence_receipt,65536),proof=JSON.parse(new TextDecoder().decode(proofBytes));
- if(proof.operation_config_sha256!==hash(configBytes)||proof.agy_version!=='1.4.3'||proof.subscription!==true||proof.credits_off!==true||
- proof.catalog_model!=='gemini-3.8-flash-high'||proof.quota_available!==true||!Number.isSafeInteger(proof.observed_at_ms)||
- Date.now()-proof.observed_at_ms<0||Date.now()-proof.observed_at_ms>config.preflight_freshness_ms)throw Error('EFFECTIVE_PREFLIGHT_UNESTABLISHED');
+ validateCodexPreflight(proof,config,configBytes,Date.now());
  const fixtures=JSON.parse(new TextDecoder().decode(await regularBytes(config.fixtures.path,65536))).fixtures;
  if(fixtures.length!==17)throw Error('FINITE_FIXTURE_MATRIX');
  consumed.add(spec.job_id);consumed.add(spec.task_scope);
@@ -72,7 +64,7 @@ export async function runBoundedCodegenOneCaseNative(specification,runtimeOption
   };
   const cfg=(id,timeout_ms=5000,deadline_ms)=>({...config.fixture_configs[id-1],timeout_ms,...(deadline_ms===undefined?{}:{deadline_ms})});
   const result=await runCodegenCampaign({fixtures},{clock,abortSignal:signal,
-    generate:()=>runBoundedCodegenTask(spec,{clock,shutdown:config.generation_shutdown,output_path:sourcePath,abortSignal:signal,enableDiagnosticRetention:true},{spawn:launch('generation'),fs,retainRejected:retention.retainRejected}),
+    generate:()=>runBoundedCodegenCodexTask(spec,{clock,shutdown:config.generation_shutdown,output_path:sourcePath,abortSignal:signal,enableDiagnosticRetention:true},{spawn:launch('generation'),fs,retainRejected:retention.retainRejected,executable:config.codex.path,codex:{observed_cli_version:config.codex.version,authorization:config.authorization}}),
     inspectSource,
     syntax:async()=>{await fs.mkdir(join(run,'.tmp'),{mode:0o700});return executeGeneratedSyntax(cfg(1),{clock,spawn:launch('syntax'),abortSignal:signal});},
     prepareFixture:async(f,index)=>{
@@ -100,14 +92,16 @@ export async function runBoundedCodegenOneCaseNative(specification,runtimeOption
  }finally{cancelOuter();}
 }
 
+export const runBoundedCodegenOneCaseNative=runBoundedCodegenOneCaseNativeCodex;
+
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  const args=process.argv.slice(2);
  if(entrypointMode(args)!=='EXPLICIT_ADMISSION_REQUIRED')console.log(JSON.stringify({status:'DRY_RUN_NATIVE_DISABLED',direct_child_invocations:0}));
  else {
   const config_bytes=await fs.readFile(args[1]),c=JSON.parse(new TextDecoder().decode(config_bytes));
-  const admission=JSON.parse(await fs.readFile(args[2],'utf8'));requireAdmission(admission,c,config_bytes);
+  const admission=JSON.parse(await fs.readFile(args[2],'utf8'));requireCodexAdmission(admission,c,config_bytes);
   const prompt_bytes=await regularBytes(c.prompt.path,32768);
-  const result=await runBoundedCodegenOneCaseNative({job_id:c.job_id,task_scope:c.scope,requested_model:'gemini-3.8-flash-high',effort:'high',max_wall_clock_sec:120,prompt_bytes},{config_bytes},admission);
+  const result=await runBoundedCodegenOneCaseNativeCodex({job_id:c.job_id,task_scope:c.scope,requested_model:c.requested_model,effort:c.effort,max_wall_clock_sec:120,prompt_bytes},{config_bytes},admission);
   console.log(JSON.stringify(result));if(result.status!=='PASS')process.exitCode=1;
  }
 }

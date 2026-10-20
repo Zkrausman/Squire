@@ -1,3 +1,5 @@
+import {prepareCodexArgv,validateCodexPrompt,codexEnvironment} from './codex-profile.mjs';
+import {createCodexCodegenStreamCollector} from './limited-stream-collector.mjs';
 import {generationEnvironment} from './bounded-codegen-plan.mjs';
 import {createCodegenStreamCollector} from './limited-stream-collector.mjs';
 import {stageGeneratedSource} from './limited-source-staging.mjs';
@@ -39,33 +41,7 @@ function claim(job, scope) {
   usedJobs.add(job); usedScopes.add(scope);
 }
 async function directory(path) {const st = await fs.lstat(path); if (!st.isDirectory() || st.isSymbolicLink()) fail('limited_directory');}
-export async function runLimitedAgyTask(specification, runtimeOptions) {
-  const spec = admitLimitedAgyTask(specification), opts = options(runtimeOptions);
-  const run = join(spec.task_scope, 'output', 'run-' + spec.job_id), expected = join(run, 'squire-limited-task-output.json');
-  if (opts.output_path !== expected) fail('limited_output_path');
-  claim(spec.job_id, run);
-  await directory(spec.task_scope);
-  // Owned output parent may already exist; the run directory itself must be new.
-  try {await fs.mkdir(join(spec.task_scope, 'output'), {mode: 0o700});} catch (e) {if (e.code !== 'EEXIST') throw e;}
-  await directory(join(spec.task_scope, 'output'));
-  await fs.mkdir(run, {mode: 0o700}); // EEXIST is a consumed, fail-closed attempt.
-  try {await fs.mkdir(join(spec.task_scope, '.tmp'), {mode: 0o700});} catch (e) {if (e.code !== 'EEXIST') throw e;}
-  await directory(join(spec.task_scope, '.tmp'));
-  const prompt = new TextDecoder('utf-8', {fatal: true}).decode(spec.prompt_bytes);
-  const invocation = {executable: EXECUTABLE, args: ['--prompt', prompt, '--output-format', 'json', '--model', MODEL,
-    '--effort', 'high', '--print-timeout', '1m', '--sandbox', '--disable-slash-commands']};
-  const persist = async (bytes, signal) => {
-    const check = () => {if (signal.aborted) throw Error('PERSISTENCE_ABORTED');};
-    check(); const stage = join(run, '.output-' + randomUUID());
-    // Complete stage then atomic no-clobber publication. No durability/crash-recovery claim.
-    const handle = await fs.open(stage, 'wx', 0o600);
-    try {check(); await handle.writeFile(bytes); check();} finally {await handle.close();}
-    check(); await fs.link(stage, expected); check();
-    await fs.unlink(stage); check();
-  };
-  return runForeground({...spec, task_class: 'PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND'}, invocation, opts,
-    {clock: opts.clock, spawn, persist, environment: childEnvironment(spec.task_scope)});
-}
+export async function runLimitedAgyTask(){throw Error('AGY_SQUIRE_RUNTIME_DISABLED');}
 export async function runInertTimeoutAcceptanceProbe(runtimeOptions) {
   const opts = options(runtimeOptions, true), scope = opts.task_scope;
   if (typeof scope !== 'string' || !scope.startsWith('/') || resolve(scope) !== scope || scope === '/') fail('probe_scope');
@@ -102,4 +78,32 @@ export async function runBoundedCodegenTask(specification, runtimeOptions, ports
     {executable:EXECUTABLE,args:['--prompt',prompt,'--output-format','json','--model',MODEL,'--effort','high','--print-timeout','1m','--sandbox','--disable-slash-commands']},opts,
     {clock:opts.clock,spawn:ports.spawn,persist,environment:generationEnvironment(spec.task_scope,process.env),createCollector:createCodegenStreamCollector,retainRejected:ports.retainRejected});
   return Object.freeze({...result,physical_source_witness:result.record.output_custody.persisted ? witness : null,runtime_admitted:false});
+}
+
+
+export function admitBoundedCodegenCodexTask(s){
+ closed(s,['job_id','task_scope','requested_model','effort','max_wall_clock_sec','prompt_bytes'],[],'codex_spec');
+ if(typeof s.job_id!=='string'||!(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(s.job_id))||
+ typeof s.task_scope!=='string'||!s.task_scope.startsWith('/')||resolve(s.task_scope)!==s.task_scope||s.task_scope==='/'||
+ typeof s.requested_model!=='string'||!s.requested_model||typeof s.effort!=='string'||!s.effort||s.max_wall_clock_sec!==120||!validateCodexPrompt(s.prompt_bytes).valid)fail('codex_admission');
+ return Object.freeze({...s,prompt_bytes:new Uint8Array(s.prompt_bytes)});
+}
+export async function runBoundedCodegenCodexTask(specification,runtimeOptions,ports){
+ const spec=admitBoundedCodegenCodexTask(specification),opts=options(runtimeOptions);
+ if(!ports||typeof ports.spawn!=='function'||!ports.fs||!ports.codex)fail('codex_injected_ports_required');
+ const prepared=prepareCodexArgv({...ports.codex,requested_model:spec.requested_model,effort:spec.effort,prompt_bytes:spec.prompt_bytes});
+ const executable=ports.executable;if(typeof executable!=='string'||!executable.startsWith('/'))fail('codex_executable');
+ const run=join(spec.task_scope,'output','run-'+spec.job_id),expected=join(run,'workspace','src','summarizer.mjs');
+ if(opts.output_path!==expected)fail('codegen_output_path');claim(spec.job_id,run);
+ const fsPort=ports.fs,scope=await fsPort.lstat(spec.task_scope);if(!scope.isDirectory()||scope.isSymbolicLink())fail('codegen_scope');
+ for(const p of [join(spec.task_scope,'output'),join(spec.task_scope,'.tmp')]){
+  try{await fsPort.mkdir(p,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}
+  const st=await fsPort.lstat(p);if(!st.isDirectory()||st.isSymbolicLink())fail('codegen_directory');
+ }
+ await fsPort.mkdir(run,{mode:0o700});let witness=null;
+ const persist=async(bytes,signal)=>{witness=await stageGeneratedSource({run_root:run,source_bytes:bytes,signal},{fs:fsPort,clock:opts.clock,validateSyntax:ports.validateSyntax});};
+ const result=await runForeground({...spec,provider_id:'native_codex',task_class:'BOUNDED_CODEGEN_SUMMARIZER_V5'},
+ {executable,args:prepared.argv,stdin_bytes:spec.prompt_bytes},opts,
+ {clock:opts.clock,spawn:ports.spawn,persist,environment:codexEnvironment(spec.task_scope,process.env),createCollector:createCodexCodegenStreamCollector,retainRejected:ports.retainRejected});
+ return Object.freeze({...result,physical_source_witness:result.record.output_custody.persisted?witness:null,runtime_admitted:false});
 }

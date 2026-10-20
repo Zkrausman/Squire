@@ -17,6 +17,8 @@ export function runForeground(spec, invocation, options, ports) {
   let abortLatched = false, timeoutLatched = false, metadata = null, payloadValid = null;
   let persisted = {persisted: false, path: null, byte_count: null, persistence_error: null};
   let persistenceController = null, retentionController = null, resolve;
+  const codex=spec.provider_id==='native_codex';
+  let inputBytes=null,inputDelivered=invocation.stdin_bytes===undefined,inputWriteReturned=false,inputWritten=false,inputNeedsDrain=false,inputDrained=false,inputEnding=false;
   let diagnosticRetention = publicRetention();
   const result = new Promise(complete => {resolve = complete;});
   const late = []; // At most one actual late child exit; never rewrites the record.
@@ -43,7 +45,7 @@ export function runForeground(spec, invocation, options, ports) {
     diagnostic ??= detail;
   }
   function destroyStreams() {
-    for (const stream of [child?.stdout, child?.stderr]) {
+    for (const stream of [child?.stdout, child?.stderr, child?.stdin]) {
       if (!stream) continue;
       stream.on('error', passiveError);
       try {stream.destroy();} catch {diagnostic ??= 'STREAM_DESTROY_FAILED';}
@@ -66,6 +68,7 @@ export function runForeground(spec, invocation, options, ports) {
         stream.removeListener('close', stream === target.stdout ? onOutClose : onErrClose);
         stream.removeListener('error', onStreamError); stream.on('error', passiveError);
       }
+      if(target.stdin){target.stdin.removeListener('error',onInputError);target.stdin.removeListener('drain',onInputDrain);target.stdin.removeListener('close',onInputClose);target.stdin.on('error',passiveError);}
       target.removeListener('spawn', onSpawn); target.removeListener('exit', onExit); target.removeListener('error', onError);
       target.on('error', passiveError);
       if (!exited) {
@@ -86,7 +89,7 @@ export function runForeground(spec, invocation, options, ports) {
       io_state: {...io, io_drained: io.io_drained && !drainingForced},
       containment_evidence: {containment_level: 'DIRECT_CHILD_ONLY_NO_DESCENDANT_TRACKING',
         settlement_status: exited ? 'SETTLED_DIRECT_CHILD_EXIT' : spawned ? 'ABANDONED_UNSETTLED' : 'UNKNOWN', descendant_guarantee: 'NONE'},
-      provider_metadata: {provider_reported_status: metadata?.provider_reported_status ?? null, duration_seconds: metadata?.duration_seconds ?? null,
+      provider_metadata: {...(codex?{codex_reasoning_output_tokens:metadata?.extra_metadata?.codex_reasoning_output_tokens??'UNKNOWN'}:{}),provider_reported_status: metadata?.provider_reported_status ?? null, duration_seconds: metadata?.duration_seconds ?? null,
         usage_tokens: Object.fromEntries(['input', 'output', 'cache_read', 'thinking', 'total'].map(k => [k, metadata?.usage?.[k] ?? 'UNKNOWN']))},
       output_custody: persisted, task_outcome_evaluated: false, task_payload_valid: payloadValid,
       error_details: {code: diagnostic, classification: status === 'LIMITED_SUCCESS' ? null : status, message: null}});
@@ -173,7 +176,7 @@ export function runForeground(spec, invocation, options, ports) {
     finishing = true; cancel('drain'); checkDeadline();
     if (!status && (code !== 0 || signal !== null)) latch('LIMITED_PROCESS_FAILED');
     if (!status && !io.io_drained) latch('LIMITED_INTERNAL_ERROR', 'IO_INCOMPLETE');
-    if (!status && ['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'BOUNDED_CODEGEN_SUMMARIZER_V5'].includes(spec.task_class)) {
+    if ((!status||codex&&status==='LIMITED_PROCESS_FAILED'&&inputDelivered&&io.io_drained) && ['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'BOUNDED_CODEGEN_SUMMARIZER_V5'].includes(spec.task_class)) {
       let parsed, parsedBytes, parsedLength;
       try {
         parsed = collector.decode({exit_code: code, exit_signal: signal, process_wall_ms: wall});
@@ -182,7 +185,7 @@ export function runForeground(spec, invocation, options, ports) {
         if (!metadataField || !Object.hasOwn(metadataField, 'value') || !bytesField || !Object.hasOwn(bytesField, 'value')) throw Error('INVALID_DECODE_RESULT');
         const safeMetadata = sanitizeDiagnosticMetadata(metadataField.value);
         parsedBytes = bytesField.value;
-        if (!safeMetadata || safeMetadata.provider_reported_status !== 'SUCCESS' || !types.isUint8Array(parsedBytes)) throw Error('INVALID_DECODE_RESULT');
+        if (!safeMetadata || safeMetadata.provider_reported_status !== (codex?'turn.completed':'SUCCESS') || !types.isUint8Array(parsedBytes)) throw Error('INVALID_DECODE_RESULT');
         parsedLength = Reflect.apply(byteLengthOf, parsedBytes, []);
         metadata = safeMetadata; payloadValid = true;
       }
@@ -192,8 +195,11 @@ export function runForeground(spec, invocation, options, ports) {
           const report=collectorDiagnostic(collector,error);
           // A report method may reenter cancellation. Never overwrite that primary status.
           if (!status) {latch('LIMITED_PARSER_ERROR', `${report.stage}:${report.reason}`);metadata=report.metadata;}
+        }else if(codex&&status==='LIMITED_PROCESS_FAILED'){
+          const report=collectorDiagnostic(collector,error);metadata=report.metadata;diagnostic??=`${report.stage}:${report.reason}`;
         }
       }
+      if(parsed&&status&&parsedBytes){try{Uint8Array.prototype.fill.call(parsedBytes,0);}catch{}}
       if (parsed && !status) {
         persistenceController = new AbortController();
         try {
@@ -211,12 +217,39 @@ export function runForeground(spec, invocation, options, ports) {
     if (!status) status = spec.task_class === 'INERT_TIMEOUT_ACCEPTANCE_PROBE' ? 'LIMITED_PROCESS_FAILED' : 'LIMITED_SUCCESS';
     complete();
   }
+  function onInputError(){if(done||inputDelivered)return;latch('LIMITED_PROCESS_FAILED','STDIN_WRITE_FAILED');beginStop();if(exited)void finalize();}
+  function onInputClose(){if(!inputDelivered)onInputError();}
+  function finishInput(){
+    if(done||status||exited||inputEnding||!inputWriteReturned||!inputWritten||inputNeedsDrain&&!inputDrained)return;
+    if(!checkDeadline()||options.abortSignal?.aborted){if(options.abortSignal?.aborted)onAbort();return;}
+    inputEnding=true;
+    try{child.stdin.end(error=>{
+      if(error){onInputError();return;}
+      if(done||status||exited)return;
+      if(checkDeadline()&&!options.abortSignal?.aborted)inputDelivered=true;
+      else if(options.abortSignal?.aborted)onAbort();
+    });}catch{onInputError();}
+  }
+  function onInputDrain(){inputDrained=true;finishInput();}
+  function writeInput(){
+    if(inputDelivered||done||status||exited)return;
+    if(!checkDeadline()||options.abortSignal?.aborted){if(options.abortSignal?.aborted)onAbort();return;}
+    try{
+      if(!child.stdin||typeof child.stdin.write!=='function'||typeof child.stdin.end!=='function')throw 0;
+      const accepted=child.stdin.write(inputBytes,error=>{
+        inputWritten=true;inputBytes?.fill(0);inputBytes=null;
+        if(error){onInputError();return;}finishInput();
+      });
+      inputNeedsDrain=accepted===false;inputWriteReturned=true;finishInput();
+    }catch{onInputError();}
+  }
   function onSpawn() {spawned = true; pid = Number.isSafeInteger(child?.pid) ? child.pid : null;
-    cancel('allocation'); if (status) {stopping = false; beginStop();}}
+    cancel('allocation'); if (status) {stopping = false; beginStop();}else writeInput();}
   function onExit(exit_code, exit_signal) {
     if (done || exited) return;
     // Preserve observed raw values before the fallible clock call.
-    exited = true; code = exit_code; signal = exit_signal; cancel('term'); cancel('kill'); cancel('allocation');
+    exited = true; code = exit_code; signal = exit_signal;
+    if(!inputDelivered)latch('LIMITED_PROCESS_FAILED','STDIN_WRITE_FAILED'); cancel('term'); cancel('kill'); cancel('allocation');
     try {wall = now() - startedAt;} catch {latch('LIMITED_INTERNAL_ERROR', 'CLOCK_UNAVAILABLE');}
     try {arm('drain', shutdown.stream_drain_timeout_ms, () => {drainingForced = true; void finalize();});}
     catch {drainingForced = true;}
@@ -244,10 +277,16 @@ export function runForeground(spec, invocation, options, ports) {
     arm('budget', deadline - startedAt, budgetTick);
     checkDeadline();
     if (status) {complete(); return result;}
+    if(invocation.stdin_bytes!==undefined){
+      if(types.isProxy(invocation.stdin_bytes)||!types.isUint8Array(invocation.stdin_bytes))throw Error('STDIN_WRITE_FAILED');
+      const size=Reflect.apply(byteLengthOf,invocation.stdin_bytes,[]);if(size<1||size>32768)throw Error('STDIN_WRITE_FAILED');
+      inputBytes=new Uint8Array(size);for(let i=0;i<size;i++)inputBytes[i]=invocation.stdin_bytes[i];
+    }
     spawnAttempted = true;
     child = spawn(invocation.executable, invocation.args, {cwd: spec.task_scope, env: environment,
-      shell: false, detached: false, stdio: ['ignore', 'pipe', 'pipe']});
+      shell: false, detached: false, stdio: [inputDelivered?'ignore':'pipe', 'pipe', 'pipe']});
     child.on('error', onError); child.on('spawn', onSpawn); child.on('exit', onExit);
+    if(!inputDelivered){if(!child.stdin)throw Error('STDIN_WRITE_FAILED');child.stdin.on('error',onInputError);child.stdin.on('drain',onInputDrain);child.stdin.on('close',onInputClose);}
     for (const [stream, data, endFn, closeFn] of [[child.stdout, onOut, onOutEnd, onOutClose], [child.stderr, onErr, onErrEnd, onErrClose]]) {
       stream.on('error', onStreamError); stream.on('data', data); stream.on('end', endFn); stream.on('close', closeFn);
     }

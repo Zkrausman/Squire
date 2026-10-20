@@ -22,9 +22,11 @@ export function validateLimitedJobRecord(value) {
       !['SETTLED_DIRECT_CHILD_EXIT', 'SIGNALED_DIRECT_CHILD', 'ABANDONED_UNSETTLED', 'UNKNOWN'].includes(c.settlement_status) ||
       c.settlement_status === 'SETTLED_DIRECT_CHILD_EXIT' && !p.observed_termination ||
       c.settlement_status === 'ABANDONED_UNSETTLED' && p.observed_termination) fail('limited_containment');
-  closed(m, ['provider_reported_status', 'duration_seconds', 'usage_tokens'], [], 'limited_metadata');
+  closed(m, ['provider_reported_status', 'duration_seconds', 'usage_tokens'], ['codex_reasoning_output_tokens'], 'limited_metadata');
   if (!nullable(m.provider_reported_status, text) || !nullable(m.duration_seconds, v => Number.isFinite(v) && v >= 0)) fail('limited_metadata');
   closed(m.usage_tokens, ['input', 'output', 'cache_read', 'thinking', 'total'], [], 'limited_usage');
+  if(Object.hasOwn(m,'codex_reasoning_output_tokens')&&m.codex_reasoning_output_tokens!=='UNKNOWN'&&!nonnegative(m.codex_reasoning_output_tokens))fail('limited_usage');
+  if(m.provider_reported_status?.startsWith('turn.')&&(m.duration_seconds!==null||m.usage_tokens.thinking!=='UNKNOWN'||m.usage_tokens.total!=='UNKNOWN'))fail('limited_codex_metadata');
   if (Object.values(m.usage_tokens).some(v => v !== 'UNKNOWN' && !nonnegative(v))) fail('limited_usage');
   closed(o, ['persisted', 'path', 'byte_count', 'persistence_error'], [], 'limited_output');
   if (!boolean(o.persisted) || !nullable(o.path, text) || !nullable(o.byte_count, nonnegative) || !nullable(o.persistence_error, text) ||
@@ -33,7 +35,7 @@ export function validateLimitedJobRecord(value) {
   if (Object.values(value.error_details).some(v => !nullable(v, text)) || !boolean(value.task_outcome_evaluated) ||
       !nullable(value.task_payload_valid, boolean) || value.task_class === 'BOUNDED_CODEGEN_SUMMARIZER_V5' && value.task_outcome_evaluated !== false) fail('limited_outcome');
   if (value.lifecycle_status === 'LIMITED_SUCCESS' && (!p.observed_termination || p.exit_code !== 0 || p.exit_signal !== null ||
-      !io.io_drained || io.stdout_bytes_observed > 1048576 || io.stderr_bytes_observed > 65536 || m.provider_reported_status !== 'SUCCESS' ||
+      !io.io_drained || io.stdout_bytes_observed > 1048576 || io.stderr_bytes_observed > 65536 || !(m.provider_reported_status==='SUCCESS'||value.task_class==='BOUNDED_CODEGEN_SUMMARIZER_V5'&&m.provider_reported_status==='turn.completed') ||
       value.task_payload_valid !== true || !o.persisted || c.settlement_status !== 'SETTLED_DIRECT_CHILD_EXIT')) fail('limited_success');
   return Object.freeze({...value, process_exit: Object.freeze({...p}), io_state: Object.freeze({...io}), containment_evidence: Object.freeze({...c}),
     provider_metadata: Object.freeze({...m, usage_tokens: Object.freeze({...m.usage_tokens})}), output_custody: Object.freeze({...o}), error_details: Object.freeze({...value.error_details})});
