@@ -60,7 +60,7 @@ export function createManagerCustodyFactory(options) {
     let settlement = null, count = null, populated = null, emptyProved = false, returned = false, released = false;
     const failures = new Set();
     function snapshot() {
-      return Object.freeze({job_id: spec.job_id, unit: epoch, started, custody_acknowledged: custody,
+      return Object.freeze({job_id: spec.job_id, unit: epoch, started, task_deadline_ms: deadline, custody_acknowledged: custody,
         canceled, cancellation_reason: reason, coordinator_returned: returned,
         process_exit_code: exitCode, settlement_status: settlement, live_count: count,
         stop_attempted: stopAttempted, stop_job_acknowledged: stopAcknowledged,
@@ -156,6 +156,7 @@ export function createManagerCustodyFactory(options) {
         } catch { unknown('native_exit_invalid'); return snapshot(); }
         return operate(() => {});
       },
+      observationFailed() { if (released) return snapshot(); unknown('observation_stream_failed'); returned = true; return snapshot(); },
       disconnected() { if (released) return snapshot(); unknown('manager_disconnected'); returned = true; return snapshot(); }
     });
   }});
