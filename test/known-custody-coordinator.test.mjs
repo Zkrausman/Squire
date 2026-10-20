@@ -4,13 +4,13 @@ import {createKnownCustodyCoordinator} from '../src/known-custody-coordinator.mj
 import {createManagerCustodyFactory, createAsyncStopManagerCustodyFactory, HOST_GATES} from '../src/manager-custody.mjs';
 import {createManagerObservationBridge} from '../src/manager-observation-bridge.mjs';
 import {encodeStopUnitRequest, captureStopJobReply, decodeStopJobRemoved} from '../src/stop-unit-codec.mjs';
-import {spec} from './fixtures.mjs';
+import {spec, managerSpec} from './fixtures.mjs';
 
 function fixture({unstarted = false, asyncStop = false, onReadCancel, onTimerCancel, scheduleThrows = false} = {}) {
   let time = 0; const timers = [], calls = [], reads = []; let stopComplete;
   const clock = {now: () => time, schedule(delay, fn) {if (scheduleThrows) throw new Error('PRIVATE_SCHEDULE'); const t = {at: time + delay, fn, active: true}; timers.push(t); return () => {t.active = false; onTimerCancel?.();};}};
-  const job = {...spec(), max_wall_clock_sec: 1};
-  const binding = {job_id: job.job_id, unit_name: 'squire-coordinator.service', invocation_id: '1'.repeat(32)};
+  const job = {...managerSpec(), max_wall_clock_sec: 1};
+  const binding = {job_id: job.job_id, unit_name: `squire-coordinator-${job.job_id}.service`, invocation_id: '1'.repeat(32)};
   const manager = {startTransientUnit() {calls.push('start'); return {binding, custody_acknowledged: true, worker_in_cgroup_before_exec: true};},
     stopUnit(request) {calls.push('stop'); assert.deepEqual(request.binding, binding);
       return asyncStop ? new Promise(resolve => {stopComplete = resolve;}) : {binding, job_acknowledged: true};}};

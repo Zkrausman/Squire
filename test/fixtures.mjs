@@ -9,3 +9,10 @@ export const record = () => ({
   usage_tokens: {}, artifact_witness: {'result.txt': {byte_count: 1, sha256: 'a'.repeat(64)}},
   settlement_status: 'CLEAN'
 });
+
+// Manager reservations now span all factories in this one module instance.
+let managerSequence = 0;
+export function managerSpec() {
+  const id = (++managerSequence).toString(16).padStart(12, '0');
+  return {...spec(), job_id: `abcdefab-1234-4abc-8def-${id}`, task_scope: `/fixture/manager-${id}`};
+}
