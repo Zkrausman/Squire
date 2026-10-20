@@ -1,3 +1,5 @@
+Squire runtime is **Codex only**. See [the Codex limited adapter](docs/CODEX-limited-adapter.md). Earlier AGY trials and provider profiles below are historical wrong-integration evidence, preserved without establishing Codex runtime acceptance. The Codex adapter is source/fake tested; real execution requires its own exact operator admission.
+
 # Squire replacement — core, execution candidate and artifact verifier
 
 The additive [limited foreground MVP](docs/LIMITED-MVP.md) now provides a smaller native execution path for one fixed-profile public-text AGY task, with bounded output and honest direct-child-only results. Its real acceptance is recorded separately from source tests. It does not claim the older manager path's full descendant or recovery guarantees.

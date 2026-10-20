@@ -46,3 +46,21 @@ export const GENERATION_SHUTDOWN=Object.freeze({term_grace_ms:3000,kill_grace_ms
 export function generationEnvironment(scope,ambient){
  const env={...ambient,TMPDIR:join(scope,'.tmp')};for(const key of ['GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL'])delete env[key];return env;
 }
+
+
+export function requireCodexAdmission(bundle,config,configBytes){
+ if(!bundle)throw Error('UNADMITTED_NATIVE_OPERATION');
+ closed(bundle,['provider_id','operator_receipt','config_sha256','job_id','scope','fix17_paths_admitted','preflight'],[],'codex_admission');
+ closed(bundle.preflight,['evidence_receipt'],[],'codex_preflight_reference');
+ if(bundle.provider_id!=='native_codex'||typeof bundle.operator_receipt!=='string'||!bundle.operator_receipt||bundle.operator_receipt!==config.authorization.operator_receipt||
+ bundle.config_sha256!==hash(configBytes)||bundle.job_id!==config.job_id||bundle.scope!==config.scope||bundle.fix17_paths_admitted!==true||
+ typeof bundle.preflight.evidence_receipt!=='string'||!bundle.preflight.evidence_receipt.startsWith('/'))throw Error('UNADMITTED_NATIVE_OPERATION');
+ return Object.freeze({...bundle,preflight:Object.freeze({...bundle.preflight})});
+}
+export function validateCodexPreflight(proof,c,configBytes,now_ms){
+ closed(proof,['operation_config_sha256','observed_at_ms','provider_id','cli_version','executable_sha256','requested_model','effort','operator_receipt','subscription','allowance_available','effective_provider','no_api_or_paid_fallback','sandbox','approval_mode','output_contract','installed_flags_verified'],[],'codex_preflight');
+ if(proof.operation_config_sha256!==hash(configBytes)||!Number.isSafeInteger(proof.observed_at_ms)||!Number.isSafeInteger(now_ms)||now_ms-proof.observed_at_ms<0||now_ms-proof.observed_at_ms>c.preflight_freshness_ms||
+ proof.provider_id!=='native_codex'||proof.cli_version!==c.codex.version||proof.executable_sha256!==c.codex.sha256||proof.requested_model!==c.requested_model||proof.effort!==c.effort||proof.operator_receipt!==c.authorization.operator_receipt||
+ proof.subscription!==true||proof.allowance_available!==true||proof.effective_provider!=='openai_subscription'||proof.no_api_or_paid_fallback!==true||proof.sandbox!==c.permissions.sandbox||proof.approval_mode!==c.permissions.approval_mode||proof.output_contract!==c.permissions.output_contract||proof.installed_flags_verified!==true)throw Error('EFFECTIVE_CODEX_PREFLIGHT_UNESTABLISHED');
+ return true;
+}

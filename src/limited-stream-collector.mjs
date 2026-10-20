@@ -1,5 +1,6 @@
 import {diagnosticReport as makeReport,legacyDiagnostic} from './internal/limited-diagnostics.mjs';
 import {AGY_BYTE_LIMITS, decodeAgyJson} from './agy-profile.mjs';
+import {decodeCodexJsonl} from './provider-metadata.mjs';
 import {createHash} from 'node:crypto';
 import {fail} from './job-spec.mjs';
 
@@ -27,7 +28,7 @@ export function validateTaskPayloadJson(bytes) {
 }
 
 export function createLimitedStreamCollector() {return collect(validateTaskPayloadJson);}
-function collect(validatePayload, captureCodegen = false) {
+function collect(validatePayload, captureCodegen = false, codex = false) {
   let arena = new Uint8Array(AGY_BYTE_LIMITS.max_stdout_bytes), length = 0, out = 0, err = 0;
   let outEof = false, errEof = false, failed = false, sealed = false, report = null, rejected = null;
   const clearCapture=()=>{if(rejected?.response_bytes)rejected.response_bytes.fill(0);rejected=null;};
@@ -50,14 +51,14 @@ function collect(validatePayload, captureCodegen = false) {
       report = null; clearCapture();let decodedBytes=null;
       try {
         if (sealed || failed || !outEof || !errEof || !arena) {report=makeReport('COLLECTION','COLLECTION_FAILED');fail('limited_collection');}
-        const bytes = decodedBytes = arena.slice(0, length), metadata = decode(bytes, raw);
+        const bytes = decodedBytes = arena.slice(0, length), metadata = codex ? decodeCodexJsonl({raw_payload_bytes:bytes,max_response_bytes:1048576,wrapper_exit_code:raw?.exit_code??null,wrapper_signal:raw?.exit_signal??null,wrapper_wall_ms:raw?.process_wall_ms??null}) : decode(bytes, raw);
         if (metadata.parser_status === 'PARSE_ERROR') {
-          const known=['PAYLOAD_SIZE_EXCEEDED','MALFORMED_UTF8','MALFORMED_JSON','DUPLICATE_KEY_CONFLICT','INVALID_ROOT_SHAPE'];
+          const known=['PAYLOAD_SIZE_EXCEEDED','MALFORMED_UTF8','MALFORMED_JSON','DUPLICATE_KEY_CONFLICT','INVALID_ROOT_SHAPE','MISSING_TERMINAL','REPEATED_TERMINAL_REJECTED','CONFLICTING_TERMINAL_EVENTS'];
           const reason=known.includes(metadata.diagnostic_code)?metadata.diagnostic_code:'ENVELOPE_PARSE_ERROR';
           report=makeReport('ENVELOPE',reason);fail(reason==='ENVELOPE_PARSE_ERROR'?'limited_envelope':reason);
         }
-        if (metadata.provider_reported_status !== 'SUCCESS') {report=makeReport('PROVIDER_STATUS','PROVIDER_NON_SUCCESS',metadata);fail('PROVIDER_NON_SUCCESS');}
-        const envelope = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes));
+        if (metadata.provider_reported_status !== (codex?'turn.completed':'SUCCESS')) {report=makeReport('PROVIDER_STATUS',codex&&metadata.provider_reported_status==='turn.failed'?'TURN_FAILED':'PROVIDER_NON_SUCCESS',metadata);fail('PROVIDER_NON_SUCCESS');}
+        const envelope = codex ? codexResponse(bytes,metadata,(stage,reason)=>{report=makeReport(stage,reason,metadata);}) : JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes));
         if (typeof envelope.response !== 'string') {report=makeReport('RESPONSE','RESPONSE_STRING_REQUIRED',metadata);fail('limited_response');}
         let payload;
         try {payload=validatePayload(new TextEncoder().encode(envelope.response), envelope.response);}
@@ -77,6 +78,30 @@ function collect(validatePayload, captureCodegen = false) {
     },
     close() {sealed = true; arena?.fill(0); arena = null; length = 0; report = null; clearCapture();}
   });
+}
+
+// Private extraction only: the public metadata decoder never exposes message text.
+function codexResponse(bytes,metadata,setReport){
+ const events=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes).split('\n').filter(x=>x.trim()).map(x=>JSON.parse(x));
+ let terminal=false,messages=0,response,started=0;
+ const reject=(stage,reason)=>{setReport(stage,reason);fail(reason);};
+ for(const event of events){
+  if(terminal)reject('ENVELOPE','TRAILING_DATA_AFTER_TERMINAL');
+  if(event.type==='turn.started'){if(++started!==1||messages)reject('ENVELOPE','ENVELOPE_PARSE_ERROR');}
+  if(event.type==='error')reject('PROVIDER_STATUS','PROVIDER_NON_SUCCESS');
+  if(event.type==='item.completed'&&event.item?.type==='agent_message'){
+   if(started!==1)reject('ENVELOPE','ENVELOPE_PARSE_ERROR');
+   if(++messages>1)reject('RESPONSE','AMBIGUOUS_AGENT_MESSAGE');response=event.item.text;
+  }
+  if(event.type==='turn.completed')terminal=true;
+ }
+ if(started!==1)reject('ENVELOPE','ENVELOPE_PARSE_ERROR');
+ if(messages!==1||typeof response!=='string')reject('RESPONSE','RESPONSE_STRING_REQUIRED');
+ return {response};
+}
+export function createCodexCodegenStreamCollector(){
+ const base=collect((bytes,response)=>validateGeneratedSourcePayload(response),true,true);
+ return Object.freeze({...base,decode(raw){const p=base.decode(raw);p.bytes.fill(0);return {bytes:p.payload.source_bytes,metadata:p.metadata,payload:p.payload};}});
 }
 
 // Cooperative format checks only. This deliberately makes no syntax or safety claim.
