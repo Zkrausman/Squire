@@ -156,6 +156,7 @@ export function createManagerCustodyFactory(options) {
         } catch { unknown('native_exit_invalid'); return snapshot(); }
         return operate(() => {});
       },
+      schedulingFailed() { if (released) return snapshot(); unknown('custody_scheduler_failed'); returned = true; return snapshot(); },
       observationFailed() { if (released) return snapshot(); unknown('observation_stream_failed'); returned = true; return snapshot(); },
       disconnected() { if (released) return snapshot(); unknown('manager_disconnected'); returned = true; return snapshot(); }
     });
