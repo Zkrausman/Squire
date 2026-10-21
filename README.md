@@ -10,6 +10,11 @@ syntax and fixture conformance without launching a task or reading its artifact.
 public-text request without editing the Q218 recipe. Generation and syntax-only
 readiness remain separate from functional correctness and native admission.
 
+The [local human-review package](docs/human-review-package.md) copies an explicit
+declared artifact into a fresh no-overwrite folder with safe review files. It
+does not apply or execute the code, and verification does not prove original
+operation acknowledgement, provenance authenticity or crash durability.
+
 The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
