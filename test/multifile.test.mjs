@@ -140,7 +140,7 @@ test('precreation validation never stats target, creates it once, and verificati
  assert.equal((await verifyStage('/owned/stage',{...f.ports,fs:io})).status,'VERIFIED');assert.equal(mkdir,1);
 }));
 test('postcreate uid/mode failure stops without content writes or permission repair',async()=>fixture(async f=>{
- for(const [i,patch]of [{uid:1001},{mode:0o40755},{mode:undefined}].entries()){
+ for(const [i,patch]of [{uid:process.getuid()+1},{mode:0o40755},{mode:undefined}].entries()){
   let mkdir=0,opens=0,chmods=0;const target='/owned/s'+i;const io={...f.ports.fs,async mkdir(...a){mkdir++;return f.ports.fs.mkdir(...a);},async lstat(p,...a){const s=await f.ports.fs.lstat(p,...a);return p===target?{...s,...patch,isDirectory:s.isDirectory.bind(s),isSymbolicLink:s.isSymbolicLink.bind(s)}:s;},open(){opens++;throw Error('must not write');},chmod(){chmods++;throw Error('must not repair');}};
   await assert.rejects(()=>writeStage(stage([]),target,{...f.ports,fs:io}),e=>e.code==='SPECIAL_FILE_REJECTED');assert.equal(mkdir,1);assert.equal(opens,0);assert.equal(chmods,0);}
 }));
