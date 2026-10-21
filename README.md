@@ -20,6 +20,11 @@ plans bounded local project files and separately partitioned evidence, with
 fresh no-overwrite directories and content-integrity receipts. It adds no
 project execution, GUI observation, grading, publication or runtime admission.
 
+The additive [Codex project candidate path](docs/project-candidates.md) validates
+one bounded file envelope, persists its exact bytes and then obtains a separate
+PR176 stage acknowledgement. Candidate staging is never functional acceptance;
+imports/default entrypoints are inert and actual calls require separate admission.
+
 The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
