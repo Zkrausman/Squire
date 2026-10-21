@@ -1,5 +1,10 @@
 # Bounded Codex project candidates
 
+This page documents the original `node24-esm` profile. The additive
+[desktop GJS/GTK4 profile](desktop-profile.md) has a distinct prompt and explicit
+private prospective identity; it remains source-simulation-only and cannot be
+activated through native admission. Omitted target fields retain Node semantics.
+
 This additive source path connects one explicitly admitted Codex generation to
 PR176 multifile staging. It never executes candidate files, checks syntax,
 installs dependencies, grades a project or starts a benchmark. PR175, PR176 and

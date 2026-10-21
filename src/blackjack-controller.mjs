@@ -3,6 +3,7 @@ import {constants} from 'node:fs';
 import {join,dirname,parse} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {types} from 'node:util';
+import {DESKTOP_TARGET,DESKTOP_BASE_SOURCE_PINS,DESKTOP_PREFIX_IDENTITY,DESKTOP_CODEGEN_PREFIX,validateDesktopRuntimeIdentity} from './desktop-profile.mjs';
 import {closed} from './job-spec.mjs';
 import {hash,canonicalBytes,NODE_RUNTIME} from './bounded-codegen-plan.mjs';
 import {verifyStage,planStaging} from './multifile-staging.mjs';
@@ -28,6 +29,7 @@ export async function prepareBlackjackController(input,ports){
  const {fs,clock,uid}=ports,abort=new AbortController();
  let phase=P[0],last=0,start,deadline,active=null,clockBusy=false,sealed=false,failure=null,checkpoint=null;
  let modelReserved=0,modelCompleted=0,nativeReserved=0,nativeCompleted=0,rejected=0;
+ let desktopIdentity=null;
  let interpretation=null,wireBytes=null,receiptBytes=null,stage=null,stageRoot=null,exported=null;
  let cancelRun=null;const pending=new Set();let stopped;
  const stopPromise=new Promise(resolve=>{stopped=resolve;});
@@ -94,8 +96,9 @@ export async function prepareBlackjackController(input,ports){
    // Validate ancestors as observations; never repair existing permissions or create higher parents.
    let path=parse(spec.workspace_root).root;const paths=[path];for(const c of spec.workspace_root.slice(path.length).split('/')){path=join(path,c);paths.push(path);}
    for(const path of paths){const s=await io(()=>fs.lstat(path));directory(s,uid,path===spec.workspace_root);if(path!==spec.workspace_root&&!(((s.uid===0||s.uid===uid)&&(s.mode&0o022)===0)||(s.uid===0&&(s.mode&0o1000)!==0)))no('PREPARATION_FAILED');}
-   for(const pin of BLACKJACK_BASE_SOURCE_PINS){const b=byteCopy(await io(()=>ports.readPublicSource(pin.path,pin.bytes)),pin.bytes);if(b.length!==pin.bytes||hash(b)!==pin.sha256)no('PREPARATION_FAILED');}
+   for(const pin of (spec.runtime_target===DESKTOP_TARGET?DESKTOP_BASE_SOURCE_PINS:BLACKJACK_BASE_SOURCE_PINS)){const b=byteCopy(await io(()=>ports.readPublicSource(pin.path,pin.bytes)),pin.bytes);if(b.length!==pin.bytes||hash(b)!==pin.sha256)no('PREPARATION_FAILED');}
    const runtime=await io(()=>ports.observeNodeIdentity());closed(runtime,['path','bytes','sha256'],[],'runtime');if(runtime.path!==NODE_RUNTIME.path||runtime.bytes!==NODE_RUNTIME.bytes||runtime.sha256!==NODE_RUNTIME.sha256)no('PREPARATION_FAILED');
+   if(spec.runtime_target===DESKTOP_TARGET){if(ports.mode!=='SOURCE_SIMULATION'||typeof ports.observeDesktopRuntimeIdentity!=='function')no('PREPARATION_FAILED');desktopIdentity=validateDesktopRuntimeIdentity(await io(()=>ports.observeDesktopRuntimeIdentity()));if(desktopIdentity.executable.path===NODE_RUNTIME.path)no('PREPARATION_FAILED');if(hash(new TextEncoder().encode(DESKTOP_CODEGEN_PREFIX))!==DESKTOP_PREFIX_IDENTITY.sha256)no('PREPARATION_FAILED');}
    if(await io(()=>ports.retentionReady())!=='READY')no('PREPARATION_FAILED');
   });pending.add(setup);setup.finally(()=>pending.delete(setup)).catch(()=>{});
   const outcome=await Promise.race([setup.then(()=>true),stopPromise.then(()=>false)]);if(!outcome)no('PREPARATION_FAILED');check();
@@ -127,7 +130,7 @@ export async function prepareBlackjackController(input,ports){
    return execute('MODEL_CALL',P[2],async()=>{
     await interpretationGate();if(!simulation)no('INCOMPATIBLE_GENERATION_PROFILE');
     // Only explicit injected source simulations may pass this seam. No production PR177 adapter is wired.
-    const value=await io(()=>ports.model_provider.dispatchCodexTask(Object.freeze({run_id:spec.run_id,interpretation_receipt:interpretation,deadline_ms:active.call_deadline_ms,generation_wall_ms:120000,outer_observation_ms:140000,signal:abort.signal})));
+    const value=await io(()=>ports.model_provider.dispatchCodexTask(Object.freeze({run_id:spec.run_id,runtime_target:spec.runtime_target??'node24-esm',...(desktopIdentity?{desktop_runtime_identity:desktopIdentity,prefix_identity:DESKTOP_PREFIX_IDENTITY}:{}),interpretation_receipt:interpretation,deadline_ms:active.call_deadline_ms,generation_wall_ms:120000,outer_observation_ms:140000,signal:abort.signal})));
     closed(value,['result','stage_root'],[],'candidate');const returnedStageRoot=value.stage_root;if(returnedStageRoot!==join(spec.workspace_root,'candidate','stage'))no('INVALID_CANDIDATE_RESULT');
     const r=value.result;closed(r,['schema','status','reason','generation','staging','task_correctness','task_outcome_evaluated','runtime_admitted','workspace_disposition','descendant_guarantee','operator_admitted','operator_receipt','direct_child_invocations','outer_observation_target_ms','event_loop_condition'],[],'candidate_result');
     if(r.schema!=='SQUIRE2_PROJECT_RESULT_V1'||r.status!=='CANDIDATE_STAGED'||r.task_correctness!=='NOT_EVALUATED'||r.task_outcome_evaluated!==false||r.runtime_admitted!==false||r.descendant_guarantee!=='NONE')no('INVALID_CANDIDATE_RESULT');

@@ -1,5 +1,7 @@
 // Pure bounded source-controller data validation. No provider or native imports.
 import {types} from 'node:util';
+import {DESKTOP_TARGET,DESKTOP_BASE} from './desktop-profile.mjs';
+export {DESKTOP_TARGET,DESKTOP_CODEGEN_PREFIX,DESKTOP_PREFIX_IDENTITY} from './desktop-profile.mjs';
 import {isAbsolute,normalize} from 'node:path';
 import {closed,ContractError} from './job-spec.mjs';
 import {parseProjectJson} from './project-task.mjs';
@@ -18,9 +20,11 @@ export function byteCopy(v,max=65536){if(types.isProxy(v)||!types.isUint8Array(v
 export function freezeData(v){if(v&&typeof v==='object'){for(const c of Object.values(v))freezeData(c);Object.freeze(v);}return v;}
 export function validateBlackjackSpec(input){
  const required=['schema','run_id','workspace_root','source_commit','source_tree','requested_model','effort','max_cumulative_wallclock_sec','cleanup_reserve_ms','max_model_invocations','max_native_jobs','max_live_owned_processes','per_call_generation_wall_ms','per_call_observation_wall_ms'];
- try{closed(input,required,['fenced_history_ref'],'controller_spec');}catch{rejectBlackjack('INVALID_CONTROLLER_SPEC');}
+ try{closed(input,required,['fenced_history_ref','runtime_target'],'controller_spec');}catch{rejectBlackjack('INVALID_CONTROLLER_SPEC');}
+ if(Object.hasOwn(input,'runtime_target')&&!['node24-esm',DESKTOP_TARGET].includes(input.runtime_target))rejectBlackjack('UNSUPPORTED_RUNTIME_TARGET');
  if(input.per_call_generation_wall_ms!==120000||input.per_call_observation_wall_ms!==140000)rejectBlackjack('INVALID_CALL_CLOCK');
- if(input.schema!=='SQUIRE_BLACKJACK_CONTROLLER_SPEC_V1'||!uuid(input.run_id)||!absolute(input.workspace_root)||input.source_commit!==BLACKJACK_BASE.commit||input.source_tree!==BLACKJACK_BASE.tree||input.cleanup_reserve_ms!==30000)rejectBlackjack('INVALID_CONTROLLER_SPEC');
+ const base=input.runtime_target===DESKTOP_TARGET?DESKTOP_BASE:BLACKJACK_BASE;
+ if(input.schema!=='SQUIRE_BLACKJACK_CONTROLLER_SPEC_V1'||!uuid(input.run_id)||!absolute(input.workspace_root)||input.source_commit!==base.commit||input.source_tree!==base.tree||input.cleanup_reserve_ms!==30000)rejectBlackjack('INVALID_CONTROLLER_SPEC');
  for(const [k,min,max] of [['max_cumulative_wallclock_sec',170,2400],['max_model_invocations',1,10],['max_native_jobs',1,3],['max_live_owned_processes',1,8]])if(!integer(input[k])||input[k]<min||input[k]>max)rejectBlackjack('INVALID_CONTROLLER_SPEC');
  if(typeof input.requested_model!=='string'||!/^[a-zA-Z0-9._-]{1,128}$/.test(input.requested_model)||!['none','minimal','low','medium','high','xhigh','max','ultra'].includes(input.effort)||Object.hasOwn(input,'fenced_history_ref')&&(typeof input.fenced_history_ref!=='string'||!/^[a-zA-Z0-9._-]{1,128}$/.test(input.fenced_history_ref)))rejectBlackjack('INVALID_CONTROLLER_SPEC');
  return Object.freeze({...input});
