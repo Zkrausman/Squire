@@ -78,3 +78,8 @@ The additive [Q218 public coding preparation](docs/Q218-source-only-coding.md) s
 [Finite safe decode diagnostics](docs/limited-safe-diagnostics.md) retain bounded rejection codes and validated metadata without raw transport/error retention or weaker validation. This cannot recover the original stopped attempt's cause or reopen it.
 
 [Local rejected-response diagnostics](docs/local-rejected-retention.md) add bounded private capture and exact response lengths, with closed public metadata, original-deadline handling and no raw model-tool access. Historical attempts remain frozen; fresh execution requires the existing scoped gates.
+
+The [Blackjack phase controller](docs/blackjack-controller.md) adds source-only
+interpretation ACK, original-deadline accounting and candidate/export separation.
+Its injected simulations and inert entrypoint grant no benchmark or desktop
+execution admission.
