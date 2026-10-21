@@ -1,5 +1,7 @@
 // Pure project request/envelope parsing. No I/O, code evaluation or provider calls.
 import {types} from 'node:util';
+import {DESKTOP_TARGET,DESKTOP_CODEGEN_PREFIX,DESKTOP_PREFIX_IDENTITY} from './desktop-profile.mjs';
+export {DESKTOP_TARGET,DESKTOP_CODEGEN_PREFIX,DESKTOP_PREFIX_IDENTITY} from './desktop-profile.mjs';
 import {closed,fail} from './job-spec.mjs';
 import {validateCodexPrompt} from './codex-profile.mjs';
 import {planStaging,safeMultifileErrorCode} from './multifile-staging.mjs';
@@ -22,11 +24,12 @@ export function parseProjectJson(input,max=1048576){
  const v=value(0);ws();if(i!==text.length)fail('MALFORMED_JSON');return v;
 }
 export function validateProjectRequest(value){
- closed(value,keys,[],'project_request');if(value.schema!=='SQUIRE2_PROJECT_REQUEST_V1'||typeof value.task_id!=='string'||!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value.task_id)||value.runtime_target!=='node24-esm'||value.stage_target!=='multifile-candidate'||invalidText(value.task_prompt))fail('project_request');
- if(value.task_prompt.length>31738)fail('project_prompt');const b=encoder.encode(value.task_prompt);if(b.length<1||b.length>31738||!validateCodexPrompt(b).valid)fail('project_prompt');return Object.freeze(Object.fromEntries(keys.map(k=>[k,value[k]])));
+ closed(value,keys,[],'project_request');if(value.schema!=='SQUIRE2_PROJECT_REQUEST_V1'||typeof value.task_id!=='string'||!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value.task_id)||!['node24-esm',DESKTOP_TARGET].includes(value.runtime_target)||value.stage_target!=='multifile-candidate'||invalidText(value.task_prompt))fail('project_request');
+ const max=32768-(value.runtime_target===DESKTOP_TARGET?DESKTOP_PREFIX_IDENTITY.bytes:PROJECT_PREFIX_IDENTITY.bytes);
+ if(value.task_prompt.length>max)fail('project_prompt');const b=encoder.encode(value.task_prompt);if(b.length<1||b.length>max||!validateCodexPrompt(b).valid)fail('project_prompt');return Object.freeze(Object.fromEntries(keys.map(k=>[k,value[k]])));
 }
 export const parseProjectRequest=bytes=>validateProjectRequest(parseProjectJson(bytes,65536));
-export function buildProjectCodegenPrompt(request){const r=validateProjectRequest(request),b=encoder.encode(PROJECT_CODEGEN_PREFIX+r.task_prompt);if(!validateCodexPrompt(b).valid)fail('project_prompt');return b;}
+export function buildProjectCodegenPrompt(request){const r=validateProjectRequest(request),b=encoder.encode((r.runtime_target===DESKTOP_TARGET?DESKTOP_CODEGEN_PREFIX:PROJECT_CODEGEN_PREFIX)+r.task_prompt);if(!validateCodexPrompt(b).valid)fail('project_prompt');return b;}
 const classCaps={SOURCE:[65536,25,524288],LOCAL_ASSET:[524288,20,2097152],DOC:[65536,5,131072]};
 export function validateProjectPayloadJson(input){
  if(types.isProxy(input)||!types.isUint8Array(input))fail('PROJECT_ENCODING_REJECTED');const size=Reflect.apply(byteLength,input,[]);if(size<2)fail('PROJECT_PAYLOAD_TOO_SMALL');if(size>1048576)fail('PROJECT_PAYLOAD_TOO_LARGE');

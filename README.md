@@ -83,3 +83,8 @@ The [Blackjack phase controller](docs/blackjack-controller.md) adds source-only
 interpretation ACK, original-deadline accounting and candidate/export separation.
 Its injected simulations and inert entrypoint grant no benchmark or desktop
 execution admission.
+
+The additive [desktop GJS/GTK4 profile](docs/desktop-profile.md) supplies a
+separate source-generation target and prompt. Prospective executable, typelib
+and library identities remain private and NOT_QUALIFIED; no desktop launcher
+or benchmark admission is enabled.

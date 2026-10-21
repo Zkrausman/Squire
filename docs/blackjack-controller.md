@@ -63,7 +63,7 @@ The returned API is:
   injected clock. `finish()` seals the run and cancels the observation schedule.
   Intermediate ready snapshots are `INCOMPLETE/SOURCE_CONTROLLER_READY`.
 
-The only callable model seams in this delivery require explicit
+The only callable model seams require explicit
 `ports.mode: 'SOURCE_SIMULATION'` with caller-injected public synthetic fakes
 (`model_provider.interpret`, `dispatchCodexTask`, `review`). This mode is a test
 convention, not authenticated runtime admission, containment or a security
@@ -71,9 +71,13 @@ boundary against a caller who supplies arbitrary functions. No actual provider
 adapter is wired. With any other mode the model path rejects without calling it.
 There is no default native, GUI or grading producer.
 
-PR177's unmodified 1030-byte prefix requires dependency-free Node 24 APIs and
+PR177's unmodified 1030-byte prefix still requires dependency-free Node 24 APIs and
 `node24-esm`. It is **incompatible with actual desktop generation** absent a
-separately reviewed compatible target/runtime/prompt. A future GUI Boolean
+separately reviewed compatible target/runtime/prompt. The additive
+[desktop profile](desktop-profile.md) now defines that source-level target and
+1075-byte prompt, but enables no native implementation or GUI execution. An
+omitted controller target remains legacy Node; explicit `desktop-gjs-gtk4`
+requires an injected private `NOT_QUALIFIED` desktop identity observation. A GUI Boolean
 cannot fix that mismatch. Existing validators check closed shapes, limits and
 prefix identity; they do not prove dependency freedom by inspecting prose or
 source imports. This delivery adds no static dependency parser, Electron,
@@ -104,3 +108,12 @@ trusted provenance, crash durability, same-UID isolation, physical denial of
 reads, or full-descendant termination. Desktop/display/input/capture, qualified
 all-owned custody and private-grader read isolation remain unadmitted. All
 historical attempts, Q219 and other unknown/access/no-rerun holds remain intact.
+
+Desktop generation simulations carry the explicit target, exact desktop prefix
+identity and owned private prospective runtime identity to the fake provider.
+They preserve the same interpretation ACK, original deadline and inert native
+ports. Source-input lineage pins continue to identify immutable prior API
+bytes:13 PR177 references for Node and9 PR178 references for desktop. They
+are distinct from active later source/runtime/config qualification. Public
+`.txt` test snapshots preserve the baseline files this additive change edits;
+no historical input hash is falsely rebound to current bytes.
