@@ -64,7 +64,29 @@ or credential/security change.
 
 Fake tests exercise collector, profile, stdin, core, physical staging ports and
 configuration/admission. They launch no provider or generated program and prove
-no native integration. Real Codex execution remains unadmitted until the exact
-owner-selected model/effort and remaining readiness evidence are established.
-Existing direct-child-only, responsive-event-loop, no descendant/crash recovery,
-no max_steps enforcement and no workspace reuse limitations remain.
+no native integration.
+
+## Completed bounded operation
+
+After PR172, one separately operator-admitted `ndjson-log-summarizer v5` operation
+requested `gpt-6-luna` with `xhigh` reasoning. The generation child exited 0 after
+96,454 ms with drained streams, and 14,124 source bytes were persisted. One syntax
+check passed and all 17 frozen fixtures passed, including expected negative exits
+2, 3 and 4. There were 19 direct-child invocations: one generation, one syntax
+check and 17 fixture executions, without retry or fallback.
+
+The reported model and inference time remain UNKNOWN. The runner's
+`task_outcome_evaluated=false` remains distinct from the campaign's observed
+fixture conformance. Existing source-contract `runtime_admitted=false` markers
+remain unchanged; the actual operation was separately `operator_admitted=true`.
+The sanitized outcome capsule is 10,690 bytes, SHA-256
+`71467753fe60533fd6ff0efef19d7fa9286f22aa751118f2496067f92aae3614`.
+Independent review confirmed retained-record accuracy and privacy, without
+reproducing native preflight. The [published closeout](https://github.com/Zkrausman/lore/pull/108)
+preserves the historical attempts and this operation's limits.
+
+This is one frozen-task result, not general software quality, standing runtime
+authority or a reusable model default. Each new operation needs its own fresh
+source/config/runtime/prompt bindings, authorization and effective preflight.
+Direct-child-only, responsive-event-loop, no descendant/crash recovery, no
+max_steps enforcement and no workspace reuse limitations remain.

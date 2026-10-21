@@ -1,0 +1,47 @@
+// Explicit offline file input only. Imports/default invocation never dispatch a task.
+import * as fs from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+import {REPORT_MAX_BYTES,parseReceiptJson,projectRunSummary,formatSummaryTerminal,invalidRunSummary} from '../src/offline-run-summary.mjs';
+
+export async function readReceiptBytes(path) {
+  let handle;
+  try{
+    const before=await fs.lstat(path);
+    if(!before.isFile()||before.isSymbolicLink())throw 'SPECIAL_FILE_REJECTED';
+    if(before.size>REPORT_MAX_BYTES)throw 'FILE_TOO_LARGE';
+    // NONBLOCK prevents a replaced FIFO from hanging open; NOFOLLOW rejects a replaced leaf symlink.
+    handle=await fs.open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    const opened=await handle.stat();if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino)throw 'SPECIAL_FILE_REJECTED';
+    if(opened.size>REPORT_MAX_BYTES)throw 'FILE_TOO_LARGE';
+    const bytes=new Uint8Array(REPORT_MAX_BYTES);let offset=0;
+    while(offset<REPORT_MAX_BYTES){const r=await handle.read(bytes,offset,Math.min(4096,REPORT_MAX_BYTES-offset),offset);if(r.bytesRead===0)break;offset+=r.bytesRead;}
+    const after=await handle.stat();
+    if(after.size>REPORT_MAX_BYTES)throw 'FILE_TOO_LARGE';
+    if(after.size!==opened.size||offset!==after.size||opened.mtimeMs!==after.mtimeMs||opened.ctimeMs!==after.ctimeMs)throw 'READ_FAILED';
+    return bytes.slice(0,offset);
+  }finally{await handle?.close();}
+}
+export async function runOfflineReportCli(argv,ports={}) {
+  const stdout=ports.stdout??process.stdout,stderr=ports.stderr??process.stderr;
+  if(!Array.isArray(argv)||argv.length!==1||typeof argv[0]!=='string'||!argv[0]||argv[0].includes('\0')){stderr.write('Usage: node bin/squire-report.mjs <receipt-path>\n');return 2;}
+  let summary;
+  try{
+    let bytes;
+    if(ports.readFile){
+      if(typeof ports.stat!=='function')throw 'READ_FAILED';const st=await ports.stat(argv[0]);
+      if(!st.isFile()||st.isSymbolicLink?.())throw 'SPECIAL_FILE_REJECTED';if(st.size>REPORT_MAX_BYTES)throw 'FILE_TOO_LARGE';
+      bytes=await ports.readFile(argv[0],{maxBytes:REPORT_MAX_BYTES});
+    }else bytes=await readReceiptBytes(argv[0]);
+    summary=projectRunSummary(parseReceiptJson(bytes));
+  }catch(error){
+    let code='READ_FAILED';
+    if(typeof error==='string')code=error;
+    else try{if(error?.code==='ENOENT')code='FILE_NOT_FOUND';else if(error?.code==='ELOOP')code='SPECIAL_FILE_REJECTED';}catch{}
+    summary=invalidRunSummary(code);
+  }
+  stdout.write(formatSummaryTerminal(summary));
+  if(summary.overall_outcome==='INVALID_RECEIPT'){stderr.write(summary.diagnostic.reason+'\n');return 2;}
+  return summary.overall_outcome==='PASS'?0:1;
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)process.exitCode=await runOfflineReportCli(process.argv.slice(2));
