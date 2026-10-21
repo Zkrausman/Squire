@@ -15,6 +15,11 @@ declared artifact into a fresh no-overwrite folder with safe review files. It
 does not apply or execute the code, and verification does not prove original
 operation acknowledgement, provenance authenticity or crash durability.
 
+The additive [multifile staging/export library](docs/multifile-staging-export.md)
+plans bounded local project files and separately partitioned evidence, with
+fresh no-overwrite directories and content-integrity receipts. It adds no
+project execution, GUI observation, grading, publication or runtime admission.
+
 The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
