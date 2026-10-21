@@ -1,8 +1,12 @@
-Squire runtime is **Codex only**. See [the Codex limited adapter](docs/CODEX-limited-adapter.md). Earlier AGY trials and provider profiles below are historical wrong-integration evidence, preserved without establishing Codex runtime acceptance. The Codex adapter is source/fake tested; real execution requires its own exact operator admission.
+Squire runtime is **Codex only**. See [the Codex limited adapter](docs/CODEX-limited-adapter.md). One separately admitted `ndjson-log-summarizer v5` operation completed with one generation, a successful syntax check and all 17 frozen fixtures passing. This establishes that task's conformance under the documented direct-child limits; each new native operation still requires its own admission and fresh readiness evidence. Earlier AGY trials and provider profiles below remain historical wrong-integration evidence.
 
 # Squire replacement — core, execution candidate and artifact verifier
 
-The additive [limited foreground MVP](docs/LIMITED-MVP.md) now provides a smaller native execution path for one fixed-profile public-text AGY task, with bounded output and honest direct-child-only results. Its real acceptance is recorded separately from source tests. It does not claim the older manager path's full descendant or recovery guarantees.
+Use the [offline run summary](docs/offline-run-summary.md) to read an existing
+Q218 receipt: `node bin/squire-report.mjs <receipt-path>`. It separates generation,
+syntax and fixture conformance without launching a task or reading its artifact.
+
+The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
 
@@ -48,7 +52,7 @@ The [fake task integration path](docs/SQ-06-injected-task-path.md) exercises acc
 
 The [injected source task coordinator](docs/SQ-06-injected-task-coordinator.md) now composes the accepted provider, custody, output, artifact and lifecycle interfaces under one original deadline. It requires explicit admission and quiescence evidence, withholds unrepresentable records and adds no real dispatch or runtime admission.
 
-The additive [Q218 public coding preparation](docs/Q218-source-only-coding.md) supplies source-format collection, injected staging/execution seams and 17 frozen public fixture scenarios. Generation and generated-program execution remain unadmitted.
+The additive [Q218 public coding preparation](docs/Q218-source-only-coding.md) supplies source-format collection, injected staging/execution seams and 17 frozen public fixture scenarios. Its initial source-only checkpoint preceded the separately admitted Codex operation described above; that operation does not grant standing authority for another run.
 
 [Q218A bounded source/config preparation](docs/Q218A-source-preparation.md) adds a disabled-by-default explicit native adapter and frozen one-case operation recipe. Provider, syntax and generated-program operations still require the exact scoped operator admission; source/fake tests do not grant it.
 
