@@ -7,7 +7,7 @@ export function validateLimitedJobRecord(value) {
   closed(value, ['job_id', 'task_class', 'lifecycle_status', 'requested_model', 'reported_model', 'process_exit', 'io_state',
     'containment_evidence', 'provider_metadata', 'output_custody', 'task_outcome_evaluated', 'task_payload_valid', 'error_details'], [], 'LimitedJobRecord');
   if (typeof value.job_id !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value.job_id) ||
-      !['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'INERT_TIMEOUT_ACCEPTANCE_PROBE', 'BOUNDED_CODEGEN_SUMMARIZER_V5'].includes(value.task_class) ||
+      !['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'INERT_TIMEOUT_ACCEPTANCE_PROBE', 'BOUNDED_CODEGEN_SUMMARIZER_V5', 'SINGLE_JS_CODEGEN_V1'].includes(value.task_class) ||
       !LIMITED_STATUSES.includes(value.lifecycle_status) || !text(value.requested_model) || !text(value.reported_model)) fail('limited_record');
   const p = value.process_exit, io = value.io_state, c = value.containment_evidence, m = value.provider_metadata, o = value.output_custody;
   closed(p, ['pid', 'exit_code', 'exit_signal', 'process_wall_ms', 'observed_termination'], [], 'limited_exit');
@@ -33,10 +33,11 @@ export function validateLimitedJobRecord(value) {
       o.persisted && (!text(o.path) || !nonnegative(o.byte_count))) fail('limited_output');
   closed(value.error_details, ['code', 'classification', 'message'], [], 'limited_error');
   if (Object.values(value.error_details).some(v => !nullable(v, text)) || !boolean(value.task_outcome_evaluated) ||
-      !nullable(value.task_payload_valid, boolean) || value.task_class === 'BOUNDED_CODEGEN_SUMMARIZER_V5' && value.task_outcome_evaluated !== false) fail('limited_outcome');
+      !nullable(value.task_payload_valid, boolean) || ['BOUNDED_CODEGEN_SUMMARIZER_V5','SINGLE_JS_CODEGEN_V1'].includes(value.task_class) && value.task_outcome_evaluated !== false) fail('limited_outcome');
   if (value.lifecycle_status === 'LIMITED_SUCCESS' && (!p.observed_termination || p.exit_code !== 0 || p.exit_signal !== null ||
-      !io.io_drained || io.stdout_bytes_observed > 1048576 || io.stderr_bytes_observed > 65536 || !(m.provider_reported_status==='SUCCESS'||value.task_class==='BOUNDED_CODEGEN_SUMMARIZER_V5'&&m.provider_reported_status==='turn.completed') ||
+      !io.io_drained || io.stdout_bytes_observed > 1048576 || io.stderr_bytes_observed > 65536 || !(m.provider_reported_status==='SUCCESS'||['BOUNDED_CODEGEN_SUMMARIZER_V5','SINGLE_JS_CODEGEN_V1'].includes(value.task_class)&&m.provider_reported_status==='turn.completed') ||
       value.task_payload_valid !== true || !o.persisted || c.settlement_status !== 'SETTLED_DIRECT_CHILD_EXIT')) fail('limited_success');
+  if(value.task_class==='SINGLE_JS_CODEGEN_V1'&&value.lifecycle_status==='LIMITED_SUCCESS'&&m.provider_reported_status!=='turn.completed')fail('limited_codex_success');
   return Object.freeze({...value, process_exit: Object.freeze({...p}), io_state: Object.freeze({...io}), containment_evidence: Object.freeze({...c}),
     provider_metadata: Object.freeze({...m, usage_tokens: Object.freeze({...m.usage_tokens})}), output_custody: Object.freeze({...o}), error_details: Object.freeze({...value.error_details})});
 }

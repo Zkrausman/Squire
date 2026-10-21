@@ -6,6 +6,10 @@ Use the [offline run summary](docs/offline-run-summary.md) to read an existing
 Q218 receipt: `node bin/squire-report.mjs <receipt-path>`. It separates generation,
 syntax and fixture conformance without launching a task or reading its artifact.
 
+[Single-JavaScript task preparation](docs/single-js-tasks.md) accepts an explicit
+public-text request without editing the Q218 recipe. Generation and syntax-only
+readiness remain separate from functional correctness and native admission.
+
 The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.

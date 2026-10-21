@@ -89,7 +89,7 @@ function validateExecution(v) {
   if(!['OBSERVED_EXIT','TIMEOUT','CANCELED','INTERNAL_ERROR','IO_INCOMPLETE','SPAWN_FAILED','CAPACITY_EXCEEDED'].includes(v.status)||!exit(v.observed_exit_code)||!nullableInteger(v.observed_wall_ms)||!nullableInteger(v.deadline_ms)||v.observed_exit_signal!==null&&!isString(v.observed_exit_signal)||typeof v.observed_termination!=='boolean'||v.runtime_admitted!==false||v.descendant_guarantee!=='NONE'||v.workspace_reuse!=='NOT_AUTHORIZED'||!['SETTLED_DIRECT_CHILD_EXIT','ABANDONED_UNSETTLED','UNKNOWN'].includes(v.settlement_status))invalid('SCHEMA_MISMATCH');
   if(!v.observed_termination&&(v.observed_exit_code!==null||v.observed_exit_signal!==null)||v.settlement_status==='SETTLED_DIRECT_CHILD_EXIT'&&!v.observed_termination)invalid('SCHEMA_MISMATCH');
 }
-function projectGeneration(v,out) {
+function projectGeneration(v,out,taskClass='BOUNDED_CODEGEN_SUMMARIZER_V5') {
   if(v===null)return;
   keys(v,['record','diagnostic_retention','runtime_evidence','physical_source_witness','runtime_admitted']);if(v.runtime_admitted!==false)invalid('SCHEMA_MISMATCH');
   const r=v.record,m=r?.provider_metadata,u=m?.usage_tokens;if(!u)invalid('SCHEMA_MISMATCH');
@@ -97,7 +97,7 @@ function projectGeneration(v,out) {
   // Null counters are legitimate unavailable observations; the legacy wire validator uses UNKNOWN.
   const normalized={...r,provider_metadata:{...m,usage_tokens:Object.fromEntries(Object.entries(u).map(([k,x])=>[k,x===null?'UNKNOWN':x])),...(m.codex_reasoning_output_tokens===null?{codex_reasoning_output_tokens:'UNKNOWN'}:{})}};
   try{validateLimitedJobRecord(normalized);}catch{invalid('SCHEMA_MISMATCH');}
-  if(r.task_class!=='BOUNDED_CODEGEN_SUMMARIZER_V5'||r.task_outcome_evaluated!==false)invalid('SCHEMA_MISMATCH');
+  if(r.task_class!==taskClass||r.task_outcome_evaluated!==false)invalid('SCHEMA_MISMATCH');
   const runtime=v.runtime_evidence;keys(runtime,['deadline_ms','timeout_latched','abort_latched','signal_attempts','event_loop_condition','workspace_reuse','workspace_disposition','max_steps']);validateSignals(runtime.signal_attempts);
   if(!nullableInteger(runtime.deadline_ms)||typeof runtime.timeout_latched!=='boolean'||typeof runtime.abort_latched!=='boolean'||runtime.event_loop_condition!=='RESPONSIVE_PARENT_EVENT_LOOP'||runtime.workspace_reuse!=='NOT_AUTHORIZED'||!['DEDICATED_NOT_REUSED','QUARANTINED'].includes(runtime.workspace_disposition)||runtime.max_steps!=='UNSUPPORTED')invalid('SCHEMA_MISMATCH');
   if(r.lifecycle_status==='LIMITED_SUCCESS'&&(runtime.timeout_latched||runtime.abort_latched||runtime.workspace_disposition!=='DEDICATED_NOT_REUSED'))invalid('SCHEMA_MISMATCH');
@@ -135,6 +135,16 @@ function projectFixtures(v,out) {
   }
   out.fixtures={total_matrix:17,passed_count:passed,failed_count:failed,not_run_count:notRun,cases};
 }
+export function projectSingleJsEvidence(value){
+  const r=copy(value);keys(r,['generation','syntax','source']);const out=base();
+  projectGeneration(r.generation,out,'SINGLE_JS_CODEGEN_V1');projectSyntax(r.syntax,out);
+  if(r.source!==null){const s=r.source;keys(s,sourceKeys);const w=r.generation?.physical_source_witness;
+    if(!isString(s.source_path)||!sha(s.source_sha256)||!integer(s.source_byte_count)||s.inspection!=='ACTUAL_BYTES_COOPERATIVE_FORMAT_ONLY'||s.safety!=='NOT_ESTABLISHED'||!w||s.source_sha256!==w.source_sha256||s.source_byte_count!==w.source_byte_count||s.source_path!==w.source_path)invalid('SOURCE_IDENTITY_CHANGED');
+    out.artifact={witness_present:true,sha256:s.source_sha256,byte_count:s.source_byte_count,format_inspection:s.inspection,safety_evidence:s.safety};
+  }
+  return freeze({generation:out.generation,syntax:out.syntax,artifact:out.artifact,diagnostic:out.diagnostic});
+}
+export const snapshotReceiptData=value=>copy(value);
 export function projectRunSummary(rawReceipt,options={}) {
   try{
     options=copy(options);keys(options,[],['maxInputBytes']);const cap=options.maxInputBytes??REPORT_MAX_BYTES;if(!integer(cap)||cap===0||cap>REPORT_MAX_BYTES)invalid('SCHEMA_MISMATCH');
@@ -172,6 +182,11 @@ function validateSummary(s) {
   keys(s.execution,['child_invocations','workspace_disposition','descendant_guarantee']);keys(s.execution.child_invocations,['generation','syntax','fixtures']);if(Object.values(s.execution.child_invocations).some(v=>!nullableInteger(v))||!['DEDICATED_NOT_REUSED','QUARANTINED','UNKNOWN'].includes(s.execution.workspace_disposition)||s.execution.descendant_guarantee!=='NONE')invalid('SCHEMA_MISMATCH');
   keys(s.diagnostic,['stage','reason']);if(s.diagnostic.stage!==null&&!stages.has(s.diagnostic.stage)&&s.diagnostic.stage!=='RECEIPT_VALIDATION'||s.diagnostic.reason!==null&&!diagnosticReasons.has(s.diagnostic.reason)&&invalidRunSummary(s.diagnostic.reason).diagnostic.reason!==s.diagnostic.reason)invalid('SCHEMA_MISMATCH');
   if(s.overall_outcome==='PASS'&&(s.campaign.raw_status!=='PASS'||s.campaign.raw_reason!==null||g?.lifecycle_status!=='LIMITED_SUCCESS'||s.syntax?.wrapper_status!=='ACCEPTED'||s.syntax.syntax_valid!==true||s.artifact?.witness_present!==true||!sha(s.artifact.sha256)||f?.passed_count!==17||f.failed_count!==0||f.not_run_count!==0))invalid('SCHEMA_MISMATCH');
+}
+export function validateProjectedEvidence(value){
+  const captured=copy(value);keys(captured,['generation','syntax','artifact','diagnostic']);
+  const wrapper={...base(),...captured,overall_outcome:'INCOMPLETE'};
+  validateSummary(wrapper);return freeze(captured); // Validates shape only, never supplies a functional outcome.
 }
 // Fresh descriptor-only validation; arbitrary strings never become terminal labels.
 export function formatSummaryTerminal(summary) {
