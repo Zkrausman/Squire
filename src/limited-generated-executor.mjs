@@ -7,13 +7,17 @@ const retained = new Set();
 // Only explicit injected spawn/clock. Importing this module cannot launch a native child.
 export function executeGeneratedSummarizer(config,ports){return executeNode(config,ports,false);}
 export function executeGeneratedSyntax(config,ports){return executeNode(config,ports,true);}
-function executeNode(config, ports, syntax) {
+export function executeSingleJsSyntax(target_path,ports){
+  const parent=dirname(target_path);
+  return executeNode({summarizer_path:target_path,input_path:parent+'/unused-input',output_path:parent+'/unused-output',manifest_path:parent+'/unused-manifest',window_start:'0',window_end:'0',timeout_ms:5000},ports,true,true);
+}
+function executeNode(config, ports, syntax, singleJs=false) {
   closed(config,['summarizer_path','input_path','output_path','manifest_path','window_start','window_end','timeout_ms'],['fixture_id','deadline_ms'],'generated_config');
   if(!ports || typeof ports.spawn !== 'function' || typeof ports.clock?.now !== 'function' || typeof ports.clock?.schedule !== 'function') throw Error('INJECTED_EXECUTION_PORTS_REQUIRED');
   config=Object.freeze({...config});
   const paths = ['summarizer_path','input_path','output_path','manifest_path'].map(k=>config[k]);
   if(paths.some(p=>typeof p !== 'string' || !isAbsolute(p) || normalize(p)!==p) || new Set(paths).size!==4 ||
-    !config.summarizer_path.endsWith('/workspace/src/summarizer.mjs') || (!Number.isSafeInteger(config.timeout_ms)||config.timeout_ms<=0||config.timeout_ms>5000) ||
+    !config.summarizer_path.endsWith(singleJs?'/workspace/src/task.mjs':'/workspace/src/summarizer.mjs') || (!Number.isSafeInteger(config.timeout_ms)||config.timeout_ms<=0||config.timeout_ms>5000) ||
     ['window_start','window_end'].some(k=>typeof config[k]!=='string' || !/^(0|[1-9][0-9]{0,15})$/.test(config[k]) || !Number.isSafeInteger(Number(config[k]))) ||
     Number(config.window_start)>Number(config.window_end)) throw Error('INVALID_GENERATED_CONFIG');
   if(config.fixture_id !== undefined && (!Number.isSafeInteger(config.fixture_id)||config.fixture_id<1||config.fixture_id>17))throw Error('INVALID_FIXTURE_ID');

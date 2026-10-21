@@ -5,13 +5,19 @@ import {validateGeneratedSourcePayload, observeGeneratedSyntax} from './limited-
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 // Explicit filesystem port; no process execution, durable ledger or hostile-writer protection.
 export async function stageGeneratedSource({run_root, source_bytes, signal}, ports) {
+  return stageSource({run_root,source_bytes,signal},ports,'summarizer.mjs');
+}
+export async function stageSingleJsGeneratedSource({run_root,source_bytes,signal},ports){
+  return stageSource({run_root,source_bytes,signal},ports,'task.mjs');
+}
+async function stageSource({run_root,source_bytes,signal},ports,filename){
   if (!(source_bytes instanceof Uint8Array) || !signal || typeof run_root !== 'string') throw Error('INVALID_SOURCE_STAGE');
   const source = new TextDecoder('utf-8', {fatal:true,ignoreBOM:true}).decode(source_bytes);
   const payload = validateGeneratedSourcePayload(source), syntax = observeGeneratedSyntax(source, ports);
   const bytes = new Uint8Array(payload.source_bytes), fs = ports.fs;
   const check = () => {if(signal.aborted) throw Error('PERSISTENCE_ABORTED');};
   const stage = join(run_root, 'stage', '.stage-' + randomUUID() + '.mjs');
-  const destination = join(run_root,'workspace','src','summarizer.mjs');
+  const destination = join(run_root,'workspace','src',filename);
   let ownedStage = false, handle;
   try {
     check();
