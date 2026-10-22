@@ -5,6 +5,10 @@ non-game GTK4 window factory, pure pixel predicates and an explicit-time source
 model. It has no launcher, capture backend or native qualification; synthetic
 buffer matches do not prove app observation, process custody or benchmark PASS.
 
+The [source-only asynchronous FIXOBS lifecycle harness](docs/fixobs-port.md)
+adds injected ports, deadlines and settlement simulation without native
+adapters or runtime qualification.
+
 # Squire replacement — core, execution candidate and artifact verifier
 
 Use the [offline run summary](docs/offline-run-summary.md) to read an existing
