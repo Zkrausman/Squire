@@ -1,5 +1,10 @@
 Squire runtime is **Codex only**. See [the Codex limited adapter](docs/CODEX-limited-adapter.md). One separately admitted `ndjson-log-summarizer v5` operation completed with one generation, a successful syntax check and all 17 frozen fixtures passing. This establishes that task's conformance under the documented direct-child limits; each new native operation still requires its own admission and fresh readiness evidence. Earlier AGY trials and provider profiles below remain historical wrong-integration evidence.
 
+The [trusted geometric fixture source](docs/fixobs-source-fixture.md) adds a
+non-game GTK4 window factory, pure pixel predicates and an explicit-time source
+model. It has no launcher, capture backend or native qualification; synthetic
+buffer matches do not prove app observation, process custody or benchmark PASS.
+
 # Squire replacement — core, execution candidate and artifact verifier
 
 Use the [offline run summary](docs/offline-run-summary.md) to read an existing
