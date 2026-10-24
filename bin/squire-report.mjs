@@ -4,6 +4,7 @@ import {constants} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {REPORT_MAX_BYTES,parseReceiptJson,projectRunSummary,formatSummaryTerminal,invalidRunSummary} from '../src/offline-run-summary.mjs';
 import {projectSingleJsRunSummary,formatSingleJsSummaryTerminal} from '../src/single-js-summary.mjs';
+import {projectProjectRunSummary,formatProjectSummaryTerminal} from '../src/project-summary.mjs';
 
 export async function readReceiptBytes(path,maxBytes=REPORT_MAX_BYTES) {
   if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>REPORT_MAX_BYTES)throw 'READ_FAILED';
@@ -27,7 +28,7 @@ export async function readReceiptBytes(path,maxBytes=REPORT_MAX_BYTES) {
 export async function runOfflineReportCli(argv,ports={}) {
   const stdout=ports.stdout??process.stdout,stderr=ports.stderr??process.stderr;
   if(!Array.isArray(argv)||argv.length!==1||typeof argv[0]!=='string'||!argv[0]||argv[0].includes('\0')){stderr.write('Usage: node bin/squire-report.mjs <receipt-path>\n');return 2;}
-  let summary,generic=false;
+  let summary,kind='campaign';
   try{
     let bytes;
     if(ports.readFile){
@@ -35,14 +36,18 @@ export async function runOfflineReportCli(argv,ports={}) {
       if(!st.isFile()||st.isSymbolicLink?.())throw 'SPECIAL_FILE_REJECTED';if(st.size>REPORT_MAX_BYTES)throw 'FILE_TOO_LARGE';
       bytes=await ports.readFile(argv[0],{maxBytes:REPORT_MAX_BYTES});
     }else bytes=await readReceiptBytes(argv[0]);
-    const raw=parseReceiptJson(bytes);generic=raw?.schema==='SQUIRE2_SINGLE_JS_RESULT_V1'||raw?.schema==='SQUIRE2_SINGLE_JS_DRY_RUN_V1';summary=generic?projectSingleJsRunSummary(raw):projectRunSummary(raw);
+    const raw=parseReceiptJson(bytes);
+    if(raw?.schema==='SQUIRE2_PROJECT_RESULT_V1'){kind='project';summary=projectProjectRunSummary(raw);}
+    else if(raw?.schema==='SQUIRE2_SINGLE_JS_RESULT_V1'||raw?.schema==='SQUIRE2_SINGLE_JS_DRY_RUN_V1'){kind='single';summary=projectSingleJsRunSummary(raw);}
+    else summary=projectRunSummary(raw);
   }catch(error){
     let code='READ_FAILED';
     if(typeof error==='string')code=error;
     else try{if(error?.code==='ENOENT')code='FILE_NOT_FOUND';else if(error?.code==='ELOOP')code='SPECIAL_FILE_REJECTED';}catch{}
     summary=invalidRunSummary(code);
   }
-  if(generic){stdout.write(formatSingleJsSummaryTerminal(summary));if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}return 1;} // No generic functional PASS exit.
+  if(kind==='project'){stdout.write(formatProjectSummaryTerminal(summary));if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}return 1;} // Recorded project claims never receive functional-success exit.
+  if(kind==='single'){stdout.write(formatSingleJsSummaryTerminal(summary));if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}return 1;} // No generic functional PASS exit.
   stdout.write(formatSummaryTerminal(summary));
   if(summary.overall_outcome==='INVALID_RECEIPT'){stderr.write(summary.diagnostic.reason+'\n');return 2;}
   return summary.overall_outcome==='PASS'?0:1;
