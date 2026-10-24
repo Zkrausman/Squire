@@ -190,4 +190,21 @@ A completed ACK is historical. A verification result is a distinct schema and ca
 
 Output contains no raw paths, private IDs, operator receipts, prompts, source bodies, raw errors, or arbitrary model strings. Preserve explicit zero distinctly from `UNKNOWN`. Requested and reported models remain separate. Wall time and provider duration are not inference time. Supply no inferred tokens, totals, ratios, cost, benefit, score, performance, or remaining-effort estimate.
 
-This source API and CLI supply neither a durable producer nor native authority. Persistence remains separately scoped. Existing native, display, input, settlement, preventive inclusive eight-process ceiling, host-support, host-output, recovery, benchmark, no-rerun, and unknown-state limits remain unchanged.
+This source API and CLI supply neither a durable producer nor native authority. The explicit bounded private receipt writer below is the only newly approved persistence path; broader persistence remains separately scoped. Existing native, display, input, settlement, preventive inclusive eight-process ceiling, host-support, host-output, recovery, benchmark, no-rerun, and unknown-state limits remain unchanged.
+
+## Explicit saved-result adapter
+
+The additive `squire/project-result-receipt` API accepts a caller-supplied `SQUIRE2_PROJECT_RESULT_V1` result and creates a frozen, validated copy. It recognizes and omits only the documented `generation.late_observations` function from the live foreground wrapper; it never calls that function. Other functions, accessors, proxies, cycles, unknown fields, or incompatible project claims reject. `CANDIDATE_STAGED` remains `NOT_EVALUATED`, and count-zero `LIMITED_SPAWN_FAILED` remains incompatible.
+
+The writer requires an explicit normalized absolute nonroot directory that the caller owns and trusts (exact mode `0700`, with special bits rejected), one safe filename, and a trustworthy injected promises-style filesystem capability with the caller's uid. Ancestor trust and stability, including the absence of concurrent hostile directory replacement, are caller preconditions; this is not a raceproof hostile-path confinement boundary. Inputs are validated before filesystem access. Each explicit call creates at most one new leaf exclusively with mode `0600` and makes one `writeFile` call for at most 262,144 UTF-8 receipt bytes including the final LF. It performs at most 65 same-handle read calls in chunks of at most 4,096 bytes, using a readback buffer of at most the receipt length plus one byte, and verifies the bytes and file and parent identity and metadata. It does not create parents, overwrite existing leaves (an `EEXIST` destination is left untouched), remove leaves, rename, chmod, retry, or fsync. It makes no crash-durability claim. Pending filesystem promises have no guaranteed wall-clock termination. After a creation, write, verification, or close failure, a partial or complete private leaf may remain; there is no rollback guarantee or library cleanup or retry, and the caller must quarantine the destination. The returned path-free acknowledgement records receipt-byte write/readback only; it does not confirm envelope custody, current-artifact verification, a staging ACK, task correctness, source authenticity, or native admission.
+
+```js
+import {createProjectResultReceipt,writeProjectResultReceipt} from 'squire/project-result-receipt';
+
+const saved= createProjectResultReceipt(projectResult);
+const acknowledgement=await writeProjectResultReceipt(projectResult,
+  {directory:privateReceiptDirectory,filename:'project-result.json'},
+  {fs:privatePromisesFilesystem,uid:ownerUid});
+```
+
+The raw saved receipt contains schema-required private values and belongs only in the private directory. The writer permits one explicit private metadata-receipt write per call; it grants no broader raw-capture retention, export, or upload authority. The offline formatter and CLI continue to omit private fields. Source validation passed 64 focused and 711 full-suite tests, including injected producer-to-private-file-to-reader/API/CLI round trips. Independent source/privacy review and ordinary PR/CI/merge are delivery gates. These tests establish only the exercised injected-route compatibility; actual native producer use remains UNKNOWN. This adapter does not alter the project producer, reporter validation, reader, or CLI behavior and establishes no actual producer use or native execution.
