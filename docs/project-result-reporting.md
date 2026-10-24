@@ -1,10 +1,10 @@
-# Offline project-result reporting contract (proposal)
+# Offline project-result reporting contract
 
-**Status: documentation-only proposal.** This defines a prospective safe offline metadata projection for `SQUIRE2_PROJECT_RESULT_V1`. It does not describe a shipped reporting path, establish a durable producer, or repair runtime behavior. Future source, persistence, and CLI implementation require separate scope; durable producer compatibility remains **UNKNOWN**.
+**Status: source API and explicit-input CLI implementation.** This offline metadata projection accepts the closed data-only `SQUIRE2_PROJECT_RESULT_V1` profile. Source validation passed 16 focused and 701 full-suite tests; independent source/privacy review and exact-head CI are delivery gates. These checks do not establish actual use with a durable producer, repair runtime behavior, or qualify native execution. Durable producer compatibility remains **UNKNOWN**.
 
 `CANDIDATE_STAGED` always reports `task_correctness: NOT_EVALUATED` and `task_outcome_evaluated: false`. The contract makes no task-correctness, execution, authorization, artifact-verification, syntax, import, functional, gameplay, fixture, scoring, or performance claim.
 
-Implemented-source observations are pinned to commit `2091c5ecaef039fa07c913e734eb50905dd75136` (tree `49afcd3daee3c1bb1b3bad1e377bee5a8049446d`). The proposed checks below are contract decisions, not descriptions of delivered capability.
+The original implemented-source observations behind this contract are pinned to commit `2091c5ecaef039fa07c913e734eb50905dd75136` (tree `49afcd3daee3c1bb1b3bad1e377bee5a8049446d`). The checks below now define the source candidate's implemented profile; they do not describe native capability or producer compatibility.
 
 ## Intake and reuse
 
@@ -14,17 +14,17 @@ Reuse these existing intake primitives:
 - `snapshotReceiptData`: descriptor-only capture with its existing budget, prototype, accessor, Proxy, cycle, and scalar restrictions.
 - `validateLimitedJobRecord`: existing closed shapes, counters, and lifecycle invariants, followed by the proposed exact task-class requirement `PROJECT_CODEGEN_V1`.
 
-Apply checks in this order: **safe capture → closed profile validation → correlated recorded-claim checks → safe projection**. Capture establishes safe data, not a valid project profile. Never repair malformed structural fields through generic fallback. [Intake primitives](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/offline-run-summary.mjs#L5-L72), [record validator](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/limited-job-record.mjs#L6-L40).
+The source API applies checks in this order: **safe capture → closed profile validation → correlated recorded-claim checks → safe projection**. Capture establishes safe data, not a valid project profile. Never repair malformed structural fields through generic fallback. [Intake primitives](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/offline-run-summary.mjs#L5-L72), [record validator](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/limited-job-record.mjs#L6-L40).
 
-Existing campaign and `SINGLE_JS` projections remain for their existing consumers. The campaign requires its 17-fixture structure, and the existing generation projection requires a different wrapper. This proposal supplies no CLI change. [Existing projection boundaries](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/offline-run-summary.mjs#L92-L169).
+Existing campaign and `SINGLE_JS` projections remain for their existing consumers. The campaign requires its 17-fixture structure, and the existing generation projection requires a different wrapper. The existing CLI dispatches an explicit `SQUIRE2_PROJECT_RESULT_V1` receipt to the project API while preserving those routes. [Existing projection boundaries](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/offline-run-summary.mjs#L92-L169).
 
 When `generation` is non-null, the raw foreground wrapper includes callable `late_observations`. Capture must reject that callable-bearing raw result; do not invoke it or silently serialize or drop it. A raw result with `generation: null` may pass capture but still requires every profile and consistency check below. Neither case establishes saved-result compatibility. [Foreground wrapper](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/internal/limited-core.mjs#L82-L101), [nullable initialization and early returns](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/project-runner.mjs#L38-L54).
 
-The proposed saved profile permits only `record`, `runtime_evidence`, and `diagnostic_retention` inside non-null `generation`. Establishing a producer that deliberately constructs this profile requires separately scoped persistence work. Complete retention construction and durable producer compatibility remain **UNKNOWN**.
+The saved profile permits only `record`, `runtime_evidence`, and `diagnostic_retention` inside non-null `generation`. Establishing a producer that deliberately constructs this profile requires separately scoped persistence work. Complete retention construction and durable producer compatibility remain **UNKNOWN**.
 
 ## Complete safe-field crosswalk
 
-All fields are required unless expressly optional. Every unlisted member rejects. “Record validation” means the unchanged validator after capture; proposed restrictions supplement it. Private input fields may be checked internally but are never emitted.
+All fields are required unless expressly optional. Every unlisted member rejects. “Record validation” means the unchanged validator after capture; project-profile restrictions supplement it. Private input fields may be checked internally but are never emitted.
 
 | Input fields | Validation and safe output |
 |---|---|
@@ -104,7 +104,7 @@ Every non-null ACK requires successful generation and its bound identity, includ
 
 ## Nested validation closure
 
-All following checks are proposed project-profile requirements; unchanged primitives supply only the explicitly reused predicates.
+All following checks are project-profile requirements; unchanged primitives supply only the explicitly reused predicates.
 
 ### Runtime evidence
 
@@ -145,6 +145,43 @@ Pair correlation is an additional proposed check. Infer no unsupported relation 
 
 Raw record error text is different: after record validation, emit an exact recognized `stage:reason` pair or output-only `UNCLASSIFIED/UNKNOWN_REJECTION`; all-null error fields convey no diagnostic. Never echo raw code, classification, or message. This fallback does not repair invalid retention or final-reason fields. [Source safe diagnostic fallback](https://github.com/Zkrausman/Squire/blob/2091c5ecaef039fa07c913e734eb50905dd75136/src/internal/limited-diagnostics.mjs#L36-L45).
 
+## Implemented source interface
+
+The package export `squire/project-summary` provides `projectProjectRunSummary(value)` and `formatProjectSummaryTerminal(summary)`. The first function returns a deeply frozen `squire2.project_summary.v1` projection; malformed input returns the fixed `INVALID_RECEIPT` profile. The formatter re-captures and validates the complete closed projection before producing printable ASCII.
+
+Example API use:
+
+```js
+import {projectProjectRunSummary,formatProjectSummaryTerminal} from 'squire/project-summary';
+
+const summary=projectProjectRunSummary(recordedProjectResult);
+process.stdout.write(formatProjectSummaryTerminal(summary));
+```
+
+Example CLI use and output:
+
+```text
+node bin/squire-report.mjs ./recorded-project-result.json
+Squire offline project result: CANDIDATE_STAGED
+Task correctness: NOT_EVALUATED
+Task outcome evaluated: false
+Reason: NONE
+Generation: LIMITED_SUCCESS
+Requested model: gpt-6-luna; reported model: UNKNOWN
+Process exit code: 0; wall ms: 120; observed termination: true
+Provider status: turn.completed; provider duration seconds: UNKNOWN; inference duration seconds: UNKNOWN
+Tokens: input=0, output=8, cache_read=0, thinking=UNKNOWN, total=UNKNOWN, codex_reasoning_output=UNKNOWN
+Envelope custody: persisted=true; bytes=100; SHA-256=UNKNOWN
+Staging ACK history: COMPLETE; operation=ACKNOWLEDGED; files=1; decoded bytes=0; manifest SHA-256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Operator receipt present: true; runtime admitted marker: false; operator admitted marker: false
+Direct child invocations: generation=1; observation target ms=140000; event loop=RESPONSIVE_PARENT_EVENT_LOOP
+Workspace: DEDICATED_NOT_REUSED; descendant guarantee: NONE
+Diagnostic: NONE
+Recorded claims only; no task outcome, artifact, authorization, or execution re-verification.
+```
+
+The CLI accepts one explicit receipt path and uses the existing bounded reader. A valid project report always exits `1`, including `CANDIDATE_STAGED`; an invalid report exits `2`. The project summary requires and emits the fixed `PROJECT_CODEGEN_V1` task class through this project-specific schema. No JSON report producer, persistence change, artifact read, or stage verification is added.
+
 ## Identity, authority, and remaining limits
 
 Envelope custody concerns serialized envelope bytes: the private path and recorded count, with the envelope digest `UNKNOWN`. The staging digest identifies a canonical decoded-file manifest; its totals count decoded contents. Neither identity substitutes for the other. Per-file identities and current disk state remain **UNKNOWN**.
@@ -153,4 +190,4 @@ A completed ACK is historical. A verification result is a distinct schema and ca
 
 Output contains no raw paths, private IDs, operator receipts, prompts, source bodies, raw errors, or arbitrary model strings. Preserve explicit zero distinctly from `UNKNOWN`. Requested and reported models remain separate. Wall time and provider duration are not inference time. Supply no inferred tokens, totals, ratios, cost, benefit, score, performance, or remaining-effort estimate.
 
-Documentation acceptance supplies neither a durable producer nor native authority. Future source, persistence, and CLI work remain separately scoped. Existing native, display, input, settlement, preventive inclusive eight-process ceiling, host-support, host-output, recovery, benchmark, no-rerun, and unknown-state limits remain unchanged.
+This source API and CLI supply neither a durable producer nor native authority. Persistence remains separately scoped. Existing native, display, input, settlement, preventive inclusive eight-process ceiling, host-support, host-output, recovery, benchmark, no-rerun, and unknown-state limits remain unchanged.

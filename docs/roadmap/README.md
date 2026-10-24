@@ -18,7 +18,15 @@ The sanitized source-owner capsule reports that PR182 merged as the source-basel
 
 ## Offline project-result reporting — 23 October 2026
 
-The decision is to adopt a separate offline metadata contract proposal for `SQUIRE2_PROJECT_RESULT_V1`; the documentation deliverable is limited to publication of [the proposed contract](../project-result-reporting.md). This records no shipped reporting capability. Source, persistence, and CLI implementation remain separate, and durable producer compatibility is **UNKNOWN**. Metadata, a staging ACK, final disposition, and task correctness (`NOT_EVALUATED`) remain distinct; `CANDIDATE_STAGED` still reports `NOT_EVALUATED`. Native and benchmark holds remain unchanged.
+The offline metadata contract for `SQUIRE2_PROJECT_RESULT_V1` is published in [the project-result reporting contract](../project-result-reporting.md). The source implementation adds a pure projection/formatter API and explicit receipt-path CLI dispatch. Source validation passed 16 focused and 701 full-suite tests; independent source/privacy review and exact-head CI remain required delivery gates. This establishes neither actual producer use nor durable producer compatibility, which remains **UNKNOWN**. Metadata, a staging ACK, final disposition, and task correctness (`NOT_EVALUATED`) remain distinct; `CANDIDATE_STAGED` still reports `NOT_EVALUATED`. Native and benchmark holds remain unchanged.
+## Approved offline project-result reporter implementation
+
+Scope: implement the reviewed PR184 offline metadata contract through a pure projection/formatter API and explicit-input routing in the existing report CLI, with no producer persistence or native execution. Reuse the bounded parser/reader and preserve legacy report behavior. Source owner: existing Squire custodian; independent source/privacy review and ordinary tests/PR/CI/merge remain required.
+
+Acceptance: closed finite input/output profiles, complete status/ACK/count correlations, private-field omission, explicit zero/UNKNOWN, replayable synthetic rejection/privacy tests, and no functional-success exit for an unevaluated candidate. CANDIDATE_STAGED remains NOT_EVALUATED. Producer compatibility, actual use and native benchmark readiness are not established by this ticket.
+
+Source entrypoint: `src/project-summary.mjs`, package export `squire/project-summary`, and the existing `bin/squire-report.mjs` explicit-input route. The source tests exercise metadata validation, rejection/privacy and legacy CLI behavior; they do not establish native qualification or benchmark readiness.
+
 ## Native and benchmark boundaries
 
 Native release remains held. Requirements still include compatible installed runtime, display, input and capture with app-only bindings; a preventive inclusive eight-process ceiling; identity-safe custody and full owned-process settlement; actual host-support qualification; and scoped admission. Fixed-topology planning remains conditional and deferred, with no implementation or native release. The historical host child-output issue remains unresolved. Historical invocation, source-access, disclosure, denial, unknown-state, and no-rerun holds remain unchanged.
