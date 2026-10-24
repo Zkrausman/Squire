@@ -27,6 +27,14 @@ Acceptance: closed finite input/output profiles, complete status/ACK/count corre
 
 Source entrypoint: `src/project-summary.mjs`, package export `squire/project-summary`, and the existing `bin/squire-report.mjs` explicit-input route. The source tests exercise metadata validation, rejection/privacy and legacy CLI behavior; they do not establish native qualification or benchmark readiness.
 
+## Approved saved-result adapter extension — 24 October 2026
+
+Scope: add an explicit adapter for a caller-supplied live `SQUIRE2_PROJECT_RESULT_V1` result, a bounded private receipt writer, package export, synthetic regressions, and documentation. The adapter captures only the already-approved saved data profile and omits the documented `late_observations` wrapper function without invoking it. It does not change the producer, reporter semantics, task runner, or native route. `CANDIDATE_STAGED` remains `NOT_EVALUATED`; count-zero `LIMITED_SPAWN_FAILED` remains incompatible.
+
+The writer requires an explicit caller-owned mode `0700` directory and injected filesystem capability, creates one exclusive mode `0600` receipt leaf, and verifies bounded same-handle readback. Its acknowledgement concerns receipt bytes only; source authenticity and crash durability remain `NOT_ESTABLISHED`. Raw saved receipts contain private schema fields and must remain in the private route. This extension permits only one explicit private metadata-receipt write per call; it grants no broader raw-capture retention, export, upload, producer, native, benchmark, or admission authority.
+
+Status: source implementation and synthetic/injected compatibility coverage validated with 64 focused and 711 full-suite tests. Independent source/privacy review and ordinary PR/CI/merge are delivery gates owned by the source custodian. Synthetic compatibility coverage does not establish durable producer compatibility or actual native use. Existing reporter behavior, historical roadmap text, and all native, benchmark, access, security, and no-rerun holds remain in force.
+
 ## Native and benchmark boundaries
 
 Native release remains held. Requirements still include compatible installed runtime, display, input and capture with app-only bindings; a preventive inclusive eight-process ceiling; identity-safe custody and full owned-process settlement; actual host-support qualification; and scoped admission. Fixed-topology planning remains conditional and deferred, with no implementation or native release. The historical host child-output issue remains unresolved. Historical invocation, source-access, disclosure, denial, unknown-state, and no-rerun holds remain unchanged.
