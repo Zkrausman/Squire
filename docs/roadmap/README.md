@@ -35,6 +35,14 @@ The writer requires an explicit caller-owned mode `0700` directory and injected 
 
 Status: source implementation and synthetic/injected compatibility coverage validated with 64 focused and 711 full-suite tests. Independent source/privacy review and ordinary PR/CI/merge are delivery gates owned by the source custodian. Synthetic compatibility coverage does not establish durable producer compatibility or actual native use. Existing reporter behavior, historical roadmap text, and all native, benchmark, access, security, and no-rerun holds remain in force.
 
+## Approved courier handoff foundation — 25 October 2026
+
+Scope: add pure, bounded metadata preparation and assessment for the existing artifact-courier preflight/closeout, with a private command projection, focused tests, and documentation. The safe assessment keeps requested and reported identities, raw and derived capture, exact read identities, review context, denial/quota, transport, evidence, and tool states distinct. Runtime admission remains false; hashes do not authenticate references or context, and metadata cannot grant execution, semantic acceptance, delivery, merge, installation, or use.
+
+Implementation and validation in this change: the pure module and its deterministic fixtures pass 15 focused tests and 726 full-suite tests. Independent source/privacy review and ordinary PR/CI/merge remain required delivery gates. These source tests establish neither native qualification nor benchmark readiness.
+
+The intended first consumer is a private, owned-file, no-inference adapter for preparing and assessing the independent-review handoff for this authorized change, after separate source tests. The adapter does not launch work. The owner separately verifies genuine current context, action authority, and exact bytes before any normal authorized reviewer launch. This foundation claims no actual consumer use or runtime admission; actual use is reported only after a real handoff consumes the module.
+
 ## Native and benchmark boundaries
 
 Native release remains held. Requirements still include compatible installed runtime, display, input and capture with app-only bindings; a preventive inclusive eight-process ceiling; identity-safe custody and full owned-process settlement; actual host-support qualification; and scoped admission. Fixed-topology planning remains conditional and deferred, with no implementation or native release. The historical host child-output issue remains unresolved. Historical invocation, source-access, disclosure, denial, unknown-state, and no-rerun holds remain unchanged.
