@@ -45,6 +45,112 @@ For each completed major benchmark, retain an inspectable result and standardize
 
 This restoration adds no new research recommendation or implementation ticket. Historical research and tickets are not newly commissioned or made ready by publication. Stronger redesign is deferred.
 
+## Proposed HumanLayer synthesis — 25 October 2026
+
+The owner approved integrating this synthesis into the roadmap as documentation only. The verified canonical PR/commit receipt records whether documentation integration has landed. These six entries remain planning proposals: their implementations are not authorized by this integration, started, or delivered. This documentation does not constitute implementation delivery, native qualification, or benchmark release. No stack, framework, or provider replacement, installation, benchmark, or current native work is authorized.
+
+This is a frozen report-based synthesis, not an independently fetched source conclusion or runtime evidence. Both author tracks cite HumanLayer commit `2f66a45b186d88488fa356862be0117db1ccae9f`. Gemini v4 rests on conditional v3 acceptance plus the sole mechanical two-character hash restoration; it is not a fresh exact-v4 verdict. The OpenAI basis is a sampled static report plus its normalized-replay addendum. HumanLayer links below remain pinned to that commit and were supplied by the reports, not fetched here.
+
+Reuse delivered [PR175](https://github.com/Zkrausman/Squire/pull/175) human-review packages, [PR181](https://github.com/Zkrausman/Squire/pull/181) injected lifecycle harness, [PR185](https://github.com/Zkrausman/Squire/pull/185) reporter, and [PR186](https://github.com/Zkrausman/Squire/pull/186) saved-result adapter. Extend the existing contracts at `docs/project-result-reporting.md`, `docs/human-review-package.md`, and `docs/fixobs-port.md`; do not create replacement reporter, adapter, or lifecycle tickets. Historical R/O/A/T labels below are cross-references only and do not reactivate those proposals.
+
+### HL-SYN-01 — Close lifecycle and event receipt gaps
+
+**Owner/path:** Augment `docs/project-result-reporting.md` and its existing PR181/185/186 reporting seams. **Priority:** P0 candidate. **Status:** Planning proposal; implementation is not authorized, started, or delivered.
+
+**Question:** Which observed event is authoritative for native input acceptance, process start, output custody, and full settlement, and how are replay, missing acknowledgments, and late adverse events represented?
+
+**Bounded output:** Add an authoritative-receipt table, projection rules, scoped event/outbox schema, loss/incompleteness states, and adversarial fixture matrix to the existing reporting and adapter contracts. Use commutative reduction only where domain ordering justifies it.
+
+**Acceptance:** Keep queued, approved, accepted, persisted, process-started, output-captured, and settled distinct; missing evidence is unknown/incomplete, never success. Duplicate, delayed, out-of-order, and lost-ack fixtures cannot create false running or settled reports. Capped terminal or protected events cannot disappear silently. Scope outbox failure to its run/tenant; link events to captured evidence and state completeness. Native observations, not control-plane state, define truth. If the existing Gelt correction is resumed, preserve immutable summary identity and explicit adverse-event/ack semantics; do not import CI status ranking as policy or reopen closed numeric criteria. Gelt-specific changes remain separately owned and conditional; no acquisition or implementation follows.
+
+**Dependencies/hold:** Reuse the delivered injected reporting/adapter work. If native signals are unavailable, publish a bounded missing-evidence result and keep the gate closed; claim neither native settlement nor benchmark readiness.
+
+**Source/report basis:** Supplied pinned references: [approval versus running projection](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/apps/riptide-api/src/orpc/api/approvals/resolve.effect.ts#L35-L128) and [lifecycle/outbox](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/packages/session-sdk-base/src/outbox.ts#L1-L238). Gemini 3.1 and 3.4; OpenAI HL-01 and session annex. Historical refs: R5/A2/A3/O/T.
+
+**Tentative effort:** 3–7 remaining human-equivalent person-days, assuming current injected reporting/adapter work is reused. Native evidence gaps may change this; owner to re-estimate after deduplication.
+
+### HL-SYN-02 — Separate immutable raw custody from derived views
+
+**Owner/path:** Augment the PR175 package design in `docs/human-review-package.md`. PR175 already has byte-bound checks; this proposal does not assert those are absent. **Priority:** P0 candidate. **Status:** Planning proposal; implementation is not authorized, started, or delivered.
+
+**Question:** Can every conclusion and retry be tied to the same authorized original bytes while normalized, truncated, and rendered views remain visibly separate?
+
+**Bounded output:** Specify a raw-byte and derivative manifest for artifacts and transcript/events: source pin, collection authority, SHA-256, byte size, transform chain, completeness, and destination. Add bounded retention/export rules and safe-preview requirements.
+
+**Acceptance:** NUL-containing, non-UTF-8, binary, oversized, renamed, and symlink-related fixtures preserve raw identity or explicitly fail capture. Retries transmit the captured object, not a later file version; each derivative links to raw identity and disclosed transforms. Normalized Fold replay is never original-byte proof; returned envelope checks are not payload-byte verification. Watch-directory membership cannot export secrets/private evidence; preview/export follows explicit destination and active-content policy. Missing originals and omissions remain visible.
+
+**Dependencies/hold:** Missing original bytes, unclear collection authority, unauthorized destination, or unknown retention ownership blocks evidence acceptance/export. Reuse PR175 packaging and existing Gelt G05/G06 contracts only as applicable; crash durability and native provenance authenticity are not assumed delivered. No Gelt implementation or new capture is included.
+
+**Source/report basis:** Supplied pinned references: [artifact normalization](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/apps/riptide-api/src/orpc/daemon/artifacts/upsert.ts#L23-L46), [live mirror/retry](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/packages/session-sdk-artifacts/src/sync.ts#L309-L380), and [normalized Fold replay](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/apps/riptide-api/src/orpc/daemon/fold-session-events/append.effect.ts#L99-L104). Gemini 3.1 and 3.3; OpenAI HL-02, E07–E10, and normalized-replay addendum. Historical refs: R3/T.
+
+**Tentative effort:** 3–8 remaining human-equivalent person-days for reviewed local integration, assuming reusable PR175 packaging and existing Gelt G05/G06 contracts. Owner to refine; this does not assume delivered crash durability or provenance authenticity.
+
+### HL-SYN-03 — Specify generation-fenced ownership and recovery
+
+**Owner/path:** Adapter-neutral planning across `docs/fixobs-port.md` and the current native input/output/settlement/package gates; reuse PR181 harness cases. **Priority:** P1 planning candidate. **Status:** Documentation proposal only; stronger recovery implementation is HELD/DEFERRED, not authorized, started, or delivered, and is not the next implementation.
+
+**Question:** Can stop, retry, or takeover target only its captured run generation, with release only after evidenced finalization or explicit incompleteness?
+
+**Bounded output:** Specify claim/stop/takeover/resume semantics, durable generation model, capability matrix, and restart/side-effect-uncertainty failure fixtures.
+
+**Acceptance:** One authorized owner per generation; stale stop cannot affect its replacement. Timeout is missing observation, not proof subprocesses or side effects stopped. Reconcile crashes before/after side effects before replay; absent resume state fails closed or offers only an explicitly labeled, authorized fresh start. Release follows output capture/durable finalization or an explicit incomplete receipt. Preserve original author/reviewer separation and executor identity.
+
+**Dependencies/hold:** First evidence must close the current MVP native input/output/settlement/package gates; then the owner must separately authorize a bounded next step. If managed execution lacks ownership/settlement signals, record the gap; do not substitute a runtime or launch a benchmark.
+
+**Source/report basis:** Supplied pinned references: [bounded claim/recovery](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/apps/riptide-daemon/src/effects/services/fold-sessions/fold-session-runner.layer.ts#L416-L583) and [finalization before release](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/apps/riptide-daemon/src/effects/services/fold-sessions/fold-session-runner.layer.ts#L377-L405). Gemini 3.1; OpenAI HL-03 and session annex. Historical refs: R1–R4.
+
+**Tentative effort:** 5–12 remaining human-equivalent person-days, including native adapter compatibility, crash/replay tests, and independent review. Reuse existing harness cases; availability of cross-process signals is the main uncertainty.
+
+### HL-SYN-04 — Extend cited rationale and phase evidence
+
+**Owner/path:** Conditional Squire consumption of an existing bounded Q188/Lore concept, registry, or changelog amendment; this roadmap entry does not create a universal checker. **Priority:** P1 high candidate. **Status:** Planning proposal; implementation is not authorized, started, or delivered.
+
+**Question:** Does the current Q188 rationale bridge or a specific Lore publication/extraction step omit a deterministic source-membership check or accepted-revision field that prevents a demonstrated failure?
+
+**Bounded output:** Amend the existing concept/registry/changelog only for a named consumer with a concrete omission; retain decision evidence, alternatives, assumptions, and revisit conditions. Add citation membership or revision/phase evidence only where needed. Keep semantic support and independent acceptance separate from byte/hash validity.
+
+**Acceptance:** Name the exact concept, consumer, omission, and minimum amendment before adding a check; otherwise record no change. For consumed generated citations, fabricated IDs fail deterministic membership validation, while real IDs with unsupported claims still require substantive independent review. Where a phase transition is actually proposed, stale, wrong-type, or unaccepted revisions and duplicate triggers cannot authorize advancement. Reuse current status distinctions rather than inventing a general release gate. Keep authors/reviewers separate, preserve unknowns, alternatives, source and permission boundaries; XML escaping is not a complete prompt-injection defense. Publish through existing concept/registry/changelog without private receipts, new private acquisition, or an inference campaign; do not duplicate PR137 mutation guidance.
+
+**Dependencies/hold:** No concrete named omission means no new checker or work. Missing accepted revision or action authority blocks any actual transition.
+
+**Source/report basis:** Supplied pinned reference: [evidence/citation membership](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/packages/ai/src/agents/context-shards/generate-context-shard-candidates.ts#L60-L196). Gemini 3.3 and 5.2; OpenAI HL-04 and workflow annex. Historical refs: A2/A3.
+
+**Tentative effort:** 2–5 remaining human-equivalent person-days for the narrowed concept/schema/publication amendment, named-consumer fixtures, review, and integration. This supersedes the broader OpenAI 4–10 day phase-engine proposal; if no concrete gap exists, record no change.
+
+### HL-SYN-05 — Preserve review anchors and partial delivery truth
+
+**Owner/path:** New proposed local contract adjacent to `docs/human-review-package.md`; it is not implied by PR175. No current consumer or new implementation path is established by this documentation. **Priority:** P1 high candidate. **Status:** Planning proposal; implementation is not authorized, started, or delivered.
+
+**Question:** Can a finding remain attached to the reviewed version while feedback delivery, comment resolution, fix completion, and verification are tracked independently?
+
+**Bounded output:** Define a minimal version/quote anchor and delivery-state contract or adapter, including exact/outdated/approximate placement, captured comment-root IDs, idempotency keys, and distinct delivered/fixed/verified fields.
+
+**Acceptance:** Changed, removed, moved, or duplicate passages cannot silently inherit a precise anchor or old verdict. Rejected delivery leaves feedback pending; accepted delivery with resolution failure remains a visible partial outcome. Retry after acceptance cannot duplicate the message. Fixing/resolving a UI thread does not certify independent verification. Reviewer disagreement and revision invalidation remain visible and bound to exact source versions.
+
+**Dependencies/hold:** Prefer the small local contract. If there is no current consumer, retain the bounded design; do not import React/Tiptap/Electric/Yjs for its own sake.
+
+**Source/report basis:** Supplied pinned references: [versioned anchors](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/packages/ui/src/artifact-viewer-v2/anchor/resolve.ts#L159-L230) and [partial delivery](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/apps/riptide-ui/src/components/artifact-viewer-v2/delivery/executeBulkArtifactDelivery.ts#L9-L56). Gemini 3.4 versioned diff patterns; OpenAI HL-05 and E14–E15. Historical refs: A2/A3/T.
+
+**Tentative effort:** 4–9 remaining human-equivalent person-days for a small local module. A full collaborative editor is excluded; the OpenAI report estimates 2–4 additional weeks for that alternative.
+
+### HL-SYN-06 — Qualify provenance and a narrow hygiene pilot
+
+**Owner/path:** Provenance/package gate before any proposed local source reuse; exact target file/module and local owner remain to be selected. No code path is authorized. **Priority:** P0 provenance prerequisite; P1 conditional hygiene candidate. **Status:** Planning proposal; implementation is not authorized, started, or delivered.
+
+**Question:** Which small lint and dependency-closure checks prevent actual local mistakes without incompatible tooling, licenses, or broad exemptions?
+
+**Bounded output:** First create an exact-file/source/license/dependency ledger and local compatibility decision. Only if those gates pass, propose a narrow known-value-widening/ternary-depth and lockfile/metafile-closure pilot, with exclusions, owner, update policy, and backout.
+
+**Acceptance:** Every copied file has a pinned source, applicable notices, modification record, and local owner; unknown external-runtime licenses/capabilities remain blockers. Selected rules pass local positive/negative fixtures with acceptable false positives and no blanket suppression of async-test safety checks. Dependency audit accepts only intended closure changes and checks actual local package/bundle topology; do not copy hardcoded HumanLayer version values. No whole-stack install or provider invocation is needed for the initial provenance/design record. Any later implementation requires normal CI and independent review.
+
+**Dependencies/hold:** Unknown license/provenance, incompatible AST/toolchain, unresolved package-evidence gate, or excessive false positives blocks code reuse/enforcement. No stack install or provider invocation is authorized by this proposal.
+
+**Source/report basis:** Supplied pinned references: [closure guard](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/scripts/check-sentry-closures.ts#L1-L118), [release closure audit](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/scripts/verify-agentlayer-release-deps.ts#L1-L273), [known-value widening](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/tools/oxlint/anti-slop/rules/no-known-value-widening.ts#L1-L500), [ternary depth](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/tools/oxlint/anti-slop/rules/max-ternary-depth.ts#L1-L83), [license](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/LICENSE), [rule license](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/tools/oxlint/anti-slop/LICENSE), and [notices](https://github.com/humanlayer/humanlayer/blob/2f66a45b186d88488fa356862be0117db1ccae9f/NOTICE). Gemini 3.5 and 5.2; OpenAI HL-06 and E23. Historical ref: T.
+
+**Tentative effort:** 4–9 remaining human-equivalent person-days: approximately 2–5 for chosen-module provenance/dependency review and 2–4 for bounded local hygiene adaptation, tests, and integration. Overlap requires owner refinement. Future significant upstream updates add roughly 0.5–2 days each, scope-dependent.
+
+All effort ranges are tentative remaining human-equivalent person-days, not agent duration, elapsed schedule, or promises; do not sum them mechanically. The owner must refine estimates. No broader recovery, native work, provider, stack replacement, installation, or benchmark is authorized by these proposals.
+
 ## Historical roadmap material and restoration boundary
 
 The text that follows is retained historical roadmap content. Its former current-tense claims and priorities describe the pre-retirement state; the dated status above governs current capability and planning. Historical SQLite and full-controller facilities are not current replacement capabilities.
