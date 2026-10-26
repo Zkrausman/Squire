@@ -51,11 +51,7 @@ observation profiles, returns their safe assessment with bounded terminal
 text, and does not launch work or read referenced artifacts. Caller-controlled
 receipt paths, retention, and access remain unchanged.
 
-Status: the candidate implementation is provided for the approved source
-change. Pinned synthetic validation, independent source/privacy review, and
-ordinary delivery remain pending. The report does not establish semantic
-acceptance, runtime admission, native qualification, benchmark readiness, or
-actual project use.
+Status: PR 190 ([merged](https://github.com/Zkrausman/Squire/pull/190), merge `4c7020d4e703a15d4f64e60158fbd950e61ceb63`) delivered the source change at reviewed head [`c4616d742cac6f5bf2fa4f8b33855d73a1cc1f9f`](https://github.com/Zkrausman/Squire/commit/c4616d742cac6f5bf2fa4f8b33855d73a1cc1f9f), tree [`3f8bc0167bc9f71ef11933b84b96076f318117a6`](https://github.com/Zkrausman/Squire/tree/3f8bc0167bc9f71ef11933b84b96076f318117a6); 70 focused and 744 full tests passed, and [CI attempt 1 succeeded](https://github.com/Zkrausman/Squire/actions/runs/40283041839). Independent review was PASS with R1 closed; it covered 10 embedded sections, carrying forward the original 40-part unchanged-file audit rather than performing a new whole-repository or roadmap audit, and included no reviewer tests or independent hash computation. Separately, one offline CLI read of previously captured authorized handoff metadata—not a job replay—rendered 2,052 bytes with no stderr and intended exit 1. M5 pilot increment remains 0 and PR 190 uncounted because no contemporaneous receipt establishes both foundation calls for its actual frozen review. Installation and native project use are not established; native and benchmark holds remain, and semantic acceptance is external and not assessed.
 
 ## Native and benchmark boundaries
 
