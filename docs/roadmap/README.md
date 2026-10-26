@@ -43,6 +43,20 @@ PR188 ([source delivery](https://github.com/Zkrausman/Squire/pull/188)) merged t
 
 The final published module bytes were consumed by a private, owned-file, no-inference adapter to prepare and assess one real authorized review handoff. That handoff supplied all 40 required reads and reported capture COMPLETE; the independent source reviewer separately returned PASS. The module does not confer semantic acceptance. The earlier real 72-read handoff also reported capture COMPLETE and received CHANGES_REQUIRED; an intervening packet was withheld before dispatch. These handoffs cover one naturally authorized source change and count as one pilot change, not three; no performance gain is claimed. The same parent shell and cwd were observed after the authorized subshell-scoped review, which does not establish full descendant settlement or generic recovery. Runtime admission remains false; installation and native project use are NOT ESTABLISHED, and benchmark admission remains HELD.
 
+## Approved offline courier handoff report — 26 October 2026
+
+Scope: add a pure saved-data report API and an explicit route in the existing
+offline report CLI. The adapter accepts the unchanged PR188 request and
+observation profiles, returns their safe assessment with bounded terminal
+text, and does not launch work or read referenced artifacts. Caller-controlled
+receipt paths, retention, and access remain unchanged.
+
+Status: the candidate implementation is provided for the approved source
+change. Pinned synthetic validation, independent source/privacy review, and
+ordinary delivery remain pending. The report does not establish semantic
+acceptance, runtime admission, native qualification, benchmark readiness, or
+actual project use.
+
 ## Native and benchmark boundaries
 
 Native release remains held. Requirements still include compatible installed runtime, display, input and capture with app-only bindings; a preventive inclusive eight-process ceiling; identity-safe custody and full owned-process settlement; actual host-support qualification; and scoped admission. Fixed-topology planning remains conditional and deferred, with no implementation or native release. The historical host child-output issue remains unresolved. Historical invocation, source-access, disclosure, denial, unknown-state, and no-rerun holds remain unchanged.
