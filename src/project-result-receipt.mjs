@@ -4,7 +4,7 @@ import {constants} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {types} from 'node:util';
 import {parseReceiptJson, REPORT_MAX_BYTES, snapshotReceiptData} from './offline-run-summary.mjs';
-import {projectProjectRunSummary} from './project-summary.mjs';
+import {projectProjectRunSummary, projectNativeProjectRunSummary} from './project-summary.mjs';
 
 const rootKeys = [
   'schema', 'status', 'reason', 'generation', 'staging', 'task_correctness',
@@ -19,6 +19,7 @@ const errorCodes = new Set([
   'INVALID_INPUT', 'INVALID_RECEIPT', 'RECEIPT_TOO_LARGE',
   'INVALID_DESTINATION', 'INVALID_PORTS', 'WRITE_FAILED'
 ]);
+const NATIVE_RECEIPT_SCHEMA='SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1';
 
 class ReceiptError extends Error {
   constructor(code) {
@@ -27,11 +28,9 @@ class ReceiptError extends Error {
     this.code = code;
   }
 }
-
 function fail(code) {
   throw new ReceiptError(errorCodes.has(code) ? code : 'INVALID_INPUT');
 }
-
 function ownDataFields(value, required, optional = [], code = 'INVALID_INPUT') {
   try {
     if (!value || typeof value !== 'object' || Array.isArray(value) || types.isProxy(value)) fail(code);
@@ -52,7 +51,6 @@ function ownDataFields(value, required, optional = [], code = 'INVALID_INPUT') {
     fail(code);
   }
 }
-
 function captureSelectedData(value) {
   const root = ownDataFields(value, rootKeys);
   if (root.generation !== null) {
@@ -67,7 +65,6 @@ function captureSelectedData(value) {
   }
   return snapshotReceiptData(root);
 }
-
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const key of Reflect.ownKeys(value)) {
@@ -78,29 +75,10 @@ function deepFreeze(value) {
   }
   return value;
 }
-
-export function createProjectResultReceipt(value) {
-  let receipt;
-  try {
-    receipt = captureSelectedData(value);
-  } catch {
-    fail('INVALID_INPUT');
-  }
-  let projection;
-  try {
-    projection = projectProjectRunSummary(receipt);
-  } catch {
-    fail('INVALID_RECEIPT');
-  }
-  if (projection.readiness === 'INVALID_RECEIPT') fail('INVALID_RECEIPT');
-  return deepFreeze(receipt);
-}
-
-function encodeValidatedReceipt(value) {
-  const receipt = createProjectResultReceipt(value);
+function encodeEnvelope(envelope, native) {
   let encoded;
   try {
-    encoded = new TextEncoder().encode(`${JSON.stringify(receipt)}\n`);
+    encoded = new TextEncoder().encode(`${JSON.stringify(envelope)}\n`);
   } catch {
     fail('INVALID_RECEIPT');
   }
@@ -111,16 +89,53 @@ function encodeValidatedReceipt(value) {
   } catch {
     fail('INVALID_RECEIPT');
   }
-  let projection;
-  try {
-    projection = projectProjectRunSummary(parsed);
-  } catch {
-    fail('INVALID_RECEIPT');
-  }
+  const projection = native
+    ? projectNativeProjectRunSummary(parsed)
+    : projectProjectRunSummary(parsed);
   if (projection.readiness === 'INVALID_RECEIPT') fail('INVALID_RECEIPT');
   return encoded;
 }
-
+export function createProjectResultReceipt(value) {
+  let receipt;
+  try {
+    receipt = captureSelectedData(value);
+  } catch {
+    fail('INVALID_INPUT');
+  }
+  const projection = projectProjectRunSummary(receipt);
+  if (projection.readiness === 'INVALID_RECEIPT') fail('INVALID_RECEIPT');
+  return deepFreeze(receipt);
+}
+export function createNativeProjectResultReceipt(liveResult) {
+  let result;
+  try {
+    result = captureSelectedData(liveResult);
+  } catch {
+    fail('INVALID_INPUT');
+  }
+  const envelope = {schema:NATIVE_RECEIPT_SCHEMA,result};
+  if (projectNativeProjectRunSummary(envelope).readiness === 'INVALID_RECEIPT') fail('INVALID_RECEIPT');
+  let bytes;
+  try {
+    bytes = new TextEncoder().encode(`${JSON.stringify(envelope)}\n`);
+  } catch {
+    fail('INVALID_RECEIPT');
+  }
+  if (bytes.length > REPORT_MAX_BYTES) {
+    bytes.fill(0);
+    fail('RECEIPT_TOO_LARGE');
+  }
+  bytes.fill(0);
+  return deepFreeze(envelope);
+}
+function encodeValidatedReceipt(value) {
+  const receipt = createProjectResultReceipt(value);
+  return encodeEnvelope(receipt, false);
+}
+function encodeValidatedNativeReceipt(value) {
+  const receipt = createNativeProjectResultReceipt(value);
+  return encodeEnvelope(receipt, true);
+}
 function validateDestination(value) {
   const fields = ownDataFields(value, destinationKeys, [], 'INVALID_DESTINATION');
   const {directory, filename} = fields;
@@ -136,7 +151,6 @@ function validateDestination(value) {
   }
   return {directory, filename};
 }
-
 function findDataMethod(target, key) {
   if (!target || typeof target !== 'object' && typeof target !== 'function') throw 0;
   for (let current = target; current !== null; current = Object.getPrototypeOf(current)) {
@@ -147,11 +161,9 @@ function findDataMethod(target, key) {
   }
   throw 0;
 }
-
 function callMethod(target, key, args = []) {
   return Reflect.apply(findDataMethod(target, key), target, args);
 }
-
 function validatePorts(value) {
   const fields = ownDataFields(value, portKeys, [], 'INVALID_PORTS');
   if (!fields.fs || typeof fields.fs !== 'object' ||
@@ -164,14 +176,12 @@ function validatePorts(value) {
   }
   return fields;
 }
-
 function ownStatField(stat, key) {
   if (!stat || typeof stat !== 'object' || types.isProxy(stat)) throw 0;
   const descriptor = Object.getOwnPropertyDescriptor(stat, key);
   if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw 0;
   return descriptor.value;
 }
-
 function statView(stat) {
   const view = {
     dev: ownStatField(stat, 'dev'),
@@ -193,7 +203,6 @@ function statView(stat) {
       ![view.isFile, view.isDirectory, view.isSymbolicLink].every(value => typeof value === 'boolean')) throw 0;
   return view;
 }
-
 function parentView(stat, uid, selected = null) {
   const view = statView(stat);
   if (!view.isDirectory || view.isSymbolicLink || view.uid !== uid ||
@@ -203,7 +212,6 @@ function parentView(stat, uid, selected = null) {
         (view.mode & 0o7777) !== selected.mode)) throw 0;
   return {dev: view.dev, ino: view.ino, uid: view.uid, nlink: view.nlink, mode: view.mode & 0o7777};
 }
-
 function leafView(stat, uid, size, selected = null) {
   const view = statView(stat);
   if (!view.isFile || view.isSymbolicLink || view.uid !== uid || view.nlink !== 1 ||
@@ -211,32 +219,26 @@ function leafView(stat, uid, size, selected = null) {
       selected && (view.dev !== selected.dev || view.ino !== selected.ino)) throw 0;
   return view;
 }
-
 function sameReadState(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.uid === right.uid &&
     left.nlink === right.nlink && (left.mode & 0o7777) === (right.mode & 0o7777) &&
     left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
-
 function readBytesCount(result) {
   if (!result || typeof result !== 'object' || types.isProxy(result)) throw 0;
   const descriptor = Object.getOwnPropertyDescriptor(result, 'bytesRead');
   if (!descriptor || !Object.hasOwn(descriptor, 'value') || !Number.isSafeInteger(descriptor.value)) throw 0;
   return descriptor.value;
 }
-
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
-
 function bytesEqual(left, right) {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
   return true;
 }
-
-export async function writeProjectResultReceipt(value, destination, ports) {
-  const encoded = encodeValidatedReceipt(value);
+async function writeEncodedReceipt(encoded, destination, ports, schema) {
   let target;
   let capability;
   try {
@@ -247,7 +249,6 @@ export async function writeProjectResultReceipt(value, destination, ports) {
     if (error instanceof ReceiptError && errorCodes.has(error.code)) throw error;
     fail('INVALID_PORTS');
   }
-
   let handle = null;
   let closeAttempted = false;
   let readback = null;
@@ -270,7 +271,6 @@ export async function writeProjectResultReceipt(value, destination, ports) {
       encoded.length,
       initial
     );
-
     readback = new Uint8Array(encoded.length + 1);
     let offset = 0;
     let reads = 0;
@@ -289,7 +289,8 @@ export async function writeProjectResultReceipt(value, destination, ports) {
       offset += count;
       if (offset > encoded.length) throw 0;
     }
-    if (!eofObserved || offset !== encoded.length || reads > 65 || !bytesEqual(readback.subarray(0, offset), encoded) ||
+    if (!eofObserved || offset !== encoded.length || reads > 65 ||
+        !bytesEqual(readback.subarray(0, offset), encoded) ||
         sha256(readback.subarray(0, offset)) !== sha256(encoded)) throw 0;
     const afterRead = leafView(
       await callMethod(handle, 'stat'),
@@ -298,7 +299,6 @@ export async function writeProjectResultReceipt(value, destination, ports) {
       initial
     );
     if (!sameReadState(beforeRead, afterRead)) throw 0;
-
     parentView(await callMethod(capability.fs, 'lstat', [target.directory]), capability.uid, parent);
     const finalLeaf = leafView(
       await callMethod(capability.fs, 'lstat', [path]),
@@ -313,9 +313,8 @@ export async function writeProjectResultReceipt(value, destination, ports) {
       initial
     );
     if (!sameReadState(afterRead, finalLeaf) || !sameReadState(afterRead, finalHandle)) throw 0;
-
     acknowledgement = Object.freeze({
-      schema: 'squire2.project_result_write_receipt.v1',
+      schema,
       status: 'RECORDED',
       byte_count: encoded.length,
       sha256: sha256(encoded),
@@ -339,4 +338,12 @@ export async function writeProjectResultReceipt(value, destination, ports) {
   }
   if (failure) fail(failure);
   return acknowledgement;
+}
+export async function writeProjectResultReceipt(value, destination, ports) {
+  const encoded = encodeValidatedReceipt(value);
+  return writeEncodedReceipt(encoded,destination,ports,'squire2.project_result_write_receipt.v1');
+}
+export async function writeNativeProjectResultReceipt(liveResult, destination, ports) {
+  const encoded = encodeValidatedNativeReceipt(liveResult);
+  return writeEncodedReceipt(encoded,destination,ports,'squire3.native_project_result_write_receipt.v1');
 }

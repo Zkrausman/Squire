@@ -4,6 +4,7 @@ import {validateLimitedJobRecord} from './limited-job-record.mjs';
 import {diagnosticReport} from './internal/limited-diagnostics.mjs';
 
 const SCHEMA='squire2.project_summary.v1';
+const NATIVE_SCHEMA='squire3.native_project_summary.v1';
 const TARGET_MS=140000;
 const EVENT_LOOP='RESPONSIVE_PARENT_EVENT_LOOP';
 const UNKNOWN='UNKNOWN';
@@ -25,13 +26,12 @@ const diagnosticPairs=[
 ];
 const inputKeys=['schema','status','reason','generation','staging','task_correctness','task_outcome_evaluated','runtime_admitted','operator_admitted','workspace_disposition','descendant_guarantee','operator_receipt','direct_child_invocations','outer_observation_target_ms','event_loop_condition'];
 const summaryKeys=['schema_version','readiness','reason','task_correctness','task_outcome_evaluated','runtime_admitted_marker','operator_admitted_marker','has_operator_receipt','workspace_disposition','descendant_guarantee','direct_child_invocations','outer_observation_target_ms','event_loop_condition','generation','staging','diagnostic'];
+const nativeSummaryKeys=['schema_version','readiness','reason','task_correctness','task_outcome_evaluated','runtime_admitted_marker','operator_admission_claimed','admission_authority','has_operator_receipt','workspace_disposition','descendant_guarantee','direct_child_invocations','outer_observation_target_ms','event_loop_condition','generation','staging','diagnostic'];
 const usageKeys=['input','output','cache_read','thinking','total'];
 const runtimeKeys=['deadline_ms','timeout_latched','abort_latched','signal_attempts','event_loop_condition','workspace_reuse','workspace_disposition','max_steps'];
 const retentionKeys=['retention_status','rejection_stage','rejection_reason','exact_response_bytes','retained_bytes_count','retained_truncated','retention_error'];
 const recordGenerationKeys=['record','runtime_evidence','diagnostic_retention'];
 const projectedGenerationKeys=['lifecycle_status','task_class','requested_model','reported_model','process_exit','io_state','containment_evidence','provider_metadata','output_custody','task_outcome_evaluated','task_payload_valid','runtime_evidence','diagnostic_retention'];
-const stagingKeys=['schema_version','stage_operation_id','caller_label','completion_status','manifest_sha256','file_count','total_bytes','operation_acknowledgement','provenance_authenticity','crash_durability'];
-const projectedStagingKeys=['schema_version','completion_status','operation_acknowledgement','caller_label','manifest_sha256','file_count','total_bytes','provenance_authenticity','crash_durability'];
 
 const reject=()=>{throw 0;};
 const integer=v=>Number.isSafeInteger(v);
@@ -56,7 +56,9 @@ function freeze(value){
   }
   return value;
 }
-function invalidSummary(){
+function invalidSummary(native=false){
+  if(native)return freeze({schema_version:NATIVE_SCHEMA,readiness:'INVALID_RECEIPT',
+    diagnostic:{stage:'RECEIPT_VALIDATION',reason:'SCHEMA_MISMATCH'}});
   return freeze({
     schema_version:SCHEMA,readiness:'INVALID_RECEIPT',reason:null,
     task_correctness:'NOT_EVALUATED',task_outcome_evaluated:false,
@@ -158,7 +160,8 @@ function projectGeneration(value){
 function projectStaging(value,jobId){
   if(value===null)return null;
   if(typeof jobId!=='string')reject();
-  closed(value,stagingKeys);
+  const keys=['schema_version','stage_operation_id','caller_label','completion_status','manifest_sha256','file_count','total_bytes','operation_acknowledgement','provenance_authenticity','crash_durability'];
+  closed(value,keys);
   if(value.schema_version!=='squire4.stage_receipt.v1'||value.stage_operation_id!==`stage-${jobId}`||
      value.caller_label!=='project_candidate_stager'||value.completion_status!=='COMPLETE'||
      value.operation_acknowledgement!=='ACKNOWLEDGED'||!sha(value.manifest_sha256)||
@@ -201,12 +204,13 @@ function noSpawnEvidence(generation,count){
   if(process.pid!==null||process.observed_termination||process.exit_code!==null||process.exit_signal!==null||
      record.containment_evidence.settlement_status==='SETTLED_DIRECT_CHILD_EXIT')reject();
 }
-function projectInput(value){
+function projectInput(value,native=false){
   const raw=snapshotReceiptData(value);
   closed(raw,inputKeys);
   if(raw.schema!=='SQUIRE2_PROJECT_RESULT_V1'||!statuses.has(raw.status)||
       !validFinalReason(raw.reason)||raw.task_correctness!=='NOT_EVALUATED'||
-     raw.task_outcome_evaluated!==false||raw.runtime_admitted!==false||raw.operator_admitted!==false||
+     raw.task_outcome_evaluated!==false||raw.runtime_admitted!==false||
+     (native?!bool(raw.operator_admitted):raw.operator_admitted!==false)||
      raw.descendant_guarantee!=='NONE'||typeof raw.operator_receipt!=='string'||
      !['DEDICATED_NOT_REUSED','QUARANTINED'].includes(raw.workspace_disposition)||
      raw.outer_observation_target_ms!==TARGET_MS||raw.event_loop_condition!==EVENT_LOOP)reject();
@@ -221,11 +225,21 @@ function projectInput(value){
   noSpawnEvidence(generation,count);
   if(!finalMatrix(raw.status,raw.reason,life,count,staging!==null))reject();
   const diagnostic=generation?.diagnostic??null;
+  const hasOperatorReceipt=raw.operator_receipt.length>0;
+  if(native)return freeze({
+    schema_version:NATIVE_SCHEMA,readiness:raw.status,reason:raw.reason,
+    task_correctness:'NOT_EVALUATED',task_outcome_evaluated:false,runtime_admitted_marker:false,
+    operator_admission_claimed:raw.operator_admitted,admission_authority:'NOT_ESTABLISHED',
+    has_operator_receipt:hasOperatorReceipt,
+    workspace_disposition:raw.workspace_disposition,descendant_guarantee:'NONE',
+    direct_child_invocations:{generation:count},outer_observation_target_ms:TARGET_MS,
+    event_loop_condition:EVENT_LOOP,generation:generation?.value??null,staging,diagnostic
+  });
   return freeze({
     schema_version:SCHEMA,readiness:raw.status,reason:raw.reason,
     task_correctness:'NOT_EVALUATED',task_outcome_evaluated:false,
     runtime_admitted_marker:false,operator_admitted_marker:false,
-    has_operator_receipt:raw.operator_receipt.length>0,
+    has_operator_receipt:hasOperatorReceipt,
     workspace_disposition:raw.workspace_disposition,descendant_guarantee:'NONE',
     direct_child_invocations:{generation:count},outer_observation_target_ms:TARGET_MS,
     event_loop_condition:EVENT_LOOP,generation:generation?.value??null,staging,diagnostic
@@ -233,7 +247,15 @@ function projectInput(value){
 }
 
 export function projectProjectRunSummary(value){
-  try{return projectInput(value);}catch{return invalidSummary();}
+  try{return projectInput(value,false);}catch{return invalidSummary(false);}
+}
+export function projectNativeProjectRunSummary(savedEnvelope){
+  try{
+    const envelope=snapshotReceiptData(savedEnvelope);
+    closed(envelope,['schema','result']);
+    if(envelope.schema!=='SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1')reject();
+    return projectInput(envelope.result,true);
+  }catch{return invalidSummary(true);}
 }
 
 function validateProjectedRuntime(value,lifecycle){
@@ -254,8 +276,8 @@ function validateProjectedRetention(value){
 }
 function validateProjectedGeneration(value){
   closed(value,projectedGenerationKeys);
-   if(!lifecycleStatuses.has(value.lifecycle_status)||value.task_class!=='PROJECT_CODEGEN_V1'||
-      !['gpt-6-luna',UNKNOWN].includes(value.requested_model)||
+  if(!lifecycleStatuses.has(value.lifecycle_status)||value.task_class!=='PROJECT_CODEGEN_V1'||
+     !['gpt-6-luna',UNKNOWN].includes(value.requested_model)||
      !['gpt-6-luna',UNKNOWN].includes(value.reported_model)||value.task_outcome_evaluated!==false||
      value.task_payload_valid!==null&&!bool(value.task_payload_valid))reject();
   const p=value.process_exit;
@@ -299,16 +321,23 @@ function validateProjectedGeneration(value){
       value.runtime_evidence.workspace_disposition!=='DEDICATED_NOT_REUSED'))reject();
 }
 function validateProjectedStaging(value){
-  closed(value,projectedStagingKeys);
+  closed(value,['schema_version','completion_status','operation_acknowledgement','caller_label','manifest_sha256','file_count','total_bytes','provenance_authenticity','crash_durability']);
   if(value.schema_version!=='squire4.stage_receipt.v1'||value.completion_status!=='COMPLETE'||
      value.operation_acknowledgement!=='ACKNOWLEDGED'||value.caller_label!=='project_candidate_stager'||
      !sha(value.manifest_sha256)||!integer(value.file_count)||value.file_count<1||value.file_count>50||
      !nonnegative(value.total_bytes)||value.total_bytes>1048576||
      value.provenance_authenticity!=='NOT_ESTABLISHED'||value.crash_durability!=='NOT_ESTABLISHED')reject();
 }
-function validateSummary(value){
-  closed(value,summaryKeys);
-  if(value.schema_version!==SCHEMA)reject();
+function validateSummary(value,native=false){
+  if(native&&value&&typeof value==='object'&&!Array.isArray(value)&&value.readiness==='INVALID_RECEIPT'){
+    closed(value,['schema_version','readiness','diagnostic']);
+    if(value.schema_version!==NATIVE_SCHEMA)reject();
+    closed(value.diagnostic,['stage','reason']);
+    if(value.diagnostic.stage!=='RECEIPT_VALIDATION'||value.diagnostic.reason!=='SCHEMA_MISMATCH')reject();
+    return;
+  }
+  closed(value,native?nativeSummaryKeys:summaryKeys);
+  if(value.schema_version!==(native?NATIVE_SCHEMA:SCHEMA))reject();
   if(value.readiness==='INVALID_RECEIPT'){
     const d=value.diagnostic;
     closed(d,['stage','reason']);
@@ -320,9 +349,10 @@ function validateSummary(value){
        value.generation!==null||value.staging!==null||d.stage!=='RECEIPT_VALIDATION'||d.reason!=='SCHEMA_MISMATCH')reject();
     return;
   }
-   if(!statuses.has(value.readiness)||!validFinalReason(value.reason)||
+  if(!statuses.has(value.readiness)||!validFinalReason(value.reason)||
      value.task_correctness!=='NOT_EVALUATED'||value.task_outcome_evaluated!==false||
-     value.runtime_admitted_marker!==false||value.operator_admitted_marker!==false||
+     value.runtime_admitted_marker!==false||
+     (native?(!bool(value.operator_admission_claimed)||value.admission_authority!=='NOT_ESTABLISHED'):value.operator_admitted_marker!==false)||
      !bool(value.has_operator_receipt)||!['DEDICATED_NOT_REUSED','QUARANTINED'].includes(value.workspace_disposition)||
      value.descendant_guarantee!=='NONE'||value.outer_observation_target_ms!==TARGET_MS||
      value.event_loop_condition!==EVENT_LOOP)reject();
@@ -347,18 +377,19 @@ function validateSummary(value){
 }
 
 const INVALID_TEXT='Squire offline project result: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
-export function formatProjectSummaryTerminal(summary){
+const NATIVE_INVALID_TEXT='Squire native offline project result: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
+function formatProject(summary,native){
   try{
     const captured=snapshotReceiptData(summary);
-    validateSummary(captured);
-    if(captured.readiness==='INVALID_RECEIPT')return INVALID_TEXT;
+    validateSummary(captured,native);
+    if(captured.readiness==='INVALID_RECEIPT')return native?NATIVE_INVALID_TEXT:INVALID_TEXT;
     const g=captured.generation,p=g?.process_exit,m=g?.provider_metadata,c=g?.output_custody,s=captured.staging;
     const number=v=>v===null?'UNKNOWN':String(v);
     const yes=v=>v?'true':'false';
     const reason=captured.reason??'NONE';
     const diagnostic=captured.diagnostic===null?'NONE':`${captured.diagnostic.stage}/${captured.diagnostic.reason}`;
     const lines=[
-      `Squire offline project result: ${captured.readiness}`,
+      `${native?'Squire native offline project result':'Squire offline project result'}: ${captured.readiness}`,
       'Task correctness: NOT_EVALUATED',
       `Task outcome evaluated: ${yes(captured.task_outcome_evaluated)}`,
       `Reason: ${reason}`,
@@ -369,14 +400,18 @@ export function formatProjectSummaryTerminal(summary){
       `Tokens: input=${number(m?.usage_tokens.input??null)}, output=${number(m?.usage_tokens.output??null)}, cache_read=${number(m?.usage_tokens.cache_read??null)}, thinking=${number(m?.usage_tokens.thinking??null)}, total=${number(m?.usage_tokens.total??null)}, codex_reasoning_output=${number(m?.codex_reasoning_output_tokens??null)}`,
       `Envelope custody: persisted=${c?yes(c.persisted):'UNKNOWN'}; bytes=${number(c?.byte_count??null)}; SHA-256=${c?.envelope_sha256??'UNKNOWN'}`,
       `Staging ACK history: ${s?.completion_status??'NONE'}; operation=${s?.operation_acknowledgement??'NONE'}; files=${number(s?.file_count??null)}; decoded bytes=${number(s?.total_bytes??null)}; manifest SHA-256=${s?.manifest_sha256??'UNKNOWN'}`,
-      `Operator receipt present: ${yes(captured.has_operator_receipt)}; runtime admitted marker: false; operator admitted marker: false`,
+      `Operator receipt present: ${yes(captured.has_operator_receipt)}; runtime admitted marker: false; ${native?`operator admission claimed: ${yes(captured.operator_admission_claimed)}; authority: ${captured.admission_authority}`:'operator admitted marker: false'}`,
       `Direct child invocations: generation=${countText(captured.direct_child_invocations.generation)}; observation target ms=${TARGET_MS}; event loop=${EVENT_LOOP}`,
       `Workspace: ${captured.workspace_disposition}; descendant guarantee: NONE`,
       `Diagnostic: ${diagnostic}`,
       'Recorded claims only; no task outcome, artifact, authorization, or execution re-verification.'
     ];
     const output=lines.join('\n')+'\n';
-    return /^[\x20-\x7e\n]+$/.test(output)?output:INVALID_TEXT;
-  }catch{return INVALID_TEXT;}
+    if(!/^[\x20-\x7e\n]+$/.test(output))return native?NATIVE_INVALID_TEXT:INVALID_TEXT;
+    if(native&&new TextEncoder().encode(output).length>8192)return NATIVE_INVALID_TEXT;
+    return output;
+  }catch{return native?NATIVE_INVALID_TEXT:INVALID_TEXT;}
 }
+export function formatProjectSummaryTerminal(summary){return formatProject(summary,false);}
+export function formatNativeProjectSummaryTerminal(summary){return formatProject(summary,true);}
 function countText(value){return value===null?'UNKNOWN':String(value);}
