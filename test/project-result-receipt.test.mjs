@@ -15,6 +15,7 @@ import {projectProjectRunSummary, formatProjectSummaryTerminal} from '../src/pro
 const PRIVATE = 'PRIVATE_SENTINEL_RECEIPT';
 const MODEL = 'synthetic-project-model';
 const EFFORT = 'synthetic-project-effort';
+const PRIVATE_ERROR = 'PRIVATE_SENTINEL_ERROR_BODY';
 const authorization = {operator_receipt: PRIVATE, supported_tuples: [{model: MODEL, effort: EFFORT}]};
 const request = {
   schema: 'SQUIRE2_PROJECT_REQUEST_V1',
@@ -137,6 +138,100 @@ function fakeRuntime(response, {aborted = false} = {}) {
       calls.push(args);
       queueMicrotask(() => child.emit('spawn'));
       return child;
+    }
+  };
+}
+
+async function boundedAdverseTurns(maxTurns = 32) {
+  for (let turn = 0; turn < maxTurns; turn++) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
+async function waitForAdverseSpawn(runtime) {
+  await runtime.spawnSignal;
+  assert.equal(runtime.spawnObserved, true, 'synthetic spawn observed');
+}
+
+function adverseRuntime(mode) {
+  let time = 0;
+  const timers = [];
+  const controller = new AbortController();
+  const child = new EventEmitter();
+  child.pid = 123;
+  child.unref = () => {};
+  child.kill = signal => {
+    child.signals.push(signal);
+    return true;
+  };
+  child.signals = [];
+  for (const name of ['stdout', 'stderr', 'stdin']) {
+    child[name] = new EventEmitter();
+    child[name].destroy = () => {};
+  }
+  child.stdin.write = (_bytes, callback) => {
+    callback();
+    return true;
+  };
+  child.stdin.end = callback => {
+    callback();
+    if (['nonzero-exit', 'stage-exists', 'outer-cleanup-throws-after-ACK'].includes(mode)) {
+      queueMicrotask(() => {
+        child.stdout.emit('data', encode(projectStream()));
+        child.stdout.emit('end');
+        child.stderr.emit('end');
+        child.emit('exit', mode === 'nonzero-exit' ? 3 : 0, null);
+      });
+    }
+  };
+  const calls = [];
+  let spawnObserved = false;
+  let resolveSpawnSignal;
+  const spawnSignal = new Promise(resolve => { resolveSpawnSignal = resolve; });
+  return {
+    controller,
+    calls,
+    child,
+    spawnSignal,
+    get spawnObserved() { return spawnObserved; },
+    clock: {
+      now: () => time,
+      schedule(delay, callback) {
+        const timer = {at: time + delay, callback, active: true};
+        timers.push(timer);
+        return () => {
+          if (mode === 'outer-cleanup-throws-after-ACK' && delay === 140000) {
+            throw Error(PRIVATE_ERROR);
+          }
+          timer.active = false;
+        };
+      }
+    },
+    spawn(...args) {
+      calls.push(args);
+      if (mode === 'spawn-throws') throw Error(PRIVATE_ERROR);
+      queueMicrotask(() => {
+        spawnObserved = true;
+        child.emit('spawn');
+        resolveSpawnSignal();
+      });
+      return child;
+    },
+    async advance(to) {
+      assert.ok(Number.isSafeInteger(to) && to >= time);
+      time = to;
+      for (let turn = 0; turn < 32; turn++) {
+        const next = timers
+          .filter(timer => timer.active && timer.at <= time)
+          .sort((left, right) => left.at - right.at)[0];
+        if (!next) break;
+        next.active = false;
+        next.callback();
+        await Promise.resolve();
+      }
+      assert.equal(timers.some(timer => timer.active && timer.at <= time), false,
+        'all due synthetic timers settled within 32 transitions');
+      await boundedAdverseTurns();
     }
   };
 }
@@ -710,4 +805,217 @@ test('write, readback, and close failures expose fixed errors and may leave priv
     });
   }
 });
+
+test('six injected adverse producer results round-trip through the private saved receipt and offline reports',
+  {timeout: 5000}, async () => {
+    const scenarios = [
+      {
+        id: 'spawn-throws', status: 'GENERATION_REJECTED', reason: 'GENERATION_REJECTED',
+        lifecycle: 'LIMITED_SPAWN_FAILED', calls: 1, staging: false,
+        settlement: 'UNKNOWN', processObserved: false, hasProviderStream: false
+      },
+      {
+        id: 'nonzero-exit', status: 'GENERATION_REJECTED', reason: 'GENERATION_REJECTED',
+        lifecycle: 'LIMITED_PROCESS_FAILED', calls: 1, staging: false,
+        settlement: 'SETTLED_DIRECT_CHILD_EXIT', processObserved: true, hasProviderStream: true
+      },
+      {
+        id: 'timeout-unsettled', status: 'INCOMPLETE', reason: 'GENERATION_REJECTED',
+        lifecycle: 'LIMITED_TIMEOUT', calls: 1, staging: false,
+        settlement: 'ABANDONED_UNSETTLED', processObserved: false, hasProviderStream: false
+      },
+      {
+        id: 'caller-abort-after-spawn', status: 'INCOMPLETE', reason: 'CANCELED',
+        lifecycle: 'LIMITED_USER_ABORT', calls: 1, staging: false,
+        settlement: 'ABANDONED_UNSETTLED', processObserved: false, hasProviderStream: false
+      },
+      {
+        id: 'stage-exists', status: 'STAGING_REJECTED',
+        reason: 'STAGING:DESTINATION_ALREADY_EXISTS',
+        lifecycle: 'LIMITED_SUCCESS', calls: 1, staging: false,
+        settlement: 'SETTLED_DIRECT_CHILD_EXIT', processObserved: true, hasProviderStream: true
+      },
+      {
+        id: 'outer-cleanup-throws-after-ACK', status: 'FAILED',
+        reason: 'CLEANUP_FAILED_OR_UNCERTAIN',
+        lifecycle: 'LIMITED_SUCCESS', calls: 1, staging: true,
+        settlement: 'SETTLED_DIRECT_CHILD_EXIT', processObserved: true, hasProviderStream: true
+      }
+    ];
+
+    await owned(async directory => {
+      let spawnFailureLive;
+      for (const scenario of scenarios) {
+        const scope = join(directory, `scope-${scenario.id}`);
+        await fs.mkdir(scope, {mode: 0o700});
+        const runtime = adverseRuntime(scenario.id);
+        const input = runnerInputs(scope, runtime);
+        if (scenario.id === 'stage-exists') {
+          const runDirectory = join(scope, 'output', `run-${input.specification.job_id}`);
+          input.ports.fs = {
+            ...fs,
+            async mkdir(path, ...args) {
+              const result = await fs.mkdir(path, ...args);
+              if (path === runDirectory) await fs.mkdir(join(path, 'stage'), {mode: 0o700});
+              return result;
+            }
+          };
+        }
+
+        const pending = runProjectCodexTask(input.specification, input.options, input.ports);
+        if (scenario.id === 'timeout-unsettled') {
+          await waitForAdverseSpawn(runtime);
+          await runtime.advance(120000);
+          await runtime.advance(123000);
+          await runtime.advance(125000);
+        } else if (scenario.id === 'caller-abort-after-spawn') {
+          await waitForAdverseSpawn(runtime);
+          runtime.controller.abort();
+          await runtime.advance(3000);
+          await runtime.advance(5000);
+        }
+        const live = await pending;
+        if (scenario.id === 'spawn-throws') spawnFailureLive = live;
+
+        assert.equal(live.schema, 'SQUIRE2_PROJECT_RESULT_V1', scenario.id);
+        assert.equal(live.status, scenario.status, scenario.id);
+        assert.equal(live.reason, scenario.reason, scenario.id);
+        assert.equal(live.task_correctness, 'NOT_EVALUATED', scenario.id);
+        assert.equal(live.task_outcome_evaluated, false, scenario.id);
+        assert.equal(live.runtime_admitted, false, scenario.id);
+        assert.equal(live.operator_admitted, false, scenario.id);
+        assert.equal(live.workspace_disposition, 'QUARANTINED', scenario.id);
+        assert.equal(runtime.calls.length, scenario.calls, scenario.id);
+        assert.equal(live.direct_child_invocations.generation, scenario.calls, scenario.id);
+        assert.equal(live.generation.record.lifecycle_status, scenario.lifecycle, scenario.id);
+        assert.equal(live.generation.record.containment_evidence.settlement_status,
+          scenario.settlement, scenario.id);
+        assert.equal(live.generation.record.process_exit.observed_termination,
+          scenario.processObserved, scenario.id);
+        assert.equal(live.staging !== null, scenario.staging, scenario.id);
+        assert.equal(typeof live.generation.late_observations, 'function', scenario.id);
+
+        const receipt = createProjectResultReceipt(live);
+        assert.equal(Object.isFrozen(receipt), true, scenario.id);
+        assert.equal(receipt.generation !== live.generation, true, scenario.id);
+        assert.equal(typeof live.generation.late_observations, 'function', scenario.id);
+        assert.deepEqual(Object.keys(receipt.generation).sort(),
+          ['diagnostic_retention', 'record', 'runtime_evidence'], scenario.id);
+        assert.doesNotMatch(JSON.stringify(receipt), /late_observations/, scenario.id);
+        for (const key of ['record', 'runtime_evidence', 'diagnostic_retention']) {
+          assert.equal(JSON.stringify(receipt.generation[key]),
+            JSON.stringify(live.generation[key]), `${scenario.id} preserves ${key}`);
+        }
+        assert.equal(receipt.task_correctness, 'NOT_EVALUATED', scenario.id);
+        assert.equal(receipt.task_outcome_evaluated, false, scenario.id);
+        assert.equal(receipt.operator_receipt, PRIVATE, scenario.id);
+
+        const receiptPath = join(directory, `saved-${scenario.id}.json`);
+        const acknowledgement = await writeProjectResultReceipt(
+          live, {directory, filename: `saved-${scenario.id}.json`},
+          {fs: fileSystemPort(), uid: process.getuid()}
+        );
+        assert.deepEqual(Object.keys(acknowledgement), [
+          'schema', 'status', 'byte_count', 'sha256', 'crash_durability', 'source_authenticity'
+        ], scenario.id);
+        assert.equal(acknowledgement.status, 'RECORDED', scenario.id);
+        assert.equal(acknowledgement.crash_durability, 'NOT_ESTABLISHED', scenario.id);
+        assert.equal(acknowledgement.source_authenticity, 'NOT_ESTABLISHED', scenario.id);
+        assert.equal(JSON.stringify(acknowledgement).includes(PRIVATE), false, scenario.id);
+
+        const bytes = await readReceiptBytes(receiptPath);
+        assert.equal(bytes.length, acknowledgement.byte_count, scenario.id);
+        const parsed = parseReceiptJson(bytes);
+        assert.equal(JSON.stringify(parsed), JSON.stringify(receipt), scenario.id);
+        assert.ok(JSON.stringify(parsed).includes(PRIVATE), scenario.id);
+        assert.ok(JSON.stringify(parsed).includes(MODEL), scenario.id);
+        const privatePath = live.generation.record.output_custody.path;
+        if (typeof privatePath === 'string') {
+          assert.ok(JSON.stringify(parsed).includes(privatePath), scenario.id);
+        }
+        const savedStat = await fs.stat(receiptPath);
+        assert.equal(savedStat.mode & 0o7777, 0o600, scenario.id);
+
+        const summary = projectProjectRunSummary(parsed);
+        assert.equal(summary.readiness, scenario.status, scenario.id);
+        assert.equal(summary.reason, scenario.reason, scenario.id);
+        assert.equal(summary.task_correctness, 'NOT_EVALUATED', scenario.id);
+        assert.equal(summary.task_outcome_evaluated, false, scenario.id);
+        assert.equal(summary.runtime_admitted_marker, false, scenario.id);
+        assert.equal(summary.operator_admitted_marker, false, scenario.id);
+        assert.equal(summary.direct_child_invocations.generation, scenario.calls, scenario.id);
+        assert.equal(summary.generation.lifecycle_status, scenario.lifecycle, scenario.id);
+        assert.equal(summary.generation.containment_evidence.settlement_status,
+          scenario.settlement, scenario.id);
+        assert.equal(summary.generation.process_exit.observed_termination,
+          scenario.processObserved, scenario.id);
+        assert.equal(summary.staging !== null, scenario.staging, scenario.id);
+        assert.equal(summary.staging?.operation_acknowledgement ?? null,
+          scenario.staging ? 'ACKNOWLEDGED' : null, scenario.id);
+        assert.equal(summary.has_operator_receipt, true, scenario.id);
+
+        const rawTokens = parsed.generation.record.provider_metadata.usage_tokens;
+        const projectedTokens = summary.generation.provider_metadata.usage_tokens;
+        if (scenario.hasProviderStream) {
+          assert.equal(rawTokens.input, 0, scenario.id);
+          assert.equal(rawTokens.output, 3, scenario.id);
+          assert.equal(rawTokens.cache_read, 0, scenario.id);
+          assert.equal(rawTokens.thinking, 'UNKNOWN', scenario.id);
+          assert.equal(rawTokens.total, 'UNKNOWN', scenario.id);
+          assert.equal(projectedTokens.input, 0, scenario.id);
+          assert.equal(projectedTokens.cache_read, 0, scenario.id);
+          assert.equal(projectedTokens.thinking, null, scenario.id);
+          assert.equal(projectedTokens.total, null, scenario.id);
+        } else {
+          assert.equal(rawTokens.input, 'UNKNOWN', scenario.id);
+          assert.equal(rawTokens.output, 'UNKNOWN', scenario.id);
+          assert.equal(rawTokens.cache_read, 'UNKNOWN', scenario.id);
+          assert.equal(projectedTokens.input, null, scenario.id);
+          assert.equal(projectedTokens.output, null, scenario.id);
+          assert.equal(projectedTokens.cache_read, null, scenario.id);
+        }
+
+        const terminal = formatProjectSummaryTerminal(summary);
+        assert.match(terminal, new RegExp(`Squire offline project result: ${scenario.status}`), scenario.id);
+        assert.match(terminal, new RegExp(`Reason: ${scenario.reason.replaceAll(':', '\\:')}`), scenario.id);
+        assert.match(terminal, new RegExp(`Generation: ${scenario.lifecycle}`), scenario.id);
+        assert.match(terminal, /Task correctness: NOT_EVALUATED/, scenario.id);
+        assert.match(terminal, /Task outcome evaluated: false/, scenario.id);
+        assert.match(terminal, /Direct child invocations: generation=1;/, scenario.id);
+        assert.match(terminal, new RegExp(
+          `observed termination: ${scenario.processObserved ? 'true' : 'false'}`), scenario.id);
+        assert.match(terminal, new RegExp(
+          `operation=${scenario.staging ? 'ACKNOWLEDGED' : 'NONE'}`), scenario.id);
+
+        const cli = await reportFile(receiptPath);
+        assert.equal(cli.code, 1, scenario.id);
+        assert.equal(cli.stdout, terminal, scenario.id);
+        assert.equal(cli.stderr, '', scenario.id);
+        const publicOutput = JSON.stringify(summary) + terminal +
+          JSON.stringify(acknowledgement) + cli.stdout + cli.stderr;
+        for (const sentinel of [PRIVATE, MODEL, PRIVATE_ERROR, privatePath].filter(Boolean)) {
+          assert.equal(publicOutput.includes(sentinel), false, `${scenario.id} omits ${sentinel}`);
+        }
+      }
+
+      assert.equal(spawnFailureLive.direct_child_invocations.generation, 1);
+      const incompatible = {
+        ...spawnFailureLive,
+        direct_child_invocations: {...spawnFailureLive.direct_child_invocations, generation: 0}
+      };
+      assert.throws(() => createProjectResultReceipt(incompatible),
+        error => error.code === 'INVALID_RECEIPT');
+      let invalidIoCalls = 0;
+      const invalidFs = {
+        async lstat() { invalidIoCalls++; },
+        async open() { invalidIoCalls++; }
+      };
+      await assert.rejects(writeProjectResultReceipt(
+        incompatible, {directory, filename: 'count-zero-incompatible.json'},
+        {fs: invalidFs, uid: process.getuid()}
+      ), error => error.code === 'INVALID_RECEIPT' && error.message === 'INVALID_RECEIPT');
+      assert.equal(invalidIoCalls, 0);
+      assert.equal(spawnFailureLive.direct_child_invocations.generation, 1);
+    });
+  });
 
