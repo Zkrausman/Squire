@@ -4,7 +4,7 @@ import {constants} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {REPORT_MAX_BYTES,parseReceiptJson,projectRunSummary,formatSummaryTerminal,invalidRunSummary} from '../src/offline-run-summary.mjs';
 import {projectSingleJsRunSummary,formatSingleJsSummaryTerminal} from '../src/single-js-summary.mjs';
-import {projectProjectRunSummary,formatProjectSummaryTerminal} from '../src/project-summary.mjs';
+import {projectProjectRunSummary,formatProjectSummaryTerminal,projectNativeProjectRunSummary,formatNativeProjectSummaryTerminal} from '../src/project-summary.mjs';
 import {buildCourierHandoffReport} from '../src/courier-handoff-report.mjs';
 
 export async function readReceiptBytes(path,maxBytes=REPORT_MAX_BYTES) {
@@ -14,7 +14,6 @@ export async function readReceiptBytes(path,maxBytes=REPORT_MAX_BYTES) {
     const before=await fs.lstat(path);
     if(!before.isFile()||before.isSymbolicLink())throw 'SPECIAL_FILE_REJECTED';
     if(before.size>maxBytes)throw 'FILE_TOO_LARGE';
-    // NONBLOCK prevents a replaced FIFO from hanging open; NOFOLLOW rejects a replaced leaf symlink.
     handle=await fs.open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     const opened=await handle.stat();if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino)throw 'SPECIAL_FILE_REJECTED';
     if(opened.size>maxBytes)throw 'FILE_TOO_LARGE';
@@ -38,7 +37,8 @@ export async function runOfflineReportCli(argv,ports={}) {
       bytes=await ports.readFile(argv[0],{maxBytes:REPORT_MAX_BYTES});
     }else bytes=await readReceiptBytes(argv[0]);
     const raw=parseReceiptJson(bytes);
-    if(raw?.schema==='SQUIRE2_PROJECT_RESULT_V1'){kind='project';summary=projectProjectRunSummary(raw);}
+    if(raw?.schema==='SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1'){kind='native-project';summary=projectNativeProjectRunSummary(raw);}
+    else if(raw?.schema==='SQUIRE2_PROJECT_RESULT_V1'){kind='project';summary=projectProjectRunSummary(raw);}
     else if(raw?.schema==='SQUIRE2_SINGLE_JS_RESULT_V1'||raw?.schema==='SQUIRE2_SINGLE_JS_DRY_RUN_V1'){kind='single';summary=projectSingleJsRunSummary(raw);}
     else if(raw?.schema==='SQUIRE3_COURIER_HANDOFF_REPORT_V1'){kind='handoff';handoffReport=buildCourierHandoffReport(raw);}
     else summary=projectRunSummary(raw);
@@ -52,8 +52,13 @@ export async function runOfflineReportCli(argv,ports={}) {
     if(!handoffReport){stderr.write('INVALID_INPUT\n');return 2;}
     stdout.write(handoffReport.terminal_text);return 1;
   }
-  if(kind==='project'){stdout.write(formatProjectSummaryTerminal(summary));if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}return 1;} // Recorded project claims never receive functional-success exit.
-  if(kind==='single'){stdout.write(formatSingleJsSummaryTerminal(summary));if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}return 1;} // No generic functional PASS exit.
+  if(kind==='native-project'){
+    stdout.write(formatNativeProjectSummaryTerminal(summary));
+    if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}
+    return 1;
+  }
+  if(kind==='project'){stdout.write(formatProjectSummaryTerminal(summary));if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}return 1;}
+  if(kind==='single'){stdout.write(formatSingleJsSummaryTerminal(summary));if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}return 1;}
   stdout.write(formatSummaryTerminal(summary));
   if(summary.overall_outcome==='INVALID_RECEIPT'){stderr.write(summary.diagnostic.reason+'\n');return 2;}
   return summary.overall_outcome==='PASS'?0:1;

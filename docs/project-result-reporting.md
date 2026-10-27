@@ -208,3 +208,22 @@ const acknowledgement=await writeProjectResultReceipt(projectResult,
 ```
 
 The raw saved receipt contains schema-required private values and belongs only in the private directory. The writer permits one explicit private metadata-receipt write per call; it grants no broader raw-capture retention, export, or upload authority. The offline formatter and CLI continue to omit private fields. Source validation passed 64 focused and 711 full-suite tests, including injected producer-to-private-file-to-reader/API/CLI round trips. Independent source/privacy review and ordinary PR/CI/merge are delivery gates. These tests establish only the exercised injected-route compatibility; actual native producer use remains UNKNOWN. This adapter does not alter the project producer, reporter validation, reader, or CLI behavior and establishes no actual producer use or native execution.
+
+## Opt-in native-result receipt and report profile
+
+This is a separate opt-in profile for recording the actual `operator_admitted` boolean supplied in a project result. It does not change the strict `SQUIRE2_PROJECT_RESULT_V1` profile: that profile still requires `operator_admitted: false`. A legacy-shaped result with `operator_admitted: true` remains invalid through the legacy projector and creator.
+
+The new saved envelope has exactly two top-level keys:
+
+- `schema`: exactly `SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1`
+- `result`: the existing closed `SQUIRE2_PROJECT_RESULT_V1` data fields, with `operator_admitted` required to be an actual boolean and preserved as supplied
+
+All other project-result, generation, staging, retention, status, counter, and cross-field checks remain in force. `runtime_admitted` stays `false`; task correctness remains `NOT_EVALUATED`; and descendant guarantees remain `NONE`. The recorded operator admission claim is not proof of authorization or execution: projected output always states `admission_authority: NOT_ESTABLISHED`, regardless of the boolean or operator-receipt presence.
+
+`createNativeProjectResultReceipt(liveResult)` returns a frozen, independent `{schema,result}` envelope. It may omit only a data-valued `generation.late_observations` function from the live wrapper, and never calls it. Accessors, proxies, other functions, cycles, symbols, and unlisted fields reject. `projectNativeProjectRunSummary(savedEnvelope)` accepts only the new envelope. Its summary uses schema `squire3.native_project_summary.v1` and preserves `operator_admission_claimed` as the actual boolean. `formatNativeProjectSummaryTerminal(summary)` independently validates that closed summary and returns bounded printable ASCII text.
+
+`writeNativeProjectResultReceipt(liveResult,destination,ports)` validates before filesystem access, then writes the complete new envelope through the same bounded physical writer as the legacy receipt API. The writer retains the existing caller-owned mode-0700 directory, exclusive mode-0600 leaf, no-overwrite behavior, same-handle bounded readback, identity checks, and buffer clearing. It returns schema `squire3.native_project_result_write_receipt.v1` with status `RECORDED`, byte count, SHA-256, and both `crash_durability` and `source_authenticity` set to `NOT_ESTABLISHED`. The complete encoded envelope, including its final newline, is limited to 262,144 bytes. Oversize receipts fail with the fixed `RECEIPT_TOO_LARGE` code.
+
+The explicit one-file CLI recognizes this profile only by its new envelope schema. A valid report exits `1` for either admission boolean; invalid input exits `2` with bounded diagnostics. Existing campaign, single-result, legacy project, and courier routes retain their prior dispatch and output behavior.
+
+These APIs record metadata claims only. They do not launch or change a producer, native entrypoint, host setting, admission path, or execution behavior. Tests using synthetic or native-wrapper-shaped data do not establish actual native producer use, task correctness, authorization, artifact verification, or admission authority. Independent validation and review are separate delivery steps.
