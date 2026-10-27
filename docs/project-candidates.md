@@ -81,11 +81,29 @@ mode; there is no production model, provider or effort default. Removing API key
 environment variables does not prove effective subscription routing.
 
 Imports and default invocation of `acceptance/project-entrypoint.mjs` are inert.
-The only activation shape is `--run-admitted <config.json> <admission.json>`.
+The original activation shape is `--run-admitted <config.json> <admission.json>`.
 It needs separately scoped project admission, exact config/job/scope bindings,
 fresh verified Codex subscription/allowance/permissions/output evidence and
 retention READY. Admission tokens are consumed in memory; no reset/reuse/retry
 or durable recovery is supplied. This source approval grants no actual launch.
+
+The optional receipt-saving shape is
+`--run-admitted-save-receipt <config.json> <admission.json> <destination.json> <destination-sha256>`.
+It uses a separately hash-bound destination descriptor and passes the original
+config bytes and admission to the existing native runner once. Its pure binding
+checks do not consume admission tokens. Extra receipt-source identities and the
+existing caller-owned destination directory are checked before dispatch; the
+fixed receipt writer checks the directory again after the operation. See the
+[receipt request contract](project-result-reporting.md#optional-entrypoint-receipt-request).
+Descriptor identity is not authorization: any future operation admission must
+explicitly authorize the exact descriptor digest and destination.
+
+A recorded result emits only the path-free writer acknowledgement and exits 1,
+including for CANDIDATE_STAGED. The acknowledgement establishes neither task
+success nor admission authority. A runner failure or save failure does not
+authorize another dispatch, overwrite, cleanup or replay. Receipt filesystem
+operations retain the existing operation and byte bounds, with no wall-clock
+completion guarantee; the generation observation target remains 140 seconds.
 
 The path attempts at most one 120-second generation, no syntax child, with a
 140-second outer observation target. Timer/abort logic requires a responsive

@@ -227,3 +227,104 @@ All other project-result, generation, staging, retention, status, counter, and c
 The explicit one-file CLI recognizes this profile only by its new envelope schema. A valid report exits `1` for either admission boolean; invalid input exits `2` with bounded diagnostics. Existing campaign, single-result, legacy project, and courier routes retain their prior dispatch and output behavior.
 
 These APIs record metadata claims only. They do not launch or change a producer, native entrypoint, host setting, admission path, or execution behavior. Tests using synthetic or native-wrapper-shaped data do not establish actual native producer use, task correctness, authorization, artifact verification, or admission authority. Independent validation and review are separate delivery steps.
+
+## Optional entrypoint receipt request
+
+The proposed entrypoint integration adds this explicit invocation:
+
+```
+node acceptance/project-entrypoint.mjs --run-admitted-save-receipt <config.json> <admission.json> <destination.json> <destination-sha256>
+```
+
+The last argument is the lowercase, 64-character SHA-256 of the exact descriptor
+bytes. Each input read is capped at 65,536 bytes; descriptor JSON uses the
+existing duplicate-decoded-key-rejecting parser. The descriptor is closed:
+
+```
+{
+  "schema": "SQUIRE3_PROJECT_RECEIPT_DESTINATION_V1",
+  "config_sha256": "<SHA-256 of exact config bytes>",
+  "job_id": "<same job as config and admission>",
+  "scope": "<same scope as config and admission>",
+  "destination": {
+    "directory": "<existing normalized absolute nonroot directory>",
+    "filename": "<1..128 ASCII letters, digits, dots, underscores or hyphens>"
+  },
+  "source_pins": {
+    "<absolute PROJECT_SOURCE_ROOT>/src/project-result-receipt.mjs": {
+      "bytes": 0,
+      "sha256": "<exact source digest>"
+    },
+    "<absolute PROJECT_SOURCE_ROOT>/src/project-summary.mjs": {
+      "bytes": 0,
+      "sha256": "<exact source digest>"
+    }
+  }
+}
+```
+
+The example's byte counts and digest placeholders must be replaced with exact
+source identities. Only those two absolute source keys are accepted. Byte counts
+must be nonnegative safe integers and digests must be lowercase SHA-256 strings.
+`PROJECT_RECEIPT_SOURCE_FILES` is separate from the legacy source inventory;
+config, preparation and admission formats retain their existing fields.
+Filename `.` or `..`, traversal, NULs and unnormalized directories reject.
+The parent must preexist, be caller-owned with a safe-integer uid, have exactly
+0700 permissions without special bits, and be a directory rather than a symlink.
+Preflight does not create or reserve the destination or reject an existing leaf;
+the writer's later exclusive creation may fail after the operation has returned.
+
+The pure `validateProjectReceiptDestination` check validates the legacy config,
+requires a true matching legacy admission, and binds config hash, job and scope.
+It does not call `requireProjectCodexAdmission` or consume a token. Native
+dispatch still performs the existing full admission and preflight once, using
+the original config bytes and admission. Descriptor hashing precedes source
+verification and dispatch. The two extra files are checked by `verifyExactFile`
+before dispatch. These checks are cooperative identity checks, not loader
+confinement, source authenticity or a full dependency-closure proof. Neither the
+descriptor hash nor this source candidate grants authority: future operation
+admission must explicitly authorize the exact descriptor digest and destination.
+
+`runProjectEntrypointCli(argv,ports)` is an explicit trusted-capability seam with
+no native defaults. Its ports are `readBytes`, `runProject`, `verifyFile`,
+`reads: {lstat,readChunks}`, `writerPorts: {fs: {lstat,open},uid}`, and
+`stdout`/`stderr`, each with a `write` method. The native main binds those ports
+to the existing bounded reader, native runner, exact-file verifier and filesystem.
+There is no injected result writer or CLI-selected executable. The returned live
+result goes directly to `writeNativeProjectResultReceipt`; the integration does
+not call late observations, serialize away functions, or rewrite admission.
+
+Successful saving prints only the existing path-free writer acknowledgement JSON
+plus LF and exits 1 for every saved status, including CANDIDATE_STAGED.
+Setup or binding failure prints only `PROJECT_RECEIPT_REQUEST_INVALID` plus LF
+and exits 2 before dispatch or receipt creation. Runner exceptions print only
+`PROJECT_ADMISSION_OR_OPERATION_FAILED` plus LF and exit 2. Writer failures print
+only `PROJECT_RECEIPT_WRITE_FAILED` plus LF and exit 2, without a result fallback.
+Only the exact `--run-admitted-save-receipt` flag selects receipt mode.
+Incorrect arity for that exact flag returns the request failure code and exits 2;
+prefix lookalikes retain existing dry-run behavior. The original three-argument
+mode, default invocation and unrelated argument shapes retain their original behavior.
+
+There is one dispatch and no automatic retry, replay, overwrite or deletion.
+Incompatible returned results, including the existing count-zero spawn-failure
+incompatibility, fail through the fixed writer before receipt creation; they do
+not trigger another dispatch. Physical partial files from sink failures remain
+for owner inspection. Writer operation and byte bounds remain unchanged,
+including the 262,144-byte encoded cap. Pending filesystem promises have no
+wall-clock completion guarantee. The generation's 140-second observation target
+is not a receipt completion guarantee.
+
+This is a static source candidate. Tests have not run. The proposed focused
+suite uses injected synthetic runners and verification capabilities with owned
+temporary receipt I/O; it does not invoke the actual native runner or a provider.
+Synthetic native-shaped records remain recorded claims, with admission authority
+and source authenticity unestablished. This candidate makes no claim that the
+exact encoded-cap failure branch was executed.
+
+The source owner must assess and apply the candidate, run
+`npm run test:project-entrypoint-receipt` once, then run the full suite only if
+that focused run passes. Preserve original failed outcomes without automatic
+reruns. Obtain fresh independent nonauthor review of the exact diff, complete
+changed sources and relevant privacy contracts before ordinary draft-PR, CI,
+expected-head merge and remote-byte verification steps. No native qualification,
+host or benchmark release, or user workload is authorized by this candidate.

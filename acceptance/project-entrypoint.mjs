@@ -4,10 +4,13 @@ import * as fs from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {types} from 'node:util';
 import {readReceiptBytes} from '../bin/squire-report.mjs';
 import {parseReceiptJson} from '../src/offline-run-summary.mjs';
 import {validateCodexPreflight,verifyExactFile,hash} from '../src/bounded-codegen-plan.mjs';
-import {validateProjectCodexConfig,requireProjectCodexAdmission} from '../src/project-configuration.mjs';
+import {validateProjectCodexConfig,requireProjectCodexAdmission,validateProjectReceiptDestination} from '../src/project-configuration.mjs';
+import {closed,object} from '../src/job-spec.mjs';
+import {writeNativeProjectResultReceipt} from '../src/project-result-receipt.mjs';
 import {runProjectCodexTask} from '../src/project-runner.mjs';
 import {createMonotonicClock} from '../src/node-process-port.mjs';
 import {createNativeRejectedRetention} from '../src/local-rejected-retention.mjs';
@@ -36,9 +39,119 @@ export async function runProjectOneCaseNative(configBytes,admission,abortSignal)
     return Object.freeze({...result,operator_admitted:true,operator_receipt:a.operator_receipt,direct_child_invocations:Object.freeze({...counts}),outer_observation_target_ms:140000,event_loop_condition:'RESPONSIVE_PARENT_EVENT_LOOP'});
   }finally{cancel();}
 }
+const receiptFlag='--run-admitted-save-receipt';
+function receiptMethod(target,key){
+  if(!target||typeof target!=='object'||types.isProxy(target))throw 0;
+  for(let current=target;current!==null;current=Object.getPrototypeOf(current)){
+    if(types.isProxy(current))throw 0;
+    const descriptor=Object.getOwnPropertyDescriptor(current,key);
+    if(!descriptor)continue;
+    if(!Object.hasOwn(descriptor,'value')||typeof descriptor.value!=='function'||types.isProxy(descriptor.value))throw 0;
+    return (...args)=>Reflect.apply(descriptor.value,target,args);
+  }
+  throw 0;
+}
+function receiptFunction(value){
+  if(typeof value!=='function'||types.isProxy(value))throw 0;
+}
+function receiptByteLength(bytes){
+  if(!types.isUint8Array(bytes)||types.isProxy(bytes))throw 0;
+  const length=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),'byteLength').get.call(bytes);
+  if(length>65536)throw 0;
+  return length;
+}
+function receiptArgs(value){
+  if(!Array.isArray(value)||types.isProxy(value)||Object.getPrototypeOf(value)!==Array.prototype)throw 0;
+  const length=Object.getOwnPropertyDescriptor(value,'length').value;
+  if(length>64||Reflect.ownKeys(value).length!==length+1)throw 0;
+  const args=[];
+  for(let index=0;index<length;index++){
+    const descriptor=Object.getOwnPropertyDescriptor(value,String(index));
+    if(!descriptor||!Object.hasOwn(descriptor,'value')||typeof descriptor.value!=='string'||descriptor.value.includes('\0'))throw 0;
+    args.push(descriptor.value);
+  }
+  return args;
+}
+function receiptPorts(ports){
+  closed(ports,['readBytes','runProject','verifyFile','reads','writerPorts','stdout','stderr'],[],'receipt_ports');
+  for(const key of ['readBytes','runProject','verifyFile'])receiptFunction(ports[key]);
+  closed(ports.reads,['lstat','readChunks'],[],'receipt_reads');
+  for(const key of ['lstat','readChunks'])receiptFunction(ports.reads[key]);
+  closed(ports.writerPorts,['fs','uid'],[],'receipt_writer_ports');
+  closed(ports.writerPorts.fs,['lstat','open'],[],'receipt_fs');
+  for(const key of ['lstat','open'])receiptFunction(ports.writerPorts.fs[key]);
+  if(!Number.isSafeInteger(ports.writerPorts.uid)||ports.writerPorts.uid<0)throw 0;
+  closed(ports.stdout,['write'],[],'receipt_stdout');
+  closed(ports.stderr,['write'],[],'receipt_stderr');
+  receiptFunction(ports.stdout.write);receiptFunction(ports.stderr.write);
+}
+async function receiptParent(destination,ports){
+  const stat=await ports.fs.lstat(destination.directory),view={};
+  if(!stat||typeof stat!=='object'||types.isProxy(stat))throw 0;
+  for(const key of ['dev','ino','uid','nlink','mode','size','mtimeMs','ctimeMs']){
+    const descriptor=Object.getOwnPropertyDescriptor(stat,key);
+    if(!descriptor||!Object.hasOwn(descriptor,'value'))throw 0;
+    view[key]=descriptor.value;
+  }
+  for(const key of ['dev','ino','uid','nlink','mode','size'])if(!Number.isSafeInteger(view[key])||view[key]<0)throw 0;
+  if(!Number.isFinite(view.mtimeMs)||!Number.isFinite(view.ctimeMs))throw 0;
+  const file=receiptMethod(stat,'isFile')(),directory=receiptMethod(stat,'isDirectory')(),symlink=receiptMethod(stat,'isSymbolicLink')();
+  if(![file,directory,symlink].every(value=>typeof value==='boolean')||
+     !directory||symlink||view.uid!==ports.uid||(view.mode&0o7777)!==0o700)throw 0;
+}
+// All capabilities are explicit and trusted. The result writer is deliberately fixed.
+export async function runProjectEntrypointCli(argv,ports){
+  let out,err,args;
+  try{
+    object(ports,'receipt_ports');
+    const stdout=Object.getOwnPropertyDescriptor(ports,'stdout'),stderr=Object.getOwnPropertyDescriptor(ports,'stderr');
+    if(!stdout||!stderr||!Object.hasOwn(stdout,'value')||!Object.hasOwn(stderr,'value'))throw 0;
+    out=receiptMethod(stdout.value,'write');err=receiptMethod(stderr.value,'write');
+    args=receiptArgs(argv);
+  }catch{if(err)err('PROJECT_RECEIPT_REQUEST_INVALID\n');return 2;}
+  const save=args[0]===receiptFlag;
+  if(!save){
+    if(projectEntrypointMode(args)!=='EXPLICIT_ADMISSION_REQUIRED'){
+      out(`${JSON.stringify(projectDryRun())}\n`);return 0;
+    }
+    try{
+      const config=await ports.readBytes(args[1],65536),admission=parseReceiptJson(await ports.readBytes(args[2],65536));
+      const result=await ports.runProject(config,admission);
+      out(`${JSON.stringify(result)}\n`);return result.status==='CANDIDATE_STAGED'?0:1;
+    }catch{err('PROJECT_ADMISSION_OR_OPERATION_FAILED\n');return 2;}
+  }
+  let configBytes,admission,descriptor;
+  try{
+    if(args.length!==5||args.slice(1,4).some(value=>value.length===0)||!/^[a-f0-9]{64}$/.test(args[4]))throw 0;
+    receiptPorts(ports);
+    configBytes=await ports.readBytes(args[1],65536);receiptByteLength(configBytes);
+    const admissionBytes=await ports.readBytes(args[2],65536);receiptByteLength(admissionBytes);
+    const descriptorBytes=await ports.readBytes(args[3],65536);receiptByteLength(descriptorBytes);
+    if(hash(descriptorBytes)!==args[4])throw 0;
+    admission=parseReceiptJson(admissionBytes);
+    descriptor=validateProjectReceiptDestination(parseReceiptJson(descriptorBytes),configBytes,admission);
+    for(const [path,pin]of Object.entries(descriptor.source_pins))await ports.verifyFile({path,...pin},ports.reads);
+    await receiptParent(descriptor.destination,ports.writerPorts);
+  }catch{err('PROJECT_RECEIPT_REQUEST_INVALID\n');return 2;}
+  let result;
+  try{result=await ports.runProject(configBytes,admission);}
+  catch{err('PROJECT_ADMISSION_OR_OPERATION_FAILED\n');return 2;}
+  try{
+    const acknowledgement=await writeNativeProjectResultReceipt(result,descriptor.destination,ports.writerPorts);
+    out(`${JSON.stringify(acknowledgement)}\n`);return 1;
+  }catch{err('PROJECT_RECEIPT_WRITE_FAILED\n');return 2;}
+}
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   const args=process.argv.slice(2);
-  if(projectEntrypointMode(args)!=='EXPLICIT_ADMISSION_REQUIRED')console.log(JSON.stringify(projectDryRun()));
+  if(args[0]===receiptFlag){
+    process.exitCode=await runProjectEntrypointCli(args,{
+      readBytes:readReceiptBytes,runProject:runProjectOneCaseNative,verifyFile:verifyExactFile,
+      reads:{lstat:fs.lstat,readChunks:p=>createReadStream(p)},
+      writerPorts:{fs:{lstat:fs.lstat,open:fs.open},uid:process.getuid()},
+      stdout:{write:value=>process.stdout.write(value)},stderr:{write:value=>process.stderr.write(value)}
+    });
+  }
+  else if(projectEntrypointMode(args)!=='EXPLICIT_ADMISSION_REQUIRED')console.log(JSON.stringify(projectDryRun()));
   else try{
     const config=await readReceiptBytes(args[1],65536),admission=parseReceiptJson(await readReceiptBytes(args[2],65536));
     const result=await runProjectOneCaseNative(config,admission);console.log(JSON.stringify(result));if(result.status!=='CANDIDATE_STAGED')process.exitCode=1;

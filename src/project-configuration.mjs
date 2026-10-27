@@ -4,7 +4,7 @@ import {createReadStream} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {closed,object,fail} from './job-spec.mjs';
-import {snapshotReceiptData} from './offline-run-summary.mjs';
+import {parseReceiptJson,snapshotReceiptData} from './offline-run-summary.mjs';
 import {NODE_RUNTIME,GENERATION_SHUTDOWN,hash,canonicalBytes,verifyExactFile} from './bounded-codegen-plan.mjs';
 import {prepareCodexArgv,CODEX_REQUIRED_VERSION,CODEX_OUTPUT_CONTRACT} from './codex-profile.mjs';
 import {buildProjectCodegenPrompt,validateProjectRequest,PROJECT_PREFIX_IDENTITY} from './project-task.mjs';
@@ -13,6 +13,8 @@ import {RETENTION_POLICY,createNativeRejectedRetention} from './local-rejected-r
 
 export const PROJECT_SOURCE_ROOT=dirname(dirname(fileURLToPath(import.meta.url)));
 export const PROJECT_SOURCE_FILES=Object.freeze(["src/project-task.mjs", "src/project-configuration.mjs", "src/project-runner.mjs", "src/offline-run-summary.mjs", "src/codex-profile.mjs", "src/bounded-codegen-plan.mjs", "src/local-rejected-retention.mjs", "src/internal/local-rejected-retention.mjs", "src/internal/rejected-capture.mjs", "src/internal/limited-core.mjs", "src/internal/limited-diagnostics.mjs", "src/internal/multifile-core.mjs", "src/multifile-staging.mjs", "src/multifile-export.mjs", "src/limited-stream-collector.mjs", "src/limited-job-record.mjs", "src/job-spec.mjs", "src/agy-profile.mjs", "src/provider-metadata.mjs", "src/node-process-port.mjs", "src/owned-group.mjs", "bin/squire-report.mjs", "acceptance/project-entrypoint.mjs", "src/project-stream-collector.mjs", "src/single-js-summary.mjs", "acceptance/prepare-project-task.mjs", "src/desktop-profile.mjs"]);
+export const PROJECT_RECEIPT_DESTINATION_SCHEMA='SQUIRE3_PROJECT_RECEIPT_DESTINATION_V1';
+export const PROJECT_RECEIPT_SOURCE_FILES=Object.freeze(['src/project-result-receipt.mjs','src/project-summary.mjs']);
 export const PROJECT_ENVIRONMENT_POLICY=Object.freeze({generation:'INHERIT_PROCESS_ENV_MINUS_CODEX_API_KEYS_SCOPED_TMPDIR',deleted_keys:Object.freeze(['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL','GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL']),program:Object.freeze({PATH:'/bin:/usr/bin',LANG:'C.UTF-8',TMPDIR:'<run>/.tmp'}),safety:'KEY_EXCLUSION_IS_NOT_EFFECTIVE_PROVIDER_OR_HOSTILE_ISOLATION_PROOF'});
 const admittedJobs=new Set(),admittedScopes=new Set();
 const same=(a,b)=>hash(canonicalBytes(a))===hash(canonicalBytes(b));
@@ -43,6 +45,34 @@ export function requireProjectCodexAdmission(bundle,c,bytes){
   if(bundle.provider_id!=='native_codex'||bundle.operator_receipt!==c.authorization.operator_receipt||bundle.config_sha256!==hash(bytes)||bundle.job_id!==c.job_id||bundle.scope!==c.scope||bundle.project_admitted!==true||!absolute(bundle.preflight.evidence_receipt))fail('project_admission');
   if(admittedJobs.has(c.job_id)||admittedScopes.has(c.scope))throw Error('NATIVE_OPERATION_ALREADY_CONSUMED');admittedJobs.add(c.job_id);admittedScopes.add(c.scope);
   return Object.freeze({...bundle,preflight:Object.freeze({...bundle.preflight})});
+}
+// Pure binding check only: no admission token consumption or authority is supplied here.
+export function validateProjectReceiptDestination(value,configBytes,admission){
+  const c=validateProjectCodexConfig(parseReceiptJson(configBytes));
+  if(c.runtime_target===DESKTOP_TARGET)fail('desktop_native_disabled');
+  const bundle=snapshotReceiptData(admission),descriptor=snapshotReceiptData(value);
+  closed(bundle,['provider_id','operator_receipt','config_sha256','job_id','scope','project_admitted','preflight'],[],'project_admission');
+  closed(bundle.preflight,['evidence_receipt'],[],'project_preflight');
+  const config_sha256=hash(configBytes);
+  if(bundle.provider_id!=='native_codex'||bundle.operator_receipt!==c.authorization.operator_receipt||
+     bundle.config_sha256!==config_sha256||bundle.job_id!==c.job_id||bundle.scope!==c.scope||
+     bundle.project_admitted!==true||!absolute(bundle.preflight.evidence_receipt))fail('project_admission');
+  closed(descriptor,['schema','config_sha256','job_id','scope','destination','source_pins'],[],'project_receipt_destination');
+  if(descriptor.schema!==PROJECT_RECEIPT_DESTINATION_SCHEMA||descriptor.config_sha256!==config_sha256||
+     descriptor.job_id!==c.job_id||descriptor.scope!==c.scope)fail('project_receipt_binding');
+  closed(descriptor.destination,['directory','filename'],[],'project_receipt_destination');
+  const {directory,filename}=descriptor.destination;
+  if(!absolute(directory)||typeof filename!=='string'||filename.length<1||filename.length>128||
+     !/^[A-Za-z0-9._-]+$/.test(filename)||filename==='.'||filename==='..')fail('project_receipt_destination');
+  const expected=PROJECT_RECEIPT_SOURCE_FILES.map(name=>join(PROJECT_SOURCE_ROOT,name));
+  closed(descriptor.source_pins,expected,[],'project_receipt_source_pins');
+  for(const source of Object.values(descriptor.source_pins)){
+    closed(source,['bytes','sha256'],[],'project_receipt_source_pin');
+    if(!Number.isSafeInteger(source.bytes)||source.bytes<0||!digest(source.sha256))fail('project_receipt_source_pin');
+    Object.freeze(source);
+  }
+  Object.freeze(descriptor.destination);Object.freeze(descriptor.source_pins);
+  return Object.freeze(descriptor);
 }
 export async function prepareProjectCodexTask(root,source_commit,request,inputs,ports={}){
   const req=validateProjectRequest(request);inputs=snapshotReceiptData(inputs);closed(inputs,['job_id','scope','codex','requested_model','effort','authorization','permissions'],['desktop_runtime_identity'],'project_private_inputs');
