@@ -1,5 +1,5 @@
 import {RETENTION_POLICY} from './local-rejected-retention.mjs';
-import {validateCodexTuple} from './codex-profile.mjs';
+import {validateCodexTuple,validateCodexPermissions} from './codex-profile.mjs';
 import {resolve,join} from 'node:path';
 import {closed} from './job-spec.mjs';
 import {canonicalBytes,hash,NODE_RUNTIME,AGY_RUNTIME,FIXTURE_FREEZE_SHA256,Q218_JOB,Q218_SCOPE,GENERATION_SHUTDOWN} from './bounded-codegen-plan.mjs';
@@ -53,8 +53,7 @@ export function validateCodexOperationConfig(c){
  closed(c.codex,['path','bytes','sha256','version'],[],'codex_identity');
  if(typeof c.codex.path!=='string'||!c.codex.path.startsWith('/')||resolve(c.codex.path)!==c.codex.path||!Number.isSafeInteger(c.codex.bytes)||c.codex.bytes<=0||!(/^[a-f0-9]{64}$/.test(c.codex.sha256))||c.codex.version!=='0.160.0')throw Error('CODEX_IDENTITY_REQUIRED');
  validateCodexTuple(c.requested_model,c.effort,c.authorization);
- closed(c.permissions,['sandbox','approval_mode','output_contract'],[],'codex_permissions');
- if(c.permissions.sandbox!=='read-only'||!['on-request','never'].includes(c.permissions.approval_mode)||c.permissions.output_contract!=='CODEX_JSONL_SINGLE_AGENT_V1')throw Error('CODEX_PERMISSION_PROFILE');
+ validateCodexPermissions(c.permissions);
  for(const pin of [c.prompt,c.fixtures,c.task_input]){
   closed(pin,['path','bytes','sha256'],[],'codex_file_pin');
   if(typeof pin.path!=='string'||!pin.path.startsWith('/')||resolve(pin.path)!==pin.path||!Number.isSafeInteger(pin.bytes)||pin.bytes<1||!(/^[a-f0-9]{64}$/.test(pin.sha256)))throw Error('CODEX_FILE_PIN');

@@ -6,13 +6,19 @@ native AGY runner and old preparation entrypoint reject before dispatch. The
 coding acceptance entrypoint now accepts only `Q218C_OPERATION_V1` Codex configs.
 
 `prepareCodexArgv` is pure data preparation for CLI version 0.160.0. It requires
-explicit caller model, reasoning effort, operator receipt and matching supported
-model/effort tuple. It has no production model, effort, executable or hash default.
-The argv is `exec --json --ephemeral --sandbox read-only --model <model> -c
-model_reasoning_effort="<effort>" -`, with executable supplied separately and
-`shell:false`. No output-last-message file, output schema, resume, bypass or
-fallback route is selected. Ephemeral mode suppresses rollouts; it does not
-establish absence of other files or host state.
+an explicit model, reasoning effort, operator receipt, matching supported
+model/effort tuple and a closed permission object with exactly `sandbox:
+"read-only"`, `approval_mode: "on-request"` or `"never"`, and
+`output_contract: "CODEX_JSONL_SINGLE_AGENT_V1"`. Missing, extra, accessor,
+proxy or unsupported permission fields reject without a default or mode
+normalization. The emitted argv begins
+`--ask-for-approval <declared-mode> exec --json --ephemeral --sandbox
+<declared-sandbox> --model <model> -c model_reasoning_effort="<effort>" -`,
+with the executable supplied separately and `shell:false`. These flags bind
+declared launch intent; they do not prove effective enforcement. No
+output-last-message file, resume, bypass or fallback route is selected.
+Ephemeral mode suppresses rollouts; it does not establish absence of other files
+or host state.
 
 The private collector validates all JSONL bytes through the content-free
 `decodeCodexJsonl` metadata API, then extracts source privately. The restricted
@@ -40,16 +46,21 @@ node acceptance/prepare-bounded-codegen.mjs --prepare-codex <fresh-prepared-dir>
 ```
 
 The private inputs contain fresh job/scope, executable identity/version, explicit
-model/effort, operator authorization and effective permission profile. Config and
-manifest files are created without replacement at mode 0600. Runtime identities,
-account evidence, credentials and captured bodies must not be copied into public
-source, PRs, CI or wiki. No credentials are read by this preparation code.
+model/effort, operator authorization and permission profile. Config and manifest
+files are created without replacement at mode 0600. Missing or invalid profiles
+reject before dispatch. After any source change, prepare a fresh config and
+manifest so source pins and emitted intent describe that source. Runtime
+identities, account evidence, credentials and captured bodies must not be copied
+into public source, PRs, CI or wiki. No credentials are read by this preparation
+code.
 
 `requireCodexAdmission` binds an operator receipt, config digest, fresh job/scope
 and the disclosed FIX17 paths. Fresh private preflight must independently attest
 subscription allowance, effective OpenAI subscription provider, no API/paid
 fallback, the admitted tuple, executable/version, supported output contract and
-actual approval mode. Removing environment keys is not proof of those facts.
+effective sandbox and approval mode, matching the declared profile. This intent
+binding does not explain the historical requested-on-request/reported-Never
+mismatch. Removing environment keys is not proof of preflight facts.
 Credits Off is an AGY/Lore control and is absent from Codex admission. No signing
 keys or PKI are added. These are supplied evidence assertions, not authentication
 or runtime qualification established by pure validation.
@@ -87,6 +98,8 @@ preserves the historical attempts and this operation's limits.
 
 This is one frozen-task result, not general software quality, standing runtime
 authority or a reusable model default. Each new operation needs its own fresh
-source/config/runtime/prompt bindings, authorization and effective preflight.
+source/config/runtime/prompt bindings, authorization and independently matched
+effective preflight. A source change requires fresh preparation; it does not
+repair historical witnesses.
 Direct-child-only, responsive-event-loop, no descendant/crash recovery, no
 max_steps enforcement and no workspace reuse limitations remain.

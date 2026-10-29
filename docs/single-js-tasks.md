@@ -24,13 +24,22 @@ no-overwrite `prompt.utf8`, `config.json` and `operation-manifest.json` at mode
 0600 after retention READY. The preparation receipt says
 `PREPARED_NOT_EXECUTABLE` and `runtime_admitted=false`; nothing launches.
 The returned prompt view is a fresh owned copy, not an immutable typed array.
+The closed permission profile must be exactly read-only sandbox, `on-request` or
+`never` approval mode, and the supported JSONL output contract. The argv records
+approval intent with `--ask-for-approval <mode>` before `exec` and carries the
+declared sandbox with `--sandbox`. Invalid or missing profiles reject before
+dispatch. These arguments do not prove effective enforcement. Any source change
+requires fresh preparation and source/config pins.
 
 Activation requires a separate `single_js_admitted=true` admission bound to the
 exact config hash/job/scope/operator receipt, with a fresh private preflight
 using the existing Codex schema. The effective caller-provided read-only sandbox
 and `never` or `on-request` approval mode govern; no example selects a new mode
-or changes settings. Subscription allowance and effective provider require real
-evidence; deleting environment keys alone proves neither.
+or changes settings. Independent effective preflight must match the declared
+sandbox and approval mode. Subscription allowance and effective provider require
+real evidence; deleting environment keys alone proves neither. This intent
+binding does not explain the historical requested-on-request/reported-Never
+mismatch.
 
 The explicit activation entrypoint is
 `node acceptance/single-js-entrypoint.mjs --run-admitted <config.json> <admission.json>`.

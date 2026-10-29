@@ -31,11 +31,18 @@ export function validateCodexTuple(model,effort,authorization){
  if(!match)fail('UNAUTHORIZED_MODEL_EFFORT');
  return Object.freeze({model,effort,operator_receipt:authorization.operator_receipt});
 }
+export function validateCodexPermissions(permissions){
+ closed(permissions,['sandbox','approval_mode','output_contract'],[],'codex_permissions');
+ if(permissions.sandbox!=='read-only'||!['on-request','never'].includes(permissions.approval_mode)||
+    permissions.output_contract!==CODEX_OUTPUT_CONTRACT)fail('codex_permissions');
+ return Object.freeze({sandbox:permissions.sandbox,approval_mode:permissions.approval_mode,output_contract:permissions.output_contract});
+}
 export function prepareCodexArgv(spec){
- closed(spec,['requested_model','effort','observed_cli_version','prompt_bytes','authorization'],[],'codex_profile');
+ closed(spec,['requested_model','effort','observed_cli_version','prompt_bytes','authorization','permissions'],[],'codex_profile');
  if(spec.observed_cli_version!==CODEX_REQUIRED_VERSION)fail('CODEX_VERSION_MISMATCH');
  validateCodexTuple(spec.requested_model,spec.effort,spec.authorization);
+ const permissions=validateCodexPermissions(spec.permissions);
  if(!validateCodexPrompt(spec.prompt_bytes).valid)fail('CODEX_PROMPT_INVALID');
- return Object.freeze({runtime_admitted:false,status:'PREPARED_NOT_EXECUTABLE',argv:Object.freeze(['exec','--json','--ephemeral','--sandbox','read-only','--model',spec.requested_model,'-c',`model_reasoning_effort=${JSON.stringify(spec.effort)}`,'-'])});
+ return Object.freeze({runtime_admitted:false,status:'PREPARED_NOT_EXECUTABLE',argv:Object.freeze(['--ask-for-approval',permissions.approval_mode,'exec','--json','--ephemeral','--sandbox',permissions.sandbox,'--model',spec.requested_model,'-c',`model_reasoning_effort=${JSON.stringify(spec.effort)}`,'-'])});
 }
 export function codexEnvironment(scope,ambient){const env={...ambient,TMPDIR:scope+'/.tmp'};for(const k of CODEX_CHILD_ENV_DELETIONS)delete env[k];return env;}

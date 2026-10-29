@@ -16,3 +16,12 @@ entrypoint bytes when later optional receipt-saving integration changes the live
 entrypoint. The existing controller test reads this snapshot against its original
 4127-byte/SHA-256 pin; the historical pin and every controller assertion remain
 unchanged. This fixture maintenance does not qualify or authorize native work.
+
+Two additional snapshots preserve the original pre-change `src/codex-profile.mjs`
+and `test/project.test.mjs` bytes for immutable historical source-pin checks.
+Their identities are 3,030 bytes/SHA-256
+`97a1b91463a3bdffed7ac2b81f1f38d0cb4e353a07d8590fdd7726e4dcdc6c13` and
+21,714 bytes/SHA-256
+`5405ee48452aae8454397961de9ba982da9bbfb130bf5fd49a9a7db63cb845ee`,
+respectively. They are data snapshots, never imported or executed, and do not
+represent the active implementation or qualify native work.

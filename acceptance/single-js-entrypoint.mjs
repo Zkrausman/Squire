@@ -32,7 +32,7 @@ export async function runSingleJsOneCaseNative(configBytes,admission,abortSignal
     await fs.mkdir(c.scope,{mode:0o700});
     const result=await runSingleJsCodexTask({job_id:c.job_id,task_scope:c.scope,requested_model:c.requested_model,effort:c.effort,max_wall_clock_sec:120,prompt_bytes},
       {clock,shutdown:c.generation_shutdown,abortSignal:signal},
-      {fs,spawn:launch('generation'),executable:c.codex.path,codex:{observed_cli_version:c.codex.version,authorization:c.authorization},environment:process.env,retainRejected:retention.retainRejected,syntax:(path,ports)=>executeSingleJsSyntax(path,{...ports,spawn:launch('syntax')})});
+      {fs,spawn:launch('generation'),executable:c.codex.path,codex:{observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions},environment:process.env,retainRejected:retention.retainRejected,syntax:(path,ports)=>executeSingleJsSyntax(path,{...ports,spawn:launch('syntax')})});
     return Object.freeze({...result,operator_admitted:true,operator_receipt:a.operator_receipt,direct_child_invocations:Object.freeze({...counts}),outer_observation_target_ms:140000,event_loop_condition:'RESPONSIVE_PARENT_EVENT_LOOP'});
   }finally{cancel();}
 }

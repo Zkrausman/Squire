@@ -262,7 +262,7 @@ function runnerInputs(directory, runtime) {
     options: {clock: runtime.clock, shutdown: GENERATION_SHUTDOWN, abortSignal: runtime.controller.signal},
     ports: {
       fs, uid: process.getuid(), spawn: runtime.spawn, executable: '/synthetic/codex',
-      codex: {observed_cli_version: '0.160.0', authorization}, environment: {PUBLIC: 'synthetic'}
+      codex: {observed_cli_version: '0.160.0', authorization, permissions: {sandbox: 'read-only', approval_mode: 'never', output_contract: 'CODEX_JSONL_SINGLE_AGENT_V1'}}, environment: {PUBLIC: 'synthetic'}
     }
   };
 }
