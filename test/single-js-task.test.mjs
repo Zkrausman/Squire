@@ -41,7 +41,7 @@ function runtime({source=SOURCE,syntaxExit=0,abort=false,pending=false}={}){
    queueMicrotask(()=>{c.emit('spawn');queueMicrotask(()=>{if(kind==='generation'&&pending)return;if(kind==='generation')c.stdout.emit('data',enc([{type:'turn.started'},{type:'item.completed',item:{type:'agent_message',text:source}},{type:'turn.completed',usage:{input_tokens:0,output_tokens:1}}].map(v=>JSON.stringify(v)).join('\n')+'\n'));c.stdout.emit('end');c.stderr.emit('end');c.emit('exit',kind==='syntax'?syntaxExit:0,null);});});return c;
  };
  const options={clock,shutdown:GENERATION_SHUTDOWN,abortSignal:controller.signal};
- const ports={fs:mem.fs,spawn:spawn('generation'),executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization:auth},environment:{OPENAI_API_KEY:'synthetic-secret',PUBLIC:'retained'},syntax:(path,p)=>executeSingleJsSyntax(path,{...p,spawn:spawn('syntax')})};
+ const ports={fs:mem.fs,spawn:spawn('generation'),executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization:auth,permissions:{sandbox:'read-only',approval_mode:'on-request',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}},environment:{OPENAI_API_KEY:'synthetic-secret',PUBLIC:'retained'},syntax:(path,p)=>executeSingleJsSyntax(path,{...p,spawn:spawn('syntax')})};
  return {mem,calls,spec,options,ports,controller,run:()=>runSingleJsCodexTask(spec,options,ports),async advance(n){time=n;for(const t of [...timers].sort((a,b)=>a.at-b.at))if(t.active&&t.at<=time){t.active=false;t.cb();}await flush();}};
 }
 test('single-JS request freezes exact prefix and prompt limits without evaluating text',()=>{
@@ -64,13 +64,23 @@ test('generic config/admission/preflight bind exact frozen tuple, identities and
  for(const change of [{single_js_admitted:false},{config_sha256:'f'.repeat(64)},{scope:'/different'},{fix17_paths_admitted:true}])assert.throws(()=>requireSingleJsCodexAdmission({...a,...change},c,bytes));
  const proof={operation_config_sha256:hash(bytes),observed_at_ms:1000,provider_id:'native_codex',cli_version:'0.160.0',executable_sha256:c.codex.sha256,requested_model:model,effort,operator_receipt:auth.operator_receipt,subscription:true,allowance_available:true,effective_provider:'openai_subscription',no_api_or_paid_fallback:true,sandbox:'read-only',approval_mode:'on-request',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1',installed_flags_verified:true};
  assert.equal(validateCodexPreflight(proof,c,bytes,1000),true);assert.throws(()=>validateCodexPreflight(proof,c,bytes,301001));
+ let fakeDispatches=0;for(const bad of [{...proof,approval_mode:'never'},{...proof,sandbox:'workspace-write'}]){
+  assert.throws(()=>{validateCodexPreflight(bad,c,bytes,1000);fakeDispatches++;});
+ }assert.equal(fakeDispatches,0);
  assert.throws(()=>validateSingleJsCodexConfig({...c,target_file:{workspace_relative_path:'/other'}}));assert.throws(()=>validateSingleJsCodexConfig({...c,max_direct_child_spawns:3}));
  await assert.rejects(runSingleJsOneCaseNative(null,null),/UNADMITTED_NATIVE_OPERATION/);assert.equal(singleJsEntrypointMode([]),'DRY_RUN_NATIVE_DISABLED');assert.equal(singleJsDryRun().direct_child_invocations,0);
 });
 test('fake runner stages fixed task.mjs, checks syntax once and never claims task correctness',async()=>{
- const f=runtime(),r=await f.run();assert.equal(r.status,'CANDIDATE_READY');assert.equal(r.task_correctness,'NOT_EVALUATED');assert.equal(r.task_outcome_evaluated,false);assert.deepEqual(f.calls.map(c=>c.kind),['generation','syntax']);assert.equal(f.calls[0].opts.env.OPENAI_API_KEY,undefined);assert.deepEqual(f.calls[1].argv,['--check',r.source.source_path]);assert.equal(f.calls[1].opts.env.NODE_OPTIONS,undefined);assert.equal(r.source.source_path.endsWith('/workspace/src/task.mjs'),true);assert.equal(r.generation.record.task_class,'SINGLE_JS_CODEGEN_V1');assert.equal(r.generation.record.provider_metadata.provider_reported_status,'turn.completed');assert.equal(JSON.stringify(r).includes('PUBLIC_SYNTHETIC_SOURCE_ONLY'),false);
+ const preparedTask=await prepared(),manifest=JSON.parse(new TextDecoder().decode(preparedTask.files.get('/synthetic/prepared/operation-manifest.json'))),f=runtime();
+ assert.deepEqual(preparedTask.config.permissions,f.ports.codex.permissions);
+ const r=await f.run();assert.deepEqual(f.calls[0].argv,manifest.generation.argv);assert.equal(r.status,'CANDIDATE_READY');assert.equal(r.task_correctness,'NOT_EVALUATED');assert.equal(r.task_outcome_evaluated,false);assert.deepEqual(f.calls.map(c=>c.kind),['generation','syntax']);assert.equal(f.calls[0].opts.env.OPENAI_API_KEY,undefined);assert.deepEqual(f.calls[1].argv,['--check',r.source.source_path]);assert.equal(f.calls[1].opts.env.NODE_OPTIONS,undefined);assert.equal(r.source.source_path.endsWith('/workspace/src/task.mjs'),true);assert.equal(r.generation.record.task_class,'SINGLE_JS_CODEGEN_V1');assert.equal(r.generation.record.provider_metadata.provider_reported_status,'turn.completed');assert.equal(JSON.stringify(r).includes('PUBLIC_SYNTHETIC_SOURCE_ONLY'),false);
  const summary=projectSingleJsRunSummary(JSON.parse(JSON.stringify(r)));assert.equal(summary.readiness,'CANDIDATE_READY');assert.equal(summary.task_correctness,'NOT_EVALUATED');assert.equal(Object.hasOwn(summary,'fixtures'),false);assert.equal(formatSingleJsSummaryTerminal(summary).includes('/synthetic'),false);
  await assert.rejects(f.run(),/limited_nonreuse|single_js_nonreuse/);
+});
+test('single-JS runner rejects missing permissions before fake dispatch or runtime filesystem effects',async()=>{
+ const f=runtime();delete f.ports.codex.permissions;
+ await assert.rejects(f.run());assert.deepEqual(f.calls,[]);
+ assert.equal(f.mem.dirs.has(join(f.spec.task_scope,'output')),false);
 });
 test('generation rejection, syntax failure and pre-abort stop without retry or functional evaluation',async()=>{
  for(const [settings,status,kinds]of [[{source:''},'GENERATION_REJECTED',['generation']],[{syntaxExit:1},'SYNTAX_REJECTED',['generation','syntax']],[{abort:true},'INCOMPLETE',[]]]){const f=runtime(settings),r=await f.run();assert.equal(r.status,status);assert.deepEqual(f.calls.map(c=>c.kind),kinds);assert.equal(r.task_correctness,'NOT_EVALUATED');assert.equal(r.workspace_disposition,'QUARANTINED');assert.equal(projectSingleJsRunSummary(JSON.parse(JSON.stringify(r))).readiness,status);}

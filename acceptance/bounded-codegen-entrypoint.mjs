@@ -64,7 +64,7 @@ export async function runBoundedCodegenOneCaseNativeCodex(specification,runtimeO
   };
   const cfg=(id,timeout_ms=5000,deadline_ms)=>({...config.fixture_configs[id-1],timeout_ms,...(deadline_ms===undefined?{}:{deadline_ms})});
   const result=await runCodegenCampaign({fixtures},{clock,abortSignal:signal,
-    generate:()=>runBoundedCodegenCodexTask(spec,{clock,shutdown:config.generation_shutdown,output_path:sourcePath,abortSignal:signal,enableDiagnosticRetention:true},{spawn:launch('generation'),fs,retainRejected:retention.retainRejected,executable:config.codex.path,codex:{observed_cli_version:config.codex.version,authorization:config.authorization}}),
+    generate:()=>runBoundedCodegenCodexTask(spec,{clock,shutdown:config.generation_shutdown,output_path:sourcePath,abortSignal:signal,enableDiagnosticRetention:true},{spawn:launch('generation'),fs,retainRejected:retention.retainRejected,executable:config.codex.path,codex:{observed_cli_version:config.codex.version,authorization:config.authorization,permissions:config.permissions}}),
     inspectSource,
     syntax:async()=>{await fs.mkdir(join(run,'.tmp'),{mode:0o700});return executeGeneratedSyntax(cfg(1),{clock,spawn:launch('syntax'),abortSignal:signal});},
     prepareFixture:async(f,index)=>{

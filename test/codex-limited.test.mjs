@@ -7,9 +7,9 @@ import {decodeCodexJsonl} from '../src/provider-metadata.mjs';
 import {runForeground} from '../src/internal/limited-core.mjs';
 import {runBoundedCodegenCodexTask,runLimitedAgyTask} from '../src/limited-runner.mjs';
 import {boundCodexConfig,runBoundedCodegenOneCaseNativeCodex} from '../acceptance/bounded-codegen-entrypoint.mjs';
-import {prepareBoundedCodegen} from '../acceptance/prepare-bounded-codegen.mjs';
+import {buildBoundedCodegenManifest,prepareBoundedCodegen} from '../acceptance/prepare-bounded-codegen.mjs';
 import {validateCodexOperationConfig,codexFixtureConfigurations,CODEX_ENVIRONMENT_POLICY,PUBLIC_FREEZE_ROOT} from '../src/bounded-codegen-configuration.mjs';
-import {requireCodexAdmission,validateCodexPreflight,NODE_RUNTIME,GENERATION_SHUTDOWN,hash} from '../src/bounded-codegen-plan.mjs';
+import {requireCodexAdmission,validateCodexPreflight,NODE_RUNTIME,GENERATION_SHUTDOWN,canonicalBytes,hash} from '../src/bounded-codegen-plan.mjs';
 import {RETENTION_POLICY} from '../src/local-rejected-retention.mjs';
 const enc=s=>new TextEncoder().encode(s),flush=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
 const MODEL='mock-codex-model-v1',EFFORT='mock-effort-standard';
@@ -18,12 +18,27 @@ const SOURCE='// PUBLIC_SYNTHETIC_SOURCE_ONLY\n'+('export const synthetic = 1;\n
 const message=text=>({type:'item.completed',item:{type:'agent_message',text}}),terminal={type:'turn.completed',usage:{input_tokens:0,output_tokens:5,cached_input_tokens:0,reasoning_output_tokens:2}};
 const lines=events=>enc(events.map(e=>typeof e==='string'?e:JSON.stringify(e)).join('\n')+'\n');
 const stream=(text=SOURCE)=>lines([{type:'turn.started'},message(text),terminal]);
-const profile={requested_model:MODEL,effort:EFFORT,observed_cli_version:'0.160.0',prompt_bytes:enc('public synthetic prompt'),authorization};
+const profile={requested_model:MODEL,effort:EFFORT,observed_cli_version:'0.160.0',prompt_bytes:enc('public synthetic prompt'),authorization,permissions:{sandbox:'read-only',approval_mode:'on-request',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}};
 function collect(bytes){const c=createCodexCodegenStreamCollector();c.chunk('stdout',bytes);c.eof('stdout');c.eof('stderr');return c;}
 test('Codex profile requires exact explicit tuple/version and closed non-shell argv',()=>{
  const p=prepareCodexArgv(profile);assert.equal(p.runtime_admitted,false);
- assert.deepEqual(p.argv,['exec','--json','--ephemeral','--sandbox','read-only','--model',MODEL,'-c','model_reasoning_effort="mock-effort-standard"','-']);
+ const expected=mode=>['--ask-for-approval',mode,'exec','--json','--ephemeral','--sandbox','read-only','--model',MODEL,'-c','model_reasoning_effort="mock-effort-standard"','-'];
+ assert.deepEqual(p.argv,expected('on-request'));
+ assert.deepEqual(prepareCodexArgv({...profile,permissions:{...profile.permissions,approval_mode:'never'}}).argv,expected('never'));
  for(const bad of [{requested_model:undefined},{effort:undefined},{requested_model:'gemini-3.8-flash-high'},{effort:'high'},{observed_cli_version:'0.159.0'},{effort:'x";arbitrary'}])assert.throws(()=>prepareCodexArgv({...profile,...bad}));
+ const missing={...profile};delete missing.permissions;assert.throws(()=>prepareCodexArgv(missing));
+ for(const permissions of [
+  {...profile.permissions,approval_mode:'automatic'},
+  {...profile.permissions,sandbox:'workspace-write'},
+  {...profile.permissions,output_contract:'OTHER'},
+  {...profile.permissions,unknown:'value'},
+  {...profile.permissions,extra:true}
+ ])assert.throws(()=>prepareCodexArgv({...profile,permissions}));
+ let reads=0;const accessor={sandbox:'read-only',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'};
+ Object.defineProperty(accessor,'approval_mode',{enumerable:true,get(){reads++;return 'never';}});
+ assert.throws(()=>prepareCodexArgv({...profile,permissions:accessor}));assert.equal(reads,0);
+ let traps=0;const proxy=new Proxy(profile.permissions,{get(){traps++;throw Error('trap');}});
+ assert.throws(()=>prepareCodexArgv({...profile,permissions:proxy}));assert.equal(traps,0);
  assert.throws(()=>prepareCodexArgv({...profile,authorization:{operator_receipt:'',supported_tuples:authorization.supported_tuples}}));
 });
 test('Codex prompt accepts exact bound and rejects encoding, empty and proxy without traps',()=>{
@@ -102,13 +117,22 @@ test('raw exit and stream drain still gate Codex success independently of termin
 });
 function fakeFS(){
  const dirs=new Set(['/synthetic']),files=new Map(),modes=new Map();const st=(file,mode)=>({isFile:()=>file,isDirectory:()=>!file,isSymbolicLink:()=>false,mode});
- const fs={async mkdir(p){if(dirs.has(p))throw Object.assign(Error(),{code:'EEXIST'});dirs.add(p);},async lstat(p){if(files.has(p))return st(true,modes.get(p));if(dirs.has(p))return st(false,0o700);throw Object.assign(Error(),{code:'ENOENT'});},async open(p,flag){assert.equal(flag,'wx');if(files.has(p))throw Object.assign(Error(),{code:'EEXIST'});return {async writeFile(b){files.set(p,new Uint8Array(b));modes.set(p,0o600);},async close(){}};},async readFile(p){return new Uint8Array(files.get(p));},async link(a,b){if(files.has(b))throw Object.assign(Error(),{code:'EEXIST'});files.set(b,new Uint8Array(files.get(a)));modes.set(b,modes.get(a));},async unlink(p){files.delete(p);},async chmod(p,m){modes.set(p,m);}};return {fs,files};
+ const fs={async mkdir(p){if(dirs.has(p))throw Object.assign(Error(),{code:'EEXIST'});dirs.add(p);},async lstat(p){if(files.has(p))return st(true,modes.get(p));if(dirs.has(p))return st(false,0o700);throw Object.assign(Error(),{code:'ENOENT'});},async open(p,flag){assert.equal(flag,'wx');if(files.has(p))throw Object.assign(Error(),{code:'EEXIST'});return {async writeFile(b){files.set(p,new Uint8Array(b));modes.set(p,0o600);},async close(){}};},async readFile(p){return new Uint8Array(files.get(p));},async link(a,b){if(files.has(b))throw Object.assign(Error(),{code:'EEXIST'});files.set(b,new Uint8Array(files.get(a)));modes.set(b,modes.get(a));},async unlink(p){files.delete(p);},async chmod(p,m){modes.set(p,m);}};return {fs,files,dirs};
 }
 test('Codex runner actually wires explicit private executable, stdin, collector and physical stage through fakes',async()=>{
  const f=runtime(),fs=fakeFS(),path='/synthetic/output/run-'+f.spec.job_id+'/workspace/src/summarizer.mjs';
- const p=runBoundedCodegenCodexTask(f.spec,{...f.options,output_path:path},{...f.ports,fs:fs.fs,executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization}});
+ const permissions=config().permissions;
+ const p=runBoundedCodegenCodexTask(f.spec,{...f.options,output_path:path},{...f.ports,fs:fs.fs,executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization,permissions}});
  await flush();f.end();const r=await p;assert.equal(r.record.lifecycle_status,'LIMITED_SUCCESS');assert.equal(r.physical_source_witness.source_path,path);assert.equal(r.runtime_admitted,false);assert.deepEqual(fs.files.get(path),enc(SOURCE));assert.deepEqual(f.writes,[f.spec.prompt_bytes]);assert.equal(f.calls[0].executable,'/synthetic/codex');
- await assert.rejects(runBoundedCodegenCodexTask(f.spec,{...f.options,output_path:path},{...f.ports,fs:fs.fs,executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization}}));
+ assert.deepEqual(f.calls[0].args,['--ask-for-approval','never','exec','--json','--ephemeral','--sandbox','read-only','--model',MODEL,'-c',`model_reasoning_effort=${JSON.stringify(EFFORT)}`,'-']);
+ await assert.rejects(runBoundedCodegenCodexTask(f.spec,{...f.options,output_path:path},{...f.ports,fs:fs.fs,executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization,permissions}}));
+});
+test('bounded runner rejects absent or invalid permissions before fake spawn or runtime filesystem effects',async()=>{
+ for(const permissions of [undefined,{sandbox:'workspace-write',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}]){
+  const f=runtime(),io=fakeFS(),path='/synthetic/output/run-'+f.spec.job_id+'/workspace/src/summarizer.mjs',codex={observed_cli_version:'0.160.0',authorization,...(permissions===undefined?{}:{permissions})};
+  await assert.rejects(runBoundedCodegenCodexTask(f.spec,{...f.options,output_path:path},{...f.ports,fs:io.fs,executable:'/synthetic/codex',codex}));
+  assert.equal(f.calls.length,0);assert.deepEqual([...io.files.keys()],[]);assert.deepEqual([...io.dirs],['/synthetic']);
+ }
 });
 function config(){
  const job_id='12345678-1234-4abc-8def-012345678901',scope='/synthetic';
@@ -116,6 +140,41 @@ function config(){
  codex:{path:'/synthetic/codex',bytes:1,sha256:'b'.repeat(64),version:'0.160.0'},requested_model:MODEL,effort:EFFORT,authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'},
  prompt:{path:'/synthetic/prompt',bytes:profile.prompt_bytes.length,sha256:hash(profile.prompt_bytes)},fixtures:{path:PUBLIC_FREEZE_ROOT+'/fixtures-freeze-manifest.json',bytes:20720,sha256:'7c133ceaae9ca7466689f5e612dbd46fd8f0a300bb7fa7807d6c5cbacd4cccc7'},fixture_inputs:Array.from({length:17},(_,i)=>PUBLIC_FREEZE_ROOT+'/fixture-'+String(i+1).padStart(2,'0')+'/input.ndjson'),fixture_configs:codexFixtureConfigurations(job_id,scope),diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,outer_observation_ms:250000,fixture_aggregate_ms:85000,max_direct_child_spawns:19,environment_policy:CODEX_ENVIRONMENT_POLICY,task_input:{path:'/synthetic/task',bytes:1,sha256:'c'.repeat(64)}};
 }
+test('production bounded manifest builder feeds matching fake generation for both approval modes',async()=>{
+ for(const mode of ['never','on-request']){
+  const f=runtime(),io=fakeFS(),c=config();c.permissions={...c.permissions,approval_mode:mode};
+  const manifest=buildBoundedCodegenManifest(c,f.spec.prompt_bytes);
+  assert.equal(manifest.schema,'Q218C_PREPARED_OPERATION_MANIFEST_V1');
+  assert.equal(manifest.config_sha256,hash(canonicalBytes(c)));
+  assert.deepEqual(manifest.prompt,c.prompt);assert.deepEqual(manifest.source_pins,c.source_pins);
+  assert.equal(manifest.generation.stdin,c.prompt);assert.equal(manifest.generation.executable,c.codex.path);
+  assert.equal(manifest.generation.args[0],'--ask-for-approval');assert.equal(manifest.generation.args[1],mode);
+  const path='/synthetic/output/run-'+f.spec.job_id+'/workspace/src/summarizer.mjs';
+  const pending=runBoundedCodegenCodexTask(f.spec,{...f.options,output_path:path},{...f.ports,fs:io.fs,executable:c.codex.path,
+   codex:{observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions}});
+  await flush();f.end();const result=await pending;
+  assert.equal(result.record.lifecycle_status,'LIMITED_SUCCESS');assert.equal(result.runtime_admitted,false);
+  assert.equal(f.calls[0].executable,manifest.generation.executable);
+  assert.deepEqual(f.calls[0].args,manifest.generation.args);assert.deepEqual(f.writes,[f.spec.prompt_bytes]);
+ }
+});
+test('production bounded manifest builder rejects permission and prompt/config mismatches before fake effects',()=>{
+ const c=config(),f=runtime(),io=fakeFS(),path='/synthetic/output/run-'+f.spec.job_id+'/workspace/src/summarizer.mjs';
+ const prepareThenLaunch=(candidate,promptBytes)=>{
+  const manifest=buildBoundedCodegenManifest(candidate,promptBytes);
+  return runBoundedCodegenCodexTask(f.spec,{...f.options,output_path:path},{...f.ports,fs:io.fs,executable:'/synthetic/codex',
+   codex:{observed_cli_version:candidate.codex.version,authorization:candidate.authorization,permissions:candidate.permissions}});
+ };
+ const missing={...c};delete missing.permissions;
+ const unsupported={...c,permissions:{...c.permissions,sandbox:'workspace-write'}};
+ const badConfigHash={...c,prompt:{...c.prompt,sha256:'f'.repeat(64)}};
+ const badPrompt=new Uint8Array(profile.prompt_bytes);badPrompt[0]^=1;
+ assert.throws(()=>prepareThenLaunch(missing,profile.prompt_bytes));
+ assert.throws(()=>prepareThenLaunch(unsupported,profile.prompt_bytes));
+ assert.throws(()=>prepareThenLaunch(badConfigHash,profile.prompt_bytes));
+ assert.throws(()=>prepareThenLaunch(c,badPrompt));
+ assert.equal(f.calls.length,0);assert.deepEqual([...io.files.keys()],[]);assert.deepEqual([...io.dirs],['/synthetic']);
+});
 test('Codex config, spec, operator admission and preflight bind exact tuple/identities without CreditsOff',async()=>{
  const c=config(),bytes=enc(JSON.stringify(c)),spec={job_id:c.job_id,task_scope:c.scope,requested_model:MODEL,effort:EFFORT,max_wall_clock_sec:120,prompt_bytes:profile.prompt_bytes};
  assert.equal(validateCodexOperationConfig(c),c);boundCodexConfig(c,spec);
@@ -124,7 +183,10 @@ test('Codex config, spec, operator admission and preflight bind exact tuple/iden
  assert.equal(requireCodexAdmission(a,c,bytes).provider_id,'native_codex');assert.throws(()=>requireCodexAdmission({...a,config_sha256:'f'.repeat(64)},c,bytes));
  const proof={operation_config_sha256:hash(bytes),observed_at_ms:1000,provider_id:'native_codex',cli_version:'0.160.0',executable_sha256:c.codex.sha256,requested_model:MODEL,effort:EFFORT,operator_receipt:authorization.operator_receipt,subscription:true,allowance_available:true,effective_provider:'openai_subscription',no_api_or_paid_fallback:true,sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1',installed_flags_verified:true};
  assert.equal(validateCodexPreflight(proof,c,bytes,1000),true);
- for(const bad of [{...proof,observed_at_ms:1001},{...proof,no_api_or_paid_fallback:false},{...proof,effective_provider:'api'},{...proof,effort:'high'},{...proof,approval_mode:'on-request'},{...proof,credits_off:true}])assert.throws(()=>validateCodexPreflight(bad,c,bytes,1000));
+ for(const bad of [{...proof,observed_at_ms:1001},{...proof,no_api_or_paid_fallback:false},{...proof,effective_provider:'api'},{...proof,effort:'high'},{...proof,approval_mode:'on-request'},{...proof,sandbox:'workspace-write'},{...proof,credits_off:true}])assert.throws(()=>validateCodexPreflight(bad,c,bytes,1000));
+ let fakeDispatches=0;for(const bad of [{...proof,approval_mode:'on-request'},{...proof,sandbox:'workspace-write'}]){
+  assert.throws(()=>{validateCodexPreflight(bad,c,bytes,1000);fakeDispatches++;});
+ }assert.equal(fakeDispatches,0);
  assert.throws(()=>validateCodexPreflight(proof,c,bytes,301001));
  await assert.rejects(runBoundedCodegenOneCaseNativeCodex(null,null,null),/UNADMITTED_NATIVE_OPERATION/);
  await assert.rejects(runLimitedAgyTask(),/AGY_SQUIRE_RUNTIME_DISABLED/);await assert.rejects(prepareBoundedCodegen(),/AGY_SQUIRE_RUNTIME_DISABLED/);

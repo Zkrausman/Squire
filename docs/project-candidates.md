@@ -76,15 +76,25 @@ This creates only fresh prompt/config/manifest files after exact source/runtime
 pin checks and private retention READY. The source inventory includes every new
 collector/preparation module and the transitive single-JS summary dependency
 loaded by the bounded receipt reader. Private inputs require explicit executable
-identity, supported model/effort tuple, operator receipt and existing permission
-mode; there is no production model, provider or effort default. Removing API key
-environment variables does not prove effective subscription routing.
+identity, supported model/effort tuple, operator receipt and a closed permission
+profile containing read-only sandbox, `on-request` or `never` approval mode, and
+the supported JSONL output contract; there is no production model, provider,
+effort or permission-mode default. The manifest emits
+`--ask-for-approval <mode>` before `exec` and the declared sandbox through
+`--sandbox`. Missing, extra or unsupported permission fields reject before
+dispatch. These flags record intent and do not prove effective enforcement.
+After source changes, prepare a fresh config and manifest with matching source
+pins. Removing API key environment variables does not prove effective
+subscription routing.
 
 Imports and default invocation of `acceptance/project-entrypoint.mjs` are inert.
 The original activation shape is `--run-admitted <config.json> <admission.json>`.
 It needs separately scoped project admission, exact config/job/scope bindings,
 fresh verified Codex subscription/allowance/permissions/output evidence and
-retention READY. Admission tokens are consumed in memory; no reset/reuse/retry
+retention READY. Independent effective preflight must match the declared
+sandbox and approval mode; intent binding alone is insufficient. The historical
+requested-on-request/reported-Never mismatch remains unexplained. Admission
+tokens are consumed in memory; no reset/reuse/retry
 or durable recovery is supplied. This source approval grants no actual launch.
 
 The optional receipt-saving shape is
