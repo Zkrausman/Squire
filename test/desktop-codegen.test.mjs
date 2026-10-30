@@ -24,7 +24,10 @@ import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY} from '../src/desktop-profile.mjs
 import {
   NODE_RUNTIME,GENERATION_SHUTDOWN,canonicalBytes,hash,validateCodexPreflight
 } from '../src/bounded-codegen-plan.mjs';
-import {prepareCodexArgv} from '../src/codex-profile.mjs';
+import {
+  prepareCodexArgv,prepareChatgptOnlyCodexArgv,
+  CODEX_CHILD_ENV_DELETIONS,codexEnvironment
+} from '../src/codex-profile.mjs';
 import {parseReceiptJson} from '../src/offline-run-summary.mjs';
 import {verifyStage} from '../src/multifile-staging.mjs';
 
@@ -184,7 +187,9 @@ async function fixture(root){
     retention:()=>({prepare:async()=>({capability_status:retention})}),
     environment:{
       PUBLIC:'synthetic',OPENAI_API_KEY:'PRIVATE_KEY_SENTINEL',
-      CODEX_API_KEY:'PRIVATE_KEY_SENTINEL',GEMINI_API_KEY:'PRIVATE_KEY_SENTINEL'
+      CODEX_API_KEY:'PRIVATE_KEY_SENTINEL',OPENAI_BASE_URL:'PRIVATE_ENDPOINT_SENTINEL',
+      GEMINI_API_KEY:'PRIVATE_KEY_SENTINEL',GOOGLE_API_KEY:'PRIVATE_KEY_SENTINEL',
+      GOOGLE_GEMINI_BASE_URL:'PRIVATE_ENDPOINT_SENTINEL'
     }
   };
   return {
@@ -216,6 +221,71 @@ async function cli(f,args=['--run-admitted-desktop-codegen','config','admission'
   return {code,out,err};
 }
 
+test('ChatGPT-only helper prepends one fixed global override and preserves the original profile',()=>{
+  const data=inputs('/synthetic/profile');
+  for(const approval_mode of ['never','on-request']){
+    const spec={
+      requested_model:data.requested_model,effort:data.effort,
+      observed_cli_version:data.codex.version,prompt_bytes:enc('Public synthetic prompt.'),
+      authorization:data.authorization,permissions:{...data.permissions,approval_mode}
+    };
+    const original=prepareCodexArgv(spec),restricted=prepareChatgptOnlyCodexArgv(spec);
+    const expected=[
+      '--ask-for-approval',approval_mode,'exec','--json','--ephemeral',
+      '--sandbox','read-only','--model',data.requested_model,
+      '-c','model_reasoning_effort="medium"','-'
+    ];
+    assert.deepEqual(original,{
+      runtime_admitted:false,status:'PREPARED_NOT_EXECUTABLE',argv:expected
+    });
+    assert.deepEqual(restricted,{
+      runtime_admitted:false,status:'PREPARED_NOT_EXECUTABLE',
+      argv:['-c','forced_login_method="chatgpt"',...expected]
+    });
+    assert.equal(Object.isFrozen(restricted),true);
+    assert.equal(Object.isFrozen(restricted.argv),true);
+    assert.throws(()=>restricted.argv.push('--extra'));
+    assert.throws(()=>{restricted.argv[1]='forced_login_method="api"';});
+    assert.equal(restricted.argv.filter(value=>value.startsWith('forced_login_method=')).length,1);
+    assert.equal(original.argv.some(value=>value.startsWith('forced_login_method=')),false);
+    assert.deepEqual(prepareCodexArgv(spec),original);
+    for(const extra of [
+      {auth_method:'api'},{forced_login_method:'api'},{provider:'api'},
+      {argv:['-c','forced_login_method="api"']},
+      {extraargv:['-c','forced_login_method="api"']}
+    ])assert.throws(()=>prepareChatgptOnlyCodexArgv({...spec,...extra}),e=>e.field==='codex_profile');
+    for(const change of [
+      s=>{s.permissions.sandbox='danger-full-access';},
+      s=>{s.permissions.approval_mode='always';},
+      s=>{s.permissions.output_contract='other';},
+      s=>{s.authorization.supported_tuples=[];},
+      s=>{s.observed_cli_version='0.159.0';},
+      s=>{s.prompt_bytes=new Uint8Array();},
+      s=>{s.prompt_bytes=new Uint8Array([0xff]);},
+      s=>{s.prompt_bytes=enc('invalid\0prompt');}
+    ]){
+      const invalid=clone(spec);change(invalid);
+      assert.throws(()=>prepareChatgptOnlyCodexArgv(invalid));
+      assert.throws(()=>prepareCodexArgv(invalid));
+    }
+  }
+});
+test('scoped Codex environment deletes exactly the six declared keys without mutating ambient data',()=>{
+  assert.deepEqual(CODEX_CHILD_ENV_DELETIONS,[
+    'OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL',
+    'GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL'
+  ]);
+  const ambient=Object.freeze({
+    PUBLIC:'synthetic',PATH:'/synthetic/bin',TMPDIR:'/synthetic/ambient-tmp',
+    ...Object.fromEntries(CODEX_CHILD_ENV_DELETIONS.map(key=>[key,'PRIVATE_ENV_SENTINEL']))
+  }),before=clone(ambient);
+  const environment=codexEnvironment('/synthetic/scope',ambient);
+  assert.deepEqual(environment,{
+    PUBLIC:'synthetic',PATH:'/synthetic/bin',TMPDIR:'/synthetic/scope/.tmp'
+  });
+  assert.deepEqual(ambient,before);
+  assert.notEqual(environment,ambient);
+});
 test('explicit preparation binds desktop data, full selected closure, actual launcher and profile',async()=>{
   const f=await prepared('/synthetic/scope-'+randomUUID());
   assert.equal(f.ack.schema,DESKTOP_CODEGEN_SCHEMA);
@@ -278,7 +348,12 @@ test('preparation rejects wrong target, missing identity and unsupported explici
     p=>{p.codex.version='0.159.0';},
     p=>{p.codex.path=p.desktop_runtime_identity.executable.path;},
     p=>{p.codex.path=NODE_RUNTIME.path;},
-    p=>{p.desktop_runtime_identity.executable={...NODE_RUNTIME};}
+    p=>{p.desktop_runtime_identity.executable={...NODE_RUNTIME};},
+    p=>{p.auth_method='api';},
+    p=>{p.forced_login_method='api';},
+    p=>{p.provider='api';},
+    p=>{p.argv=['-c','forced_login_method="api"'];},
+    p=>{p.extraargv=['-c','forced_login_method="api"'];}
   ]){
     const p=preparationPorts(),data=inputs('/synthetic/scope-'+randomUUID());change(data);
     await assert.rejects(prepareDesktopCodegenTask('/synthetic/new-'+randomUUID(),'e'.repeat(40),request,data,p.ports));
@@ -300,7 +375,7 @@ test('pure builder forwards exact target, prefix, identity, Codex pin and read-o
   assert.equal(invocation.executable,f.config.codex.path);
   assert.notEqual(invocation.executable,NODE_RUNTIME.path);
   assert.notEqual(invocation.executable,identity().executable.path);
-  assert.deepEqual(prepareCodexArgv({
+  assert.deepEqual(prepareChatgptOnlyCodexArgv({
     ...invocation.codex,requested_model:f.config.requested_model,
     effort:f.config.effort,prompt_bytes:invocation.specification.prompt_bytes
   }).argv,f.manifest.generation.argv);
@@ -361,7 +436,9 @@ test('pure builder snapshots intrinsic prompt bytes without own length, byteLeng
   }
 });
 test('native-like injected producer persists exact envelope and full physical stage ACK with one invocation',async()=>owned(async root=>{
-  const f=await fixture(root),r=await f.run();
+  const f=await fixture(root),ambient=clone(f.ports.environment);
+  Object.freeze(f.ports.environment);
+  const r=await f.run();
   assert.equal(r.status,'CANDIDATE_STAGED');
   assert.equal(r.operator_admitted,true);
   assert.equal(r.runtime_admitted,false);
@@ -372,10 +449,25 @@ test('native-like injected producer persists exact envelope and full physical st
   const [exe,argv,options]=f.rt.calls[0];
   assert.equal(exe,f.config.codex.path);
   assert.deepEqual(argv,f.manifest.generation.argv);
+  const invocation=buildDesktopCodegenInvocation(f.config,buildProjectCodegenPrompt(request));
+  const original=prepareCodexArgv({
+    ...invocation.codex,requested_model:invocation.specification.requested_model,
+    effort:invocation.specification.effort,prompt_bytes:invocation.specification.prompt_bytes
+  });
+  assert.deepEqual(argv,['-c','forced_login_method="chatgpt"',...original.argv]);
+  assert.deepEqual(argv,prepareChatgptOnlyCodexArgv({
+    ...invocation.codex,requested_model:invocation.specification.requested_model,
+    effort:invocation.specification.effort,prompt_bytes:invocation.specification.prompt_bytes
+  }).argv);
+  assert.equal(argv.filter(value=>value.startsWith('forced_login_method=')).length,1);
   assert.equal(options.shell,false);
-  for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','GEMINI_API_KEY']){
+  for(const key of CODEX_CHILD_ENV_DELETIONS){
     assert.equal(Object.hasOwn(options.env,key),false);
   }
+  assert.equal(options.env.PUBLIC,'synthetic');
+  assert.equal(options.env.TMPDIR,join(f.config.scope,'.tmp'));
+  assert.deepEqual(options.env,codexEnvironment(f.config.scope,ambient));
+  assert.deepEqual(f.ports.environment,ambient);
   assert.equal(await fs.readFile(r.generation.record.output_custody.path,'utf8'),envelope);
   assert.equal(r.generation.record.output_custody.byte_count,enc(envelope).length);
   assert.equal(r.staging.completion_status,'COMPLETE');
@@ -444,13 +536,47 @@ test('unsupported configs fail before generation even with a newly matching admi
     c=>{c.max_direct_child_spawns=2;},
     c=>{c.generation_wall_ms=120001;},
     c=>{c.outer_observation_ms=140001;},
-    c=>{c.diagnostic_retention={};}
+    c=>{c.diagnostic_retention={};},
+    c=>{c.auth_method='api';},
+    c=>{c.forced_login_method='api';},
+    c=>{c.provider='api';},
+    c=>{c.argv=['-c','forced_login_method="api"'];},
+    c=>{c.extraargv=['-c','forced_login_method="api"'];}
   ])await owned(async root=>{
     const f=await fixture(root),c=clone(f.config);change(c);f.rebind(c);
     await assert.rejects(f.run());
     assert.equal(f.rt.calls.length,0);assert.deepEqual(await fs.readdir(root),[]);
   });
 });
+test('desktop runner rejects unsupported profiles, prompts and caller auth overrides before dispatch',async()=>owned(async root=>{
+  const f=await prepared(root);
+  const invocation=buildDesktopCodegenInvocation(f.config,buildProjectCodegenPrompt(request));
+  for(const change of [
+    (s,c)=>{c.permissions.sandbox='danger-full-access';},
+    (s,c)=>{c.permissions.approval_mode='always';},
+    (s,c)=>{c.permissions.output_contract='other';},
+    (s,c)=>{c.authorization.supported_tuples=[];},
+    (s,c)=>{c.observed_cli_version='0.159.0';},
+    s=>{s.prompt_bytes=new Uint8Array();},
+    s=>{s.prompt_bytes=enc('wrong prefix');},
+    (s,c)=>{c.auth_method='api';},
+    (s,c)=>{c.forced_login_method='api';},
+    (s,c)=>{c.provider='api';},
+    (s,c)=>{c.argv=['-c','forced_login_method="api"'];},
+    (s,c)=>{c.extraargv=['-c','forced_login_method="api"'];}
+  ]){
+    const spec=clone(invocation.specification),codex=clone(invocation.codex),rt=runtime();
+    change(spec,codex);
+    await assert.rejects(runProjectCodexTask(spec,{
+      clock:rt.clock,shutdown:GENERATION_SHUTDOWN,abortSignal:rt.controller.signal
+    },{
+      mode:invocation.mode,operation_intent:invocation.operation_intent,
+      executable:invocation.executable,codex,fs,uid:process.getuid(),spawn:rt.spawn
+    }));
+    assert.equal(rt.calls.length,0);
+    assert.deepEqual(await fs.readdir(root),[]);
+  }
+}));
 test('unchanged effective preflight validator rejects every mismatched proof field before dispatch',async()=>{
   const mutations={
     operation_config_sha256:'0'.repeat(64),observed_at_ms:301001,provider_id:'other',
@@ -519,6 +645,12 @@ test('old Node, desktop simulation, old native admission and default entrypoint 
     {mode:'SOURCE_SIMULATION',fs,uid:process.getuid(),spawn:rt.spawn,executable:c.codex.path,
       codex:{observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions}});
   assert.equal(simulated.status,'CANDIDATE_STAGED');assert.equal(rt.calls.length,1);
+  assert.deepEqual(rt.calls[0][1],prepareCodexArgv({
+    observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,
+    requested_model:legacySpec.requested_model,effort:legacySpec.effort,
+    prompt_bytes:legacySpec.prompt_bytes
+  }).argv);
+  assert.equal(rt.calls[0][1].some(value=>value.startsWith('forced_login_method=')),false);
   assert.equal(projectEntrypointMode([]),'DRY_RUN_NATIVE_DISABLED');
   assert.equal(projectEntrypointMode(['--run-admitted','c','a']),'EXPLICIT_ADMISSION_REQUIRED');
   assert.equal(projectEntrypointMode(['--run-admitted-desktop-codegen','c','a']),'DRY_RUN_NATIVE_DISABLED');
@@ -535,7 +667,37 @@ test('legacy Node preparation still omits desktop and operation fields',async()=
     assert.equal(Object.hasOwn(c,key),false);
   }
   assert.equal(c.schema,'SQUIRE2_PROJECT_OPERATION_V1');
+  const manifest=parseReceiptJson(p.files.get(join(root,'operation-manifest.json')));
+  assert.deepEqual(manifest.generation.argv,prepareCodexArgv({
+    requested_model:data.requested_model,effort:data.effort,
+    observed_cli_version:data.codex.version,authorization:data.authorization,
+    permissions:data.permissions,prompt_bytes:buildProjectCodegenPrompt({...request,runtime_target:'node24-esm'})
+  }).argv);
+  assert.equal(manifest.generation.argv.some(value=>value.startsWith('forced_login_method=')),false);
 });
+test('original Node runner keeps its original argv without a desktop auth override',async()=>owned(async root=>{
+  const data=inputs(root),rt=runtime();
+  const spec={
+    job_id:data.job_id,task_scope:root,requested_model:data.requested_model,
+    effort:data.effort,max_wall_clock_sec:120,
+    prompt_bytes:buildProjectCodegenPrompt({...request,runtime_target:'node24-esm'})
+  };
+  const codex={
+    observed_cli_version:data.codex.version,
+    authorization:data.authorization,permissions:data.permissions
+  };
+  const result=await runProjectCodexTask(spec,{
+    clock:rt.clock,shutdown:GENERATION_SHUTDOWN,abortSignal:rt.controller.signal
+  },{
+    fs,uid:process.getuid(),spawn:rt.spawn,executable:data.codex.path,codex
+  });
+  assert.equal(result.status,'CANDIDATE_STAGED');
+  assert.equal(rt.calls.length,1);
+  assert.deepEqual(rt.calls[0][1],prepareCodexArgv({
+    ...codex,requested_model:spec.requested_model,effort:spec.effort,prompt_bytes:spec.prompt_bytes
+  }).argv);
+  assert.equal(rt.calls[0][1].some(value=>value.startsWith('forced_login_method=')),false);
+}));
 test('CLI emits only a bounded path-free codegen acknowledgement, exits one and refuses replay',async()=>owned(async root=>{
   const f=await fixture(root),r=await cli(f);
   assert.equal(r.code,1);assert.equal(r.err,'');

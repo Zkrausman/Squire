@@ -45,6 +45,32 @@ the exact desktop prefix identity and the prospective identity. Other policy
 fields retain the existing source, Node, Codex, prompt, retention, shutdown,
 environment, 120-second generation, 140-second observation and one-child bounds.
 
+Only `DESKTOP_CODEGEN_ONLY` prepends the fixed global arguments
+`-c 'forced_login_method="chatgpt"'` before the existing Codex argv and `exec`
+command. Preparation, config validation and generation use the same pure
+ChatGPT-only profile helper. The original Node, default, receipt,
+`SOURCE_SIMULATION` and other Codex profiles keep their existing argv.
+Operation inputs cannot select another auth method, provider or extra arguments.
+This per-process restriction writes no persistent config and authorizes no
+manual login, logout or credential changes. The existing six scoped API key
+and endpoint environment deletions remain unchanged.
+
+The override restricts allowed authentication; it does not establish the active
+account, current included allowance or credit state, and supplies no hard
+billing guarantee. ChatGPT authentication alone does not disable purchased
+ChatGPT or Work credits. Real admission still requires fresh evidence for the
+same account using ChatGPT authentication, the official default provider,
+available included capacity, `hasCredits: false` and balance zero, bound to the
+exact accepted source, config, cwd and argv. No proof boolean is inferred from
+the flag. The helper remains `PREPARED_NOT_EXECUTABLE` with
+`runtime_admitted: false`; it creates no admission or preflight proof.
+
+Incompatible credentials, unknown fresh state, unavailable quota or unexpected
+credit state require stopping. Never repair credentials, switch providers or
+retry. Existing prepared artifacts remain preserved and unadmitted; they cannot
+silently rebind to changed source. Newly accepted source requires fresh
+preparation and separately supported admission.
+
 The desktop inventory includes the existing project inventory plus the receipt
 modules already imported by the entrypoint. The dedicated source test traverses
 relative runtime imports and checks membership. Preparation hashes current

@@ -45,4 +45,8 @@ export function prepareCodexArgv(spec){
  if(!validateCodexPrompt(spec.prompt_bytes).valid)fail('CODEX_PROMPT_INVALID');
  return Object.freeze({runtime_admitted:false,status:'PREPARED_NOT_EXECUTABLE',argv:Object.freeze(['--ask-for-approval',permissions.approval_mode,'exec','--json','--ephemeral','--sandbox',permissions.sandbox,'--model',spec.requested_model,'-c',`model_reasoning_effort=${JSON.stringify(spec.effort)}`,'-'])});
 }
+export function prepareChatgptOnlyCodexArgv(spec){
+ const profile=prepareCodexArgv(spec);
+ return Object.freeze({...profile,argv:Object.freeze(['-c','forced_login_method="chatgpt"',...profile.argv])});
+}
 export function codexEnvironment(scope,ambient){const env={...ambient,TMPDIR:scope+'/.tmp'};for(const k of CODEX_CHILD_ENV_DELETIONS)delete env[k];return env;}
