@@ -25,3 +25,10 @@ Their identities are 3,030 bytes/SHA-256
 `5405ee48452aae8454397961de9ba982da9bbfb130bf5fd49a9a7db63cb845ee`,
 respectively. They are data snapshots, never imported or executed, and do not
 represent the active implementation or qualify native work.
+
+The prepare-project-task.mjs.txt snapshot preserves the original
+acceptance/prepare-project-task.mjs: 1,010 bytes, SHA-256
+85cd902f5b8489c581740cd7b4e03c34fa74a255b6b0ef3e0f9d44672c357292.
+Historical controller checks use these immutable bytes while the live opt-in
+adapter evolves. This inert .txt data is never imported or executed and does
+not represent current source or establish native qualification.

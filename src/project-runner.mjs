@@ -8,11 +8,26 @@ import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} f
 import {createCodexProjectStreamCollector} from './project-stream-collector.mjs';
 import {planStaging,writeStage,safeMultifileErrorCode} from './multifile-staging.mjs';
 import {runForeground} from './internal/limited-core.mjs';
-import {GENERATION_SHUTDOWN,canonicalBytes,hash} from './bounded-codegen-plan.mjs';
+import {NODE_RUNTIME,GENERATION_SHUTDOWN,canonicalBytes,hash} from './bounded-codegen-plan.mjs';
 const usedJobs=new Set(),usedScopes=new Set();
 const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v);
 const absolute=v=>typeof v==='string'&&v!=='/'&&v.startsWith('/')&&resolve(v)===v&&!v.includes('\0');
-export function admitProjectCodexTask(s){closed(s,['job_id','task_scope','requested_model','effort','max_wall_clock_sec','prompt_bytes'],['runtime_target','desktop_runtime_identity'],'project_spec');if(!uuid(s.job_id)||!absolute(s.task_scope)||typeof s.requested_model!=='string'||typeof s.effort!=='string'||s.max_wall_clock_sec!==120||!validateCodexPrompt(s.prompt_bytes).valid)fail('project_spec');const target=Object.hasOwn(s,'runtime_target')?s.runtime_target:'node24-esm';if(!['node24-esm',DESKTOP_TARGET].includes(target))fail('project_spec');const prefix=target===DESKTOP_TARGET?DESKTOP_PREFIX_IDENTITY:PROJECT_PREFIX_IDENTITY;let desktop;if(target===DESKTOP_TARGET)desktop=validateDesktopRuntimeIdentity(s.desktop_runtime_identity);else if(Object.hasOwn(s,'desktop_runtime_identity'))fail('project_spec');const b=new Uint8Array(s.prompt_bytes);if(b.length<prefix.bytes+1||hash(b.subarray(0,prefix.bytes))!==prefix.sha256)fail('project_prompt_binding');return Object.freeze({...s,...(desktop?{desktop_runtime_identity:desktop}:{}),prompt_bytes:b});}
+export function admitProjectCodexTask(s){return admitProjectTask(s,false);}
+export function admitDesktopCodegenProjectTask(s){return admitProjectTask(s,true);}
+function admitProjectTask(s,desktopCodegen){
+ closed(s,['job_id','task_scope','requested_model','effort','max_wall_clock_sec','prompt_bytes',...(desktopCodegen?['runtime_target','prefix_identity','desktop_runtime_identity']:[])],desktopCodegen?[]:['runtime_target','desktop_runtime_identity'],'project_spec');
+ if(!uuid(s.job_id)||!absolute(s.task_scope)||typeof s.requested_model!=='string'||typeof s.effort!=='string'||s.max_wall_clock_sec!==120||!validateCodexPrompt(s.prompt_bytes).valid)fail('project_spec');
+ const target=Object.hasOwn(s,'runtime_target')?s.runtime_target:'node24-esm';
+ if(!['node24-esm',DESKTOP_TARGET].includes(target))fail('project_spec');
+ const prefix=target===DESKTOP_TARGET?DESKTOP_PREFIX_IDENTITY:PROJECT_PREFIX_IDENTITY;
+ if(desktopCodegen&&(target!==DESKTOP_TARGET||hash(canonicalBytes(s.prefix_identity))!==hash(canonicalBytes(DESKTOP_PREFIX_IDENTITY))))fail('project_prefix');
+ let desktop;
+ if(target===DESKTOP_TARGET)desktop=validateDesktopRuntimeIdentity(s.desktop_runtime_identity);
+ else if(Object.hasOwn(s,'desktop_runtime_identity'))fail('project_spec');
+ const b=new Uint8Array(s.prompt_bytes);
+ if(b.length<prefix.bytes+1||hash(b.subarray(0,prefix.bytes))!==prefix.sha256)fail('project_prompt_binding');
+ return Object.freeze({...s,...(desktop?{desktop_runtime_identity:desktop}:{}),...(desktopCodegen?{prefix_identity:DESKTOP_PREFIX_IDENTITY}:{}),prompt_bytes:b});
+}
 const clearFiles=payload=>{for(const f of payload?.files??[])f.content.fill(0);};
 async function persistEnvelope(fs,path,input,signal){
  const bytes=new Uint8Array(input);let handle,payload,back;
@@ -29,7 +44,11 @@ async function persistEnvelope(fs,path,input,signal){
  }finally{try{if(handle)await handle.close();}finally{bytes.fill(0);back?.fill(0);clearFiles(payload);}}
 }
 export async function runProjectCodexTask(specification,options,ports){
- const spec=admitProjectCodexTask(specification);if(spec.runtime_target===DESKTOP_TARGET&&(ports?.mode!=='SOURCE_SIMULATION'||ports.executable===spec.desktop_runtime_identity.executable.path))fail('desktop_source_only');closed(options,['clock','shutdown','abortSignal'],[],'project_options');closed(options.clock,['now','schedule'],[],'project_clock');
+ const desktopCodegen=ports?.mode==='DESKTOP_CODEGEN_ONLY';
+ const spec=(desktopCodegen?admitDesktopCodegenProjectTask:admitProjectCodexTask)(specification);
+ if(desktopCodegen&&(ports.operation_intent!=='CODEGEN_ONLY_NO_DESKTOP_EXECUTION'||ports.executable===NODE_RUNTIME.path))fail('desktop_codegen_intent');
+ if(spec.runtime_target===DESKTOP_TARGET&&((!desktopCodegen&&ports?.mode!=='SOURCE_SIMULATION')||ports.executable===spec.desktop_runtime_identity.executable.path||desktopCodegen&&spec.desktop_runtime_identity.executable.path===NODE_RUNTIME.path))fail('desktop_source_only');
+ closed(options,['clock','shutdown','abortSignal'],[],'project_options');closed(options.clock,['now','schedule'],[],'project_clock');
  if(typeof options.clock.now!=='function'||typeof options.clock.schedule!=='function'||!(options.abortSignal instanceof AbortSignal)||hash(canonicalBytes(options.shutdown))!==hash(canonicalBytes(GENERATION_SHUTDOWN)))fail('project_options');
  if(!ports||typeof ports.spawn!=='function'||!ports.fs||!Number.isSafeInteger(ports.uid)||ports.uid<0||!absolute(ports.executable))fail('project_ports');
  const profile=prepareCodexArgv({...ports.codex,requested_model:spec.requested_model,effort:spec.effort,prompt_bytes:spec.prompt_bytes}),operatorReceipt=ports.codex.authorization.operator_receipt;
