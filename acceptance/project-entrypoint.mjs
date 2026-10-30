@@ -101,6 +101,59 @@ export async function runProjectDesktopCodegenWithFailureDiagnosticsWithPorts(co
     })
   });
 }
+// Separate explicit phase API. Capture the trusted monotonic origin before
+// async intake; observer failures never replace a known primary result.
+export async function runProjectDesktopCodegenNativeWithPhaseDiagnostics(configBytes,admission,abortSignal){
+  return runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts(
+    configBytes,admission,abortSignal,nativeDesktopCodegenPorts()
+  );
+}
+export async function runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts(configBytes,admission,abortSignal,ports){
+  closed(ports,['fs','spawn','readBytes','verifyFile','reads','now','clock','retention','environment','uid'],[],'desktop_codegen_ports');
+  receiptFunction(ports.spawn);
+  closed(ports.clock,['now','schedule'],[],'desktop_codegen_clock');
+  receiptFunction(ports.clock.now);receiptFunction(ports.clock.schedule);
+  let origin=null;
+  try{
+    const value=ports.clock.now();
+    if(Number.isSafeInteger(value)&&value>=0)origin=value;
+  }catch{}
+  const c=validateDesktopCodegenConfig(parseReceiptJson(configBytes));
+  let module=null,observer=null;
+  try{
+    module=await import('../src/project-phase-diagnostics.mjs');
+    observer=module.createProjectPhaseObserver(ports.clock,origin);
+  }catch{}
+  let result,observation=null;
+  try{
+    result=await runProjectDesktopCodegenWithPorts(configBytes,admission,abortSignal,{
+      ...ports,
+      spawn(executable,argv,options){
+        try{observer?.spawnAttempt();}catch{}
+        const child=ports.spawn(executable,argv,options);
+        try{observer?.observe(child);}catch{}
+        return child;
+      }
+    });
+    try{observer?.primaryResultReturned();}catch{}
+  }finally{
+    try{observation=observer?.seal()??null;}catch{}
+  }
+  let phase_diagnostics;
+  try{
+    if(!module||!observation||observation.observer_error==='OBSERVER_ERROR')throw 0;
+    const binding=module.createProjectPhaseBinding(c,result);
+    const evidence=module.createProjectPhaseEvidence(binding,observation);
+    phase_diagnostics=Object.freeze({
+      status:'OBSERVED',evidence,sidecar_status:'NOT_REQUESTED'
+    });
+  }catch{
+    phase_diagnostics=Object.freeze({
+      status:'UNAVAILABLE',reason:'OBSERVER_ERROR',sidecar_status:'NOT_REQUESTED'
+    });
+  }
+  return Object.freeze({result,phase_diagnostics});
+}
 // Trusted capability injection for ordinary source acceptance. The production
 // wrapper above supplies the fixed native backend; operation files supply data.
 export async function runProjectDesktopCodegenWithPorts(configBytes,admission,abortSignal,ports){

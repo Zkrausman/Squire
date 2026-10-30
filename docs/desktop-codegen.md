@@ -276,3 +276,145 @@ They execute no provider, model, generated module, GJS or real child process.
 This feature neither recovers lost stderr nor fixes or reproduces an unknown
 benchmark failure, qualifies a native runtime, changes a runtime budget, or
 authorizes another operation.
+
+## Opt-in private phase observations
+
+`runProjectDesktopCodegenNativeWithPhaseDiagnostics(configBytes, admission,
+abortSignal)` explicitly selects phase observation. The injected source-test
+counterpart is
+`runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts(configBytes, admission,
+abortSignal, ports)`. They call the existing admitted native path once and return
+`{result, phase_diagnostics}`. The primary `result` is unchanged. Default, CLI,
+receipt and V1 failure-observation contracts retain their behavior.
+
+Only this opt-in wrapper loads `project-phase-diagnostics.mjs`, using a fixed
+literal lazy import. Future desktop preparations pin its complete dependency
+closure. Existing preparations, source pins and admissions are not rewritten.
+The wrapper samples the existing trusted monotonic clock before its first await;
+elapsed times therefore include async intake and setup. Clock throws, unsafe
+values and regressions produce fixed errors and nullable times. These are
+elapsed observations, never wall-clock freshness evidence.
+
+The observer marks the spawn attempt immediately before the existing spawn
+port and observes only the returned child and its streams. It adds and removes
+its own listeners. It never wraps stdin write/end callbacks, calls stream
+read/pause/resume/pipe, starts another child, accesses diagnostic files, schedules
+work, sends signals or changes a deadline. The 120-second generation,
+140-second observation and separately accepted 170-second parent window remain
+unchanged. JSONL activity and terminal usage cannot renew any deadline.
+
+`spawn_returned` records local child allocation. `stdin_finish_event` records
+only Node Writable `finish`; it does not attest the source write/end callbacks,
+peer EOF, a peer read or provider prompt receipt. JSONL kinds are literal local
+observations and supply no trusted provider attestation. Missing milestones
+supply no cause verdict. The observer seals on primary return or throw and
+detaches its listeners without waiting for child close or descendants. Child
+close may occur after sealing; an unobserved close does not contradict primary
+direct-child exit evidence.
+
+An observed envelope contains:
+
+```
+{
+  status: "OBSERVED",
+  evidence: {
+    schema: "SQUIRE_PRIVATE_PHASE_EVIDENCE_V1",
+    binding: {job_id, outcome, lifecycle, declared_prompt_bytes},
+    observation: {
+      clock, observer_error, milestones, streams,
+      stdout_event_counts, stdout_frame_quality, terminal_usage
+    }
+  },
+  sidecar_status: "NOT_REQUESTED"
+}
+```
+
+The binding's prompt size is the validated declared size, never an observed
+delivered-byte claim. Stdin has stream availability and event milestones, with
+no fabricated observed byte count. Stdout and stderr availability, EOF, close,
+error and byte counters remain distinct. Their counters saturate at the current
+project collector caps plus one: 1048577 and 65537 respectively. Stream error
+payloads and child error payloads are never inspected.
+
+Diagnostic JSONL work has separate limits: 1 MiB scanned stdout, a 65536-byte
+line buffer and 256 parse attempts, including malformed frames. LF frames and
+the final nonempty EOF frame are processed once. Oversized lines are discarded
+through LF, allowing later bounded frames to be observed. Omitted scan bytes
+break continuity. An unfinished line without EOF is not counted as a complete
+frame. Complete-frame count is capped at 1048576; each event-kind count is capped
+at 255 with an overflow flag. Reaching 256 parse attempts sets the parse-cap
+flag even when no later frame arrives. After that cap, bounded LF and final
+nonempty EOF frame accounting continues without buffering or parsing more line
+bytes. Only occupied buffer regions are cleared; empty LF frames perform no
+line-buffer erase.
+
+Complete UTF-8 frames use the existing duplicate-aware project parser. Numeric
+tokens are checked lexically before that parser. Canonical nonnegative integer
+tokens through 9007199254740991 are accepted. Syntactically valid zero tokens
+with an all-zero mantissa, including `-0`, `0.0` and `-0e-999`, become exact zero
+without evaluating an exponent. Other valid numeric tokens become a transient
+negative sentinel, so selected counters report INVALID/UNKNOWN. This deliberately
+rejects nonzero decimal or exponent notation, including `1.0` and `1e0`, as well
+as fractions, unsafe integers, negative nonzero values and values that floating
+point conversion could round or underflow. No rounded numeric conversion,
+BigInt or exponent-sized allocation establishes validity. Strings and malformed
+whole numeric tokens remain unchanged; grammar, UTF-8, BOM and duplicate-key
+rejection remain subject to the existing parser. Rejected frames produce fixed
+counts. Unknown event types map to `OTHER`; they never become metadata keys.
+
+The only selected CLI usage fields are `input_tokens`, `output_tokens`,
+`cached_input_tokens` and `reasoning_output_tokens` from an observed
+`turn.completed`. Missing counters stay `UNKNOWN`, zero stays zero, and invalid
+counters remain `UNKNOWN` with INVALID availability. Cache and reasoning
+counters are separate views; no total, billing, cost or inference-time estimate
+is computed. Repeated or conflicting `turn.completed`/`turn.failed` terminals
+make usage AMBIGUOUS and clear its counters. App-server notifications are not
+interpreted as this CLI route's usage.
+
+For example, a synthetic `turn.completed` observed at 80000 ms can coexist with
+the unchanged primary `LIMITED_TIMEOUT` at the original deadline and an
+unobserved child-close milestone. Its numeric usage is a separate diagnostic
+view; it does not promote the operation to success or rewrite the primary record.
+
+Evidence is rebuilt as a closed, deeply frozen projection. Only fixed keys,
+enums, counts, elapsed times, numeric usage and UUID binding survive. No raw
+stdin/stdout/stderr, prompt, message, reasoning, tool argument, error, private
+path, account identifier, credential or secret-byte hash is retained. Temporary
+line buffers are cleared at sealing; this makes no secure JavaScript-string
+erasure claim. Accessors, proxies, unknown keys and serialization hooks are
+rejected without invocation.
+
+Unexpected observer or evidence-construction failures after a known result
+return fixed
+`{status: "UNAVAILABLE", reason: "OBSERVER_ERROR", sidecar_status: "NOT_REQUESTED"}`
+diagnostics while preserving that result. Existing config and admission throws
+remain throws. Clock degradation alone retains useful finite observations with
+nullable timestamps.
+
+Observation starts zero diagnostic filesystem operations. The separate explicit
+writer is `writeProjectPhaseDiagnostics(evidence, {scope, job_id}, {fs, uid})`,
+exported by the phase module. A host must separately await it within its
+accepted remaining external window. Its only destination is
+`<scope>/output/run-<job>/phase-diagnostics.json`. It shares the private V1 writer
+mechanics with a fixed internal kind: closed job binding, at most 4096 encoded
+bytes, exclusive 0600 creation, single-link ownership, whole-ancestor policy and
+identity checks, exact readback and successful close. It creates no directories,
+overwrites nothing and performs no cleanup or background I/O.
+
+Writer statuses retain the V1 meaning: FAILED before a potentially creating
+open, UNKNOWN after possible mutation without established custody, RECORDED
+only after verification and close. Pending filesystem work supplies no bounded
+RECORDED claim; an expired external observation window leaves custody UNKNOWN.
+The writer cannot extend the primary job or rewrite its result.
+
+The focused proposed source command is:
+
+```
+node --test --test-isolation=none test/project-phase-diagnostics.test.mjs test/project-failure-diagnostics.test.mjs test/desktop-codegen.test.mjs
+```
+
+Fixtures use fake children and clocks, memory writer ports, owned disposable
+files for synthetic staging, and source inspection. They distinguish native
+stream caps from diagnostic scan, line and frame caps. Independent execution,
+source/privacy review and the existing full regression remain required. This
+source feature authorizes no native run, producer release or budget change.
