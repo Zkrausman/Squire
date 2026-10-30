@@ -316,3 +316,29 @@ Any later, separately authorized evaluation should compare coupled-placement qua
 [PR 195](https://github.com/Zkrausman/Squire/pull/195) delivered optional entrypoint receipt saving at merge [`6bb7df7`](https://github.com/Zkrausman/Squire/commit/6bb7df71ae225c897d8b5dc44e3f9c78baa696fd). Its delivery receipt reports 163 focused and 812 full-suite tests passing, the documentation review finding closed with the prior source/privacy assessment carried forward, and exact-head CI success. The descriptor and destination are checked before dispatch; the producer runs at most once, and its live result goes to the existing bounded writer. The optional path emits a path-free acknowledgement and exits 1 after a saved result; setup/binding, runner, and writer failures use fixed errors and exit 2. It does not replay, overwrite, delete, or fall back to private result output.
 
 After a creation, write, verification, or close failure, a partial or complete private receipt file may remain; the caller must quarantine the destination. These source deliveries establish neither actual native producer use nor host-output qualification, full process custody, installation, or benchmark readiness. Existing native, host-support, host-output, source-access, benchmark, and no-rerun holds remain unchanged.
+
+## Additive delivery-status appendix — 30 October 2026
+
+This entry adds current status to the roadmap; it does not revise historical entries or reactivate historical tickets.
+
+### PR 197 — source delivery
+
+[PR 197](https://github.com/Zkrausman/Squire/pull/197) merged as [`3d02ff2`](https://github.com/Zkrausman/Squire/commit/3d02ff2248ebfdad036913cf84afcdb51f606380), from reviewed head [`f63f30a`](https://github.com/Zkrausman/Squire/commit/f63f30a3515d961b2e89876e6cc2513569075e70). It adds a closed, explicit read-only permission profile and carries the approval mode through bounded code generation, single-JavaScript and project preparation, manifests, and runtime. Missing, unsupported, or mismatched profiles are rejected before dispatch; effective-policy preflight remains separate. The remote check found the 20 changed files matched reviewed bytes, with 152 unrelated blobs unchanged.
+
+Source and synthetic validation passed **147 focused and 817 full-suite tests**, with zero failures or skips. Exact-head [CI run 40827052907, attempt 1](https://github.com/Zkrausman/Squire/actions/runs/40827052907) passed the controller, npm test, and git-diff checks. Independent static source/privacy review passed across the supplied call chain and diff. The reported test summary was attributed; the reviewer did not independently run tests or verify runtime policy or hashes. The original hook warning was retained and owner-adjudicated nonfatal for that review; no settings changed.
+
+This establishes source delivery, not effective policy, authentication, actual native Codex use, installation, qualification, or absence of API or paid-credit fallback.
+
+### Fixed public fixture — accepted and consumed once
+
+On 29 October, one approved, no-inference fixed public fixture was consumed through real Squire capture, parsing, and persistence. Retained private evidence records input and output EOF, exit 0, a child-after-write audit, and exact persisted bytes. There were no Codex or model calls. The source owner accepted this one pinned direct-child normal case only. It provides no timeout, descendant-settlement, generated-software-correctness, host-repair, authentication, paid-fallback, or benchmark evidence. The old witness remains unresolved; there was no rerun.
+
+### Projection study — closed, no change
+
+The corrected disposition is **NO_CHANGE / NOT_ESTABLISHED**: bounded [App Server documentation](https://learn.chatgpt.com/docs/app-server) and attributed retained installed 0.160 schemas did not establish server-side field suppression before client receipt or authoritative exact-execution policy provenance. This is not proof of absence; local filtering occurs after client receipt. The documentation was unversioned; the installed-schema evidence was retained and not independently reproduced by the study reviewer. The original three-page-fetch claim is not accepted; recorded metadata may be partial. The distinct Sol medium review passed the corrected narrow disposition only, not the original report or a full-roadmap audit. No live configuration, RPC, account, client implementation, or runtime was examined.
+
+### Holds and next dependencies
+
+A bounded selected-field privacy request and a safe reviewed capture boundary using an existing interface are **PREPARED / PROPOSED**; no live read is released. An actual ordinary Codex task remains **HELD** pending operation-specific safety review and admission, fresh effective approval and sandbox/provider/authentication/no-paid-credit-fallback evidence, plus applicable output, timeout, direct-child observation, and custody evidence. Old-host output, native package/input/capture/full-custody/settlement, and benchmark gates remain held; stronger recovery remains deferred. No diagnostic, launch, replay, or consumed-fixture rerun is released.
+
+Remaining effort is **UNKNOWN**. Acceptance of this appendix remains with the source owner; ordinary documentation checks, draft PR, exact-head CI, merge, and remote verification follow acceptance. Future proposals require separately scoped authorization. This appendix itself grants no implementation authority, new ticket, or formal PR approval.
