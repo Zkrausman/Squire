@@ -4,7 +4,8 @@ import {constants} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {types} from 'node:util';
 import {parseReceiptJson, REPORT_MAX_BYTES, snapshotReceiptData} from './offline-run-summary.mjs';
-import {projectProjectRunSummary, projectNativeProjectRunSummary} from './project-summary.mjs';
+import {projectProjectRunSummary, projectNativeProjectRunSummary,projectNativeProjectCodingObservationRunSummary} from './project-summary.mjs';
+import {PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA} from './project-coding-profile.mjs';
 
 const rootKeys = [
   'schema', 'status', 'reason', 'generation', 'staging', 'task_correctness',
@@ -51,8 +52,8 @@ function ownDataFields(value, required, optional = [], code = 'INVALID_INPUT') {
     fail(code);
   }
 }
-function captureSelectedData(value) {
-  const root = ownDataFields(value, rootKeys);
+function captureSelectedData(value,observation=false) {
+  const root = ownDataFields(value, [...rootKeys,...(observation?['execution_profile','post_generation_closeout']:[])]);
   if (root.generation !== null) {
     const generation = ownDataFields(root.generation, generationKeys, ['late_observations']);
     if (Object.hasOwn(generation, 'late_observations') &&
@@ -75,7 +76,7 @@ function deepFreeze(value) {
   }
   return value;
 }
-function encodeEnvelope(envelope, native) {
+function encodeEnvelope(envelope, native,observation=false) {
   let encoded;
   try {
     encoded = new TextEncoder().encode(`${JSON.stringify(envelope)}\n`);
@@ -89,7 +90,7 @@ function encodeEnvelope(envelope, native) {
   } catch {
     fail('INVALID_RECEIPT');
   }
-  const projection = native
+  const projection = observation?projectNativeProjectCodingObservationRunSummary(parsed):native
     ? projectNativeProjectRunSummary(parsed)
     : projectProjectRunSummary(parsed);
   if (projection.readiness === 'INVALID_RECEIPT') fail('INVALID_RECEIPT');
@@ -107,14 +108,21 @@ export function createProjectResultReceipt(value) {
   return deepFreeze(receipt);
 }
 export function createNativeProjectResultReceipt(liveResult) {
+  return createNativeReceipt(liveResult,false);
+}
+export function createNativeProjectCodingObservationResultReceipt(liveResult) {
+  return createNativeReceipt(liveResult,true);
+}
+function createNativeReceipt(liveResult,observation) {
   let result;
   try {
-    result = captureSelectedData(liveResult);
+    result = captureSelectedData(liveResult,observation);
   } catch {
     fail('INVALID_INPUT');
   }
-  const envelope = {schema:NATIVE_RECEIPT_SCHEMA,result};
-  if (projectNativeProjectRunSummary(envelope).readiness === 'INVALID_RECEIPT') fail('INVALID_RECEIPT');
+  const envelope = {schema:observation?PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA:NATIVE_RECEIPT_SCHEMA,result};
+  const projection=observation?projectNativeProjectCodingObservationRunSummary(envelope):projectNativeProjectRunSummary(envelope);
+  if (projection.readiness === 'INVALID_RECEIPT') fail('INVALID_RECEIPT');
   let bytes;
   try {
     bytes = new TextEncoder().encode(`${JSON.stringify(envelope)}\n`);
@@ -346,4 +354,9 @@ export async function writeProjectResultReceipt(value, destination, ports) {
 export async function writeNativeProjectResultReceipt(liveResult, destination, ports) {
   const encoded = encodeValidatedNativeReceipt(liveResult);
   return writeEncodedReceipt(encoded,destination,ports,'squire3.native_project_result_write_receipt.v1');
+}
+export async function writeNativeProjectCodingObservationResultReceipt(liveResult,destination,ports){
+  const receipt=createNativeProjectCodingObservationResultReceipt(liveResult);
+  const encoded=encodeEnvelope(receipt,true,true);
+  return writeEncodedReceipt(encoded,destination,ports,'squire3.native_project_coding_observation_result_write_receipt.v1');
 }

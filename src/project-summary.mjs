@@ -2,6 +2,11 @@
 import {snapshotReceiptData} from './offline-run-summary.mjs';
 import {validateLimitedJobRecord} from './limited-job-record.mjs';
 import {diagnosticReport} from './internal/limited-diagnostics.mjs';
+import {
+  PROJECT_CODING_OBSERVATION_PROFILE,PROJECT_CODING_OBSERVATION_RESULT_SCHEMA,
+  PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA,PROJECT_CODING_OBSERVATION_SUMMARY_SCHEMA,
+  validateProjectCodingObservationProfile,validateProjectCodingObservationOutcome
+} from './project-coding-profile.mjs';
 
 const SCHEMA='squire2.project_summary.v1';
 const NATIVE_SCHEMA='squire3.native_project_summary.v1';
@@ -41,7 +46,8 @@ const nullableExit=v=>v===null||integer(v);
 const bool=v=>typeof v==='boolean';
 const sha=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const model=v=>v==='gpt-6-luna'?'gpt-6-luna':UNKNOWN;
-const validFinalReason=value=>value===null||reasons.has(value)||
+const validFinalReason=(value,observation=false)=>value===null||reasons.has(value)||
+  observation&&value==='POST_GENERATION_CLOSEOUT_DEADLINE'||
   typeof value==='string'&&value.startsWith('STAGING:')&&stagingErrors.has(value.slice(8));
 
 function closed(value,required,optional=[]){
@@ -56,8 +62,8 @@ function freeze(value){
   }
   return value;
 }
-function invalidSummary(native=false){
-  if(native)return freeze({schema_version:NATIVE_SCHEMA,readiness:'INVALID_RECEIPT',
+function invalidSummary(native=false,observation=false){
+  if(native)return freeze({schema_version:observation?PROJECT_CODING_OBSERVATION_SUMMARY_SCHEMA:NATIVE_SCHEMA,readiness:'INVALID_RECEIPT',
     diagnostic:{stage:'RECEIPT_VALIDATION',reason:'SCHEMA_MISMATCH'}});
   return freeze({
     schema_version:SCHEMA,readiness:'INVALID_RECEIPT',reason:null,
@@ -204,36 +210,48 @@ function noSpawnEvidence(generation,count){
   if(process.pid!==null||process.observed_termination||process.exit_code!==null||process.exit_signal!==null||
      record.containment_evidence.settlement_status==='SETTLED_DIRECT_CHILD_EXIT')reject();
 }
-function projectInput(value,native=false){
+function checkObservationOutcome(status,reason,lifecycle,count,staging,closeout){
+  return validateProjectCodingObservationOutcome({
+    status,reason,lifecycle,generation_invocations:count,has_staging:staging!==null,
+    post_generation_closeout:closeout
+  });
+}
+function projectInput(value,native=false,observation=false){
   const raw=snapshotReceiptData(value);
-  closed(raw,inputKeys);
-  if(raw.schema!=='SQUIRE2_PROJECT_RESULT_V1'||!statuses.has(raw.status)||
-      !validFinalReason(raw.reason)||raw.task_correctness!=='NOT_EVALUATED'||
+  closed(raw,[...inputKeys,...(observation?['execution_profile','post_generation_closeout']:[])]);
+  if(observation)validateProjectCodingObservationProfile(raw.execution_profile);
+  const target=observation?null:TARGET_MS;
+  if(raw.schema!==(observation?PROJECT_CODING_OBSERVATION_RESULT_SCHEMA:'SQUIRE2_PROJECT_RESULT_V1')||!statuses.has(raw.status)||
+      !validFinalReason(raw.reason,observation)||observation&&raw.reason==='OBSERVATION_DEADLINE'||raw.task_correctness!=='NOT_EVALUATED'||
      raw.task_outcome_evaluated!==false||raw.runtime_admitted!==false||
      (native?!bool(raw.operator_admitted):raw.operator_admitted!==false)||
      raw.descendant_guarantee!=='NONE'||typeof raw.operator_receipt!=='string'||
      !['DEDICATED_NOT_REUSED','QUARANTINED'].includes(raw.workspace_disposition)||
-     raw.outer_observation_target_ms!==TARGET_MS||raw.event_loop_condition!==EVENT_LOOP)reject();
+     raw.outer_observation_target_ms!==target||raw.event_loop_condition!==EVENT_LOOP)reject();
   closed(raw.direct_child_invocations,['generation']);
   const count=raw.direct_child_invocations.generation;
   if(!integer(count)||count<0||count>1)reject();
   const generation=projectGeneration(raw.generation);
   const life=generation?.value.lifecycle_status??null;
+  if(observation&&generation&&(generation.value.runtime_evidence.deadline_ms!==null||
+     generation.value.runtime_evidence.timeout_latched||life==='LIMITED_TIMEOUT'))reject();
   const staging=projectStaging(raw.staging,generation?.jobId);
   if(raw.workspace_disposition!==(raw.status==='CANDIDATE_STAGED'?'DEDICATED_NOT_REUSED':'QUARANTINED'))reject();
   if(generation?.taskClass==='PROJECT_CODEGEN_V1'&&life==='LIMITED_SPAWN_FAILED'&&count!==1)reject();
   noSpawnEvidence(generation,count);
-  if(!finalMatrix(raw.status,raw.reason,life,count,staging!==null))reject();
+  if(!observation&&!finalMatrix(raw.status,raw.reason,life,count,staging!==null))reject();
+  const closeout=observation?checkObservationOutcome(raw.status,raw.reason,life,count,staging,raw.post_generation_closeout):null;
   const diagnostic=generation?.diagnostic??null;
   const hasOperatorReceipt=raw.operator_receipt.length>0;
   if(native)return freeze({
-    schema_version:NATIVE_SCHEMA,readiness:raw.status,reason:raw.reason,
+    schema_version:observation?PROJECT_CODING_OBSERVATION_SUMMARY_SCHEMA:NATIVE_SCHEMA,readiness:raw.status,reason:raw.reason,
     task_correctness:'NOT_EVALUATED',task_outcome_evaluated:false,runtime_admitted_marker:false,
     operator_admission_claimed:raw.operator_admitted,admission_authority:'NOT_ESTABLISHED',
     has_operator_receipt:hasOperatorReceipt,
     workspace_disposition:raw.workspace_disposition,descendant_guarantee:'NONE',
-    direct_child_invocations:{generation:count},outer_observation_target_ms:TARGET_MS,
-    event_loop_condition:EVENT_LOOP,generation:generation?.value??null,staging,diagnostic
+    direct_child_invocations:{generation:count},outer_observation_target_ms:target,
+    event_loop_condition:EVENT_LOOP,generation:generation?.value??null,staging,diagnostic,
+    ...(observation?{execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,post_generation_closeout:closeout}:{})
   });
   return freeze({
     schema_version:SCHEMA,readiness:raw.status,reason:raw.reason,
@@ -256,6 +274,14 @@ export function projectNativeProjectRunSummary(savedEnvelope){
     if(envelope.schema!=='SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1')reject();
     return projectInput(envelope.result,true);
   }catch{return invalidSummary(true);}
+}
+export function projectNativeProjectCodingObservationRunSummary(savedEnvelope){
+  try{
+    const envelope=snapshotReceiptData(savedEnvelope);
+    closed(envelope,['schema','result']);
+    if(envelope.schema!==PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA)reject();
+    return projectInput(envelope.result,true,true);
+  }catch{return invalidSummary(true,true);}
 }
 
 function validateProjectedRuntime(value,lifecycle){
@@ -328,16 +354,19 @@ function validateProjectedStaging(value){
      !nonnegative(value.total_bytes)||value.total_bytes>1048576||
      value.provenance_authenticity!=='NOT_ESTABLISHED'||value.crash_durability!=='NOT_ESTABLISHED')reject();
 }
-function validateSummary(value,native=false){
+function validateSummary(value,native=false,observation=false){
+  const nativeSchema=observation?PROJECT_CODING_OBSERVATION_SUMMARY_SCHEMA:NATIVE_SCHEMA;
+  const target=observation?null:TARGET_MS;
   if(native&&value&&typeof value==='object'&&!Array.isArray(value)&&value.readiness==='INVALID_RECEIPT'){
     closed(value,['schema_version','readiness','diagnostic']);
-    if(value.schema_version!==NATIVE_SCHEMA)reject();
+    if(value.schema_version!==nativeSchema)reject();
     closed(value.diagnostic,['stage','reason']);
     if(value.diagnostic.stage!=='RECEIPT_VALIDATION'||value.diagnostic.reason!=='SCHEMA_MISMATCH')reject();
     return;
   }
-  closed(value,native?nativeSummaryKeys:summaryKeys);
-  if(value.schema_version!==(native?NATIVE_SCHEMA:SCHEMA))reject();
+  closed(value,[...(native?nativeSummaryKeys:summaryKeys),...(observation?['execution_profile','post_generation_closeout']:[])]);
+  if(observation)validateProjectCodingObservationProfile(value.execution_profile);
+  if(value.schema_version!==(native?nativeSchema:SCHEMA))reject();
   if(value.readiness==='INVALID_RECEIPT'){
     const d=value.diagnostic;
     closed(d,['stage','reason']);
@@ -349,12 +378,12 @@ function validateSummary(value,native=false){
        value.generation!==null||value.staging!==null||d.stage!=='RECEIPT_VALIDATION'||d.reason!=='SCHEMA_MISMATCH')reject();
     return;
   }
-  if(!statuses.has(value.readiness)||!validFinalReason(value.reason)||
+  if(!statuses.has(value.readiness)||!validFinalReason(value.reason,observation)||observation&&value.reason==='OBSERVATION_DEADLINE'||
      value.task_correctness!=='NOT_EVALUATED'||value.task_outcome_evaluated!==false||
      value.runtime_admitted_marker!==false||
      (native?(!bool(value.operator_admission_claimed)||value.admission_authority!=='NOT_ESTABLISHED'):value.operator_admitted_marker!==false)||
      !bool(value.has_operator_receipt)||!['DEDICATED_NOT_REUSED','QUARANTINED'].includes(value.workspace_disposition)||
-     value.descendant_guarantee!=='NONE'||value.outer_observation_target_ms!==TARGET_MS||
+     value.descendant_guarantee!=='NONE'||value.outer_observation_target_ms!==target||
      value.event_loop_condition!==EVENT_LOOP)reject();
   closed(value.direct_child_invocations,['generation']);
   const count=value.direct_child_invocations.generation;
@@ -362,7 +391,10 @@ function validateSummary(value,native=false){
   if(value.generation!==null)validateProjectedGeneration(value.generation);
   if(value.staging!==null)validateProjectedStaging(value.staging);
   const life=value.generation?.lifecycle_status??null;
-  if(!finalMatrix(value.readiness,value.reason,life,count,value.staging!==null)||
+  if(observation&&value.generation&&(value.generation.runtime_evidence.deadline_ms!==null||
+     value.generation.runtime_evidence.timeout_latched||life==='LIMITED_TIMEOUT'))reject();
+  if(observation)checkObservationOutcome(value.readiness,value.reason,life,count,value.staging,value.post_generation_closeout);
+  if(!observation&&!finalMatrix(value.readiness,value.reason,life,count,value.staging!==null)||
      value.workspace_disposition!==(value.readiness==='CANDIDATE_STAGED'?'DEDICATED_NOT_REUSED':'QUARANTINED'))reject();
   if(value.generation?.lifecycle_status==='LIMITED_SPAWN_FAILED'&&count!==1)reject();
   if(count===0&&value.generation!==null){
@@ -378,18 +410,26 @@ function validateSummary(value,native=false){
 
 const INVALID_TEXT='Squire offline project result: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
 const NATIVE_INVALID_TEXT='Squire native offline project result: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
-function formatProject(summary,native){
+const OBSERVATION_INVALID_TEXT='Squire native offline project coding observation result: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
+function formatProject(summary,native,observation=false){
+  const invalidText=observation?OBSERVATION_INVALID_TEXT:native?NATIVE_INVALID_TEXT:INVALID_TEXT;
   try{
     const captured=snapshotReceiptData(summary);
-    validateSummary(captured,native);
-    if(captured.readiness==='INVALID_RECEIPT')return native?NATIVE_INVALID_TEXT:INVALID_TEXT;
+    validateSummary(captured,native,observation);
+    if(captured.readiness==='INVALID_RECEIPT')return invalidText;
     const g=captured.generation,p=g?.process_exit,m=g?.provider_metadata,c=g?.output_custody,s=captured.staging;
     const number=v=>v===null?'UNKNOWN':String(v);
     const yes=v=>v?'true':'false';
     const reason=captured.reason??'NONE';
     const diagnostic=captured.diagnostic===null?'NONE':`${captured.diagnostic.stage}/${captured.diagnostic.reason}`;
     const lines=[
-      `${native?'Squire native offline project result':'Squire offline project result'}: ${captured.readiness}`,
+      `${observation?'Squire native offline project coding observation result':native?'Squire native offline project result':'Squire offline project result'}: ${captured.readiness}`,
+      ...(observation?[
+        'Execution profile: PROJECT_CODING_OBSERVE_V1',
+        'NO SQUIRE ELAPSED GENERATION CUTOFF; user cancellation available.',
+        `Local closeout: ${captured.post_generation_closeout.status}; limit ms=20000 after generation.`,
+        'External platform/provider limits: UNKNOWN; cost: UNKNOWN.'
+      ]:[]),
       'Task correctness: NOT_EVALUATED',
       `Task outcome evaluated: ${yes(captured.task_outcome_evaluated)}`,
       `Reason: ${reason}`,
@@ -401,17 +441,18 @@ function formatProject(summary,native){
       `Envelope custody: persisted=${c?yes(c.persisted):'UNKNOWN'}; bytes=${number(c?.byte_count??null)}; SHA-256=${c?.envelope_sha256??'UNKNOWN'}`,
       `Staging ACK history: ${s?.completion_status??'NONE'}; operation=${s?.operation_acknowledgement??'NONE'}; files=${number(s?.file_count??null)}; decoded bytes=${number(s?.total_bytes??null)}; manifest SHA-256=${s?.manifest_sha256??'UNKNOWN'}`,
       `Operator receipt present: ${yes(captured.has_operator_receipt)}; runtime admitted marker: false; ${native?`operator admission claimed: ${yes(captured.operator_admission_claimed)}; authority: ${captured.admission_authority}`:'operator admitted marker: false'}`,
-      `Direct child invocations: generation=${countText(captured.direct_child_invocations.generation)}; observation target ms=${TARGET_MS}; event loop=${EVENT_LOOP}`,
+      `Direct child invocations: generation=${countText(captured.direct_child_invocations.generation)}; observation target ms=${observation?'NONE':TARGET_MS}; event loop=${EVENT_LOOP}`,
       `Workspace: ${captured.workspace_disposition}; descendant guarantee: NONE`,
       `Diagnostic: ${diagnostic}`,
       'Recorded claims only; no task outcome, artifact, authorization, or execution re-verification.'
     ];
     const output=lines.join('\n')+'\n';
-    if(!/^[\x20-\x7e\n]+$/.test(output))return native?NATIVE_INVALID_TEXT:INVALID_TEXT;
-    if(native&&new TextEncoder().encode(output).length>8192)return NATIVE_INVALID_TEXT;
+    if(!/^[\x20-\x7e\n]+$/.test(output))return invalidText;
+    if(native&&new TextEncoder().encode(output).length>8192)return invalidText;
     return output;
-  }catch{return native?NATIVE_INVALID_TEXT:INVALID_TEXT;}
+  }catch{return invalidText;}
 }
 export function formatProjectSummaryTerminal(summary){return formatProject(summary,false);}
 export function formatNativeProjectSummaryTerminal(summary){return formatProject(summary,true);}
+export function formatNativeProjectCodingObservationSummaryTerminal(summary){return formatProject(summary,true,true);}
 function countText(value){return value===null?'UNKNOWN':String(value);}

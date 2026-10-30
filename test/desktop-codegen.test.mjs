@@ -30,6 +30,13 @@ import {
 } from '../src/codex-profile.mjs';
 import {parseReceiptJson} from '../src/offline-run-summary.mjs';
 import {verifyStage} from '../src/multifile-staging.mjs';
+import {prepareDesktopCodingObservationTask} from '../src/project-configuration.mjs';
+import {
+  runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts,
+  runProjectDesktopCodegenWithFailureDiagnosticsWithPorts
+} from '../acceptance/project-entrypoint.mjs';
+import {createNativeProjectCodingObservationResultReceipt} from '../src/project-result-receipt.mjs';
+import {projectNativeProjectCodingObservationRunSummary} from '../src/project-summary.mjs';
 
 // Only event-emitting fake producers, injected clocks and owned fixture files.
 // No child_process, generated module, provider, GJS or grader is invoked.
@@ -137,10 +144,10 @@ function preparationPorts(){
     }
   };
 }
-async function prepared(scope){
+async function prepared(scope,observation=false){
   const p=preparationPorts(),privateInputs=inputs(scope);
   const root='/synthetic/prepared-'+privateInputs.job_id;
-  const ack=await prepareDesktopCodegenTask(root,'e'.repeat(40),request,privateInputs,p.ports);
+  const ack=await (observation?prepareDesktopCodingObservationTask:prepareDesktopCodegenTask)(root,'e'.repeat(40),request,privateInputs,p.ports);
   const configBytes=p.files.get(join(root,'config.json'));
   const config=validateDesktopCodegenConfig(parseReceiptJson(configBytes));
   const manifest=parseReceiptJson(p.files.get(join(root,'operation-manifest.json')));
@@ -158,8 +165,8 @@ function proofFor(c,bytes){
     installed_flags_verified:true
   };
 }
-async function fixture(root){
-  const f=await prepared(join(root,'fresh-scope')),rt=runtime();
+async function fixture(root,observation=false){
+  const f=await prepared(join(root,'fresh-scope'),observation),rt=runtime();
   let proof=proofFor(f.config,f.configBytes),retention='READY';
   const admission={
     provider_id:'native_codex',operator_receipt:f.config.authorization.operator_receipt,
@@ -220,6 +227,89 @@ async function cli(f,args=['--run-admitted-desktop-codegen','config','admission'
   });
   return {code,out,err};
 }
+
+test('observation preparation remains explicit and emits a distinct nonqualification CLI ACK',async()=>owned(async root=>{
+  const f=await fixture(root,true),result=await cli(f);
+  assert.equal(result.code,1);assert.equal(result.err,'');
+  assert.equal(result.out,'{"schema":"SQUIRE2_DESKTOP_CODING_OBSERVATION_ACK_V1","status":"CANDIDATE_STAGED","task_correctness":"NOT_EVALUATED","native_app_status":"NOT_QUALIFIED"}\n');
+  assert.equal(f.rt.calls.length,1);
+  assert.equal(f.rt.timers.some(t=>t.at===140100),false);
+}));
+test('observation phase and failure APIs retain same-child primary results and separate diagnostics',async()=>{
+  for(const kind of ['phase','failure'])await owned(async root=>{
+    const f=await fixture(root,true);
+    const original=f.ports.spawn;
+    f.ports.spawn=(...args)=>{
+      const child=original(...args);
+      const end=child.stdin.end;
+      child.stdin.end=callback=>{
+        f.rt.setTime(3600100);
+        child.stderr.emit('data',enc('retrying PRIVATE_DIAGNOSTIC_SENTINEL'));
+        return end(callback);
+      };
+      return child;
+    };
+    const wrapped=await (kind==='phase'?runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts:
+      runProjectDesktopCodegenWithFailureDiagnosticsWithPorts)(
+        f.configBytes,f.admission,undefined,f.ports);
+    assert.equal(wrapped.result.status,'CANDIDATE_STAGED');
+    assert.equal(wrapped.result.generation.record.process_exit.process_wall_ms,3600000);
+    assert.equal(wrapped.result.generation.runtime_evidence.deadline_ms,null);
+    assert.equal(wrapped.result.outer_observation_target_ms,null);
+    assert.equal(f.rt.calls.length,1);
+    const saved=createNativeProjectCodingObservationResultReceipt(wrapped.result);
+    assert.equal(projectNativeProjectCodingObservationRunSummary(saved).readiness,'CANDIDATE_STAGED');
+    if(kind==='failure')assert.deepEqual(wrapped.failure_diagnostics,{status:'NOT_RETAINED_SUCCESS'});
+    else{
+      assert.equal(wrapped.phase_diagnostics.status,'OBSERVED');
+      assert.equal(wrapped.phase_diagnostics.sidecar_status,'NOT_REQUESTED');
+    }
+    assert.equal(JSON.stringify(wrapped[kind+'_diagnostics']).includes('PRIVATE_DIAGNOSTIC_SENTINEL'),false);
+  });
+});
+test('observation observers preserve canceled primary evidence without automatic diagnostic writes',async()=>{
+  for(const kind of ['phase','failure'])await owned(async root=>{
+    const f=await fixture(root,true),controller=new AbortController();
+    const original=f.ports.spawn;
+    f.ports.spawn=(...args)=>{
+      const child=original(...args);
+      child.stdin.end=callback=>{
+        callback();
+        f.rt.setTime(7200100);
+        child.stdout.emit('data',enc('{"type":"turn.started"}\n'));
+        child.stderr.emit('data',enc('retrying PRIVATE_DIAGNOSTIC_SENTINEL'));
+        controller.abort();
+        queueMicrotask(()=>{
+          child.stdout.emit('end');child.stderr.emit('end');child.emit('exit',null,'SIGTERM');
+        });
+      };
+      return child;
+    };
+    const wrapped=await (kind==='phase'?runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts:
+      runProjectDesktopCodegenWithFailureDiagnosticsWithPorts)(
+        f.configBytes,f.admission,controller.signal,f.ports);
+    assert.equal(wrapped.result.status,'INCOMPLETE');
+    assert.equal(wrapped.result.generation.record.lifecycle_status,'LIMITED_USER_ABORT');
+    assert.equal(wrapped.result.generation.runtime_evidence.timeout_latched,false);
+    assert.equal(wrapped[kind+'_diagnostics'].status,'OBSERVED');
+    assert.equal(wrapped[kind+'_diagnostics'].sidecar_status,'NOT_REQUESTED');
+    assert.equal(JSON.stringify(wrapped[kind+'_diagnostics']).includes('PRIVATE_DIAGNOSTIC_SENTINEL'),false);
+    assert.equal(f.rt.calls.length,1);
+    assert.equal(projectNativeProjectCodingObservationRunSummary(
+      createNativeProjectCodingObservationResultReceipt(wrapped.result)).readiness,'INCOMPLETE');
+  });
+});
+test('observation native intake cancellation releases a pending verification wait without dispatch',async()=>owned(async root=>{
+  const f=await fixture(root,true),controller=new AbortController();
+  let entered=false,release;
+  const blocked=new Promise(resolve=>{release=resolve;});
+  f.ports.verifyFile=async()=>{entered=true;await blocked;};
+  const pending=f.run(controller.signal);
+  for(let i=0;i<100&&!entered;i++)await Promise.resolve();
+  assert.equal(entered,true);controller.abort();
+  await assert.rejects(pending,/OPERATION_ABORTED/);
+  assert.equal(f.rt.calls.length,0);release();
+}));
 
 test('ChatGPT-only helper prepends one fixed global override and preserves the original profile',()=>{
   const data=inputs('/synthetic/profile');

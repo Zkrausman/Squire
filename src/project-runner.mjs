@@ -9,14 +9,21 @@ import {createCodexProjectStreamCollector} from './project-stream-collector.mjs'
 import {planStaging,writeStage,safeMultifileErrorCode} from './multifile-staging.mjs';
 import {runForeground} from './internal/limited-core.mjs';
 import {NODE_RUNTIME,GENERATION_SHUTDOWN,canonicalBytes,hash} from './bounded-codegen-plan.mjs';
+import {
+ PROJECT_CODING_OBSERVATION_PROFILE,PROJECT_CODING_OBSERVATION_RESULT_SCHEMA,
+ validateProjectCodingObservationProfile,resolveProjectCodingProfile,
+ validateProjectCodingObservationOutcome
+} from './project-coding-profile.mjs';
 const usedJobs=new Set(),usedScopes=new Set();
 const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v);
 const absolute=v=>typeof v==='string'&&v!=='/'&&v.startsWith('/')&&resolve(v)===v&&!v.includes('\0');
 export function admitProjectCodexTask(s){return admitProjectTask(s,false);}
 export function admitDesktopCodegenProjectTask(s){return admitProjectTask(s,true);}
 function admitProjectTask(s,desktopCodegen){
- closed(s,['job_id','task_scope','requested_model','effort','max_wall_clock_sec','prompt_bytes',...(desktopCodegen?['runtime_target','prefix_identity','desktop_runtime_identity']:[])],desktopCodegen?[]:['runtime_target','desktop_runtime_identity'],'project_spec');
- if(!uuid(s.job_id)||!absolute(s.task_scope)||typeof s.requested_model!=='string'||typeof s.effort!=='string'||s.max_wall_clock_sec!==120||!validateCodexPrompt(s.prompt_bytes).valid)fail('project_spec');
+ closed(s,['job_id','task_scope','requested_model','effort','max_wall_clock_sec','prompt_bytes',...(desktopCodegen?['runtime_target','prefix_identity','desktop_runtime_identity']:[])],desktopCodegen?['execution_profile']:['runtime_target','desktop_runtime_identity'],'project_spec');
+ const observation=desktopCodegen&&Object.hasOwn(s,'execution_profile');
+ if(observation)validateProjectCodingObservationProfile(s.execution_profile);
+ if(!uuid(s.job_id)||!absolute(s.task_scope)||typeof s.requested_model!=='string'||typeof s.effort!=='string'||s.max_wall_clock_sec!==(observation?null:120)||!validateCodexPrompt(s.prompt_bytes).valid)fail('project_spec');
  const target=Object.hasOwn(s,'runtime_target')?s.runtime_target:'node24-esm';
  if(!['node24-esm',DESKTOP_TARGET].includes(target))fail('project_spec');
  const prefix=target===DESKTOP_TARGET?DESKTOP_PREFIX_IDENTITY:PROJECT_PREFIX_IDENTITY;
@@ -26,7 +33,7 @@ function admitProjectTask(s,desktopCodegen){
  else if(Object.hasOwn(s,'desktop_runtime_identity'))fail('project_spec');
  const b=new Uint8Array(s.prompt_bytes);
  if(b.length<prefix.bytes+1||hash(b.subarray(0,prefix.bytes))!==prefix.sha256)fail('project_prompt_binding');
- return Object.freeze({...s,...(desktop?{desktop_runtime_identity:desktop}:{}),...(desktopCodegen?{prefix_identity:DESKTOP_PREFIX_IDENTITY}:{}),prompt_bytes:b});
+ return Object.freeze({...s,...(desktop?{desktop_runtime_identity:desktop}:{}),...(desktopCodegen?{prefix_identity:DESKTOP_PREFIX_IDENTITY}:{}),...(observation?{execution_profile:PROJECT_CODING_OBSERVATION_PROFILE}:{}),prompt_bytes:b});
 }
 const clearFiles=payload=>{for(const f of payload?.files??[])f.content.fill(0);};
 async function persistEnvelope(fs,path,input,signal){
@@ -46,6 +53,8 @@ async function persistEnvelope(fs,path,input,signal){
 export async function runProjectCodexTask(specification,options,ports){
  const desktopCodegen=ports?.mode==='DESKTOP_CODEGEN_ONLY';
  const spec=(desktopCodegen?admitDesktopCodegenProjectTask:admitProjectCodexTask)(specification);
+ const observation=desktopCodegen&&Object.hasOwn(spec,'execution_profile');
+ const bounds=resolveProjectCodingProfile(observation?spec.execution_profile:undefined);
  if(desktopCodegen&&(ports.operation_intent!=='CODEGEN_ONLY_NO_DESKTOP_EXECUTION'||ports.executable===NODE_RUNTIME.path))fail('desktop_codegen_intent');
  if(spec.runtime_target===DESKTOP_TARGET&&((!desktopCodegen&&ports?.mode!=='SOURCE_SIMULATION')||ports.executable===spec.desktop_runtime_identity.executable.path||desktopCodegen&&spec.desktop_runtime_identity.executable.path===NODE_RUNTIME.path))fail('desktop_source_only');
  closed(options,['clock','shutdown','abortSignal'],[],'project_options');closed(options.clock,['now','schedule'],[],'project_clock');
@@ -54,30 +63,65 @@ export async function runProjectCodexTask(specification,options,ports){
  const profile=(desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({...ports.codex,requested_model:spec.requested_model,effort:spec.effort,prompt_bytes:spec.prompt_bytes}),operatorReceipt=ports.codex.authorization.operator_receipt;
  if(usedJobs.has(spec.job_id)||usedScopes.has(spec.task_scope))fail('project_nonreuse');usedJobs.add(spec.job_id);usedScopes.add(spec.task_scope);
  const run=join(spec.task_scope,'output','run-'+spec.job_id),envelopePath=join(run,'candidate-envelope.json'),fs=ports.fs,controller=new AbortController();
- let generation=null,staging=null,payload=null,spawns=0,cancel=null,last=-1,deadline=null,expired=false,finished=false;
+ let generation=null,staging=null,payload=null,spawns=0,cancel=null,last=-1,deadline=null,expired=false,finished=false,closeoutStatus='NOT_STARTED';
  const now=()=>{const n=options.clock.now();if(!Number.isSafeInteger(n)||n<0||n<last)throw Error('CLOCK_UNAVAILABLE');last=n;return n;};
  const abort=()=>controller.abort();options.abortSignal.addEventListener('abort',abort,{once:true});
+ // A canceled asynchronous setup wait can return without claiming that the
+ // underlying filesystem operation was preempted or has settled.
+ const wait=operation=>{
+  if(!observation)return operation();
+  if(controller.signal.aborted)return Promise.reject(Error('OPERATION_ABORTED'));
+  let listener;
+  const aborted=new Promise((_,reject)=>{
+   listener=()=>reject(Error('OPERATION_ABORTED'));
+   controller.signal.addEventListener('abort',listener,{once:true});
+  });
+  const work=Promise.resolve().then(()=>{
+   if(controller.signal.aborted)throw Error('OPERATION_ABORTED');
+   return operation();
+  });
+  return Promise.race([work,aborted]).finally(()=>controller.signal.removeEventListener('abort',listener));
+ };
  const finish=(status,reason)=>{finished=true;try{if(typeof cancel==='function')cancel();}catch{status='FAILED';reason='CLEANUP_FAILED_OR_UNCERTAIN';}cancel=null;
-  if(status==='CANDIDATE_STAGED')try{if(now()>=deadline){expired=true;controller.abort();}}catch{status='FAILED';reason='CLOCK_UNAVAILABLE';}
-  if(controller.signal.aborted&&status!=='FAILED'){status='INCOMPLETE';reason=expired?'OBSERVATION_DEADLINE':'CANCELED';}
-  return Object.freeze({schema:'SQUIRE2_PROJECT_RESULT_V1',status,reason,generation,staging,task_correctness:'NOT_EVALUATED',task_outcome_evaluated:false,runtime_admitted:false,workspace_disposition:status==='CANDIDATE_STAGED'?'DEDICATED_NOT_REUSED':'QUARANTINED',descendant_guarantee:'NONE',operator_admitted:false,operator_receipt:operatorReceipt,direct_child_invocations:Object.freeze({generation:spawns}),outer_observation_target_ms:140000,event_loop_condition:'RESPONSIVE_PARENT_EVENT_LOOP'});};
+  if(status==='CANDIDATE_STAGED')try{if(deadline!==null&&now()>=deadline){expired=true;controller.abort();}}catch{status='FAILED';reason='CLOCK_UNAVAILABLE';}
+  if(controller.signal.aborted&&status!=='FAILED'){status='INCOMPLETE';reason=expired?(observation?'POST_GENERATION_CLOSEOUT_DEADLINE':'OBSERVATION_DEADLINE'):'CANCELED';}
+  if(observation&&closeoutStatus!=='NOT_STARTED'){
+   closeoutStatus=expired?'DEADLINE_EXCEEDED':
+    controller.signal.aborted?'CANCELED':status==='CANDIDATE_STAGED'?'COMPLETE':'FAILED_OR_UNCERTAIN';
+  }
+  if(observation)validateProjectCodingObservationOutcome({
+   status,reason,lifecycle:generation?.record.lifecycle_status??null,
+   generation_invocations:spawns,has_staging:staging!==null,
+   post_generation_closeout:{status:closeoutStatus,limit_ms:bounds.post_generation_closeout_ms}
+  });
+  return Object.freeze({schema:observation?PROJECT_CODING_OBSERVATION_RESULT_SCHEMA:'SQUIRE2_PROJECT_RESULT_V1',status,reason,generation,staging,task_correctness:'NOT_EVALUATED',task_outcome_evaluated:false,runtime_admitted:false,workspace_disposition:status==='CANDIDATE_STAGED'?'DEDICATED_NOT_REUSED':'QUARANTINED',descendant_guarantee:'NONE',operator_admitted:false,operator_receipt:operatorReceipt,direct_child_invocations:Object.freeze({generation:spawns}),outer_observation_target_ms:bounds.outer_observation_ms,event_loop_condition:'RESPONSIVE_PARENT_EVENT_LOOP',...(observation?{
+   execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
+   post_generation_closeout:Object.freeze({status:closeoutStatus,limit_ms:bounds.post_generation_closeout_ms})
+  }:{})});};
  try{
-  if(options.abortSignal.aborted)return finish('INCOMPLETE','CANCELED');deadline=now()+140000;let returned=false,inline=false;
-  cancel=options.clock.schedule(140000,()=>{if(finished)return;if(!returned){inline=true;return;}expired=true;controller.abort();});returned=true;if(typeof cancel!=='function'||inline)throw Error('SCHEDULER_UNAVAILABLE');
-  const check=()=>{if(now()>=deadline){expired=true;controller.abort();}if(controller.signal.aborted)throw Error('OPERATION_ABORTED');};check();
-  const st=await fs.lstat(spec.task_scope);check();if(!st.isDirectory()||st.isSymbolicLink())throw Error('SCOPE_REQUIRED');
-  await fs.mkdir(join(spec.task_scope,'output'),{mode:0o700});check();await fs.mkdir(run,{mode:0o700});check();await fs.mkdir(join(spec.task_scope,'.tmp'),{mode:0o700});check();
+  if(options.abortSignal.aborted)return finish('INCOMPLETE','CANCELED');
+  const arm=delay=>{
+   deadline=now()+delay;if(!Number.isSafeInteger(deadline))throw Error('CLOCK_BUDGET_OVERFLOW');
+   let returned=false,inline=false;
+   cancel=options.clock.schedule(delay,()=>{if(finished)return;if(!returned){inline=true;return;}expired=true;controller.abort();});
+   returned=true;if(typeof cancel!=='function'||inline)throw Error('SCHEDULER_UNAVAILABLE');
+  };
+  if(!observation)arm(bounds.outer_observation_ms);
+  const check=()=>{const current=now();if(deadline!==null&&current>=deadline){expired=true;controller.abort();}if(controller.signal.aborted)throw Error('OPERATION_ABORTED');};check();
+  const st=await wait(()=>fs.lstat(spec.task_scope));check();if(!st.isDirectory()||st.isSymbolicLink())throw Error('SCOPE_REQUIRED');
+  await wait(()=>fs.mkdir(join(spec.task_scope,'output'),{mode:0o700}));check();await wait(()=>fs.mkdir(run,{mode:0o700}));check();await wait(()=>fs.mkdir(join(spec.task_scope,'.tmp'),{mode:0o700}));check();
   generation=await runForeground({...spec,provider_id:'native_codex',task_class:'PROJECT_CODEGEN_V1'},{executable:ports.executable,args:profile.argv,stdin_bytes:spec.prompt_bytes},
    {clock:options.clock,shutdown:GENERATION_SHUTDOWN,abortSignal:controller.signal,output_path:envelopePath,enableDiagnosticRetention:true},
    {clock:options.clock,spawn(...args){if(controller.signal.aborted||++spawns>1)throw Error('PROJECT_SPAWN_LIMIT');return ports.spawn(...args);},environment:codexEnvironment(spec.task_scope,ports.environment??{}),createCollector:createCodexProjectStreamCollector,retainRejected:ports.retainRejected,persist:async(bytes,signal)=>{const p=await persistEnvelope(fs,envelopePath,bytes,signal);if(finished||controller.signal.aborted){clearFiles(p);throw Error('PERSISTENCE_ABORTED');}payload=p;}});
   if(generation.record.lifecycle_status!=='LIMITED_SUCCESS')return finish(['LIMITED_TIMEOUT','LIMITED_USER_ABORT'].includes(generation.record.lifecycle_status)?'INCOMPLETE':'GENERATION_REJECTED','GENERATION_REJECTED');check();
+  if(observation){closeoutStatus='FAILED_OR_UNCERTAIN';arm(bounds.post_generation_closeout_ms);check();}
   if(!payload)throw Error('PROJECT_PAYLOAD_UNAVAILABLE');const plan=planStaging({stage_operation_id:'stage-'+spec.job_id,caller_label:'project_candidate_stager',files:payload.files.map(f=>({path:f.path,classification:f.classification,content:f.content}))});clearFiles(payload);payload=null;
   let onAbort;const abortPromise=new Promise((_,reject)=>{onAbort=()=>reject(Error('STAGE_ABORTED'));controller.signal.addEventListener('abort',onAbort,{once:true});if(controller.signal.aborted)onAbort();});abortPromise.catch(()=>{});
   const operation=Promise.resolve().then(()=>{check();return writeStage(plan,join(run,'stage'),{fs,uid:ports.uid,signal:controller.signal});});
   operation.then(()=>{for(const f of plan.files)f.content.fill(0);},()=>{for(const f of plan.files)f.content.fill(0);});
   try{const ack=await Promise.race([operation,abortPromise]);check();const expected={schema_version:'squire4.stage_receipt.v1',stage_operation_id:plan.stage_operation_id,caller_label:plan.caller_label,completion_status:'COMPLETE',manifest_sha256:plan.manifest_sha256,file_count:plan.file_count,total_bytes:plan.total_bytes,operation_acknowledgement:'ACKNOWLEDGED',provenance_authenticity:'NOT_ESTABLISHED',crash_durability:'NOT_ESTABLISHED'};
    if(hash(canonicalBytes(ack))!==hash(canonicalBytes(expected)))throw Error('INVALID_STAGE_RECEIPT');staging=ack;return finish('CANDIDATE_STAGED',null);
-  }catch(e){staging=null;if(controller.signal.aborted)return finish('INCOMPLETE',expired?'OBSERVATION_DEADLINE':'CANCELED');return finish('STAGING_REJECTED','STAGING:'+safeMultifileErrorCode(e));}finally{controller.signal.removeEventListener('abort',onAbort);}
- }catch{return finish(controller.signal.aborted?'INCOMPLETE':'FAILED',controller.signal.aborted?(expired?'OBSERVATION_DEADLINE':'CANCELED'):'OPERATION_FAILED_OR_UNCERTAIN');}
+  }catch(e){staging=null;if(controller.signal.aborted)return finish('INCOMPLETE',expired?(observation?'POST_GENERATION_CLOSEOUT_DEADLINE':'OBSERVATION_DEADLINE'):'CANCELED');return finish('STAGING_REJECTED','STAGING:'+safeMultifileErrorCode(e));}finally{controller.signal.removeEventListener('abort',onAbort);}
+ }catch{return finish(controller.signal.aborted?'INCOMPLETE':'FAILED',controller.signal.aborted?(expired?(observation?'POST_GENERATION_CLOSEOUT_DEADLINE':'OBSERVATION_DEADLINE'):'CANCELED'):'OPERATION_FAILED_OR_UNCERTAIN');}
  finally{finished=true;clearFiles(payload);options.abortSignal.removeEventListener('abort',abort);try{if(typeof cancel==='function')cancel();}catch{}}
 }

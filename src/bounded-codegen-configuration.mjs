@@ -1,7 +1,8 @@
 import {RETENTION_POLICY} from './local-rejected-retention.mjs';
 import {validateCodexTuple,validateCodexPermissions} from './codex-profile.mjs';
 import {resolve,join} from 'node:path';
-import {closed} from './job-spec.mjs';
+import {fileURLToPath} from 'node:url';
+import {closed,object} from './job-spec.mjs';
 import {canonicalBytes,hash,NODE_RUNTIME,AGY_RUNTIME,FIXTURE_FREEZE_SHA256,Q218_JOB,Q218_SCOPE,GENERATION_SHUTDOWN} from './bounded-codegen-plan.mjs';
 import {publicFixtures} from '../fixtures/q218/public-fixtures.mjs';
 export const PUBLIC_FREEZE_ROOT='/home/zack/Documents/Codex/2026-10-19/squire-q218-public-freeze-20261020';
@@ -11,6 +12,16 @@ export function fixtureConfigurations(){
   output_path:join(run,'runs','fixture-'+f.id,'summary.json'),manifest_path:join(run,'runs','fixture-'+f.id,'manifest.json'),window_start:f.window_start,window_end:f.window_end,timeout_ms:5000}));
 }
 const same=(a,b)=>hash(canonicalBytes(a))===hash(canonicalBytes(b));
+const sharedCoreSources=Object.freeze([
+ 'src/project-coding-profile.mjs','src/desktop-profile.mjs','src/offline-run-summary.mjs'
+]);
+const sourceRoot=fileURLToPath(new URL('..',import.meta.url));
+function validateSharedCorePins(pins){
+ object(pins,'source_pins');
+ // Require the dependencies newly reached through the shared core without
+ // changing the historical policy for unrelated inventory entries.
+ closed(pins,sharedCoreSources.map(name=>join(sourceRoot,name)),Object.keys(pins),'source_pins');
+}
 export function validateOperationConfig(c){
  closed(c,['schema','runtime_admitted','job_id','scope','source_commit','source_pins','node','agy','prompt','fixtures','fixture_inputs','fixture_configs',
  'diagnostic_retention','generation_shutdown','preflight_freshness_ms','outer_observation_ms','fixture_aggregate_ms','max_direct_child_spawns','environment_policy','task_input'],[],'operation_config');
@@ -21,11 +32,13 @@ export function validateOperationConfig(c){
  c.fixtures.sha256!==FIXTURE_FREEZE_SHA256||c.fixtures.bytes!==20720||
  c.fixtures.path!==join(PUBLIC_FREEZE_ROOT,'fixtures-freeze-manifest.json')||
  !same(c.fixture_inputs,Array.from({length:17},(_,i)=>join(PUBLIC_FREEZE_ROOT,`fixture-${String(i+1).padStart(2,'0')}`,'input.ndjson'))))throw Error('FROZEN_CONFIG_MISMATCH');
+ validateSharedCorePins(c.source_pins);
  for(const pin of Object.values(c.source_pins)){closed(pin,['bytes','sha256'],[],'source_pin');if(!Number.isSafeInteger(pin.bytes)||pin.bytes<0||typeof pin.sha256!=='string'||!/^[a-f0-9]{64}$/.test(pin.sha256))throw Error('SOURCE_PIN_INVALID');}
  if(!same(c.environment_policy,ENVIRONMENT_POLICY))throw Error('ENVIRONMENT_POLICY_MISMATCH');
  return c;
 }
 export const SOURCE_FILES=Object.freeze([
+ ...sharedCoreSources,
  'src/codex-profile.mjs','src/bounded-codegen-plan.mjs','src/bounded-codegen-configuration.mjs','src/bounded-codegen-campaign.mjs',
  'src/local-rejected-retention.mjs','src/internal/local-rejected-retention.mjs','src/internal/rejected-capture.mjs','src/limited-runner.mjs','src/internal/limited-core.mjs','src/internal/limited-diagnostics.mjs','src/limited-generated-executor.mjs','src/limited-source-staging.mjs','src/limited-stream-collector.mjs','src/limited-job-record.mjs',
  'src/job-spec.mjs','src/agy-profile.mjs','src/provider-metadata.mjs','src/node-process-port.mjs','src/owned-group.mjs',
@@ -62,6 +75,7 @@ export function validateCodexOperationConfig(c){
  !same(c.diagnostic_retention,RETENTION_POLICY)||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||!same(c.environment_policy,CODEX_ENVIRONMENT_POLICY)||
  c.fixtures.sha256!==FIXTURE_FREEZE_SHA256||c.fixtures.bytes!==20720||c.fixtures.path!==join(PUBLIC_FREEZE_ROOT,'fixtures-freeze-manifest.json')||
  !same(c.fixture_configs,codexFixtureConfigurations(c.job_id,c.scope))||!same(c.fixture_inputs,Array.from({length:17},(_,i)=>join(PUBLIC_FREEZE_ROOT,`fixture-${String(i+1).padStart(2,'0')}`,'input.ndjson'))))throw Error('FROZEN_CODEX_CONFIG_MISMATCH');
+ validateSharedCorePins(c.source_pins);
  for(const pin of Object.values(c.source_pins)){closed(pin,['bytes','sha256'],[],'source_pin');if(!Number.isSafeInteger(pin.bytes)||pin.bytes<0||!(/^[a-f0-9]{64}$/.test(pin.sha256)))throw Error('SOURCE_PIN_INVALID');}
  return c;
 }
