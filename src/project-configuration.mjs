@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {closed,object,fail} from './job-spec.mjs';
 import {parseReceiptJson,snapshotReceiptData} from './offline-run-summary.mjs';
 import {NODE_RUNTIME,GENERATION_SHUTDOWN,hash,canonicalBytes,verifyExactFile} from './bounded-codegen-plan.mjs';
-import {prepareCodexArgv,CODEX_REQUIRED_VERSION,validateCodexPermissions} from './codex-profile.mjs';
+import {prepareCodexArgv,prepareChatgptOnlyCodexArgv,CODEX_REQUIRED_VERSION,validateCodexPermissions} from './codex-profile.mjs';
 import {buildProjectCodegenPrompt,validateProjectRequest,PROJECT_PREFIX_IDENTITY} from './project-task.mjs';
 import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} from './desktop-profile.mjs';
 import {RETENTION_POLICY,createNativeRejectedRetention} from './local-rejected-retention.mjs';
@@ -45,7 +45,7 @@ function validateProjectConfig(c,desktopCodegen){
   const expected=(desktopCodegen?DESKTOP_CODEGEN_SOURCE_FILES:PROJECT_SOURCE_FILES).map(n=>join(PROJECT_SOURCE_ROOT,n)).sort();closed(c.source_pins,expected,[],'project_source_pins');if(!same(Object.keys(c.source_pins).sort(),expected))fail('project_source_pins');
   for(const p of Object.values(c.source_pins)){closed(p,['bytes','sha256'],[],'project_source_pin');if(!Number.isSafeInteger(p.bytes)||p.bytes<0||!digest(p.sha256))fail('project_source_pin');}
   validateCodexPermissions(c.permissions);
-  prepareCodexArgv({requested_model:c.requested_model,effort:c.effort,observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,prompt_bytes:new Uint8Array([65])});
+  (desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({requested_model:c.requested_model,effort:c.effort,observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,prompt_bytes:new Uint8Array([65])});
   closed(c.target_mode,['mode','stage_subpath'],[],'project_target');
   if((c.target_mode.mode!=='multifile_stage'||c.target_mode.stage_subpath!=='stage')||!same(c.diagnostic_retention,RETENTION_POLICY)||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||!same(c.environment_policy,PROJECT_ENVIRONMENT_POLICY)||c.preflight_freshness_ms!==300000||c.outer_observation_ms!==140000||c.generation_wall_ms!==120000||c.max_direct_child_spawns!==1)fail('project_policy');
   return c;
@@ -134,7 +134,7 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   if(!absolute(root)||typeof source_commit!=='string'||!/^[a-f0-9]{40}$/.test(source_commit))fail('project_preparation');
   const fsPort=ports.fs??fs,verify=ports.verifyFile??verifyExactFile,reads={lstat:fsPort.lstat,readChunks:ports.readChunks??(p=>createReadStream(p))};
   const prompt=buildProjectCodegenPrompt(req),source_pins={};pin(inputs.codex,true);
-  prepareCodexArgv({requested_model:inputs.requested_model,effort:inputs.effort,observed_cli_version:inputs.codex.version,prompt_bytes:prompt,authorization:inputs.authorization,permissions});
+  const profile=(desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({requested_model:inputs.requested_model,effort:inputs.effort,observed_cli_version:inputs.codex.version,prompt_bytes:prompt,authorization:inputs.authorization,permissions});
   for(const name of desktopCodegen?DESKTOP_CODEGEN_SOURCE_FILES:PROJECT_SOURCE_FILES){const p=join(PROJECT_SOURCE_ROOT,name),b=await fsPort.readFile(p);source_pins[p]={bytes:b.length,sha256:hash(b)};}
   const config={schema:'SQUIRE2_PROJECT_OPERATION_V1',runtime_admitted:false,provider_id:'native_codex',job_id:inputs.job_id,scope:inputs.scope,source_commit,source_pins,node:NODE_RUNTIME,codex:inputs.codex,requested_model:inputs.requested_model,effort:inputs.effort,authorization:inputs.authorization,permissions,prompt:{path:join(root,'prompt.utf8'),bytes:prompt.length,sha256:hash(prompt)},target_mode:{mode:'multifile_stage',stage_subpath:'stage'},diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,outer_observation_ms:140000,generation_wall_ms:120000,max_direct_child_spawns:1,environment_policy:PROJECT_ENVIRONMENT_POLICY};
   if(desktop)Object.assign(config,{runtime_target:DESKTOP_TARGET,prefix_identity:DESKTOP_PREFIX_IDENTITY,desktop_runtime_identity:desktop});
@@ -143,7 +143,7 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
   const gate=await (ports.retention??createNativeRejectedRetention)(inputs.job_id).prepare();if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
   const target=join(config.scope,'output','run-'+config.job_id,'candidate-envelope.json');
-  const manifest={schema:'SQUIRE2_PROJECT_PREPARED_MANIFEST_V1',runtime_admitted:false,source_commit,source_pins,job_id:config.job_id,scope:config.scope,task_id:req.task_id,request_sha256:hash(canonicalBytes(req)),config_sha256:hash(canonicalBytes(config)),prompt:config.prompt,node:NODE_RUNTIME,codex:config.codex,generation:{argv:prepareCodexArgv({requested_model:config.requested_model,effort:config.effort,observed_cli_version:config.codex.version,prompt_bytes:prompt,authorization:config.authorization,permissions:config.permissions}).argv,stdin:config.prompt,wall_ms:120000},candidate_envelope:{path:target,source:'EXACT_FINAL_MESSAGE_UTF8'},staging:{stage_subpath:'stage',runtime_admitted:false},task_correctness:'NOT_EVALUATED',limits:{max_direct_child_spawns:1,outer_observation_ms:140000,descendant_guarantee:'NONE',workspace_reuse:'NOT_AUTHORIZED'},admission_required:true};
+  const manifest={schema:'SQUIRE2_PROJECT_PREPARED_MANIFEST_V1',runtime_admitted:false,source_commit,source_pins,job_id:config.job_id,scope:config.scope,task_id:req.task_id,request_sha256:hash(canonicalBytes(req)),config_sha256:hash(canonicalBytes(config)),prompt:config.prompt,node:NODE_RUNTIME,codex:config.codex,generation:{argv:profile.argv,stdin:config.prompt,wall_ms:120000},candidate_envelope:{path:target,source:'EXACT_FINAL_MESSAGE_UTF8'},staging:{stage_subpath:'stage',runtime_admitted:false},task_correctness:'NOT_EVALUATED',limits:{max_direct_child_spawns:1,outer_observation_ms:140000,descendant_guarantee:'NONE',workspace_reuse:'NOT_AUTHORIZED'},admission_required:true};
   if(desktop)Object.assign(manifest,{runtime_target:DESKTOP_TARGET,prefix_identity:DESKTOP_PREFIX_IDENTITY,desktop_runtime_identity:desktop});
   if(desktopCodegen)Object.assign(manifest,{
     schema:'SQUIRE2_DESKTOP_CODEGEN_PREPARED_MANIFEST_V1',

@@ -2,7 +2,7 @@
 import {constants} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {closed,fail} from './job-spec.mjs';
-import {prepareCodexArgv,validateCodexPrompt,codexEnvironment} from './codex-profile.mjs';
+import {prepareCodexArgv,prepareChatgptOnlyCodexArgv,validateCodexPrompt,codexEnvironment} from './codex-profile.mjs';
 import {PROJECT_PREFIX_IDENTITY,validateProjectPayloadJson} from './project-task.mjs';
 import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} from './desktop-profile.mjs';
 import {createCodexProjectStreamCollector} from './project-stream-collector.mjs';
@@ -51,7 +51,7 @@ export async function runProjectCodexTask(specification,options,ports){
  closed(options,['clock','shutdown','abortSignal'],[],'project_options');closed(options.clock,['now','schedule'],[],'project_clock');
  if(typeof options.clock.now!=='function'||typeof options.clock.schedule!=='function'||!(options.abortSignal instanceof AbortSignal)||hash(canonicalBytes(options.shutdown))!==hash(canonicalBytes(GENERATION_SHUTDOWN)))fail('project_options');
  if(!ports||typeof ports.spawn!=='function'||!ports.fs||!Number.isSafeInteger(ports.uid)||ports.uid<0||!absolute(ports.executable))fail('project_ports');
- const profile=prepareCodexArgv({...ports.codex,requested_model:spec.requested_model,effort:spec.effort,prompt_bytes:spec.prompt_bytes}),operatorReceipt=ports.codex.authorization.operator_receipt;
+ const profile=(desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({...ports.codex,requested_model:spec.requested_model,effort:spec.effort,prompt_bytes:spec.prompt_bytes}),operatorReceipt=ports.codex.authorization.operator_receipt;
  if(usedJobs.has(spec.job_id)||usedScopes.has(spec.task_scope))fail('project_nonreuse');usedJobs.add(spec.job_id);usedScopes.add(spec.task_scope);
  const run=join(spec.task_scope,'output','run-'+spec.job_id),envelopePath=join(run,'candidate-envelope.json'),fs=ports.fs,controller=new AbortController();
  let generation=null,staging=null,payload=null,spawns=0,cancel=null,last=-1,deadline=null,expired=false,finished=false;
