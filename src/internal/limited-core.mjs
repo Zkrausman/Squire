@@ -3,12 +3,21 @@ import {types} from 'node:util';
 import {collectorDiagnostic,sanitizeDiagnosticMetadata} from './limited-diagnostics.mjs';
 import {createLimitedStreamCollector} from '../limited-stream-collector.mjs';
 import {validateLimitedJobRecord} from '../limited-job-record.mjs';
+import {DESKTOP_TARGET} from '../desktop-profile.mjs';
+import {validateProjectCodingObservationProfile} from '../project-coding-profile.mjs';
 
 const passiveError = () => {};
 const byteLengthOf = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength').get;
 const retained = new Set();
 // Explicit ports for synthetic tests; this module has no native defaults or public argv entrypoint.
 export function runForeground(spec, invocation, options, ports) {
+  // Null is a closed desktop-project capability, never a generic timeout switch.
+  const observation=Object.hasOwn(spec,'execution_profile');
+  if(observation){
+    validateProjectCodingObservationProfile(spec.execution_profile);
+    if(spec.provider_id!=='native_codex'||spec.task_class!=='PROJECT_CODEGEN_V1'||
+       spec.runtime_target!==DESKTOP_TARGET||spec.max_wall_clock_sec!==null)throw Error('INVALID_OBSERVATION_PROFILE');
+  }else if(spec.max_wall_clock_sec===null)throw Error('INVALID_OBSERVATION_PROFILE');
   const {clock, spawn, persist, environment} = ports, shutdown = options.shutdown;
   const collector = ['BOUNDED_CODEGEN_SUMMARIZER_V5','SINGLE_JS_CODEGEN_V1','PROJECT_CODEGEN_V1'].includes(spec.task_class) ? ports.createCollector() : createLimitedStreamCollector(), timers = new Map(), attempts = [];
   let spawnAttempted = false, child = null, startedAt = null, lastNow = -1, deadline = null, pid = null;
@@ -128,7 +137,7 @@ export function runForeground(spec, invocation, options, ports) {
     if (exited) void finalize();
   }
   function checkDeadline() {
-    try {if (now() >= deadline) {latch('LIMITED_TIMEOUT'); beginStop();return false;}return true;}
+    try {const current=now();if (!observation&&current >= deadline) {latch('LIMITED_TIMEOUT'); beginStop();return false;}return true;}
     catch {latch('LIMITED_INTERNAL_ERROR', 'CLOCK_UNAVAILABLE'); beginStop();return false;}
   }
   async function retainRejected() {
@@ -138,7 +147,7 @@ export function runForeground(spec, invocation, options, ports) {
     if (!capture?.eligible) {diagnosticRetention=publicRetention('NOT_ELIGIBLE',capture);return;}
     const clear=()=>{try{capture.response_bytes.fill(0);}catch{}};
     let remaining;
-    try {remaining=deadline-now();} catch {latch('LIMITED_INTERNAL_ERROR','CLOCK_UNAVAILABLE');clear();return;}
+    try {const current=now();remaining=observation?shutdown.persistence_timeout_ms:deadline-current;} catch {latch('LIMITED_INTERNAL_ERROR','CLOCK_UNAVAILABLE');clear();return;}
     if (options.abortSignal?.aborted) onAbort();
     if (remaining<=0) latch('LIMITED_TIMEOUT');
     if (status!=='LIMITED_PARSER_ERROR') {clear();return;}
@@ -150,7 +159,7 @@ export function runForeground(spec, invocation, options, ports) {
     aborted.catch(()=>{});
     let operation;
     try {
-      arm('retention',remaining,()=>{latch('LIMITED_TIMEOUT');retentionController.abort();});
+      arm('retention',remaining,()=>{if(!observation)latch('LIMITED_TIMEOUT');retentionController.abort();});
       // schedule()/clock callbacks may reenter abort: register first, then check again before calling the port.
       if(!checkDeadline())retentionController.abort();
       if(options.abortSignal?.aborted)onAbort();
@@ -270,11 +279,14 @@ export function runForeground(spec, invocation, options, ports) {
   const onOutClose = () => {if (!collector.snapshot().stdout_eof) onStreamError();};
   const onErrClose = () => {if (!collector.snapshot().stderr_eof) onStreamError();};
   try {
-    startedAt = now(); deadline = startedAt + spec.max_wall_clock_sec * 1000;
-    if (!Number.isSafeInteger(deadline)) throw Error('CLOCK_BUDGET_OVERFLOW');
+    startedAt = now();
+    if(!observation){
+      deadline = startedAt + spec.max_wall_clock_sec * 1000;
+      if (!Number.isSafeInteger(deadline)) throw Error('CLOCK_BUDGET_OVERFLOW');
+    }
     options.abortSignal?.addEventListener('abort', onAbort, {once: true});
     if (options.abortSignal?.aborted) {latch('LIMITED_USER_ABORT'); complete(); return result;}
-    arm('budget', deadline - startedAt, budgetTick);
+    if(!observation)arm('budget', deadline - startedAt, budgetTick);
     checkDeadline();
     if (status) {complete(); return result;}
     if(invocation.stdin_bytes!==undefined){

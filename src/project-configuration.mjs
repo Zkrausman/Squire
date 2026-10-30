@@ -10,9 +10,14 @@ import {prepareCodexArgv,prepareChatgptOnlyCodexArgv,CODEX_REQUIRED_VERSION,vali
 import {buildProjectCodegenPrompt,validateProjectRequest,PROJECT_PREFIX_IDENTITY} from './project-task.mjs';
 import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} from './desktop-profile.mjs';
 import {RETENTION_POLICY,createNativeRejectedRetention} from './local-rejected-retention.mjs';
+import {
+  PROJECT_CODING_OBSERVATION_PROFILE,PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA,
+  PROJECT_CODING_OBSERVATION_MANIFEST_SCHEMA,validateProjectCodingObservationProfile,
+  resolveProjectCodingProfile
+} from './project-coding-profile.mjs';
 
 export const PROJECT_SOURCE_ROOT=dirname(dirname(fileURLToPath(import.meta.url)));
-export const PROJECT_SOURCE_FILES=Object.freeze(["src/project-task.mjs", "src/project-configuration.mjs", "src/project-runner.mjs", "src/offline-run-summary.mjs", "src/codex-profile.mjs", "src/bounded-codegen-plan.mjs", "src/local-rejected-retention.mjs", "src/internal/local-rejected-retention.mjs", "src/internal/rejected-capture.mjs", "src/internal/limited-core.mjs", "src/internal/limited-diagnostics.mjs", "src/internal/multifile-core.mjs", "src/multifile-staging.mjs", "src/multifile-export.mjs", "src/limited-stream-collector.mjs", "src/limited-job-record.mjs", "src/job-spec.mjs", "src/agy-profile.mjs", "src/provider-metadata.mjs", "src/node-process-port.mjs", "src/owned-group.mjs", "bin/squire-report.mjs", "acceptance/project-entrypoint.mjs", "src/project-stream-collector.mjs", "src/single-js-summary.mjs", "acceptance/prepare-project-task.mjs", "src/desktop-profile.mjs"]);
+export const PROJECT_SOURCE_FILES=Object.freeze(["src/project-task.mjs", "src/project-configuration.mjs", "src/project-runner.mjs", "src/offline-run-summary.mjs", "src/codex-profile.mjs", "src/bounded-codegen-plan.mjs", "src/local-rejected-retention.mjs", "src/internal/local-rejected-retention.mjs", "src/internal/rejected-capture.mjs", "src/internal/limited-core.mjs", "src/internal/limited-diagnostics.mjs", "src/internal/multifile-core.mjs", "src/multifile-staging.mjs", "src/multifile-export.mjs", "src/limited-stream-collector.mjs", "src/limited-job-record.mjs", "src/job-spec.mjs", "src/agy-profile.mjs", "src/provider-metadata.mjs", "src/node-process-port.mjs", "src/owned-group.mjs", "bin/squire-report.mjs", "acceptance/project-entrypoint.mjs", "src/project-stream-collector.mjs", "src/single-js-summary.mjs", "acceptance/prepare-project-task.mjs", "src/desktop-profile.mjs", "src/project-coding-profile.mjs"]);
 export const PROJECT_RECEIPT_DESTINATION_SCHEMA='SQUIRE3_PROJECT_RECEIPT_DESTINATION_V1';
 export const PROJECT_RECEIPT_SOURCE_FILES=Object.freeze(['src/project-result-receipt.mjs','src/project-summary.mjs']);
 export const DESKTOP_CODEGEN_SCHEMA='SQUIRE2_DESKTOP_CODEGEN_OPERATION_V1';
@@ -34,8 +39,10 @@ export function validateProjectCodexConfig(c){return validateProjectConfig(c,fal
 export function validateDesktopCodegenConfig(c){return validateProjectConfig(c,true);}
 function validateProjectConfig(c,desktopCodegen){
   c=snapshotReceiptData(c);
-  closed(c,['schema','runtime_admitted','provider_id','job_id','scope','source_commit','source_pins','node','codex','requested_model','effort','authorization','permissions','prompt','target_mode','diagnostic_retention','generation_shutdown','preflight_freshness_ms','outer_observation_ms','generation_wall_ms','max_direct_child_spawns','environment_policy',...(desktopCodegen?['operation_intent','runtime_target','prefix_identity','desktop_runtime_identity']:[])],desktopCodegen?[]:['runtime_target','prefix_identity','desktop_runtime_identity'],'project_config');
-  if(c.schema!==(desktopCodegen?DESKTOP_CODEGEN_SCHEMA:'SQUIRE2_PROJECT_OPERATION_V1')||c.runtime_admitted!==false||c.provider_id!=='native_codex'||typeof c.job_id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(c.job_id)||!absolute(c.scope)||typeof c.source_commit!=='string'||!/^[a-f0-9]{40}$/.test(c.source_commit))fail('project_config');
+  const observation=desktopCodegen&&c.schema===PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA;
+  closed(c,['schema','runtime_admitted','provider_id','job_id','scope','source_commit','source_pins','node','codex','requested_model','effort','authorization','permissions','prompt','target_mode','diagnostic_retention','generation_shutdown','preflight_freshness_ms','outer_observation_ms','generation_wall_ms','max_direct_child_spawns','environment_policy',...(desktopCodegen?['operation_intent','runtime_target','prefix_identity','desktop_runtime_identity']:[]),...(observation?['execution_profile']:[])],desktopCodegen?[]:['runtime_target','prefix_identity','desktop_runtime_identity'],'project_config');
+  const bounds=resolveProjectCodingProfile(observation?validateProjectCodingObservationProfile(c.execution_profile):undefined);
+  if(c.schema!==(observation?PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA:desktopCodegen?DESKTOP_CODEGEN_SCHEMA:'SQUIRE2_PROJECT_OPERATION_V1')||c.runtime_admitted!==false||c.provider_id!=='native_codex'||typeof c.job_id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(c.job_id)||!absolute(c.scope)||typeof c.source_commit!=='string'||!/^[a-f0-9]{40}$/.test(c.source_commit))fail('project_config');
   if(desktopCodegen&&(c.operation_intent!==DESKTOP_CODEGEN_INTENT||c.runtime_target!==DESKTOP_TARGET))fail('desktop_codegen_intent');
   const target=Object.hasOwn(c,'runtime_target')?c.runtime_target:'node24-esm';if(!['node24-esm',DESKTOP_TARGET].includes(target))fail('project_target');
   const prefix=target===DESKTOP_TARGET?DESKTOP_PREFIX_IDENTITY:PROJECT_PREFIX_IDENTITY;
@@ -48,7 +55,7 @@ function validateProjectConfig(c,desktopCodegen){
   validateCodexPermissions(c.permissions);
   (desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({requested_model:c.requested_model,effort:c.effort,observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,prompt_bytes:new Uint8Array([65])});
   closed(c.target_mode,['mode','stage_subpath'],[],'project_target');
-  if((c.target_mode.mode!=='multifile_stage'||c.target_mode.stage_subpath!=='stage')||!same(c.diagnostic_retention,RETENTION_POLICY)||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||!same(c.environment_policy,PROJECT_ENVIRONMENT_POLICY)||c.preflight_freshness_ms!==300000||c.outer_observation_ms!==140000||c.generation_wall_ms!==120000||c.max_direct_child_spawns!==1)fail('project_policy');
+  if((c.target_mode.mode!=='multifile_stage'||c.target_mode.stage_subpath!=='stage')||!same(c.diagnostic_retention,RETENTION_POLICY)||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||!same(c.environment_policy,PROJECT_ENVIRONMENT_POLICY)||c.preflight_freshness_ms!==300000||c.outer_observation_ms!==bounds.outer_observation_ms||c.generation_wall_ms!==bounds.generation_wall_ms||c.max_direct_child_spawns!==1)fail('project_policy');
   return c;
 }
 // Pure binding validation supplies neither token consumption nor native app
@@ -116,7 +123,10 @@ export async function prepareProjectCodexTask(root,source_commit,request,inputs,
 export async function prepareDesktopCodegenTask(root,source_commit,request,inputs,ports={}){
   return prepareProjectTask(root,source_commit,request,inputs,ports,true);
 }
-async function prepareProjectTask(root,source_commit,request,inputs,ports,desktopCodegen){
+export async function prepareDesktopCodingObservationTask(root,source_commit,request,inputs,ports={}){
+  return prepareProjectTask(root,source_commit,request,inputs,ports,true,true);
+}
+async function prepareProjectTask(root,source_commit,request,inputs,ports,desktopCodegen,observation=false){
   const req=validateProjectRequest(request);inputs=snapshotReceiptData(inputs);closed(inputs,['job_id','scope','codex','requested_model','effort','authorization','permissions'],['desktop_runtime_identity'],'project_private_inputs');
   const permissions=validateCodexPermissions(inputs.permissions);
   if(desktopCodegen&&req.runtime_target!==DESKTOP_TARGET)fail('desktop_codegen_target');
@@ -140,6 +150,11 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   const config={schema:'SQUIRE2_PROJECT_OPERATION_V1',runtime_admitted:false,provider_id:'native_codex',job_id:inputs.job_id,scope:inputs.scope,source_commit,source_pins,node:NODE_RUNTIME,codex:inputs.codex,requested_model:inputs.requested_model,effort:inputs.effort,authorization:inputs.authorization,permissions,prompt:{path:join(root,'prompt.utf8'),bytes:prompt.length,sha256:hash(prompt)},target_mode:{mode:'multifile_stage',stage_subpath:'stage'},diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,outer_observation_ms:140000,generation_wall_ms:120000,max_direct_child_spawns:1,environment_policy:PROJECT_ENVIRONMENT_POLICY};
   if(desktop)Object.assign(config,{runtime_target:DESKTOP_TARGET,prefix_identity:DESKTOP_PREFIX_IDENTITY,desktop_runtime_identity:desktop});
   if(desktopCodegen)Object.assign(config,{schema:DESKTOP_CODEGEN_SCHEMA,operation_intent:DESKTOP_CODEGEN_INTENT});
+  if(observation)Object.assign(config,{
+    schema:PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA,
+    execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
+    generation_wall_ms:null,outer_observation_ms:null
+  });
   (desktopCodegen?validateDesktopCodegenConfig:validateProjectCodexConfig)(config);
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
   const gate=await (ports.retention??createNativeRejectedRetention)(inputs.job_id).prepare();if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
@@ -155,6 +170,12 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
       effort:config.effort,permissions:config.permissions
     },
     generation:{...manifest.generation,executable:config.codex}
+  });
+  if(observation)Object.assign(manifest,{
+    schema:PROJECT_CODING_OBSERVATION_MANIFEST_SCHEMA,
+    execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
+    generation:{...manifest.generation,wall_ms:null},
+    limits:{...manifest.limits,outer_observation_ms:null}
   });
   await fsPort.mkdir(root,{mode:0o700});
   for(const[name,b]of[['prompt.utf8',prompt],['config.json',canonicalBytes(config)],['operation-manifest.json',canonicalBytes(manifest)]]){await fsPort.writeFile(join(root,name),b,{flag:'wx',mode:0o600});if(hash(await fsPort.readFile(join(root,name)))!==hash(b))throw Error('PREPARATION_READBACK');}

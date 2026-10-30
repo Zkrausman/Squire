@@ -1,5 +1,114 @@
 # Explicit desktop source generation
 
+## Explicit observation profile
+
+The separate source preparation API
+`prepareDesktopCodingObservationTask(root, source_commit, request, inputs, ports)`
+and the exact five-argument preparation flag
+`--prepare-desktop-coding-observation` select an additional desktop
+`CODEGEN_ONLY_NO_DESKTOP_EXECUTION` profile. Existing preparation APIs, flags,
+generic project routes and their 120-second generation / 140-second observation
+formats remain unchanged.
+
+The observation config schema is
+`SQUIRE2_DESKTOP_CODING_OBSERVATION_OPERATION_V1`; its manifest schema is
+`SQUIRE2_DESKTOP_CODING_OBSERVATION_PREPARED_MANIFEST_V1`. Both require this exact
+closed descriptor:
+
+```
+{
+  "id": "PROJECT_CODING_OBSERVE_V1",
+  "generation_wall_ms": null,
+  "outer_observation_ms": null,
+  "post_generation_closeout_ms": 20000
+}
+```
+
+The corresponding config generation and outer bounds, manifest generation wall
+bound, and manifest outer observation bound are null. Null is accepted only
+with the exact observation schema, desktop target, descriptor and explicit
+desktop execution path. It is not a generic timeout override.
+
+This profile imposes **NO SQUIRE ELAPSED GENERATION CUTOFF** while the child is
+starting, running or waiting to complete. It schedules no generation or
+whole-operation observation timer. Progress, inactivity and JSONL events neither
+create nor renew a deadline. The historical external 170-second observation
+convention does not apply to a future observation-mode caller. A separately
+released caller must support non-expiring asynchronous observation and owned
+cancellation, or disclose an unavoidable platform limit before dispatch.
+No such caller or producer operation is released by this source change.
+
+Actual AbortSignal cancellation remains available during asynchronous intake,
+runner setup, generation and staging. Canceling a pending filesystem wait does
+not prove that its underlying I/O stopped or settled. Synchronous blocking,
+process death and platform limits cannot be preempted or bounded by this
+JavaScript contract. Installed Codex, external provider duration limits and
+cost remain UNKNOWN; this profile supplies no unlimited platform, allowance or
+spending guarantee.
+
+One child, shared job/scope nonreuse, exact source and prompt bindings, admission,
+freshness, retention policy, permissions, forced ChatGPT authentication and the
+six environment exclusions remain required. Denial, quota, provider errors,
+parser errors, stream failures and output caps remain failures without fallback
+or retry. After actual cancellation or error, existing finite shutdown remains:
+3000 ms TERM grace, 2000 ms KILL grace and 1000 ms stream drain. Unobserved
+termination retains uncertain custody and quarantine.
+
+Once direct-child termination is observed, existing local drain and persistence
+bounds remain finite. Rejected retention uses the existing 2000 ms persistence
+bound in observation mode. These waits cannot terminate an otherwise running
+generation. After foreground success returns, staging receives one fixed
+20000 ms local closeout window. It never starts while generation is running and
+cannot renew. Expiry reports `POST_GENERATION_CLOSEOUT_DEADLINE`, an incomplete
+primary result and `post_generation_closeout.status: "DEADLINE_EXCEEDED"`.
+It does not claim a generation timeout or successful staging. Pending I/O and
+partial artifacts remain preserved; no cleanup, replay or late promotion occurs.
+
+Observation results use `SQUIRE2_PROJECT_CODING_OBSERVATION_RESULT_V1`, the exact
+execution descriptor, `outer_observation_target_ms: null`, and a closed
+`post_generation_closeout: {status, limit_ms: 20000}`. Its statuses are
+`NOT_STARTED`, `COMPLETE`, `CANCELED`, `DEADLINE_EXCEEDED` and
+`FAILED_OR_UNCERTAIN`. Generation runtime evidence retains a null deadline,
+false generation-timeout latch and actual monotonic process wall time.
+Primary correctness and native application qualification remain unevaluated.
+
+The explicit native receipt APIs are
+`createNativeProjectCodingObservationResultReceipt(liveResult)` and
+`writeNativeProjectCodingObservationResultReceipt(liveResult, destination, ports)`.
+They share existing exclusive 0600 creation, ownership, identity, bounded
+readback and successful-close checks. They emit
+`SQUIRE3_NATIVE_PROJECT_CODING_OBSERVATION_RESULT_RECEIPT_V1`.
+Legacy APIs reject this format, and observation APIs reject legacy or mixed
+formats before writing.
+
+Offline projection uses
+`projectNativeProjectCodingObservationRunSummary(savedEnvelope)` and
+`formatNativeProjectCodingObservationSummaryTerminal(summary)`, with summary
+schema `squire3.native_project_coding_observation_summary.v1`.
+`bin/squire-report.mjs` recognizes the exact saved receipt schema and reads only
+the supplied saved bytes. Valid recorded native claims exit 1; invalid receipts
+exit 2. Operator admission is the recorded boolean, with authority
+`NOT_ESTABLISHED`; missing evidence stays unknown and zero stays zero.
+No private command, path, operator receipt or payload becomes terminal text.
+
+The existing explicitly admitted desktop CLI also accepts a hash-bound
+observation config. A staged result emits only the distinct
+`SQUIRE2_DESKTOP_CODING_OBSERVATION_ACK_V1` nonqualification ACK and exits 1.
+The original desktop ACK remains byte-for-byte unchanged.
+
+Both explicit phase and failure observation APIs compose with this profile
+through the same admitted child. Their schemas, privacy limits, error behavior
+and sidecar separation remain unchanged. Diagnostic writes remain separate,
+explicitly awaited host operations after the primary result.
+
+Source acceptance uses fake children, clocks, injected preparation and receipt
+filesystems, and owned disposable fixture files. No actual long wall wait,
+provider, generated program, GJS or product task is required. Focused synthetic
+checks and independent complete-callchain/privacy review are required before
+publication or any separately authorized installation or run. This feature
+does not alter S1, release a retry, establish a timeout cause or prove a native
+benefit.
+
 This additive adapter permits one separately admitted real Codex generation for
 `desktop-gjs-gtk4`. It uses the existing JSONL collector, envelope parser,
 exclusive envelope persistence and physical multifile staging. It never launches

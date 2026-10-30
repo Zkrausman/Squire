@@ -14,6 +14,9 @@ import {writeNativeProjectResultReceipt} from '../src/project-result-receipt.mjs
 import {runProjectCodexTask,admitDesktopCodegenProjectTask} from '../src/project-runner.mjs';
 import {createMonotonicClock} from '../src/node-process-port.mjs';
 import {createNativeRejectedRetention} from '../src/local-rejected-retention.mjs';
+import {
+  PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA,PROJECT_CODING_OBSERVATION_RESULT_SCHEMA
+} from '../src/project-coding-profile.mjs';
 const consumed=new Set();
 const desktopCodegenFlag='--run-admitted-desktop-codegen';
 export const desktopCodegenEntrypointMode=args=>args.length===3&&args[0]===desktopCodegenFlag?'EXPLICIT_DESKTOP_CODEGEN_ADMISSION_REQUIRED':'DRY_RUN_NATIVE_DISABLED';
@@ -31,9 +34,10 @@ export function buildDesktopCodegenInvocation(config,promptBytes){
   if(hash(bytes)!==c.prompt.sha256)throw Error('PROMPT_CHANGED');
   const specification=admitDesktopCodegenProjectTask({
     job_id:c.job_id,task_scope:c.scope,requested_model:c.requested_model,
-    effort:c.effort,max_wall_clock_sec:120,prompt_bytes:bytes,
+    effort:c.effort,max_wall_clock_sec:c.generation_wall_ms===null?null:c.generation_wall_ms/1000,prompt_bytes:bytes,
     runtime_target:c.runtime_target,prefix_identity:c.prefix_identity,
-    desktop_runtime_identity:c.desktop_runtime_identity
+    desktop_runtime_identity:c.desktop_runtime_identity,
+    ...(c.schema===PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA?{execution_profile:c.execution_profile}:{})
   });
   return Object.freeze({
     specification,mode:'DESKTOP_CODEGEN_ONLY',operation_intent:DESKTOP_CODEGEN_INTENT,
@@ -167,27 +171,42 @@ export async function runProjectDesktopCodegenWithPorts(configBytes,admission,ab
   if(!Number.isSafeInteger(ports.uid)||ports.uid<0||
      abortSignal!==undefined&&!(abortSignal instanceof AbortSignal))throw Error('DESKTOP_CODEGEN_PORTS_INVALID');
   const c=validateDesktopCodegenConfig(parseReceiptJson(configBytes));
+  const observation=c.schema===PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA;
   const a=requireDesktopCodegenAdmission(admission,c,configBytes);
   if(consumed.has(c.job_id)||consumed.has(c.scope))throw Error('NATIVE_OPERATION_ALREADY_CONSUMED');
-  for(const identity of [c.node,c.codex,c.prompt,...Object.entries(c.source_pins).map(([path,pin])=>({path,...pin}))]){
-    await ports.verifyFile(identity,ports.reads);
-  }
-  const proofBytes=await ports.readBytes(a.preflight.evidence_receipt,65536);
-  receiptByteLength(proofBytes);
-  validateCodexPreflight(parseReceiptJson(proofBytes),c,configBytes,ports.now());
-  const promptBytes=await ports.readBytes(c.prompt.path,32768);
-  const invocation=buildDesktopCodegenInvocation(c,promptBytes);
-  consumed.add(c.job_id);consumed.add(c.scope);
-  const retention=ports.retention(c.job_id),gate=await retention.prepare();
-  if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
   const controller=new AbortController();
   const signal=abortSignal?AbortSignal.any([abortSignal,controller.signal]):controller.signal;
+  const wait=operation=>{
+    if(!observation)return operation();
+    if(signal.aborted)return Promise.reject(Error('OPERATION_ABORTED'));
+    let listener;
+    const aborted=new Promise((_,reject)=>{
+      listener=()=>reject(Error('OPERATION_ABORTED'));
+      signal.addEventListener('abort',listener,{once:true});
+    });
+    const work=Promise.resolve().then(()=>{
+      if(signal.aborted)throw Error('OPERATION_ABORTED');
+      return operation();
+    });
+    return Promise.race([work,aborted]).finally(()=>signal.removeEventListener('abort',listener));
+  };
+  for(const identity of [c.node,c.codex,c.prompt,...Object.entries(c.source_pins).map(([path,pin])=>({path,...pin}))]){
+    await wait(()=>ports.verifyFile(identity,ports.reads));
+  }
+  const proofBytes=await wait(()=>ports.readBytes(a.preflight.evidence_receipt,65536));
+  receiptByteLength(proofBytes);
+  validateCodexPreflight(parseReceiptJson(proofBytes),c,configBytes,ports.now());
+  const promptBytes=await wait(()=>ports.readBytes(c.prompt.path,32768));
+  const invocation=buildDesktopCodegenInvocation(c,promptBytes);
+  consumed.add(c.job_id);consumed.add(c.scope);
+  const retention=ports.retention(c.job_id),gate=await wait(()=>retention.prepare());
+  if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
   const counts={generation:0};
-  const cancel=ports.clock.schedule(c.outer_observation_ms,()=>controller.abort());
+  const cancel=observation?()=>{}:ports.clock.schedule(c.outer_observation_ms,()=>controller.abort());
   if(typeof cancel!=='function')throw Error('SCHEDULER_UNAVAILABLE');
   try{
     if(signal.aborted)throw Error('OPERATION_ABORTED');
-    await ports.fs.mkdir(c.scope,{mode:0o700});
+    await wait(()=>ports.fs.mkdir(c.scope,{mode:0o700}));
     const result=await runProjectCodexTask(invocation.specification,
       {clock:ports.clock,shutdown:c.generation_shutdown,abortSignal:signal},
       {
@@ -312,7 +331,11 @@ export async function runProjectEntrypointCli(argv,ports){
       if(result.status!=='CANDIDATE_STAGED'||result.task_correctness!=='NOT_EVALUATED'||
          result.task_outcome_evaluated!==false||result.runtime_admitted!==false||
          result.staging?.operation_acknowledgement!=='ACKNOWLEDGED')throw 0;
-      out('{"schema":"SQUIRE2_DESKTOP_CODEGEN_ACK_V1","status":"CANDIDATE_STAGED","task_correctness":"NOT_EVALUATED","native_app_status":"NOT_QUALIFIED"}\n');
+      if(result.schema===PROJECT_CODING_OBSERVATION_RESULT_SCHEMA){
+        out('{"schema":"SQUIRE2_DESKTOP_CODING_OBSERVATION_ACK_V1","status":"CANDIDATE_STAGED","task_correctness":"NOT_EVALUATED","native_app_status":"NOT_QUALIFIED"}\n');
+      }else{
+        out('{"schema":"SQUIRE2_DESKTOP_CODEGEN_ACK_V1","status":"CANDIDATE_STAGED","task_correctness":"NOT_EVALUATED","native_app_status":"NOT_QUALIFIED"}\n');
+      }
       return 1;
     }catch{err('DESKTOP_CODEGEN_ADMISSION_OR_OPERATION_FAILED\n');return 2;}
   }

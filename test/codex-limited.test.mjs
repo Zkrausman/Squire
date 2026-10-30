@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
+import {fileURLToPath} from 'node:url';
 import {prepareCodexArgv,validateCodexPrompt,codexEnvironment} from '../src/codex-profile.mjs';
 import {createCodexCodegenStreamCollector} from '../src/limited-stream-collector.mjs';
 import {decodeCodexJsonl} from '../src/provider-metadata.mjs';
@@ -8,7 +9,7 @@ import {runForeground} from '../src/internal/limited-core.mjs';
 import {runBoundedCodegenCodexTask,runLimitedAgyTask} from '../src/limited-runner.mjs';
 import {boundCodexConfig,runBoundedCodegenOneCaseNativeCodex} from '../acceptance/bounded-codegen-entrypoint.mjs';
 import {buildBoundedCodegenManifest,prepareBoundedCodegen} from '../acceptance/prepare-bounded-codegen.mjs';
-import {validateCodexOperationConfig,codexFixtureConfigurations,CODEX_ENVIRONMENT_POLICY,PUBLIC_FREEZE_ROOT} from '../src/bounded-codegen-configuration.mjs';
+import {SOURCE_FILES,validateCodexOperationConfig,codexFixtureConfigurations,CODEX_ENVIRONMENT_POLICY,PUBLIC_FREEZE_ROOT} from '../src/bounded-codegen-configuration.mjs';
 import {requireCodexAdmission,validateCodexPreflight,NODE_RUNTIME,GENERATION_SHUTDOWN,canonicalBytes,hash} from '../src/bounded-codegen-plan.mjs';
 import {RETENTION_POLICY} from '../src/local-rejected-retention.mjs';
 const enc=s=>new TextEncoder().encode(s),flush=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
@@ -136,7 +137,12 @@ test('bounded runner rejects absent or invalid permissions before fake spawn or 
 });
 function config(){
  const job_id='12345678-1234-4abc-8def-012345678901',scope='/synthetic';
- return {schema:'Q218C_OPERATION_V1',runtime_admitted:false,provider_id:'native_codex',job_id,scope,source_commit:'a'.repeat(40),source_pins:{'/synthetic/source':{bytes:1,sha256:'a'.repeat(64)}},node:NODE_RUNTIME,
+ // Synthetic fixture identities only; no actual source bytes or readiness are verified.
+ const source_pins=Object.fromEntries(SOURCE_FILES.map(name=>[
+  fileURLToPath(new URL('../'+name,import.meta.url)),{bytes:1,sha256:'a'.repeat(64)}
+ ]));
+ source_pins['/synthetic/source']={bytes:1,sha256:'a'.repeat(64)};
+ return {schema:'Q218C_OPERATION_V1',runtime_admitted:false,provider_id:'native_codex',job_id,scope,source_commit:'a'.repeat(40),source_pins,node:NODE_RUNTIME,
  codex:{path:'/synthetic/codex',bytes:1,sha256:'b'.repeat(64),version:'0.160.0'},requested_model:MODEL,effort:EFFORT,authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'},
  prompt:{path:'/synthetic/prompt',bytes:profile.prompt_bytes.length,sha256:hash(profile.prompt_bytes)},fixtures:{path:PUBLIC_FREEZE_ROOT+'/fixtures-freeze-manifest.json',bytes:20720,sha256:'7c133ceaae9ca7466689f5e612dbd46fd8f0a300bb7fa7807d6c5cbacd4cccc7'},fixture_inputs:Array.from({length:17},(_,i)=>PUBLIC_FREEZE_ROOT+'/fixture-'+String(i+1).padStart(2,'0')+'/input.ndjson'),fixture_configs:codexFixtureConfigurations(job_id,scope),diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,outer_observation_ms:250000,fixture_aggregate_ms:85000,max_direct_child_spawns:19,environment_policy:CODEX_ENVIRONMENT_POLICY,task_input:{path:'/synthetic/task',bytes:1,sha256:'c'.repeat(64)}};
 }
