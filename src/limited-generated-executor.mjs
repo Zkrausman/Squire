@@ -24,6 +24,49 @@ function executeNode(config, ports, syntax, singleJs=false) {
   if(config.deadline_ms!==undefined&&(!Number.isSafeInteger(config.deadline_ms)||config.deadline_ms<0))throw Error('INVALID_AGGREGATE_DEADLINE');
   const argv=Object.freeze(syntax?['--check',config.summarizer_path]:[config.summarizer_path,...fixtureArgv(config.fixture_id,config,config.window_start,config.window_end)]);
   const cwd=dirname(dirname(config.summarizer_path));
+  return executeBoundedNode({source_path:config.summarizer_path,argv,cwd,timeout_ms:config.timeout_ms,deadline_ms:config.deadline_ms},ports);
+}
+
+// Narrow selected-file syntax entry only. Revalidate here so importing this entry
+// directly cannot bypass the project wrapper's contract or supply arbitrary argv.
+export function executePreparedProjectSyntax(spec,ports){
+  closed(spec,['project_dir','source_path','timeout_ms'],['deadline_ms'],'project_syntax');
+  const captured=Object.create(null);
+  for(const key of Reflect.ownKeys(spec))
+    captured[key]=Object.getOwnPropertyDescriptor(spec,key).value;
+  spec=Object.freeze(captured);
+  if(typeof spec.project_dir!=='string'||!isAbsolute(spec.project_dir)||
+    normalize(spec.project_dir)!==spec.project_dir||spec.project_dir==='/'||
+    typeof spec.source_path!=='string'||!isAbsolute(spec.source_path)||
+    normalize(spec.source_path)!==spec.source_path||
+    !spec.source_path.startsWith(spec.project_dir+'/')||
+    !spec.source_path.endsWith('.mjs')||
+    !Number.isSafeInteger(spec.timeout_ms)||spec.timeout_ms<=0||spec.timeout_ms>5000)
+    throw Error('INVALID_PROJECT_SYNTAX_SPEC');
+  validateProjectRelativePath(spec.source_path.slice(spec.project_dir.length+1));
+  if(spec.deadline_ms!==undefined&&(!Number.isSafeInteger(spec.deadline_ms)||spec.deadline_ms<0))
+    throw Error('INVALID_AGGREGATE_DEADLINE');
+  if(!ports||typeof ports.spawn!=='function'||typeof ports.clock?.now!=='function'||typeof ports.clock?.schedule!=='function')
+    throw Error('INJECTED_EXECUTION_PORTS_REQUIRED');
+  return executeBoundedNode({
+    source_path:spec.source_path,argv:Object.freeze(['--check',spec.source_path]),
+    cwd:spec.project_dir,timeout_ms:spec.timeout_ms,deadline_ms:spec.deadline_ms
+  },ports);
+}
+function validateProjectRelativePath(path){
+  if(typeof path!=='string'||!path||path.length>256||!/^[a-zA-Z0-9._/-]+$/.test(path)||path.startsWith('/')||path.endsWith('/'))
+    throw Error('PATH_TRAVERSAL_REJECTED');
+  const parts=path.split('/');
+  if(parts.length>7||parts.some(p=>!p||p==='.'||p==='..'||p.length>64||
+    /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p)||
+    ['stage-manifest.json','export-manifest.json','package-manifest.json'].includes(p.toLowerCase()))||
+    ['project','evidence','frames'].includes(parts[0].toLowerCase()))
+    throw Error('PATH_TRAVERSAL_REJECTED');
+}
+
+// Private mechanics shared by the historical profiles and selected-file syntax.
+// All callers above capture and validate their own profile before entering here.
+function executeBoundedNode(config,ports){
   let child,begin=null,last=-1,deadline=null,done=false,spawned=false,exited=false,exit_code=null,exit_signal=null,wall=null;
   let status=null,out=0,err=0,outEOF=false,errEOF=false,ioFailed=false;
   const timers=new Map(),attempts=[],late=[];
@@ -73,7 +116,7 @@ function executeNode(config, ports, syntax, singleJs=false) {
     arm('budget',Math.max(0,deadline-begin),budget);
     if(now()>=deadline){status??='TIMEOUT';finish();return result;}
     if(done||status||ports.abortSignal?.aborted){status??='CANCELED';finish();return result;}
-    child=ports.spawn(NODE_RUNTIME.path,argv,{shell:false,detached:false,stdio:['ignore','pipe','pipe'],env:programEnvironment(config.summarizer_path),cwd});
+    child=ports.spawn(NODE_RUNTIME.path,config.argv,{shell:false,detached:false,stdio:['ignore','pipe','pipe'],env:programEnvironment(config.source_path),cwd:config.cwd});
     child.on('spawn',onSpawn);child.on('exit',onExit);child.on('error',onError);
     for(const [name,stream] of [['stdout',child.stdout],['stderr',child.stderr]]){
       stream.on('data',b=>feed(name,b));stream.on('end',()=>{if(done)return;if(name==='stdout')outEOF=true;else errEOF=true;drained();});
