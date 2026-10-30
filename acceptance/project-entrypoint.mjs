@@ -55,6 +55,52 @@ function nativeDesktopCodegenPorts(){
 export async function runProjectDesktopCodegenNative(configBytes,admission,abortSignal){
   return runProjectDesktopCodegenWithPorts(configBytes,admission,abortSignal,nativeDesktopCodegenPorts());
 }
+// Separate explicit opt-in API. Legacy/default/native/CLI/receipt routes neither
+// load the observer module nor change their result shapes.
+export async function runProjectDesktopCodegenNativeWithFailureDiagnostics(configBytes,admission,abortSignal){
+  return runProjectDesktopCodegenWithFailureDiagnosticsWithPorts(
+    configBytes,admission,abortSignal,nativeDesktopCodegenPorts()
+  );
+}
+export async function runProjectDesktopCodegenWithFailureDiagnosticsWithPorts(configBytes,admission,abortSignal,ports){
+  closed(ports,['fs','spawn','readBytes','verifyFile','reads','now','clock','retention','environment','uid'],[],'desktop_codegen_ports');
+  receiptFunction(ports.spawn);
+  const c=validateDesktopCodegenConfig(parseReceiptJson(configBytes));
+  // Fixed literal import only on the explicit opt-in call path. Future desktop
+  // preparations pin this module; legacy eager import closures stay unchanged.
+  const {
+    createProjectFailureObserver,createProjectFailureBinding,
+    createProjectFailureEvidence
+  }=await import('../src/project-failure-diagnostics.mjs');
+  const observer=createProjectFailureObserver();
+  let result,observation;
+  try{
+    result=await runProjectDesktopCodegenWithPorts(configBytes,admission,abortSignal,{
+      ...ports,
+      spawn(executable,argv,options){
+        const child=ports.spawn(executable,argv,options);
+        observer.observe(child);
+        return child;
+      }
+    });
+  }finally{observation=observer.seal();}
+  if(result.status==='CANDIDATE_STAGED'){
+    return Object.freeze({
+      result,
+      failure_diagnostics:Object.freeze({status:'NOT_RETAINED_SUCCESS'})
+    });
+  }
+  const binding=createProjectFailureBinding(c,result);
+  const evidence=createProjectFailureEvidence(binding,observation);
+  // Observation only: no diagnostic filesystem operation is started here.
+  // A host may separately await the explicit writer under its accepted window.
+  return Object.freeze({
+    result,
+    failure_diagnostics:Object.freeze({
+      status:'OBSERVED',evidence,sidecar_status:'NOT_REQUESTED'
+    })
+  });
+}
 // Trusted capability injection for ordinary source acceptance. The production
 // wrapper above supplies the fixed native backend; operation files supply data.
 export async function runProjectDesktopCodegenWithPorts(configBytes,admission,abortSignal,ports){

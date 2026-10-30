@@ -22,4 +22,5 @@ jobs:
         with:
           node-version: '24'
       - run: npm test
+      - run: node --test test/project-failure-diagnostics.test.mjs
       - run: git diff --exit-code

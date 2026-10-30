@@ -161,3 +161,118 @@ unchanged. Actual native input, app-only capture, custody, settlement, evaluator
 isolation, runtime qualification and fresh operation proof remain pending.
 No score is computed; the manual score remains UNKNOWN until supplied by the
 owner.
+
+## Opt-in private failure observations
+
+`runProjectDesktopCodegenNativeWithFailureDiagnostics(configBytes, admission,
+abortSignal)` is a separate explicit observation API. Its trusted synthetic
+counterpart is
+`runProjectDesktopCodegenWithFailureDiagnosticsWithPorts(configBytes, admission,
+abortSignal, ports)`. Both reuse the existing admitted runner and fixed launch
+once. They return `{result, failure_diagnostics}`; `result` is the unchanged
+primary runner result. Existing native, default, CLI, simulation and receipt
+APIs retain their shapes. Never pass this envelope to the old native receipt
+writer.
+
+Only the explicit opt-in function loads the observer module, through a fixed
+literal lazy import. Legacy entrypoint routes do not eagerly load it. Future
+desktop preparations pin it through `DESKTOP_CODEGEN_SOURCE_FILES`. Existing
+artifacts, historical pins and admissions are not rewritten.
+
+The observer attaches its own stderr data, end and error listeners to the
+returned child. It performs no read, pause, resume, pipe, retry, extra launch or
+provider callback. It seals and detaches owned listeners when the runner returns
+or throws. Late events cannot revise the frozen metadata. Throws remain throws.
+
+The closed observation contains fixed marker keys with counts saturated at 255,
+saturating byte counts, scanned byte count, truncation, EOF, stream availability,
+completeness and a fixed observer error enum. Unknown, missing, empty at EOF,
+partial, truncated and observer failure remain distinct. It scans at most 65536
+bytes in total, using at most that prefix of any chunk. ASCII letters are case
+folded; non-ASCII bytes, including invalid UTF-8, break matching. Chunk boundaries
+preserve at most the longest fixed pattern minus one ASCII characters. Omitted
+bytes break matching continuity. Sealing clears the carry.
+
+The fixed literals are `stream disconnected`, `error sending request`,
+`retrying`, `reconnecting`, `connection reset`, `timed out`, `401 unauthorized`,
+`403 forbidden`, `429 too many requests`, `rate limit`, `quota` and
+`clamping interrupt hook timeout`. These are literal sightings only. They
+establish no authentication, quota, permission or failure cause verdict.
+No raw log, exception message, command, private path, payload, account identifier,
+credential or arbitrary-byte digest enters the evidence. This supplies no
+regex-based credential redaction guarantee.
+
+A `CANDIDATE_STAGED` primary result returns only
+`failure_diagnostics: {status: "NOT_RETAINED_SUCCESS"}`. Other terminal results
+return:
+
+```
+{
+  status: "OBSERVED",
+  evidence: {
+    schema: "SQUIRE_PRIVATE_FAILURE_EVIDENCE_V1",
+    binding: {job_id, outcome, lifecycle},
+    observation
+  },
+  sidecar_status: "NOT_REQUESTED"
+}
+```
+
+The binding selects the validated config's UUID job identifier and fixed enums
+from the actual returned primary outcome and generation lifecycle. An unavailable
+primary field stays `UNKNOWN`. It contains no scope, operator receipt, command,
+raw reason or exception. This relationship is recorded data; it establishes no
+provenance authenticity or causation.
+
+The observation wrapper starts **zero diagnostic filesystem operations**.
+There is no automatic sidecar, background write, persistence promise or late
+filesystem work owned by that wrapper.
+
+The separate explicit trusted API is
+`writeProjectFailureDiagnostics(evidence, {scope, job_id}, {fs, uid})`.
+The host caller must separately authorize and await it under an accepted
+remaining external deadline and observer. The helper has no internal hard
+filesystem deadline and cannot force pending filesystem I/O to settle. If the
+host's external observation window expires first, custody remains uncertain;
+the host must account for outstanding I/O and preserve partial artifacts.
+This API creates no runtime authority, primary-job extension, process dispatch
+or permission to retry. No actual host integration is activated here.
+
+The writer requires the evidence binding's job UUID to match the supplied run
+job UUID before any write. Its only destination is the fixed derived path
+`<scope>/output/run-<job>/failure-diagnostics.json`. It rebuilds closed data and
+limits encoded JSON to 4096 bytes. It opens exclusively with no-follow flags
+and mode 0600, checks owner and single-link regular-file identity, and compares
+exact readback bytes without hashing secret input.
+
+The existing parent must be owned by the supplied uid and mode 0700. Every
+ancestor must be a nonsymlink directory owned by root or that uid, with no group
+or other write permission or special permission bits. Whole-ancestor identities
+and policies are rechecked across the write and close. Unsafe or changed
+ancestry, including a writable temporary-directory ancestor, rejects recording.
+No directory is created, existing file overwritten or partial artifact cleaned up.
+
+The separately awaited writer returns only a fixed status:
+
+- `FAILED`: validation or ancestor checking rejected before any potentially
+  creating open was invoked.
+- `UNKNOWN`: open was invoked and complete custody could not be established.
+  This includes an open exception, partial write, readback mismatch, mode or
+  identity uncertainty, and close failure. An exclusive-open rejection also
+  remains `UNKNOWN`; exception text is never used to infer artifact absence.
+- `RECORDED`: exclusive creation, exact bounded readback, identity, ownership,
+  mode, ancestry and successful close checks completed.
+
+None of these statuses rewrites the primary result or the wrapper's frozen
+`NOT_REQUESTED` status. They establish neither crash durability nor hostile-host
+isolation. Partial and uncertain artifacts remain preserved without cleanup or
+replay.
+
+The focused synthetic command is
+`node --test test/project-failure-diagnostics.test.mjs`; existing regression
+checks remain required separately. Tests use fake children, clocks and writer
+filesystem ports, plus owned fixture files for successful synthetic staging.
+They execute no provider, model, generated module, GJS or real child process.
+This feature neither recovers lost stderr nor fixes or reproduces an unknown
+benchmark failure, qualifies a native runtime, changes a runtime budget, or
+authorizes another operation.
