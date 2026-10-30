@@ -288,13 +288,29 @@ function destination(value){
 // accepted remaining external observation window. There is no internal hard FS
 // deadline, abort, background dispatch, process dispatch or primary-job extension.
 export async function writeProjectFailureDiagnostics(value,run,ports){
+  return writeDiagnostics('FAILURE',value,run,ports);
+}
+// A second literal entrypoint shares the existing private custody mechanics.
+// The new projection is loaded only for this explicit kind. Neither entrypoint
+// accepts a validator, filename, callback or persistence destination override.
+export async function writeProjectPhaseDiagnostics(value,run,ports){
+  return writeDiagnostics('PHASE',value,run,ports);
+}
+async function writeDiagnostics(kind,value,run,ports){
   let handle=null,encoded=null,back=null;
   let possibleMutation=false,status='FAILED';
   try{
     const target=destination(run),p=fields(ports,['fs','uid']);
     if(!Number.isSafeInteger(p.uid)||p.uid<0)throw 0;
     const lstat=method(p.fs,'lstat'),open=method(p.fs,'open');
-    const evidence=evidenceProjection(value);
+    let evidence;
+    if(kind==='FAILURE')evidence=evidenceProjection(value);
+    else{
+      const v=fields(value,['schema','binding','observation']);
+      if(v.schema!=='SQUIRE_PRIVATE_PHASE_EVIDENCE_V1')throw 0;
+      const {createProjectPhaseEvidence}=await import('./project-phase-diagnostics.mjs');
+      evidence=createProjectPhaseEvidence(v.binding,v.observation);
+    }
     if(evidence.binding.job_id!==target.job_id)throw 0;
     encoded=new TextEncoder().encode(JSON.stringify(evidence)+'\n');
     if(encoded.length>4096)throw 0;
@@ -315,7 +331,8 @@ export async function writeProjectFailureDiagnostics(value,run,ports){
         if(!sameIdentity(current,ancestors[index]))throw 0;
       }
     };
-    const path=join(target.directory,'failure-diagnostics.json');
+    const path=join(target.directory,kind==='FAILURE'?
+      'failure-diagnostics.json':'phase-diagnostics.json');
     // A rejected open can still leave creation uncertain. Latch before calling
     // or awaiting the trusted port; never infer absence from exception details.
     possibleMutation=true;

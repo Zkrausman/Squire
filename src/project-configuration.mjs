@@ -22,7 +22,7 @@ export const DESKTOP_CODEGEN_INTENT='CODEGEN_ONLY_NO_DESKTOP_EXECUTION';
 export const DESKTOP_CODEGEN_SOURCE_FILES=Object.freeze([
   ...PROJECT_SOURCE_FILES,...PROJECT_RECEIPT_SOURCE_FILES,
   'src/courier-handoff-report.mjs','src/courier-handoff.mjs',
-  'src/project-failure-diagnostics.mjs'
+  'src/project-failure-diagnostics.mjs','src/project-phase-diagnostics.mjs'
 ]);
 export const PROJECT_ENVIRONMENT_POLICY=Object.freeze({generation:'INHERIT_PROCESS_ENV_MINUS_CODEX_API_KEYS_SCOPED_TMPDIR',deleted_keys:Object.freeze(['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL','GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL']),program:Object.freeze({PATH:'/bin:/usr/bin',LANG:'C.UTF-8',TMPDIR:'<run>/.tmp'}),safety:'KEY_EXCLUSION_IS_NOT_EFFECTIVE_PROVIDER_OR_HOSTILE_ISOLATION_PROOF'});
 const admittedJobs=new Set(),admittedScopes=new Set();
