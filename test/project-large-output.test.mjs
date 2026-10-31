@@ -1338,15 +1338,26 @@ test('large envelope above its fixed payload ceiling cannot persist or stage',as
 test('large generation user abort signals the child and records observed EOF and exit',async()=>{
   await largeRunnerFixture(async root=>{
     const runtime=largeFakeRuntime(largeResultEnvelope(70000),{mode:'pending'});
+    const spawned=new Promise(resolve=>{
+      runtime.child.once('spawn',resolve);
+    });
     const pending=runDesktopCodingLargeObservationProjectTask(
       largeRunnerSpec(root),
       {clock:runtime.clock,shutdown:GENERATION_SHUTDOWN,
        abortSignal:runtime.controller.signal},
       largeRunnerPorts(runtime,{fs})
     );
-    for(let i=0;i<100&&!runtime.calls.length;i++){
-      await new Promise(resolve=>setImmediate(resolve));
-    }
+    let spawnGuard;
+    const guardedSpawn=new Promise(resolve=>{
+      spawnGuard=setTimeout(()=>resolve(false),55000);
+    });
+    const boundary=await Promise.race([
+      spawned.then(()=>true),
+      pending.then(()=>false,()=>false),
+      guardedSpawn
+    ]);
+    clearTimeout(spawnGuard);
+    assert.equal(boundary,true,'fake child did not spawn within the bounded guard');
     assert.equal(runtime.calls.length,1);
     runtime.controller.abort();
     assert.ok(runtime.kills.includes('SIGTERM'));
