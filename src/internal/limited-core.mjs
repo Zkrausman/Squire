@@ -2,9 +2,12 @@ import {publicRetention,takeRejectedCapture,retentionResult,ownData} from './rej
 import {types} from 'node:util';
 import {collectorDiagnostic,sanitizeDiagnosticMetadata} from './limited-diagnostics.mjs';
 import {createLimitedStreamCollector} from '../limited-stream-collector.mjs';
-import {validateLimitedJobRecord} from '../limited-job-record.mjs';
+import {validateLimitedJobRecord,validateLargeProjectJobRecord} from '../limited-job-record.mjs';
 import {DESKTOP_TARGET} from '../desktop-profile.mjs';
-import {validateProjectCodingObservationProfile} from '../project-coding-profile.mjs';
+import {
+  PROJECT_LARGE_OBSERVATION_TASK_CLASS,PROJECT_OUTPUT_LARGE_PROFILE,
+  validateProjectCodingObservationProfile,validateProjectOutputLargeProfile
+} from '../project-coding-profile.mjs';
 
 const passiveError = () => {};
 const byteLengthOf = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength').get;
@@ -12,14 +15,24 @@ const retained = new Set();
 // Explicit ports for synthetic tests; this module has no native defaults or public argv entrypoint.
 export function runForeground(spec, invocation, options, ports) {
   // Null is a closed desktop-project capability, never a generic timeout switch.
-  const observation=Object.hasOwn(spec,'execution_profile');
-  if(observation){
+  const hasExecutionProfile=Object.hasOwn(spec,'execution_profile');
+  const hasOutputProfile=Object.hasOwn(spec,'output_profile');
+  const largeObservation=hasOutputProfile;
+  const observation=hasExecutionProfile||largeObservation;
+  let largeOutputProfile=null;
+  if(largeObservation){
+    const executionProfile=validateProjectCodingObservationProfile(spec.execution_profile);
+    largeOutputProfile=validateProjectOutputLargeProfile(spec.output_profile);
+    if(spec.provider_id!=='native_codex'||spec.task_class!==PROJECT_LARGE_OBSERVATION_TASK_CLASS||
+       spec.runtime_target!==DESKTOP_TARGET||spec.max_wall_clock_sec!==null||
+       executionProfile.id!=='PROJECT_CODING_OBSERVE_V1') throw Error('INVALID_OBSERVATION_PROFILE');
+  }else if(hasExecutionProfile){
     validateProjectCodingObservationProfile(spec.execution_profile);
     if(spec.provider_id!=='native_codex'||spec.task_class!=='PROJECT_CODEGEN_V1'||
        spec.runtime_target!==DESKTOP_TARGET||spec.max_wall_clock_sec!==null)throw Error('INVALID_OBSERVATION_PROFILE');
-  }else if(spec.max_wall_clock_sec===null)throw Error('INVALID_OBSERVATION_PROFILE');
+  }else if(spec.max_wall_clock_sec===null||spec.task_class===PROJECT_LARGE_OBSERVATION_TASK_CLASS)throw Error('INVALID_OBSERVATION_PROFILE');
   const {clock, spawn, persist, environment} = ports, shutdown = options.shutdown;
-  const collector = ['BOUNDED_CODEGEN_SUMMARIZER_V5','SINGLE_JS_CODEGEN_V1','PROJECT_CODEGEN_V1'].includes(spec.task_class) ? ports.createCollector() : createLimitedStreamCollector(), timers = new Map(), attempts = [];
+  const collector = ['BOUNDED_CODEGEN_SUMMARIZER_V5','SINGLE_JS_CODEGEN_V1','PROJECT_CODEGEN_V1',PROJECT_LARGE_OBSERVATION_TASK_CLASS].includes(spec.task_class) ? ports.createCollector() : createLimitedStreamCollector(), timers = new Map(), attempts = [];
   let spawnAttempted = false, child = null, startedAt = null, lastNow = -1, deadline = null, pid = null;
   let exited = false, code = null, signal = null, wall = null, status = null, diagnostic = null;
   let done = false, completing = false, finishing = false, drainingForced = false, stopping = false, spawned = false;
@@ -92,7 +105,8 @@ export function runForeground(spec, invocation, options, ports) {
     if (done || completing) return;
     completing = true; cancelAll();
     const io = collector.snapshot();
-    const record = validateLimitedJobRecord({job_id: spec.job_id, task_class: spec.task_class,
+    const recordInput = {job_id: spec.job_id, task_class: spec.task_class,
+      ...(largeObservation?{output_profile:largeOutputProfile}:{}),
       lifecycle_status: status ?? 'LIMITED_INTERNAL_ERROR', requested_model: spec.requested_model, reported_model: 'UNKNOWN',
       process_exit: {pid, exit_code: code, exit_signal: signal, process_wall_ms: wall, observed_termination: exited},
       io_state: {...io, io_drained: io.io_drained && !drainingForced},
@@ -101,7 +115,8 @@ export function runForeground(spec, invocation, options, ports) {
       provider_metadata: {...(codex?{codex_reasoning_output_tokens:metadata?.extra_metadata?.codex_reasoning_output_tokens??'UNKNOWN'}:{}),provider_reported_status: metadata?.provider_reported_status ?? null, duration_seconds: metadata?.duration_seconds ?? null,
         usage_tokens: Object.fromEntries(['input', 'output', 'cache_read', 'thinking', 'total'].map(k => [k, metadata?.usage?.[k] ?? 'UNKNOWN']))},
       output_custody: persisted, task_outcome_evaluated: false, task_payload_valid: payloadValid,
-      error_details: {code: diagnostic, classification: status === 'LIMITED_SUCCESS' ? null : status, message: null}});
+      error_details: {code: diagnostic, classification: status === 'LIMITED_SUCCESS' ? null : status, message: null}};
+    const record=largeObservation?validateLargeProjectJobRecord(recordInput):validateLimitedJobRecord(recordInput);
     done = true; teardown();
     resolve(Object.freeze({record, diagnostic_retention: diagnosticRetention, runtime_evidence: Object.freeze({deadline_ms: deadline, timeout_latched: timeoutLatched,
       abort_latched: abortLatched, signal_attempts: Object.freeze(attempts.map(x => Object.freeze({...x}))),
@@ -185,7 +200,7 @@ export function runForeground(spec, invocation, options, ports) {
     finishing = true; cancel('drain'); checkDeadline();
     if (!status && (code !== 0 || signal !== null)) latch('LIMITED_PROCESS_FAILED');
     if (!status && !io.io_drained) latch('LIMITED_INTERNAL_ERROR', 'IO_INCOMPLETE');
-    if ((!status||codex&&status==='LIMITED_PROCESS_FAILED'&&inputDelivered&&io.io_drained) && ['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'BOUNDED_CODEGEN_SUMMARIZER_V5','SINGLE_JS_CODEGEN_V1','PROJECT_CODEGEN_V1'].includes(spec.task_class)) {
+    if ((!status||codex&&status==='LIMITED_PROCESS_FAILED'&&inputDelivered&&io.io_drained) && ['PUBLIC_INLINE_TEXT_SUMMARIZATION_FOREGROUND', 'BOUNDED_CODEGEN_SUMMARIZER_V5','SINGLE_JS_CODEGEN_V1','PROJECT_CODEGEN_V1',PROJECT_LARGE_OBSERVATION_TASK_CLASS].includes(spec.task_class)) {
       let parsed, parsedBytes, parsedLength;
       try {
         parsed = collector.decode({exit_code: code, exit_signal: signal, process_wall_ms: wall});

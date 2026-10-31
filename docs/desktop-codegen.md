@@ -527,3 +527,79 @@ files for synthetic staging, and source inspection. They distinguish native
 stream caps from diagnostic scan, line and frame caps. Independent execution,
 source/privacy review and the existing full regression remain required. This
 source feature authorizes no native run, producer release or budget change.
+
+## Explicit large observation profile
+
+Large output uses the separately prepared
+`prepareDesktopCodingLargeObservationTask(root, source_commit, request, inputs, ports)`
+config and manifest schemas. Prepare it with exactly five arguments:
+
+```
+node acceptance/prepare-project-task.mjs --prepare-desktop-coding-large-observation <fresh-prepared-dir> <published-source-commit> <request.json> <private-inputs.json>
+```
+
+The profile is explicit desktop `CODEGEN_ONLY_NO_DESKTOP_EXECUTION`, with
+read-only permissions, on-request approval, no Squire elapsed generation
+cutoff, user cancellation and a fixed 20-second post-generation closeout.
+Existing defaults retain their 120-second generation and 140-second observation
+bounds. The native APIs are
+`runProjectDesktopCodingLargeObservationNative(configBytes, admission, abortSignal)`,
+`runProjectDesktopCodingLargeObservationNativeWithFailureDiagnostics(...)` and
+`runProjectDesktopCodingLargeObservationNativeWithPhaseDiagnostics(...)`.
+Injected `WithPorts` forms and
+`buildDesktopCodingLargeObservationInvocation(config, promptBytes)` support
+source acceptance. Existing exact config, source pin, preflight, retention,
+one-child, authentication and permission checks still apply. Provider duration,
+provider-side output limits, cost and included allowance remain UNKNOWN.
+
+The explicit generation command has exactly three arguments:
+
+```
+node acceptance/project-entrypoint.mjs --run-admitted-desktop-coding-large-observation <config.json> <admission.json>
+```
+
+It prints only a fixed `SQUIRE2_DESKTOP_CODING_LARGE_OBSERVATION_ACK_V1`
+nonqualification ACK after a validated candidate stage and exits 1. It does
+not save a result receipt. Hosts that need a private primary receipt must call
+`writeNativeProjectLargeObservationResultReceipt(liveResult, destination, ports)`
+separately and await its result. The matching creator is
+`createNativeProjectLargeObservationResultReceipt(liveResult)`. Offline readers
+use `projectNativeProjectLargeObservationRunSummary(savedEnvelope)` and
+`formatNativeProjectLargeObservationSummaryTerminal(summary)`;
+`bin/squire-report.mjs <receipt-path>` recognizes only the exact large receipt
+schema. These APIs project recorded claims and establish no task correctness,
+admission authority, provider readiness or native application qualification.
+Large receipt CLI intake also uses
+`projectNativeProjectLargeObservationReceiptBytesSummary(bytes)` to check
+selected usage-counter number tokens before JavaScript numeric conversion.
+The object-based large summary API can validate values but cannot recover their
+original number spellings.
+
+The closed profile sets these finite protective ceilings:
+
+- SOURCE files: 512 KiB per file, 2 MiB total and 25 files.
+- Captured stdout: 8 MiB; stderr: 256 KiB; JSON envelope: 4 MiB.
+- Decoded project: 4 MiB; all project files: 50.
+- LOCAL_ASSET: 512 KiB per file, 20 files and 2 MiB total.
+- DOC: 64 KiB per file, 5 files and 128 KiB total.
+- JSONL: 65536 transport-wide frames, depth 64 and 65536 nodes per frame.
+- Large stage: 4 MiB decoded and a 64 KiB manifest.
+- Large export: 20 MiB total, including a 128 KiB manifest.
+- Metadata receipts: 256 KiB. Raw rejected-response retention remains 64 KiB
+  and only applies to legacy-eligible responses no larger than 1 MiB.
+
+Large rejected-response metadata accepts only payload rejection captures with
+one of the supported project rejection reasons. Eligible exact response sizes
+are at most 1 MiB; a published capture records at most 64 KiB and marks
+truncation exactly when the response exceeds that retained prefix. Unpublished
+FAILED and UNKNOWN states do not claim retained bytes. These receipt checks
+describe bounded metadata relationships and do not establish a retention write.
+
+JSON framing, escaping and joint limits mean these maxima cannot all be reached
+at once. Source-size estimates are guidance, not small-task acceptance caps.
+Diagnostics keep their existing finite limits and may report partial,
+truncated or unknown observations at large output sizes; zero markers do not
+prove that no errors occurred. Summaries omit raw payload, stderr, session data
+and private paths. Defensive copies and finite counters do not form a memory
+sandbox, hard RSS quota or host-disk quota, and the caps do not promise provider
+completion or output size.
