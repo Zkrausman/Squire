@@ -4,10 +4,19 @@ import {constants} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {REPORT_MAX_BYTES,parseReceiptJson,projectRunSummary,formatSummaryTerminal,invalidRunSummary} from '../src/offline-run-summary.mjs';
 import {projectSingleJsRunSummary,formatSingleJsSummaryTerminal} from '../src/single-js-summary.mjs';
-import {projectProjectRunSummary,formatProjectSummaryTerminal,projectNativeProjectRunSummary,formatNativeProjectSummaryTerminal} from '../src/project-summary.mjs';
+import {
+  projectProjectRunSummary,formatProjectSummaryTerminal,
+  projectNativeProjectRunSummary,formatNativeProjectSummaryTerminal,
+  projectNativeProjectLargeObservationRunSummary,
+  projectNativeProjectLargeObservationReceiptBytesSummary,
+  formatNativeProjectLargeObservationSummaryTerminal
+} from '../src/project-summary.mjs';
 import {buildCourierHandoffReport} from '../src/courier-handoff-report.mjs';
 import {projectNativeProjectCodingObservationRunSummary,formatNativeProjectCodingObservationSummaryTerminal} from '../src/project-summary.mjs';
-import {PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA} from '../src/project-coding-profile.mjs';
+import {
+  PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA,
+  PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA
+} from '../src/project-coding-profile.mjs';
 
 export async function readReceiptBytes(path,maxBytes=REPORT_MAX_BYTES) {
   if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>REPORT_MAX_BYTES)throw 'READ_FAILED';
@@ -39,7 +48,8 @@ export async function runOfflineReportCli(argv,ports={}) {
       bytes=await ports.readFile(argv[0],{maxBytes:REPORT_MAX_BYTES});
     }else bytes=await readReceiptBytes(argv[0]);
     const raw=parseReceiptJson(bytes);
-    if(raw?.schema===PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA){kind='native-project-observation';summary=projectNativeProjectCodingObservationRunSummary(raw);}
+    if(raw?.schema===PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA){kind='native-project-large-observation';summary=projectNativeProjectLargeObservationReceiptBytesSummary(bytes);}
+    else if(raw?.schema===PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA){kind='native-project-observation';summary=projectNativeProjectCodingObservationRunSummary(raw);}
     else if(raw?.schema==='SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1'){kind='native-project';summary=projectNativeProjectRunSummary(raw);}
     else if(raw?.schema==='SQUIRE2_PROJECT_RESULT_V1'){kind='project';summary=projectProjectRunSummary(raw);}
     else if(raw?.schema==='SQUIRE2_SINGLE_JS_RESULT_V1'||raw?.schema==='SQUIRE2_SINGLE_JS_DRY_RUN_V1'){kind='single';summary=projectSingleJsRunSummary(raw);}
@@ -62,6 +72,11 @@ export async function runOfflineReportCli(argv,ports={}) {
   }
   if(kind==='native-project-observation'){
     stdout.write(formatNativeProjectCodingObservationSummaryTerminal(summary));
+    if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}
+    return 1;
+  }
+  if(kind==='native-project-large-observation'){
+    stdout.write(formatNativeProjectLargeObservationSummaryTerminal(summary));
     if(summary.readiness==='INVALID_RECEIPT'){stderr.write('SCHEMA_MISMATCH\n');return 2;}
     return 1;
   }

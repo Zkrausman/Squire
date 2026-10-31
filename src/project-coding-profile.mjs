@@ -12,6 +12,44 @@ export const PROJECT_CODING_OBSERVATION_MANIFEST_SCHEMA='SQUIRE2_DESKTOP_CODING_
 export const PROJECT_CODING_OBSERVATION_RESULT_SCHEMA='SQUIRE2_PROJECT_CODING_OBSERVATION_RESULT_V1';
 export const PROJECT_CODING_OBSERVATION_RECEIPT_SCHEMA='SQUIRE3_NATIVE_PROJECT_CODING_OBSERVATION_RESULT_RECEIPT_V1';
 export const PROJECT_CODING_OBSERVATION_SUMMARY_SCHEMA='squire3.native_project_coding_observation_summary.v1';
+export const PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA='SQUIRE3_NATIVE_PROJECT_LARGE_OBSERVATION_RESULT_RECEIPT_V1';
+export const PROJECT_LARGE_OBSERVATION_SUMMARY_SCHEMA='squire3.native_project_large_observation_summary.v1';
+export const PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA='SQUIRE2_DESKTOP_CODING_LARGE_OBSERVATION_OPERATION_V1';
+export const PROJECT_LARGE_OBSERVATION_MANIFEST_SCHEMA='SQUIRE2_DESKTOP_CODING_LARGE_OBSERVATION_PREPARED_MANIFEST_V1';
+export const PROJECT_LARGE_OBSERVATION_TASK_CLASS='PROJECT_LARGE_OBSERVATION_CODEGEN_V1';
+export const PROJECT_LARGE_OBSERVATION_RESULT_SCHEMA='SQUIRE2_PROJECT_LARGE_OBSERVATION_RESULT_V1';
+
+// Explicit finite output ceilings for the separately selected large profile.
+// These values are policy constants; callers cannot supply replacement limits.
+export const PROJECT_OUTPUT_LARGE_PROFILE=Object.freeze({
+  id:'PROJECT_OUTPUT_LARGE_V1',
+  max_stdout_bytes:8388608,
+  max_stderr_bytes:262144,
+  max_envelope_bytes:4194304,
+  max_source_file_bytes:524288,
+  max_source_total_bytes:2097152,
+  max_decoded_project_bytes:4194304,
+  max_source_files:25,
+  max_all_files:50,
+  max_jsonl_frames:65536,
+  max_event_depth:64,
+  max_event_nodes:65536
+});
+const largeProfileKeys=[
+  'id','max_stdout_bytes','max_stderr_bytes','max_envelope_bytes',
+  'max_source_file_bytes','max_source_total_bytes','max_decoded_project_bytes',
+  'max_source_files','max_all_files','max_jsonl_frames','max_event_depth',
+  'max_event_nodes'
+];
+export function validateProjectOutputLargeProfile(value){
+  closed(value,largeProfileKeys,[],'project_output_large_profile');
+  for(const key of largeProfileKeys){
+    if(value[key]!==PROJECT_OUTPUT_LARGE_PROFILE[key]){
+      fail('project_output_large_profile');
+    }
+  }
+  return PROJECT_OUTPUT_LARGE_PROFILE;
+}
 
 const legacy=Object.freeze({
   generation_wall_ms:120000,outer_observation_ms:140000,

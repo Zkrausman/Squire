@@ -1,1 +1,6 @@
-export {planExport,writeExport,buildExport,verifyExport,MultifilePackageError,safeMultifileErrorCode} from './internal/multifile-core.mjs';
+export {
+ planExport,writeExport,buildExport,verifyExport,
+ planLargeProjectExport,writeLargeProjectExport,buildLargeProjectExport,
+ verifyLargeProjectExport,
+ MultifilePackageError,safeMultifileErrorCode
+} from './internal/multifile-core.mjs';

@@ -8,18 +8,25 @@ import {types} from 'node:util';
 import {readReceiptBytes} from '../bin/squire-report.mjs';
 import {parseReceiptJson} from '../src/offline-run-summary.mjs';
 import {validateCodexPreflight,verifyExactFile,hash} from '../src/bounded-codegen-plan.mjs';
-import {validateProjectCodexConfig,requireProjectCodexAdmission,validateProjectReceiptDestination,validateDesktopCodegenConfig,requireDesktopCodegenAdmission,DESKTOP_CODEGEN_INTENT} from '../src/project-configuration.mjs';
+import {validateProjectCodexConfig,requireProjectCodexAdmission,validateProjectReceiptDestination,validateDesktopCodegenConfig,requireDesktopCodegenAdmission,validateDesktopCodingLargeObservationConfig,validateDesktopCodingLargeObservationAdmission,requireDesktopCodingLargeObservationAdmission,DESKTOP_CODEGEN_INTENT} from '../src/project-configuration.mjs';
 import {closed,object} from '../src/job-spec.mjs';
 import {writeNativeProjectResultReceipt} from '../src/project-result-receipt.mjs';
-import {runProjectCodexTask,admitDesktopCodegenProjectTask} from '../src/project-runner.mjs';
+import {runProjectCodexTask,admitDesktopCodegenProjectTask,runDesktopCodingLargeObservationProjectTask,admitDesktopCodingLargeObservationProjectTask} from '../src/project-runner.mjs';
 import {createMonotonicClock} from '../src/node-process-port.mjs';
 import {createNativeRejectedRetention} from '../src/local-rejected-retention.mjs';
 import {
-  PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA,PROJECT_CODING_OBSERVATION_RESULT_SCHEMA
+  PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA,PROJECT_CODING_OBSERVATION_RESULT_SCHEMA,
+  PROJECT_LARGE_OBSERVATION_RESULT_SCHEMA,PROJECT_CODING_OBSERVATION_PROFILE,
+  validateProjectCodingObservationProfile,validateProjectOutputLargeProfile
 } from '../src/project-coding-profile.mjs';
 const consumed=new Set();
 const desktopCodegenFlag='--run-admitted-desktop-codegen';
+const desktopCodingLargeObservationFlag='--run-admitted-desktop-coding-large-observation';
 export const desktopCodegenEntrypointMode=args=>args.length===3&&args[0]===desktopCodegenFlag?'EXPLICIT_DESKTOP_CODEGEN_ADMISSION_REQUIRED':'DRY_RUN_NATIVE_DISABLED';
+export const desktopCodingLargeObservationEntrypointMode=args=>
+  args.length===3&&args[0]===desktopCodingLargeObservationFlag
+    ?'EXPLICIT_DESKTOP_CODING_LARGE_OBSERVATION_ADMISSION_REQUIRED'
+    :'DRY_RUN_NATIVE_DISABLED';
 
 // Pure binding builder shared by the native wrapper and injected source tests.
 // There is no executable override, loader, shell, evaluator or provider callback.
@@ -38,6 +45,30 @@ export function buildDesktopCodegenInvocation(config,promptBytes){
     runtime_target:c.runtime_target,prefix_identity:c.prefix_identity,
     desktop_runtime_identity:c.desktop_runtime_identity,
     ...(c.schema===PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA?{execution_profile:c.execution_profile}:{})
+  });
+  return Object.freeze({
+    specification,mode:'DESKTOP_CODEGEN_ONLY',operation_intent:DESKTOP_CODEGEN_INTENT,
+    executable:c.codex.path,
+    codex:Object.freeze({
+      observed_cli_version:c.codex.version,
+      authorization:c.authorization,permissions:c.permissions
+    })
+  });
+}
+export function buildDesktopCodingLargeObservationInvocation(config,promptBytes){
+  const c=validateDesktopCodingLargeObservationConfig(config);
+  const length=receiptByteLength(promptBytes);
+  if(length!==c.prompt.bytes||length>32768)throw Error('PROMPT_CHANGED');
+  const bytes=new Uint8Array(length);
+  Uint8Array.prototype.set.call(bytes,promptBytes);
+  if(hash(bytes)!==c.prompt.sha256)throw Error('PROMPT_CHANGED');
+  const specification=admitDesktopCodingLargeObservationProjectTask({
+    job_id:c.job_id,task_scope:c.scope,requested_model:c.requested_model,
+    effort:c.effort,max_wall_clock_sec:null,prompt_bytes:bytes,
+    runtime_target:c.runtime_target,prefix_identity:c.prefix_identity,
+    desktop_runtime_identity:c.desktop_runtime_identity,
+    execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
+    output_profile:validateProjectOutputLargeProfile(c.output_profile)
   });
   return Object.freeze({
     specification,mode:'DESKTOP_CODEGEN_ONLY',operation_intent:DESKTOP_CODEGEN_INTENT,
@@ -75,7 +106,7 @@ export async function runProjectDesktopCodegenWithFailureDiagnosticsWithPorts(co
   const {
     createProjectFailureObserver,createProjectFailureBinding,
     createProjectFailureEvidence
-  }=await import('../src/project-failure-diagnostics.mjs');
+  }=await loadProjectFailureDiagnostics();
   const observer=createProjectFailureObserver();
   let result,observation;
   try{
@@ -105,6 +136,9 @@ export async function runProjectDesktopCodegenWithFailureDiagnosticsWithPorts(co
     })
   });
 }
+async function loadProjectFailureDiagnostics(){
+  return import('../src/project-failure-diagnostics.mjs');
+}
 // Separate explicit phase API. Capture the trusted monotonic origin before
 // async intake; observer failures never replace a known primary result.
 export async function runProjectDesktopCodegenNativeWithPhaseDiagnostics(configBytes,admission,abortSignal){
@@ -125,7 +159,7 @@ export async function runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts(conf
   const c=validateDesktopCodegenConfig(parseReceiptJson(configBytes));
   let module=null,observer=null;
   try{
-    module=await import('../src/project-phase-diagnostics.mjs');
+    module=await loadProjectPhaseDiagnostics();
     observer=module.createProjectPhaseObserver(ports.clock,origin);
   }catch{}
   let result,observation=null;
@@ -157,6 +191,9 @@ export async function runProjectDesktopCodegenWithPhaseDiagnosticsWithPorts(conf
     });
   }
   return Object.freeze({result,phase_diagnostics});
+}
+async function loadProjectPhaseDiagnostics(){
+  return import('../src/project-phase-diagnostics.mjs');
 }
 // Trusted capability injection for ordinary source acceptance. The production
 // wrapper above supplies the fixed native backend; operation files supply data.
@@ -223,6 +260,162 @@ export async function runProjectDesktopCodegenWithPorts(configBytes,admission,ab
     return Object.freeze({...result,operator_admitted:true,operator_receipt:a.operator_receipt,
       direct_child_invocations:Object.freeze({...counts})});
   }finally{cancel();}
+}
+export async function runProjectDesktopCodingLargeObservationNative(configBytes,admission,abortSignal){
+  return runProjectDesktopCodingLargeObservationWithPorts(
+    configBytes,admission,abortSignal,nativeDesktopCodegenPorts()
+  );
+}
+export async function runProjectDesktopCodingLargeObservationNativeWithFailureDiagnostics(configBytes,admission,abortSignal){
+  return runProjectDesktopCodingLargeObservationWithFailureDiagnosticsWithPorts(
+    configBytes,admission,abortSignal,nativeDesktopCodegenPorts()
+  );
+}
+export async function runProjectDesktopCodingLargeObservationNativeWithPhaseDiagnostics(configBytes,admission,abortSignal){
+  return runProjectDesktopCodingLargeObservationWithPhaseDiagnosticsWithPorts(
+    configBytes,admission,abortSignal,nativeDesktopCodegenPorts()
+  );
+}
+function validateLargeDesktopPorts(ports){
+  closed(ports,['fs','spawn','readBytes','verifyFile','reads','now','clock','retention','environment','uid'],[],'desktop_codegen_ports');
+  for(const key of ['spawn','readBytes','verifyFile','now','retention'])receiptFunction(ports[key]);
+  closed(ports.reads,['lstat','readChunks'],[],'desktop_codegen_reads');
+  receiptFunction(ports.reads.lstat);receiptFunction(ports.reads.readChunks);
+  closed(ports.clock,['now','schedule'],[],'desktop_codegen_clock');
+  receiptFunction(ports.clock.now);receiptFunction(ports.clock.schedule);
+  if(!Number.isSafeInteger(ports.uid)||ports.uid<0)throw Error('DESKTOP_CODEGEN_PORTS_INVALID');
+}
+export async function runProjectDesktopCodingLargeObservationWithPorts(configBytes,admission,abortSignal,ports){
+  if(!admission)throw Error('UNADMITTED_NATIVE_OPERATION');
+  validateLargeDesktopPorts(ports);
+  if(abortSignal!==undefined&&!(abortSignal instanceof AbortSignal))throw Error('DESKTOP_CODEGEN_PORTS_INVALID');
+  receiptByteLength(configBytes);
+  const c=validateDesktopCodingLargeObservationConfig(parseReceiptJson(configBytes));
+  const a=requireDesktopCodingLargeObservationAdmission(admission,c,configBytes);
+  if(consumed.has(c.job_id)||consumed.has(c.scope))throw Error('NATIVE_OPERATION_ALREADY_CONSUMED');
+  const controller=new AbortController();
+  const signal=abortSignal?AbortSignal.any([abortSignal,controller.signal]):controller.signal;
+  const wait=operation=>{
+    if(signal.aborted)return Promise.reject(Error('OPERATION_ABORTED'));
+    let listener;
+    const aborted=new Promise((_,reject)=>{
+      listener=()=>reject(Error('OPERATION_ABORTED'));
+      signal.addEventListener('abort',listener,{once:true});
+    });
+    const work=Promise.resolve().then(()=>{
+      if(signal.aborted)throw Error('OPERATION_ABORTED');
+      return operation();
+    });
+    return Promise.race([work,aborted]).finally(()=>signal.removeEventListener('abort',listener));
+  };
+  for(const identity of [c.node,c.codex,c.prompt,...Object.entries(c.source_pins).map(([path,pin])=>({path,...pin}))]){
+    await wait(()=>ports.verifyFile(identity,ports.reads));
+  }
+  const proofBytes=await wait(()=>ports.readBytes(a.preflight.evidence_receipt,65536));
+  receiptByteLength(proofBytes);
+  validateCodexPreflight(parseReceiptJson(proofBytes),c,configBytes,ports.now());
+  const promptBytes=await wait(()=>ports.readBytes(c.prompt.path,32768));
+  const invocation=buildDesktopCodingLargeObservationInvocation(c,promptBytes);
+  consumed.add(c.job_id);consumed.add(c.scope);
+  const retention=ports.retention(c.job_id),gate=await wait(()=>retention.prepare());
+  if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
+  if(signal.aborted)throw Error('OPERATION_ABORTED');
+  await wait(()=>ports.fs.mkdir(c.scope,{mode:0o700}));
+  const counts={generation:0};
+  const result=await runDesktopCodingLargeObservationProjectTask(
+    invocation.specification,
+    {clock:ports.clock,shutdown:c.generation_shutdown,abortSignal:signal},
+    {
+      fs:ports.fs,uid:ports.uid,mode:invocation.mode,
+      operation_intent:invocation.operation_intent,executable:invocation.executable,
+      codex:invocation.codex,environment:ports.environment,
+      retainRejected:retention.retainRejected,
+      spawn(executable,argv,options){
+        if(signal.aborted||++counts.generation>1||
+           executable!==invocation.executable||options.shell!==false)throw Error('PROJECT_SPAWN_LIMIT');
+        return ports.spawn(executable,argv,options);
+      }
+    }
+  );
+  if(result.schema!==PROJECT_LARGE_OBSERVATION_RESULT_SCHEMA)throw Error('INVALID_LARGE_OBSERVATION_RESULT');
+  return Object.freeze({...result,operator_admitted:true,operator_receipt:a.operator_receipt,
+    direct_child_invocations:Object.freeze({...counts})});
+}
+async function runLargeObservationDiagnostics(kind,configBytes,admission,abortSignal,ports){
+  validateLargeDesktopPorts(ports);
+  let phaseOrigin=null;
+  if(kind==='PHASE'){
+    try{
+      const value=ports.clock.now();
+      if(Number.isSafeInteger(value)&&value>=0)phaseOrigin=value;
+    }catch{}
+  }
+  let config=null;
+  try{
+    receiptByteLength(configBytes);
+    config=validateDesktopCodingLargeObservationConfig(parseReceiptJson(configBytes));
+  }catch{}
+  let module=null,observer=null;
+  try{
+    module=kind==='FAILURE'
+      ?await loadProjectFailureDiagnostics()
+      :await loadProjectPhaseDiagnostics();
+    if(kind==='FAILURE')observer=module.createProjectFailureObserver();
+    else observer=module.createProjectPhaseObserver(ports.clock,phaseOrigin);
+  }catch{}
+  let result,primaryFailed=false,primaryError,observation=null;
+  try{
+    result=await runProjectDesktopCodingLargeObservationWithPorts(
+      configBytes,admission,abortSignal,{
+        ...ports,
+        spawn(executable,argv,options){
+          if(kind==='PHASE')try{observer?.spawnAttempt();}catch{}
+          const child=ports.spawn(executable,argv,options);
+          try{observer?.observe(child);}catch{}
+          return child;
+        }
+      }
+    );
+    if(kind==='PHASE')try{observer?.primaryResultReturned();}catch{}
+  }catch(error){primaryFailed=true;primaryError=error;}
+  finally{try{observation=observer?.seal()??null;}catch{}}
+  if(primaryFailed)throw primaryError;
+  if(kind==='FAILURE'){
+    if(result.status==='CANDIDATE_STAGED'){
+      return Object.freeze({result,failure_diagnostics:Object.freeze({status:'NOT_RETAINED_SUCCESS'})});
+    }
+    try{
+      if(!module||!observer||!observation||!config)throw 0;
+      const binding=module.createProjectFailureBinding(config,result);
+      const evidence=module.createProjectFailureEvidence(binding,observation);
+      return Object.freeze({result,failure_diagnostics:Object.freeze({
+        status:'OBSERVED',evidence,sidecar_status:'NOT_REQUESTED'
+      })});
+    }catch{
+      return Object.freeze({result,failure_diagnostics:Object.freeze({
+        status:'UNAVAILABLE',reason:'OBSERVER_ERROR',sidecar_status:'NOT_REQUESTED'
+      })});
+    }
+  }
+  try{
+    if(!module||!observer||!observation||!config||
+       observation.observer_error==='OBSERVER_ERROR')throw 0;
+    const binding=module.createProjectPhaseBinding(config,result);
+    const evidence=module.createProjectPhaseEvidence(binding,observation);
+    return Object.freeze({result,phase_diagnostics:Object.freeze({
+      status:'OBSERVED',evidence,sidecar_status:'NOT_REQUESTED'
+    })});
+  }catch{
+    return Object.freeze({result,phase_diagnostics:Object.freeze({
+      status:'UNAVAILABLE',reason:'OBSERVER_ERROR',sidecar_status:'NOT_REQUESTED'
+    })});
+  }
+}
+export async function runProjectDesktopCodingLargeObservationWithFailureDiagnosticsWithPorts(configBytes,admission,abortSignal,ports){
+  return runLargeObservationDiagnostics('FAILURE',configBytes,admission,abortSignal,ports);
+}
+export async function runProjectDesktopCodingLargeObservationWithPhaseDiagnosticsWithPorts(configBytes,admission,abortSignal,ports){
+  return runLargeObservationDiagnostics('PHASE',configBytes,admission,abortSignal,ports);
 }
 export const projectEntrypointMode=args=>args.length===3&&args[0]==='--run-admitted'?'EXPLICIT_ADMISSION_REQUIRED':'DRY_RUN_NATIVE_DISABLED';
 export const projectDryRun=()=>Object.freeze({schema:'SQUIRE2_PROJECT_DRY_RUN_V1',status:'DRY_RUN_NATIVE_DISABLED',direct_child_invocations:0,task_correctness:'NOT_EVALUATED',runtime_admitted:false});
@@ -318,6 +511,55 @@ export async function runProjectEntrypointCli(argv,ports){
     out=receiptMethod(stdout.value,'write');err=receiptMethod(stderr.value,'write');
     args=receiptArgs(argv);
   }catch{if(err)err('PROJECT_RECEIPT_REQUEST_INVALID\n');return 2;}
+  if(args[0]===desktopCodingLargeObservationFlag){
+    try{
+      if(desktopCodingLargeObservationEntrypointMode(args)!==
+           'EXPLICIT_DESKTOP_CODING_LARGE_OBSERVATION_ADMISSION_REQUIRED'||
+         args.slice(1).some(value=>value.length===0))throw 0;
+      receiptFunction(ports.readBytes);
+      const configBytes=await ports.readBytes(args[1],65536);
+      const admissionBytes=await ports.readBytes(args[2],65536);
+      receiptByteLength(configBytes);receiptByteLength(admissionBytes);
+      const config=validateDesktopCodingLargeObservationConfig(
+        parseReceiptJson(configBytes)
+      );
+      const admission=validateDesktopCodingLargeObservationAdmission(
+        parseReceiptJson(admissionBytes),configBytes
+      );
+      const result=await runProjectDesktopCodingLargeObservationWithPorts(
+        configBytes,admission,undefined,ports.desktopCodingLargeObservationPorts
+      );
+      const profile=validateProjectOutputLargeProfile(result.output_profile);
+      const stage=result.staging;
+      validateProjectCodingObservationProfile(result.execution_profile);
+      if(result.schema!==PROJECT_LARGE_OBSERVATION_RESULT_SCHEMA||
+         result.status!=='CANDIDATE_STAGED'||
+         result.task_correctness!=='NOT_EVALUATED'||
+         result.task_outcome_evaluated!==false||result.runtime_admitted!==false||
+         result.operator_admitted!==true||
+         result.direct_child_invocations?.generation!==1||
+         result.post_generation_closeout?.status!=='COMPLETE'||
+         result.post_generation_closeout?.limit_ms!==20000||
+         !stage||stage.schema_version!=='squire4.large_project_stage_receipt.v1'||
+         validateProjectOutputLargeProfile(stage.output_profile)!==profile||
+         stage.stage_operation_id!==`stage-${config.job_id}`||
+         stage.caller_label!=='project_candidate_stager'||
+         stage.completion_status!=='COMPLETE'||
+         stage.operation_acknowledgement!=='ACKNOWLEDGED'||
+         !/^[a-f0-9]{64}$/.test(stage.manifest_sha256)||
+         !Number.isSafeInteger(stage.file_count)||stage.file_count<1||
+         stage.file_count>profile.max_all_files||
+         !Number.isSafeInteger(stage.total_bytes)||stage.total_bytes<0||
+         stage.total_bytes>profile.max_decoded_project_bytes||
+         stage.provenance_authenticity!=='NOT_ESTABLISHED'||
+         stage.crash_durability!=='NOT_ESTABLISHED')throw 0;
+      out('{"schema":"SQUIRE2_DESKTOP_CODING_LARGE_OBSERVATION_ACK_V1","status":"CANDIDATE_STAGED","task_correctness":"NOT_EVALUATED","native_app_status":"NOT_QUALIFIED"}\n');
+      return 1;
+    }catch{
+      err('DESKTOP_CODING_LARGE_OBSERVATION_ADMISSION_OR_OPERATION_FAILED\n');
+      return 2;
+    }
+  }
   if(args[0]===desktopCodegenFlag){
     try{
       if(desktopCodegenEntrypointMode(args)!=='EXPLICIT_DESKTOP_CODEGEN_ADMISSION_REQUIRED'||
@@ -373,12 +615,15 @@ export async function runProjectEntrypointCli(argv,ports){
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   const args=process.argv.slice(2);
-  if(args[0]===receiptFlag||args[0]===desktopCodegenFlag){
+  if(args[0]===receiptFlag||args[0]===desktopCodegenFlag||
+     args[0]===desktopCodingLargeObservationFlag){
     process.exitCode=await runProjectEntrypointCli(args,{
       readBytes:readReceiptBytes,runProject:runProjectOneCaseNative,verifyFile:verifyExactFile,
       reads:{lstat:fs.lstat,readChunks:p=>createReadStream(p)},
       writerPorts:{fs:{lstat:fs.lstat,open:fs.open},uid:process.getuid()},
       ...(args[0]===desktopCodegenFlag?{desktopCodegenPorts:nativeDesktopCodegenPorts()}:{}),
+      ...(args[0]===desktopCodingLargeObservationFlag
+        ?{desktopCodingLargeObservationPorts:nativeDesktopCodegenPorts()}:{}),
       stdout:{write:value=>process.stdout.write(value)},stderr:{write:value=>process.stderr.write(value)}
     });
   }

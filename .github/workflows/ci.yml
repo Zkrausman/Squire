@@ -21,6 +21,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
-      - run: node --test --test-isolation=none test/project-coding-profile.test.mjs test/desktop-codegen.test.mjs test/project-native-result.test.mjs test/project-summary.test.mjs test/project-phase-diagnostics.test.mjs test/project-failure-diagnostics.test.mjs
+      - run: node --test --test-isolation=none test/project-coding-profile.test.mjs test/desktop-codegen.test.mjs test/project-native-result.test.mjs test/project-summary.test.mjs test/project-phase-diagnostics.test.mjs test/project-failure-diagnostics.test.mjs test/project-large-output.test.mjs
       - run: npm test
       - run: git diff --exit-code

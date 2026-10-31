@@ -32,3 +32,15 @@ acceptance/prepare-project-task.mjs: 1,010 bytes, SHA-256
 Historical controller checks use these immutable bytes while the live opt-in
 adapter evolves. This inert .txt data is never imported or executed and does
 not represent current source or establish native qualification.
+
+Four further inert snapshots preserve the original PR177 lineage inputs:
+src/project-stream-collector.mjs.txt (5,330 bytes, SHA-256
+78432960c22b0bc13906825ba5d6097fad174943c7eabcea8b0184ae4785f2ce),
+src/multifile-staging.mjs.txt (127 bytes, SHA-256
+ade7afc17829df66713054fa1c59360e35b4c1de5a2bf60b90f34929f8d2faf2),
+src/multifile-export.mjs.txt (140 bytes, SHA-256
+ece01ab3b9bf3c80fd631dffe79b11745b2b8e48d4e88a1300578c066b52d345), and
+src/internal/multifile-core.mjs.txt (23,235 bytes, SHA-256
+5ff1c193a2147c6154fe43be14584fe2e6fba081e7187c46173b447d3278d420).
+Historical checks use these snapshots as immutable lineage data, never as
+current runtime inputs or qualification evidence.

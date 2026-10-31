@@ -13,6 +13,8 @@ import {RETENTION_POLICY,createNativeRejectedRetention} from './local-rejected-r
 import {
   PROJECT_CODING_OBSERVATION_PROFILE,PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA,
   PROJECT_CODING_OBSERVATION_MANIFEST_SCHEMA,validateProjectCodingObservationProfile,
+  PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA,PROJECT_LARGE_OBSERVATION_MANIFEST_SCHEMA,
+  PROJECT_OUTPUT_LARGE_PROFILE,validateProjectOutputLargeProfile,
   resolveProjectCodingProfile
 } from './project-coding-profile.mjs';
 
@@ -29,6 +31,16 @@ export const DESKTOP_CODEGEN_SOURCE_FILES=Object.freeze([
   'src/courier-handoff-report.mjs','src/courier-handoff.mjs',
   'src/project-failure-diagnostics.mjs','src/project-phase-diagnostics.mjs'
 ]);
+const LARGE_OUTPUT_LIMITS=Object.freeze({
+  max_stdout_bytes:PROJECT_OUTPUT_LARGE_PROFILE.max_stdout_bytes,
+  max_stderr_bytes:PROJECT_OUTPUT_LARGE_PROFILE.max_stderr_bytes,
+  max_envelope_bytes:PROJECT_OUTPUT_LARGE_PROFILE.max_envelope_bytes,
+  max_source_file_bytes:PROJECT_OUTPUT_LARGE_PROFILE.max_source_file_bytes,
+  max_source_total_bytes:PROJECT_OUTPUT_LARGE_PROFILE.max_source_total_bytes,
+  max_decoded_project_bytes:PROJECT_OUTPUT_LARGE_PROFILE.max_decoded_project_bytes,
+  max_source_files:PROJECT_OUTPUT_LARGE_PROFILE.max_source_files,
+  max_all_files:PROJECT_OUTPUT_LARGE_PROFILE.max_all_files
+});
 export const PROJECT_ENVIRONMENT_POLICY=Object.freeze({generation:'INHERIT_PROCESS_ENV_MINUS_CODEX_API_KEYS_SCOPED_TMPDIR',deleted_keys:Object.freeze(['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL','GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL']),program:Object.freeze({PATH:'/bin:/usr/bin',LANG:'C.UTF-8',TMPDIR:'<run>/.tmp'}),safety:'KEY_EXCLUSION_IS_NOT_EFFECTIVE_PROVIDER_OR_HOSTILE_ISOLATION_PROOF'});
 const admittedJobs=new Set(),admittedScopes=new Set();
 const same=(a,b)=>hash(canonicalBytes(a))===hash(canonicalBytes(b));
@@ -37,12 +49,30 @@ const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 function pin(v,version=false){closed(v,['path','bytes','sha256',...(version?['version']:[])],[],'project_pin');if(!absolute(v.path)||!Number.isSafeInteger(v.bytes)||v.bytes<0||!digest(v.sha256)||version&&v.version!==CODEX_REQUIRED_VERSION)fail('project_pin');}
 export function validateProjectCodexConfig(c){return validateProjectConfig(c,false);}
 export function validateDesktopCodegenConfig(c){return validateProjectConfig(c,true);}
-function validateProjectConfig(c,desktopCodegen){
-  c=snapshotReceiptData(c);
-  const observation=desktopCodegen&&c.schema===PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA;
-  closed(c,['schema','runtime_admitted','provider_id','job_id','scope','source_commit','source_pins','node','codex','requested_model','effort','authorization','permissions','prompt','target_mode','diagnostic_retention','generation_shutdown','preflight_freshness_ms','outer_observation_ms','generation_wall_ms','max_direct_child_spawns','environment_policy',...(desktopCodegen?['operation_intent','runtime_target','prefix_identity','desktop_runtime_identity']:[]),...(observation?['execution_profile']:[])],desktopCodegen?[]:['runtime_target','prefix_identity','desktop_runtime_identity'],'project_config');
+export function validateDesktopCodingLargeObservationConfig(c){return validateProjectConfig(c,true,true);}
+function validateProjectConfig(value,desktopCodegen,largeObservation=false){
+  let c;
+  if(largeObservation){
+    const keys=['schema','runtime_admitted','provider_id','job_id','scope','source_commit','source_pins',
+      'node','codex','requested_model','effort','authorization','permissions','prompt','target_mode',
+      'diagnostic_retention','generation_shutdown','preflight_freshness_ms','outer_observation_ms',
+      'generation_wall_ms','max_direct_child_spawns','environment_policy','operation_intent',
+      'runtime_target','prefix_identity','desktop_runtime_identity','execution_profile','output_profile'];
+    closed(value,keys,[],'project_config');
+    const captured={};
+    for(const key of keys)captured[key]=Object.getOwnPropertyDescriptor(value,key).value;
+    c=snapshotReceiptData(captured);
+  }else c=snapshotReceiptData(value);
+  const observation=desktopCodegen&&(
+    c.schema===PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA||
+    largeObservation&&c.schema===PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA
+  );
+  closed(c,['schema','runtime_admitted','provider_id','job_id','scope','source_commit','source_pins','node','codex','requested_model','effort','authorization','permissions','prompt','target_mode','diagnostic_retention','generation_shutdown','preflight_freshness_ms','outer_observation_ms','generation_wall_ms','max_direct_child_spawns','environment_policy',...(desktopCodegen?['operation_intent','runtime_target','prefix_identity','desktop_runtime_identity']:[]),...(observation?['execution_profile']:[]),...(largeObservation?['output_profile']:[])],desktopCodegen?[]:['runtime_target','prefix_identity','desktop_runtime_identity'],'project_config');
+  if(largeObservation&&c.schema!==PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA)fail('project_config');
+  if(!largeObservation&&c.schema===PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA)fail('project_config');
   const bounds=resolveProjectCodingProfile(observation?validateProjectCodingObservationProfile(c.execution_profile):undefined);
-  if(c.schema!==(observation?PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA:desktopCodegen?DESKTOP_CODEGEN_SCHEMA:'SQUIRE2_PROJECT_OPERATION_V1')||c.runtime_admitted!==false||c.provider_id!=='native_codex'||typeof c.job_id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(c.job_id)||!absolute(c.scope)||typeof c.source_commit!=='string'||!/^[a-f0-9]{40}$/.test(c.source_commit))fail('project_config');
+  if(c.schema!==(largeObservation?PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA:observation?PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA:desktopCodegen?DESKTOP_CODEGEN_SCHEMA:'SQUIRE2_PROJECT_OPERATION_V1')||c.runtime_admitted!==false||c.provider_id!=='native_codex'||typeof c.job_id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(c.job_id)||!absolute(c.scope)||typeof c.source_commit!=='string'||!/^[a-f0-9]{40}$/.test(c.source_commit))fail('project_config');
+  const outputProfile=largeObservation?validateProjectOutputLargeProfile(c.output_profile):null;
   if(desktopCodegen&&(c.operation_intent!==DESKTOP_CODEGEN_INTENT||c.runtime_target!==DESKTOP_TARGET))fail('desktop_codegen_intent');
   const target=Object.hasOwn(c,'runtime_target')?c.runtime_target:'node24-esm';if(!['node24-esm',DESKTOP_TARGET].includes(target))fail('project_target');
   const prefix=target===DESKTOP_TARGET?DESKTOP_PREFIX_IDENTITY:PROJECT_PREFIX_IDENTITY;
@@ -53,9 +83,12 @@ function validateProjectConfig(c,desktopCodegen){
   const expected=(desktopCodegen?DESKTOP_CODEGEN_SOURCE_FILES:PROJECT_SOURCE_FILES).map(n=>join(PROJECT_SOURCE_ROOT,n)).sort();closed(c.source_pins,expected,[],'project_source_pins');if(!same(Object.keys(c.source_pins).sort(),expected))fail('project_source_pins');
   for(const p of Object.values(c.source_pins)){closed(p,['bytes','sha256'],[],'project_source_pin');if(!Number.isSafeInteger(p.bytes)||p.bytes<0||!digest(p.sha256))fail('project_source_pin');}
   validateCodexPermissions(c.permissions);
+  if(largeObservation&&c.permissions.approval_mode!=='on-request')fail('project_policy');
   (desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({requested_model:c.requested_model,effort:c.effort,observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,prompt_bytes:new Uint8Array([65])});
   closed(c.target_mode,['mode','stage_subpath'],[],'project_target');
   if((c.target_mode.mode!=='multifile_stage'||c.target_mode.stage_subpath!=='stage')||!same(c.diagnostic_retention,RETENTION_POLICY)||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||!same(c.environment_policy,PROJECT_ENVIRONMENT_POLICY)||c.preflight_freshness_ms!==300000||c.outer_observation_ms!==bounds.outer_observation_ms||c.generation_wall_ms!==bounds.generation_wall_ms||c.max_direct_child_spawns!==1)fail('project_policy');
+  if(largeObservation)return Object.freeze({...c,
+    execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,output_profile:outputProfile});
   return c;
 }
 // Pure binding validation supplies neither token consumption nor native app
@@ -71,6 +104,29 @@ export function validateDesktopCodegenAdmission(bundle,configBytes){
      bundle.scope!==c.scope||bundle.desktop_codegen_admitted!==true||
      !absolute(bundle.preflight.evidence_receipt))fail('desktop_codegen_admission');
   return Object.freeze({...bundle,preflight:Object.freeze({...bundle.preflight})});
+}
+function ownDataRecord(value,keys,field){
+  closed(value,keys,[],field);
+  const result={};
+  for(const key of keys)result[key]=Object.getOwnPropertyDescriptor(value,key).value;
+  return result;
+}
+export function validateDesktopCodingLargeObservationAdmission(bundle,configBytes){
+  const c=validateDesktopCodingLargeObservationConfig(parseReceiptJson(configBytes));
+  const b=ownDataRecord(bundle,['provider_id','operator_receipt','config_sha256','job_id','scope','desktop_codegen_admitted','preflight'],'desktop_codegen_admission');
+  const preflight=ownDataRecord(b.preflight,['evidence_receipt'],'project_preflight');
+  if(b.provider_id!=='native_codex'||b.operator_receipt!==c.authorization.operator_receipt||
+     b.config_sha256!==hash(configBytes)||b.job_id!==c.job_id||b.scope!==c.scope||
+     b.desktop_codegen_admitted!==true||!absolute(preflight.evidence_receipt))fail('desktop_codegen_admission');
+  return Object.freeze({...b,preflight:Object.freeze(preflight)});
+}
+export function requireDesktopCodingLargeObservationAdmission(bundle,c,configBytes){
+  c=validateDesktopCodingLargeObservationConfig(c);
+  if(!same(c,validateDesktopCodingLargeObservationConfig(parseReceiptJson(configBytes))))fail('desktop_codegen_config_binding');
+  const admission=validateDesktopCodingLargeObservationAdmission(bundle,configBytes);
+  if(admittedJobs.has(c.job_id)||admittedScopes.has(c.scope))throw Error('NATIVE_OPERATION_ALREADY_CONSUMED');
+  admittedJobs.add(c.job_id);admittedScopes.add(c.scope);
+  return admission;
 }
 export function requireDesktopCodegenAdmission(bundle,c,configBytes){
   c=validateDesktopCodegenConfig(c);
@@ -126,7 +182,10 @@ export async function prepareDesktopCodegenTask(root,source_commit,request,input
 export async function prepareDesktopCodingObservationTask(root,source_commit,request,inputs,ports={}){
   return prepareProjectTask(root,source_commit,request,inputs,ports,true,true);
 }
-async function prepareProjectTask(root,source_commit,request,inputs,ports,desktopCodegen,observation=false){
+export async function prepareDesktopCodingLargeObservationTask(root,source_commit,request,inputs,ports={}){
+  return prepareProjectTask(root,source_commit,request,inputs,ports,true,true,true);
+}
+async function prepareProjectTask(root,source_commit,request,inputs,ports,desktopCodegen,observation=false,largeObservation=false){
   const req=validateProjectRequest(request);inputs=snapshotReceiptData(inputs);closed(inputs,['job_id','scope','codex','requested_model','effort','authorization','permissions'],['desktop_runtime_identity'],'project_private_inputs');
   const permissions=validateCodexPermissions(inputs.permissions);
   if(desktopCodegen&&req.runtime_target!==DESKTOP_TARGET)fail('desktop_codegen_target');
@@ -150,12 +209,18 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   const config={schema:'SQUIRE2_PROJECT_OPERATION_V1',runtime_admitted:false,provider_id:'native_codex',job_id:inputs.job_id,scope:inputs.scope,source_commit,source_pins,node:NODE_RUNTIME,codex:inputs.codex,requested_model:inputs.requested_model,effort:inputs.effort,authorization:inputs.authorization,permissions,prompt:{path:join(root,'prompt.utf8'),bytes:prompt.length,sha256:hash(prompt)},target_mode:{mode:'multifile_stage',stage_subpath:'stage'},diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,outer_observation_ms:140000,generation_wall_ms:120000,max_direct_child_spawns:1,environment_policy:PROJECT_ENVIRONMENT_POLICY};
   if(desktop)Object.assign(config,{runtime_target:DESKTOP_TARGET,prefix_identity:DESKTOP_PREFIX_IDENTITY,desktop_runtime_identity:desktop});
   if(desktopCodegen)Object.assign(config,{schema:DESKTOP_CODEGEN_SCHEMA,operation_intent:DESKTOP_CODEGEN_INTENT});
-  if(observation)Object.assign(config,{
+  if(largeObservation)Object.assign(config,{
+    schema:PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA,
+    execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
+    output_profile:PROJECT_OUTPUT_LARGE_PROFILE,
+    generation_wall_ms:null,outer_observation_ms:null
+  });
+  else if(observation)Object.assign(config,{
     schema:PROJECT_CODING_OBSERVATION_CONFIG_SCHEMA,
     execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
     generation_wall_ms:null,outer_observation_ms:null
   });
-  (desktopCodegen?validateDesktopCodegenConfig:validateProjectCodexConfig)(config);
+  (largeObservation?validateDesktopCodingLargeObservationConfig:desktopCodegen?validateDesktopCodegenConfig:validateProjectCodexConfig)(config);
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
   const gate=await (ports.retention??createNativeRejectedRetention)(inputs.job_id).prepare();if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
   const target=join(config.scope,'output','run-'+config.job_id,'candidate-envelope.json');
@@ -176,6 +241,15 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
     execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
     generation:{...manifest.generation,wall_ms:null},
     limits:{...manifest.limits,outer_observation_ms:null}
+  });
+  if(largeObservation)Object.assign(manifest,{
+    schema:PROJECT_LARGE_OBSERVATION_MANIFEST_SCHEMA,
+    config_schema:PROJECT_LARGE_OBSERVATION_CONFIG_SCHEMA,
+    execution_profile:PROJECT_CODING_OBSERVATION_PROFILE,
+    output_profile:PROJECT_OUTPUT_LARGE_PROFILE,
+    generation:{...manifest.generation,wall_ms:null},
+    limits:{...manifest.limits,outer_observation_ms:null},
+    output_limits:LARGE_OUTPUT_LIMITS
   });
   await fsPort.mkdir(root,{mode:0o700});
   for(const[name,b]of[['prompt.utf8',prompt],['config.json',canonicalBytes(config)],['operation-manifest.json',canonicalBytes(manifest)]]){await fsPort.writeFile(join(root,name),b,{flag:'wx',mode:0o600});if(hash(await fsPort.readFile(join(root,name)))!==hash(b))throw Error('PREPARATION_READBACK');}
