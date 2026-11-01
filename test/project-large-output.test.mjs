@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {EventEmitter} from 'node:events';
-import {join} from 'node:path';
+import {dirname,join} from 'node:path';
 import {
   PROJECT_OUTPUT_LARGE_PROFILE as PROFILE,
   validateProjectOutputLargeProfile,
@@ -20,7 +20,7 @@ import {
   parseProjectJson,validateProjectPayloadJson,
   validateLargeProjectPayloadJson
 } from '../src/project-task.mjs';
-import {hash} from '../src/bounded-codegen-plan.mjs';
+import {hash,canonicalBytes,verifyExactFile} from '../src/bounded-codegen-plan.mjs';
 import {
   decodeCodexJsonl,decodeLargeProjectCodexJsonl,
   iterateLargeProjectCodexJsonlFrames
@@ -58,8 +58,12 @@ import {
   runProjectEntrypointCli,
   desktopCodingLargeObservationEntrypointMode,
   runProjectDesktopCodingLargeObservationWithPorts,
+  runProjectDesktopCodingLargeObservationNativeWithReadiness,
+  runProjectDesktopCodingLargeObservationWithReadinessWithPorts,
   runProjectDesktopCodingLargeObservationWithFailureDiagnosticsWithPorts,
-  runProjectDesktopCodingLargeObservationWithPhaseDiagnosticsWithPorts
+  runProjectDesktopCodingLargeObservationWithPhaseDiagnosticsWithPorts,
+  verifyProjectArtifactChecks,
+  verifyProjectArtifactChecksWithPorts
 } from '../acceptance/project-entrypoint.mjs';
 import {
   createNativeProjectLargeObservationResultReceipt,
@@ -81,6 +85,7 @@ import {REPORT_MAX_BYTES} from '../src/offline-run-summary.mjs';
 import {runOfflineReportCli} from '../bin/squire-report.mjs';
 import {publicRetention,retentionResult} from '../src/internal/rejected-capture.mjs';
 import {GENERATION_SHUTDOWN} from '../src/bounded-codegen-plan.mjs';
+import {CODEX_CHILD_ENV_DELETIONS} from '../src/codex-profile.mjs';
 
 const encoder=new TextEncoder();
 const mib=1024*1024;
@@ -2114,3 +2119,1860 @@ test('large rejected-retention claims enforce capture, publication and truncatio
     }
   });
 });
+
+const readinessCompanionPaths=[
+  'src/desktop-readiness-evidence.mjs',
+  'src/project-artifact-check-evidence.mjs',
+  'src/artifact-verifier.mjs',
+  'src/job-record.mjs'
+];
+const readinessClone=value=>structuredClone(value);
+const readinessDomain=(domain,value)=>hash(canonicalBytes({domain,value}));
+const readinessDeferred=()=>{
+  let resolve;
+  const promise=new Promise(done=>{resolve=done;});
+  return {promise,resolve};
+};
+const readinessController=()=>({
+  pid:101,start_ticks:'11',
+  boot_id:'00000000-0000-0000-0000-000000000001'
+});
+const readinessServer=()=>({
+  pid:102,start_ticks:'12',
+  boot_id:'00000000-0000-0000-0000-000000000001'
+});
+const readinessFixtureProcess=()=>({
+  pid:103,start_ticks:'13',
+  boot_id:'00000000-0000-0000-0000-000000000001'
+});
+
+function readinessRoute(runtimeIdentity,probeRunId='probe-1'){
+  return {
+    backend:'broadway',backend_gtype:'GdkBroadwayDisplay',
+    display_name:'Broadway',
+    environment:{
+      GDK_BACKEND:'broadway',BROADWAY_DISPLAY:':41',
+      XDG_RUNTIME_DIR:'/synthetic/runtime'
+    },
+    session:{
+      probe_run_id:probeRunId,controller:readinessController(),
+      server:readinessServer(),host:'127.0.0.1',port:8121,
+      socket_path:'/synthetic/runtime/broadway42.socket',
+      socket_dev:'0',socket_ino:'44'
+    },
+    runtime_identity:readinessClone(runtimeIdentity)
+  };
+}
+
+function readinessSubscriptionBytes(fixture,observedAt){
+  const config=fixture.config;
+  return encoder.encode(JSON.stringify({
+    operation_config_sha256:hash(fixture.configBytes),
+    observed_at_ms:observedAt,
+    provider_id:'native_codex',cli_version:config.codex.version,
+    executable_sha256:config.codex.sha256,
+    requested_model:config.requested_model,effort:config.effort,
+    operator_receipt:config.authorization.operator_receipt,
+    subscription:true,allowance_available:true,
+    effective_provider:'openai_subscription',no_api_or_paid_fallback:true,
+    sandbox:config.permissions.sandbox,
+    approval_mode:config.permissions.approval_mode,
+    output_contract:config.permissions.output_contract,
+    installed_flags_verified:true
+  }));
+}
+
+function refreshReadinessFixture(fixture,{operationHash=true}={}){
+  const requirements=fixture.context.requirements;
+  if(operationHash){
+    requirements.operation_config_sha256=hash(fixture.configBytes);
+  }
+  fixture.proof.route=readinessClone(requirements.route);
+  fixture.terminal.probe_run_id=requirements.route.session.probe_run_id;
+  fixture.terminal.requirements_sha256=readinessDomain(
+    'squire.desktop-readiness.requirements.v2',requirements
+  );
+  fixture.terminal.route_sha256=readinessDomain(
+    'squire.desktop-readiness.route.v2',requirements.route
+  );
+  fixture.terminalBytes=encoder.encode(JSON.stringify(fixture.terminal));
+  fixture.context.observer_terminal_pin={
+    ...fixture.context.observer_terminal_pin,
+    bytes:fixture.terminalBytes.length,sha256:hash(fixture.terminalBytes)
+  };
+  fixture.proof.requirements_sha256=readinessDomain(
+    'squire.desktop-readiness.requirements.v2',requirements
+  );
+  fixture.proof.terminal_receipt_sha256=hash(fixture.terminalBytes);
+  fixture.proof.capabilities.find(
+    item=>item.name==='direct_owned_cleanup'
+  ).detail.terminal_sha256=hash(fixture.terminalBytes);
+  fixture.proofBytes=encoder.encode(JSON.stringify(fixture.proof));
+  fixture.context.proof_pin={
+    ...fixture.context.proof_pin,
+    bytes:fixture.proofBytes.length,sha256:hash(fixture.proofBytes)
+  };
+  fixture.readinessContextBytes=encoder.encode(
+    JSON.stringify(fixture.context)
+  );
+  fixture.selectedRouteBytes=encoder.encode(
+    JSON.stringify(fixture.context.requirements.route)
+  );
+  fixture.files.set(fixture.context.proof_pin.path,fixture.proofBytes);
+  fixture.files.set(
+    fixture.context.observer_terminal_pin.path,fixture.terminalBytes
+  );
+  fixture.subscriptionBytes=readinessSubscriptionBytes(
+    fixture,fixture.subscriptionObservedAt
+  );
+  fixture.files.set('/synthetic/large-preflight.json',
+    fixture.subscriptionBytes);
+  return fixture;
+}
+
+function readinessRuntimeDescriptor(files){
+  const descriptor=readinessClone(largeDesktopIdentity);
+  const bind=(pin,path,label)=>{
+    const bytes=encoder.encode(label);
+    pin.bytes=bytes.length;
+    pin.sha256=hash(bytes);
+    files.set(path,bytes);
+  };
+  bind(descriptor.executable,descriptor.executable.path,
+    'synthetic runtime executable');
+  for(const entry of descriptor.typelibs){
+    bind(entry,entry.typelib,`synthetic typelib ${entry.namespace}`);
+  }
+  for(const entry of descriptor.libraries){
+    bind(entry,entry.path,`synthetic library ${entry.name}`);
+  }
+  return descriptor;
+}
+
+async function makeReadinessIntegrationFixture(root,{
+  jobId=null,scope=null,needsInput=true
+}={}){
+  const prepared=await largePreparedFixture(root);
+  const config=readinessClone(prepared.config);
+  if(jobId)config.job_id=jobId;
+  if(scope)config.scope=scope;
+  const files=prepared.files;
+  const descriptor=readinessRuntimeDescriptor(files);
+  config.desktop_runtime_identity=descriptor;
+  const configBytes=encoder.encode(JSON.stringify(config));
+  files.set(config.prompt.path,new Uint8Array(prepared.promptBytes));
+  const route=readinessRoute(descriptor);
+  const fixtureProcess=readinessFixtureProcess();
+  const fixtureDefinitionBytes=encoder.encode('fixture definition bytes');
+  const observerDefinitionBytes=encoder.encode('observer definition bytes');
+  const probeBytes=encoder.encode('PNGbytes');
+  const witness={
+    'captures/window.png':{
+      byte_count:probeBytes.length,sha256:hash(probeBytes)
+    }
+  };
+  const companionFiles=new Map();
+  const companion_source_pins=Object.create(null);
+  for(const relative of readinessCompanionPaths){
+    const bytes=encoder.encode(`synthetic pinned companion ${relative}`);
+    const path=join(PROJECT_SOURCE_ROOT,relative);
+    companionFiles.set(path,bytes);
+    files.set(path,bytes);
+    companion_source_pins[relative]={
+      bytes:bytes.length,sha256:hash(bytes)
+    };
+  }
+  const requirements={
+    schema:'squire.desktop_readiness_requirements.v2',
+    operation_config_sha256:hash(configBytes),job_id:config.job_id,
+    scope:config.scope,source_commit:config.source_commit,
+    prompt_sha256:config.prompt.sha256,
+    desktop_descriptor_sha256:readinessDomain(
+      'squire.desktop-runtime-descriptor.v2',descriptor
+    ),
+    route:readinessClone(route),
+    observer_policy_sha256:'3'.repeat(64),needs_input:needsInput,
+    required_capabilities:needsInput
+      ?['api_shape','own_widget_render_readback','artifact_return',
+        'own_window_active','direct_owned_cleanup']
+      :['api_shape','own_widget_render_readback','artifact_return',
+        'direct_owned_cleanup'],
+    max_age_ms:300000,
+    fixture_definition_sha256:hash(fixtureDefinitionBytes),
+    observer_definition_sha256:hash(observerDefinitionBytes)
+  };
+  const terminal={
+    schema:'squire.desktop_readiness_terminal.v2',
+    probe_run_id:route.session.probe_run_id,
+    requirements_sha256:readinessDomain(
+      'squire.desktop-readiness.requirements.v2',requirements
+    ),
+    route_sha256:readinessDomain(
+      'squire.desktop-readiness.route.v2',route
+    ),
+    fixture_definition_sha256:requirements.fixture_definition_sha256,
+    observer_definition_sha256:requirements.observer_definition_sha256,
+    terminal:{
+      process:readinessFixtureProcess(),started_at_ms:900,ended_at_ms:1100,
+      direct_child_exit_observed:true,exit_kind:'natural',exit_code:0,
+      signal:null,stdout_eof:true,stderr_eof:true,stop_codes:[],
+      cleanup_codes:[],descendant_guarantee:'NOT_ESTABLISHED'
+    }
+  };
+  const terminalBytes=encoder.encode(JSON.stringify(terminal));
+  const capabilities=[
+    {
+      name:'api_shape',status:'passed',evidence_kind:'API_CONTRACT',
+      detail:{
+        activity_property_kind:'boolean',
+        backend_gtype:'GdkBroadwayDisplay',display_name:'Broadway'
+      }
+    },
+    {
+      name:'own_widget_render_readback',status:'passed',
+      evidence_kind:'NATIVE_RENDER',
+      detail:{
+        mapped:true,width:640,height:480,decoded_width:640,
+        decoded_height:480,png_relative:'captures/window.png'
+      }
+    },
+    {
+      name:'artifact_return',status:'passed',
+      evidence_kind:'ARTIFACT_READBACK',
+      detail:{
+        witness_sha256:readinessDomain(
+          'squire.desktop-readiness.artifact-witness.v2',witness
+        )
+      }
+    },
+    ...(needsInput?[{
+      name:'own_window_active',status:'passed',
+      evidence_kind:'NATIVE_ACTIVE',
+      detail:{
+        active:true,target:'OWN_FIXTURE',
+        process:readinessFixtureProcess()
+      }
+    }]:[]),
+    {
+      name:'direct_owned_cleanup',status:'passed',
+      evidence_kind:'DIRECT_PROCESS_CLEANUP',
+      detail:{terminal_sha256:hash(terminalBytes)}
+    }
+  ];
+  const proof={
+    schema:'squire.desktop_readiness_observation.v2',
+    requirements_sha256:readinessDomain(
+      'squire.desktop-readiness.requirements.v2',requirements
+    ),
+    observed_at_ms:1000,route:readinessClone(route),
+    fixture_definition_sha256:requirements.fixture_definition_sha256,
+    observer_definition_sha256:requirements.observer_definition_sha256,
+    observer_policy_sha256:requirements.observer_policy_sha256,
+    capabilities,
+    terminal_receipt_sha256:hash(terminalBytes),
+    artifact_witness_sha256:readinessDomain(
+      'squire.desktop-readiness.artifact-witness.v2',witness
+    )
+  };
+  const proofBytes=encoder.encode(JSON.stringify(proof));
+  const context={
+    schema:'squire.desktop_readiness_context.v2',requirements,
+    proof_pin:{
+      path:'/synthetic/evidence/proof.json',
+      bytes:proofBytes.length,sha256:hash(proofBytes)
+    },
+    observer_definition_pin:{
+      path:'/synthetic/evidence/observer.py',
+      bytes:observerDefinitionBytes.length,
+      sha256:hash(observerDefinitionBytes)
+    },
+    fixture_definition_pin:{
+      path:'/synthetic/evidence/fixture.py',
+      bytes:fixtureDefinitionBytes.length,
+      sha256:hash(fixtureDefinitionBytes)
+    },
+    observer_terminal_pin:{
+      path:'/synthetic/evidence/terminal.json',
+      bytes:terminalBytes.length,sha256:hash(terminalBytes)
+    },
+    probe_artifacts:{root:'/synthetic/probe',witness},
+    companion_source_pins
+  };
+  const readinessContextBytes=encoder.encode(JSON.stringify(context));
+  const fixture={
+    ...prepared,files,config,configBytes,
+    admission:null,route,context,proof,terminal,proofBytes,terminalBytes,
+    readinessContextBytes,
+    selectedRouteBytes:encoder.encode(JSON.stringify(route)),
+    fixtureDefinitionBytes,observerDefinitionBytes,probeBytes,
+    companionFiles,now:1200,subscriptionObservedAt:1100
+  };
+  fixture.admission=largePreparedAdmission(fixture,configBytes);
+  files.set(context.proof_pin.path,proofBytes);
+  files.set(context.observer_terminal_pin.path,terminalBytes);
+  files.set(context.fixture_definition_pin.path,fixtureDefinitionBytes);
+  files.set(context.observer_definition_pin.path,observerDefinitionBytes);
+  files.set('/synthetic/probe/captures/window.png',probeBytes);
+  fixture.subscriptionBytes=readinessSubscriptionBytes(
+    fixture,fixture.subscriptionObservedAt
+  );
+  files.set('/synthetic/large-preflight.json',fixture.subscriptionBytes);
+  return fixture;
+}
+
+function readinessProbeStat(kind,size=0,ino=10n){
+  return {
+    dev:1n,ino,size:BigInt(size),mtimeNs:2n,ctimeNs:3n,
+    mode:kind==='file'?0o100600n:0o040700n,
+    uid:process.getuid(),nlink:1,
+    isFile:()=>kind==='file',
+    isDirectory:()=>kind==='directory',
+    isSymbolicLink:()=>false
+  };
+}
+
+function makeReadinessIntegrationPorts(fixture,runtime,hooks={}){
+  const files=fixture.files;
+  const probeRoot='/synthetic/probe';
+  const probeDirs=new Set([probeRoot,join(probeRoot,'captures')]);
+  const probeFiles=new Set(['/synthetic/probe/captures/window.png']);
+  const calls={
+    verify:[],readBytes:[],lstat:[],readChunks:[],realpath:[],
+    probeOpen:[],probeRead:[],probeClose:[],mkdir:[],retention:[],
+    events:[],now:[]
+  };
+  const retentionGate=hooks.retentionGate?readinessDeferred():null;
+  const releaseRetention=retentionGate?.resolve??null;
+  const enteredRetention=hooks.retentionEntered??(()=>{});
+  const probeStat=path=>probeDirs.has(path)
+    ?readinessProbeStat('directory',1,10n)
+    :probeFiles.has(path)
+      ?readinessProbeStat('file',files.get(path)?.length??0,20n)
+      :null;
+  const fsPort={
+    async lstat(path,...args){
+      calls.lstat.push(path);
+      const fake=probeStat(path);
+      if(fake)return fake;
+      return fs.lstat(path,...args);
+    },
+    async realpath(path,...args){
+      calls.realpath.push(path);
+      if(path.startsWith('/synthetic/'))return path;
+      return fs.realpath(path,...args);
+    },
+    async open(path,...args){
+      if(probeFiles.has(path)){
+        calls.probeOpen.push(path);
+        if(hooks.beforeProbeOpen)await hooks.beforeProbeOpen(calls);
+        const bytes=files.get(path);
+        let closed=false;
+        return {
+          async stat(){return readinessProbeStat('file',bytes.length,20n);},
+          async read(buffer,offset,length,position){
+            calls.probeRead.push({path,position,length});
+            const count=Math.min(length,Math.max(0,bytes.length-position));
+            if(count)buffer.set(bytes.subarray(position,position+count),offset);
+            return {bytesRead:count};
+          },
+          async close(){
+            if(closed)throw Error('DOUBLE_PROBE_CLOSE');
+            closed=true;calls.probeClose.push(path);
+          }
+        };
+      }
+      return fs.open(path,...args);
+    },
+    async mkdir(path,...args){
+      calls.mkdir.push(path);
+      const value=await fs.mkdir(path,...args);
+      if(hooks.afterMkdir)await hooks.afterMkdir(path,calls);
+      return value;
+    },
+    chmod:(...args)=>fs.chmod(...args),
+    readdir:(...args)=>fs.readdir(...args)
+  };
+  const reads={
+    async lstat(path){
+      calls.events.push(`pin-lstat:${path}`);
+      calls.lstat.push(path);
+      if(hooks.pinLstat)await hooks.pinLstat(path,calls);
+      const bytes=files.get(path);
+      if(!bytes)throw Object.assign(new Error('missing'),{code:'ENOENT'});
+      return {size:bytes.length,isFile:()=>true,isSymbolicLink:()=>false};
+    },
+    readChunks(path){
+      calls.readChunks.push(path);
+      const bytes=files.get(path);
+      if(!bytes)throw Object.assign(new Error('missing'),{code:'ENOENT'});
+      return (async function*(){
+        for(let offset=0;offset<bytes.length;offset+=7){
+          if(hooks.afterDefinitionChunk)await hooks.afterDefinitionChunk(path);
+          yield bytes.subarray(offset,Math.min(offset+7,bytes.length));
+        }
+      })();
+    }
+  };
+  const port={
+    fs:fsPort,uid:process.getuid(),spawn:runtime.spawn,
+    async readBytes(path,maxBytes){
+      calls.readBytes.push({path,maxBytes});
+      calls.events.push(`read-bytes:${path}`);
+      if(hooks.beforeReadBytes)await hooks.beforeReadBytes(path,calls);
+      const bytes=files.get(path);
+      if(!bytes)throw Object.assign(new Error('missing'),{code:'ENOENT'});
+      if(bytes.length>maxBytes)throw Error('SYNTHETIC_READ_LIMIT');
+      const result=new Uint8Array(bytes);
+      if(hooks.afterReadBytes)await hooks.afterReadBytes(path,calls);
+      return result;
+    },
+    async verifyFile(identity,suppliedReads){
+      calls.verify.push(identity.path);
+      calls.events.push(`verify:${identity.path}`);
+      if(hooks.beforeVerify)await hooks.beforeVerify(identity,calls);
+      if(identity.path===fixture.config.node.path||
+         identity.path===fixture.config.codex.path){
+        if(hooks.verifyFile)await hooks.verifyFile(identity,calls);
+        return Object.freeze({...identity});
+      }
+      const companion=fixture.companionFiles.get(identity.path);
+      if(companion&&!files.has(identity.path)){
+        throw Error('SYNTHETIC_COMPANION_MISSING');
+      }
+      const result=await verifyExactFile(identity,suppliedReads);
+      if(hooks.verifyFile)await hooks.verifyFile(identity,calls);
+      return result;
+    },
+    reads,now(){
+      calls.now.push(fixture.now);
+      return hooks.now?hooks.now(calls,fixture):fixture.now;
+    },
+    clock:runtime.clock,
+    retention(jobId){
+      calls.retention.push(jobId);
+      return {
+        async prepare(){
+          if(retentionGate)enteredRetention();
+          if(retentionGate)await retentionGate.promise;
+          if(hooks.retentionPrepare)await hooks.retentionPrepare();
+          return {capability_status:'READY'};
+        },
+        async retainRejected(){return {status:'NOT_RETAINED'};}
+      };
+    },
+    environment:{PUBLIC:'synthetic'}
+  };
+  return {port,calls,files,releaseRetention};
+}
+
+// Harness construction has no dispatch. Every test starts and awaits one
+// explicit API operation, including abort and corrected-retry cases.
+function dispatchReadiness(fixture,harness,abortSignal=undefined){
+  return runProjectDesktopCodingLargeObservationWithReadinessWithPorts(
+    fixture.configBytes,fixture.admission,fixture.readinessContextBytes,
+    fixture.selectedRouteBytes,abortSignal,harness.port
+  );
+}
+
+async function expectReadinessCode(code,operation){
+  await assert.rejects(operation,error=>
+    error?.code===code||error?.message===code
+  );
+}
+
+test('readiness opt-in verifies fixed source closure, accepted evidence and probe bytes before generation',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeReadinessIntegrationFixture(root);
+    const runtime=largeFakeRuntime(largeResultEnvelope(20));
+    const harness=makeReadinessIntegrationPorts(fixture,runtime);
+    const result=await dispatchReadiness(fixture,harness);
+    assert.equal(result.schema,PROJECT_LARGE_OBSERVATION_RESULT_SCHEMA);
+    assert.equal(result.status,'CANDIDATE_STAGED');
+    assert.equal(result.task_correctness,'NOT_EVALUATED');
+    assert.equal(result.task_outcome_evaluated,false);
+    assert.equal(result.runtime_admitted,false);
+    assert.equal(result.operator_admitted,true);
+    assert.equal(result.direct_child_invocations.generation,1);
+    assert.equal(runtime.calls.length,1);
+    assert.equal(harness.calls.probeOpen.length,1);
+    assert.deepEqual(harness.calls.probeClose,harness.calls.probeOpen);
+    assert.ok(harness.calls.probeRead.some(read=>read.length===1));
+    assert.ok(harness.calls.readChunks.includes(
+      fixture.context.fixture_definition_pin.path
+    ));
+    assert.ok(harness.calls.readChunks.includes(
+      fixture.context.observer_definition_pin.path
+    ));
+    const basePaths=[
+      fixture.config.node.path,fixture.config.codex.path,
+      fixture.config.prompt.path,...Object.keys(fixture.config.source_pins)
+    ];
+    const baseEnd=Math.max(...basePaths.map(path=>
+      harness.calls.events.indexOf(`verify:${path}`)
+    ));
+    const companions=readinessCompanionPaths.map(relative=>
+      harness.calls.events.indexOf(
+        `verify:${join(PROJECT_SOURCE_ROOT,relative)}`
+      )
+    );
+    assert.ok(companions.every(index=>index>baseEnd));
+    const firstEvidenceRead=harness.calls.events.indexOf(
+      `read-bytes:${fixture.context.proof_pin.path}`
+    );
+    assert.ok(firstEvidenceRead>Math.max(...companions));
+    assert.equal(harness.calls.readBytes.every(
+      item=>item.maxBytes<=65536
+    ),true);
+    assert.equal(harness.calls.retention.length,1);
+    assert.ok(harness.calls.mkdir.includes(fixture.config.scope));
+    assert.equal(fixture.config.desktop_runtime_identity.status,'NOT_QUALIFIED');
+    assert.equal(Object.hasOwn(result,'native_app_status'),false);
+  });
+});
+
+test('all four mandatory companion pins fail closed and corrected same-identity retries proceed',async()=>{
+  await largeRunnerFixture(async root=>{
+    for(const relative of readinessCompanionPaths){
+      for(const failure of ['expected-hash','backing-missing','backing-changed']){
+        const fixture=await makeReadinessIntegrationFixture(root);
+        const expectedContext=new Uint8Array(fixture.readinessContextBytes);
+        const originalBacking=new Uint8Array(
+          fixture.companionFiles.get(join(PROJECT_SOURCE_ROOT,relative))
+        );
+        if(failure==='expected-hash'){
+          fixture.context.companion_source_pins[relative].sha256='0'.repeat(64);
+          fixture.readinessContextBytes=encoder.encode(
+            JSON.stringify(fixture.context)
+          );
+        }else if(failure==='backing-missing'){
+          fixture.files.delete(join(PROJECT_SOURCE_ROOT,relative));
+        }else{
+          fixture.files.set(join(PROJECT_SOURCE_ROOT,relative),
+            new Uint8Array([...originalBacking,0x21]));
+        }
+        const failedRuntime=largeFakeRuntime(largeResultEnvelope(20));
+        const failedHarness=makeReadinessIntegrationPorts(
+          fixture,failedRuntime
+        );
+        await expectReadinessCode(
+          failure==='expected-hash'
+            ?'READINESS_EVIDENCE_BLOCKED'
+            :'READINESS_EVIDENCE_BLOCKED',
+          dispatchReadiness(fixture,failedHarness)
+        );
+        assert.equal(failedRuntime.calls.length,0);
+        assert.equal(failedHarness.calls.retention.length,0);
+
+        fixture.readinessContextBytes=expectedContext;
+        fixture.files.set(join(PROJECT_SOURCE_ROOT,relative),originalBacking);
+        const retryRuntime=largeFakeRuntime(largeResultEnvelope(20));
+        const retryHarness=makeReadinessIntegrationPorts(fixture,retryRuntime);
+        assert.equal((await dispatchReadiness(fixture,retryHarness)).status,
+          'CANDIDATE_STAGED');
+        assert.equal(retryRuntime.calls.length,1);
+        assert.equal(readinessCompanionPaths.every(path=>
+          retryHarness.calls.verify.includes(join(PROJECT_SOURCE_ROOT,path))
+        ),true);
+      }
+    }
+
+    const malformed=[
+      context=>{delete context.companion_source_pins[readinessCompanionPaths[0]];},
+      context=>{
+        const pin=context.companion_source_pins[readinessCompanionPaths[0]];
+        delete context.companion_source_pins[readinessCompanionPaths[0]];
+        context.companion_source_pins['src/wrong.mjs']=pin;
+      },
+      context=>{context.companion_source_pins.unexpected={bytes:1,sha256:'0'.repeat(64)};},
+      context=>{context.companion_source_pins[readinessCompanionPaths[0]].bytes=Number.MAX_SAFE_INTEGER;},
+      context=>{context.companion_source_pins[readinessCompanionPaths[0]].bytes=1048577;},
+      context=>{context.companion_source_pins[readinessCompanionPaths[0]].sha256='unsafe';}
+    ];
+    const fixture=await makeReadinessIntegrationFixture(root);
+    const original=new Uint8Array(fixture.readinessContextBytes);
+    for(const mutate of malformed){
+      const changed=readinessClone(fixture.context);
+      mutate(changed);
+      fixture.readinessContextBytes=encoder.encode(JSON.stringify(changed));
+      const runtime=largeFakeRuntime(largeResultEnvelope(20));
+      const harness=makeReadinessIntegrationPorts(fixture,runtime);
+      await expectReadinessCode(
+        'INVALID_READINESS_CONTEXT',dispatchReadiness(fixture,harness)
+      );
+      assert.equal(runtime.calls.length,0);
+      assert.equal(harness.calls.retention.length,0);
+    }
+    fixture.readinessContextBytes=original;
+    const retryRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const retryHarness=makeReadinessIntegrationPorts(fixture,retryRuntime);
+    assert.equal((await dispatchReadiness(fixture,retryHarness)).status,
+      'CANDIDATE_STAGED');
+  });
+});
+
+test('base source verification failure is fail-closed and leaves the operation available',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeReadinessIntegrationFixture(root);
+    let failOnce=true;
+    const hooks={
+      verifyFile(identity){
+        if(failOnce&&identity.path===fixture.config.node.path){
+          failOnce=false;
+          throw Error('PRIVATE_SOURCE_FAILURE');
+        }
+      }
+    };
+    const failedRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const failedHarness=makeReadinessIntegrationPorts(
+      fixture,failedRuntime,hooks
+    );
+    await expectReadinessCode(
+      'READINESS_EVIDENCE_BLOCKED',
+      dispatchReadiness(fixture,failedHarness)
+    );
+    assert.equal(failedRuntime.calls.length,0);
+    assert.equal(failedHarness.calls.retention.length,0);
+    const retryRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const retryHarness=makeReadinessIntegrationPorts(
+      fixture,retryRuntime,hooks
+    );
+    assert.equal((await dispatchReadiness(fixture,retryHarness)).status,
+      'CANDIDATE_STAGED');
+    assert.equal(retryRuntime.calls.length,1);
+  });
+});
+
+test('operation, job, source, prompt and selected-route mismatches reach their bound comparisons',async()=>{
+  await largeRunnerFixture(async root=>{
+    for(const mode of [
+      'operation-config','job-id','source-commit','prompt-hash','route-session'
+    ]){
+      const fixture=await makeReadinessIntegrationFixture(root);
+      const originalOperationHash=
+        fixture.context.requirements.operation_config_sha256;
+      if(mode==='operation-config'){
+        fixture.config.scope=join(root,`scope-B-${fixture.config.job_id}`);
+      }else if(mode==='job-id'){
+        fixture.config.job_id='20000000-0000-4000-8000-000000000001';
+      }else if(mode==='source-commit'){
+        fixture.config.source_commit='f'.repeat(40);
+      }else if(mode==='prompt-hash'){
+        fixture.promptBytes=encoder.encode(
+          `${new TextDecoder().decode(fixture.promptBytes)} `
+        );
+        fixture.config.prompt.bytes=fixture.promptBytes.length;
+        fixture.config.prompt.sha256=hash(fixture.promptBytes);
+        fixture.files.set(fixture.config.prompt.path,fixture.promptBytes);
+      }else{
+        const selected=readinessRoute(
+          fixture.config.desktop_runtime_identity,'probe-session-B'
+        );
+        fixture.selectedRouteBytes=encoder.encode(JSON.stringify(selected));
+      }
+      if(mode!=='route-session'){
+        fixture.configBytes=encoder.encode(JSON.stringify(fixture.config));
+        fixture.admission=largePreparedAdmission(
+          fixture,fixture.configBytes
+        );
+        fixture.subscriptionObservedAt=fixture.now-100;
+        refreshReadinessFixture(fixture);
+        if(mode==='operation-config'){
+          fixture.context.requirements.operation_config_sha256=
+            originalOperationHash;
+          refreshReadinessFixture(fixture,{operationHash:false});
+        }
+      }
+      const runtime=largeFakeRuntime(largeResultEnvelope(20));
+      const harness=makeReadinessIntegrationPorts(fixture,runtime);
+      await expectReadinessCode(
+        'READINESS_EVIDENCE_BLOCKED',
+        dispatchReadiness(fixture,harness)
+      );
+      assert.equal(runtime.calls.length,0,mode);
+      assert.equal(harness.calls.retention.length,0,mode);
+      assert.equal(harness.calls.readBytes.some(item=>
+        item.path===fixture.context.proof_pin.path
+      ),false,mode);
+    }
+  });
+});
+
+test('caller buffers and admission are captured before a held source verification',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeReadinessIntegrationFixture(root);
+    const gate=readinessDeferred(),entered=readinessDeferred();
+    const runtime=largeFakeRuntime(largeResultEnvelope(20));
+    const configBytes=fixture.configBytes;
+    const contextBytes=fixture.readinessContextBytes;
+    const routeBytes=fixture.selectedRouteBytes;
+    const admission=fixture.admission;
+    const harness=makeReadinessIntegrationPorts(fixture,runtime,{
+      async beforeVerify(identity){
+        if(identity.path===fixture.config.node.path){
+          entered.resolve();
+          await gate.promise;
+        }
+      }
+    });
+    const operation=dispatchReadiness(fixture,harness);
+    await entered.promise;
+    configBytes.fill(0);
+    contextBytes.fill(0);
+    routeBytes.fill(0);
+    admission.job_id='30000000-0000-4000-8000-000000000001';
+    gate.resolve();
+    const result=await operation;
+    assert.equal(result.status,'CANDIDATE_STAGED');
+    assert.equal(result.operator_receipt,
+      fixture.config.authorization.operator_receipt);
+    assert.equal(runtime.calls.length,1);
+  });
+});
+
+test('abort, stale, future and regressing readiness clocks reject before consumption and allow retry',async()=>{
+  await largeRunnerFixture(async root=>{
+    const abortStages=['source','reader','probe','subscription','prompt'];
+    for(const stage of abortStages){
+      const fixture=await makeReadinessIntegrationFixture(root);
+      const controller=new AbortController();
+      const gate=readinessDeferred(),entered=readinessDeferred();
+      const runtime=largeFakeRuntime(largeResultEnvelope(20));
+      const hooks={};
+      const hold=async()=>{
+        entered.resolve();
+        await gate.promise;
+        controller.abort();
+      };
+      if(stage==='source'){
+        hooks.beforeVerify=async identity=>{
+          if(identity.path===fixture.config.node.path)await hold();
+        };
+      }else if(stage==='reader'){
+        hooks.beforeReadBytes=async path=>{
+          if(path===fixture.context.proof_pin.path)await hold();
+        };
+      }else if(stage==='probe'){
+        hooks.beforeProbeOpen=hold;
+      }else if(stage==='subscription'){
+        hooks.beforeReadBytes=async path=>{
+          if(path==='/synthetic/large-preflight.json')await hold();
+        };
+      }else{
+        hooks.beforeReadBytes=async path=>{
+          if(path===fixture.config.prompt.path)await hold();
+        };
+      }
+      const harness=makeReadinessIntegrationPorts(fixture,runtime,hooks);
+      const operation=dispatchReadiness(fixture,harness,controller.signal);
+      await entered.promise;
+      gate.resolve();
+      await assert.rejects(operation,error=>
+        ['OPERATION_ABORTED','READINESS_EVIDENCE_BLOCKED'].includes(
+          error?.code??error?.message
+        )
+      );
+      assert.equal(runtime.calls.length,0,stage);
+      assert.equal(harness.calls.retention.length,0,stage);
+      const retryRuntime=largeFakeRuntime(largeResultEnvelope(20));
+      const retryHarness=makeReadinessIntegrationPorts(fixture,retryRuntime);
+      assert.equal((await dispatchReadiness(fixture,retryHarness)).status,
+        'CANDIDATE_STAGED',stage);
+    }
+
+    const stale=await makeReadinessIntegrationFixture(root);
+    stale.now=301001;
+    stale.subscriptionObservedAt=300901;
+    stale.subscriptionBytes=readinessSubscriptionBytes(
+      stale,stale.subscriptionObservedAt
+    );
+    stale.files.set('/synthetic/large-preflight.json',stale.subscriptionBytes);
+    const staleRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const staleHarness=makeReadinessIntegrationPorts(stale,staleRuntime);
+    await expectReadinessCode(
+      'READINESS_EVIDENCE_BLOCKED',
+      dispatchReadiness(stale,staleHarness)
+    );
+    assert.ok(staleHarness.calls.readBytes.some(item=>
+      item.path===stale.config.prompt.path
+    ));
+    assert.equal(staleRuntime.calls.length,0);
+    stale.now=1200;
+    stale.subscriptionObservedAt=1100;
+    stale.subscriptionBytes=readinessSubscriptionBytes(stale,1100);
+    stale.files.set('/synthetic/large-preflight.json',stale.subscriptionBytes);
+    const staleRetryRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const staleRetryHarness=makeReadinessIntegrationPorts(
+      stale,staleRetryRuntime
+    );
+    assert.equal((await dispatchReadiness(stale,staleRetryHarness)).status,
+      'CANDIDATE_STAGED');
+
+    const future=await makeReadinessIntegrationFixture(root);
+    future.now=999;
+    future.subscriptionObservedAt=899;
+    future.subscriptionBytes=readinessSubscriptionBytes(future,899);
+    future.files.set('/synthetic/large-preflight.json',future.subscriptionBytes);
+    const futureRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const futureHarness=makeReadinessIntegrationPorts(future,futureRuntime);
+    await expectReadinessCode(
+      'READINESS_EVIDENCE_BLOCKED',
+      dispatchReadiness(future,futureHarness)
+    );
+    assert.ok(futureHarness.calls.readBytes.some(item=>
+      item.path===future.config.prompt.path
+    ));
+    assert.equal(futureRuntime.calls.length,0);
+    future.now=1200;
+    future.subscriptionObservedAt=1100;
+    future.files.set('/synthetic/large-preflight.json',
+      readinessSubscriptionBytes(future,1100));
+    assert.equal((await dispatchReadiness(
+      future,makeReadinessIntegrationPorts(
+        future,largeFakeRuntime(largeResultEnvelope(20))
+      )
+    )).status,'CANDIDATE_STAGED');
+
+    const regressing=await makeReadinessIntegrationFixture(root);
+    let sample=0;
+    const regressionRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const regressionHarness=makeReadinessIntegrationPorts(
+      regressing,regressionRuntime,{
+        now(){
+          sample++;
+          return sample===1?1200:sample===2?1201:1200;
+        }
+      }
+    );
+    await expectReadinessCode(
+      'READINESS_EVIDENCE_BLOCKED',
+      dispatchReadiness(regressing,regressionHarness)
+    );
+    assert.equal(regressionRuntime.calls.length,0);
+    assert.equal(regressionHarness.calls.retention.length,0);
+    assert.equal((await dispatchReadiness(
+      regressing,makeReadinessIntegrationPorts(
+        regressing,largeFakeRuntime(largeResultEnvelope(20))
+      )
+    )).status,'CANDIDATE_STAGED');
+  });
+});
+
+test('concurrent new readiness calls share both existing job and scope fences',async()=>{
+  await largeRunnerFixture(async root=>{
+    for(const relation of ['same-job','same-scope']){
+      const sharedJob=`40000000-0000-4000-8000-00000000000${
+        relation==='same-job'?'1':'2'
+      }`;
+      const sharedScope=join(root,`shared-readiness-${relation}`);
+      const first=await makeReadinessIntegrationFixture(root,{
+        jobId:relation==='same-job'?sharedJob:null,
+        scope:relation==='same-scope'?sharedScope:join(root,'readiness-A')
+      });
+      const second=await makeReadinessIntegrationFixture(root,{
+        jobId:relation==='same-job'?sharedJob:null,
+        scope:relation==='same-scope'?sharedScope:join(root,'readiness-B')
+      });
+      const gate=readinessDeferred(),entered=readinessDeferred();
+      let arrivals=0;
+      const beforeVerify=async()=>{
+        if(++arrivals===2)entered.resolve();
+        await gate.promise;
+      };
+      const runtimeA=largeFakeRuntime(largeResultEnvelope(20));
+      const runtimeB=largeFakeRuntime(largeResultEnvelope(20));
+      const harnessA=makeReadinessIntegrationPorts(first,runtimeA,{beforeVerify});
+      const harnessB=makeReadinessIntegrationPorts(second,runtimeB,{beforeVerify});
+      const operationA=dispatchReadiness(first,harnessA);
+      const operationB=dispatchReadiness(second,harnessB);
+      await entered.promise;
+      gate.resolve();
+      const settled=await Promise.allSettled([operationA,operationB]);
+      assert.equal(settled.filter(item=>item.status==='fulfilled').length,1);
+      assert.equal(settled.filter(item=>item.status==='rejected').length,1);
+      assert.equal(runtimeA.calls.length+runtimeB.calls.length,1);
+      assert.equal(
+        harnessA.calls.retention.length+harnessB.calls.retention.length,1
+      );
+    }
+  });
+});
+
+test('new and legacy routes contend in both winner orders for shared job and scope fences',async()=>{
+  await largeRunnerFixture(async root=>{
+    for(const relation of ['same-job','same-scope']){
+      for(const winner of ['new-first','legacy-first']){
+        const suffix=`${relation}-${winner}`;
+        const sharedJob=`50000000-0000-4000-8000-00000000000${
+          winner==='new-first'?'1':'2'
+        }`;
+        const sharedScope=join(root,`shared-${suffix}`);
+        const readiness=await makeReadinessIntegrationFixture(root,{
+          jobId:relation==='same-job'?sharedJob:null,
+          scope:relation==='same-scope'?sharedScope:join(root,`new-${suffix}`)
+        });
+        const legacy=await makeReadinessIntegrationFixture(root,{
+          jobId:relation==='same-job'?sharedJob:null,
+          scope:relation==='same-scope'?sharedScope:join(root,`legacy-${suffix}`)
+        });
+        const newRuntime=largeFakeRuntime(largeResultEnvelope(20));
+        const legacyRuntime=largeFakeRuntime(largeResultEnvelope(20));
+
+        if(winner==='new-first'){
+          const entered=readinessDeferred();
+          const newHarness=makeReadinessIntegrationPorts(
+            readiness,newRuntime,{
+              retentionGate:true,retentionEntered:()=>entered.resolve()
+            }
+          );
+          const newOperation=dispatchReadiness(readiness,newHarness);
+          await entered.promise;
+          const legacyHarness=makeReadinessIntegrationPorts(
+            legacy,legacyRuntime
+          );
+          await expectReadinessCode(
+            'NATIVE_OPERATION_ALREADY_CONSUMED',
+            runProjectDesktopCodingLargeObservationWithPorts(
+              legacy.configBytes,legacy.admission,undefined,legacyHarness.port
+            )
+          );
+          assert.equal(legacyRuntime.calls.length,0);
+          assert.equal(legacyHarness.calls.retention.length,0);
+          newHarness.releaseRetention();
+          assert.equal((await newOperation).status,'CANDIDATE_STAGED');
+          assert.equal(newRuntime.calls.length,1);
+        }else{
+          const gate=readinessDeferred(),entered=readinessDeferred();
+          const legacyHarness=makeReadinessIntegrationPorts(
+            legacy,legacyRuntime,{
+              async beforeVerify(identity){
+                if(identity.path===legacy.config.node.path){
+                  entered.resolve();
+                  await gate.promise;
+                }
+              }
+            }
+          );
+          const legacyOperation=
+            runProjectDesktopCodingLargeObservationWithPorts(
+              legacy.configBytes,legacy.admission,undefined,legacyHarness.port
+            );
+          await entered.promise;
+          const newHarness=makeReadinessIntegrationPorts(
+            readiness,newRuntime
+          );
+          await expectReadinessCode(
+            'NATIVE_OPERATION_ALREADY_CONSUMED',
+            dispatchReadiness(readiness,newHarness)
+          );
+          assert.equal(newRuntime.calls.length,0);
+          assert.equal(newHarness.calls.retention.length,0);
+          gate.resolve();
+          assert.equal((await legacyOperation).status,'CANDIDATE_STAGED');
+          assert.equal(legacyRuntime.calls.length,1);
+        }
+      }
+    }
+  });
+});
+
+test('late expiry blocks physical spawn after both attempts and backend throws remain unknown-child attempts',async()=>{
+  await largeRunnerFixture(async root=>{
+    const expired=await makeReadinessIntegrationFixture(root);
+    const expiredRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const expiredHarness=makeReadinessIntegrationPorts(
+      expired,expiredRuntime,{
+        async afterMkdir(path){
+          if(path===expired.config.scope)expired.now=301001;
+        }
+      }
+    );
+    const result=await dispatchReadiness(expired,expiredHarness);
+    assert.equal(result.status,'GENERATION_REJECTED');
+    assert.equal(result.generation.record.lifecycle_status,'LIMITED_SPAWN_FAILED');
+    assert.equal(result.direct_child_invocations.generation,1);
+    assert.equal(expiredRuntime.calls.length,0);
+    assert.equal(expiredHarness.calls.retention.length,1);
+    const retryRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    await expectReadinessCode('NATIVE_OPERATION_ALREADY_CONSUMED',
+      dispatchReadiness(expired,makeReadinessIntegrationPorts(
+        expired,retryRuntime
+      ))
+    );
+    assert.equal(retryRuntime.calls.length,0);
+
+    const thrown=await makeReadinessIntegrationFixture(root);
+    const backendCalls=[];
+    const throwingRuntime=largeFakeRuntime(largeResultEnvelope(20));
+    const throwingHarness=makeReadinessIntegrationPorts(
+      thrown,throwingRuntime
+    );
+    throwingHarness.port.spawn=(...args)=>{
+      backendCalls.push(args);
+      throw Error('SYNTHETIC_BACKEND_THROW');
+    };
+    const failed=await dispatchReadiness(thrown,throwingHarness);
+    assert.equal(failed.status,'GENERATION_REJECTED');
+    assert.equal(failed.generation.record.lifecycle_status,'LIMITED_SPAWN_FAILED');
+    assert.equal(failed.direct_child_invocations.generation,1);
+    assert.equal(backendCalls.length,1);
+    assert.equal(failed.generation.record.process_exit.pid,null);
+    assert.equal(
+      failed.generation.record.containment_evidence.settlement_status,
+      'UNKNOWN'
+    );
+  });
+});
+
+test('native readiness projects its environment and honors an early preflight abort',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeReadinessIntegrationFixture(root);
+    const controller=new AbortController();
+    controller.abort();
+    await assert.rejects(
+      ()=>runProjectDesktopCodingLargeObservationNativeWithReadiness(
+        fixture.configBytes,fixture.admission,fixture.readinessContextBytes,
+        fixture.selectedRouteBytes,controller.signal
+      ),
+      error=>{
+        const descriptor=Object.getOwnPropertyDescriptor(error,'code');
+        return Boolean(descriptor&&Object.hasOwn(descriptor,'value')&&
+          descriptor.value==='OPERATION_ABORTED');
+      }
+    );
+  });
+});
+
+test('injected readiness environments stay descriptor-safe and bounded',async()=>{
+  await largeRunnerFixture(async root=>{
+    let getterCalls=0,proxyTraps=0;
+    const accessorEnvironment={};
+    Object.defineProperty(accessorEnvironment,'SYNTHETIC_ACCESSOR',{
+      enumerable:true,
+      get(){getterCalls++;return 'synthetic-value';}
+    });
+    const proxyTarget={PUBLIC:'synthetic-value'};
+    const proxyEnvironment=new Proxy(proxyTarget,{
+      ownKeys(target){proxyTraps++;return Reflect.ownKeys(target);},
+      getOwnPropertyDescriptor(target,key){
+        proxyTraps++;return Reflect.getOwnPropertyDescriptor(target,key);
+      },
+      getPrototypeOf(target){
+        proxyTraps++;return Reflect.getPrototypeOf(target);
+      },
+      get(target,key,receiver){
+        proxyTraps++;return Reflect.get(target,key,receiver);
+      }
+    });
+    const customPrototype=Object.create({syntheticMarker:'synthetic-value'});
+    customPrototype.PUBLIC='synthetic-value';
+    const oversizedEnvironment={};
+    for(let index=0;index<80;index++){
+      oversizedEnvironment[`SYNTHETIC_ENV_${index}`]='x'.repeat(4096);
+    }
+    const scenarios=[
+      {
+        name:'ordinary',
+        environment:{PUBLIC:'synthetic-value'},
+        expected:'OPERATION_ABORTED'
+      },
+      {
+        name:'accessor',
+        environment:accessorEnvironment,
+        expected:'INVALID_READINESS_CONTEXT'
+      },
+      {
+        name:'proxy',
+        environment:proxyEnvironment,
+        expected:'INVALID_READINESS_CONTEXT'
+      },
+      {
+        name:'custom-prototype',
+        environment:customPrototype,
+        expected:'INVALID_READINESS_CONTEXT'
+      },
+      {
+        name:'oversized',
+        environment:oversizedEnvironment,
+        expected:'INVALID_READINESS_CONTEXT'
+      }
+    ];
+    for(const scenario of scenarios){
+      const fixture=await makeReadinessIntegrationFixture(root);
+      const runtime=largeFakeRuntime(largeResultEnvelope(20));
+      const harness=makeReadinessIntegrationPorts(fixture,runtime);
+      harness.port.environment=scenario.environment;
+      const controller=new AbortController();
+      controller.abort();
+      await expectReadinessCode(
+        scenario.expected,
+        dispatchReadiness(fixture,harness,controller.signal)
+      );
+      assert.equal(harness.calls.verify.length,0,scenario.name);
+      assert.equal(harness.calls.readBytes.length,0,scenario.name);
+      assert.equal(harness.calls.readChunks.length,0,scenario.name);
+      assert.equal(harness.calls.realpath.length,0,scenario.name);
+      assert.equal(harness.calls.probeOpen.length,0,scenario.name);
+      assert.equal(harness.calls.retention.length,0,scenario.name);
+      assert.equal(runtime.calls.length,0,scenario.name);
+    }
+    assert.equal(getterCalls,0);
+    assert.equal(proxyTraps,0);
+  });
+});
+
+test('readiness generation preserves synthetic environment policy at the fake backend',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeReadinessIntegrationFixture(root);
+    const runtime=largeFakeRuntime(largeResultEnvelope(20));
+    const harness=makeReadinessIntegrationPorts(fixture,runtime);
+    const environment={
+      PUBLIC:'synthetic-public',
+      PATH:'/synthetic/bin',
+      TMPDIR:'/synthetic/ambient-tmp'
+    };
+    for(const key of CODEX_CHILD_ENV_DELETIONS){
+      environment[key]='synthetic-deleted-value';
+    }
+    harness.port.environment=environment;
+    const result=await dispatchReadiness(fixture,harness);
+    assert.equal(result.status,'CANDIDATE_STAGED');
+    assert.equal(runtime.calls.length,1);
+    const childEnvironment=runtime.calls[0][2].env;
+    assert.equal(childEnvironment.PUBLIC,'synthetic-public');
+    assert.equal(childEnvironment.PATH,'/synthetic/bin');
+    assert.equal(childEnvironment.TMPDIR,`${fixture.config.scope}/.tmp`);
+    for(const key of CODEX_CHILD_ENV_DELETIONS){
+      assert.equal(Object.hasOwn(childEnvironment,key),false);
+    }
+  });
+});
+
+const artifactWrapperCompanions=[
+  'src/desktop-readiness-evidence.mjs',
+  'src/project-artifact-check-evidence.mjs',
+  'src/artifact-verifier.mjs',
+  'src/job-record.mjs'
+];
+const artifactWrapperUid=71;
+function artifactWrapperTerminal({exit_code=0}={}){
+  return {
+    process:{
+      pid:503,start_ticks:'53',
+      boot_id:'00000000-0000-0000-0000-000000000001'
+    },
+    started_at_ms:100,ended_at_ms:101,
+    direct_child_exit_observed:true,exit_kind:'natural',exit_code,
+    signal:null,stdout_eof:true,stderr_eof:true,stop_codes:[],
+    cleanup_codes:[],descendant_guarantee:'NOT_ESTABLISHED'
+  };
+}
+const artifactWrapperSubset=(fixture,check)=>{
+  const artifacts=check.artifact_ids.map(id=>{
+    const item=fixture.context.artifacts.find(value=>value.artifact_id===id);
+    return {
+      artifact_id:item.artifact_id,role:item.role,
+      relative_path:item.relative_path,byte_count:item.byte_count,
+      sha256:item.sha256,staged_artifact_id:item.staged_artifact_id
+    };
+  }).sort((left,right)=>left.artifact_id<right.artifact_id?-1:1);
+  return hash(canonicalBytes({
+    domain:'squire.project-artifact-check.subset.v2',
+    value:{
+      job_id:fixture.config.job_id,
+      operation_config_sha256:hash(fixture.configBytes),
+      stage_manifest_sha256:fixture.stagePlan.manifest_sha256,
+      artifacts
+    }
+  }));
+};
+
+async function makeArtifactWrapperFixture(root,options={}){
+  const prepared=await largePreparedFixture(root);
+  const config=readinessClone(prepared.config);
+  const files=prepared.files;
+  const configBytes=encoder.encode(JSON.stringify(config));
+  const stageRoot=join(
+    config.scope,'output',`run-${config.job_id}`,'stage'
+  );
+  const sourceBytes=encoder.encode('synthetic artifact wrapper application');
+  const stagePlan=planLargeProjectStaging({
+    stage_operation_id:`stage-${config.job_id}`,
+    caller_label:'artifact-wrapper-stage',
+    output_profile:PROFILE,
+    files:[{
+      path:'src/app.js',classification:'SOURCE',content:sourceBytes
+    }]
+  });
+  const stageMember=stagePlan.files[0];
+  const deliveryRoot=join(root,'artifact-wrapper-delivery');
+  const artifacts=[
+    {
+      artifact_id:'main-app',role:'staged',root:stageRoot,
+      relative_path:stageMember.path,byte_count:stageMember.bytes,
+      sha256:stageMember.sha256,staged_artifact_id:null
+    },
+    {
+      artifact_id:'copy-app',role:'delivered_copy',root:deliveryRoot,
+      relative_path:'app.js',byte_count:stageMember.bytes,
+      sha256:stageMember.sha256,staged_artifact_id:'main-app'
+    }
+  ];
+  files.set(join(stageRoot,stageMember.path),new Uint8Array(sourceBytes));
+  files.set(join(stageRoot,'stage-manifest.json'),
+    new Uint8Array(stagePlan.manifest_bytes));
+  files.set(join(deliveryRoot,'app.js'),new Uint8Array(sourceBytes));
+
+  const companion_source_pins=Object.create(null);
+  for(const relative of artifactWrapperCompanions){
+    const path=join(PROJECT_SOURCE_ROOT,relative);
+    let bytes=files.get(path);
+    if(!bytes){
+      bytes=encoder.encode(`synthetic pinned source ${relative}`);
+      files.set(path,bytes);
+    }
+    companion_source_pins[relative]={
+      bytes:bytes.length,sha256:hash(bytes)
+    };
+  }
+  const checkIds=options.checkIds??['first-check','later-check'];
+  const definitions=checkIds.map(id=>
+    encoder.encode(`synthetic definition ${id}`)
+  );
+  const checks=checkIds.map((check_id,index)=>({
+    check_id,
+    definition_pin:{
+      path:join(root,'artifact-wrapper-evidence',`${check_id}.definition`),
+      bytes:definitions[index].length,sha256:hash(definitions[index])
+    },
+    receipt_pin:{
+      path:join(root,'artifact-wrapper-evidence',`${check_id}.receipt`),
+      bytes:1,sha256:'0'.repeat(64)
+    },
+    observer_role:'trusted_owner_fixture',
+    artifact_ids:['copy-app','main-app']
+  }));
+  const context={
+    schema:'squire.project_artifact_check_context.v2',
+    operation_config_sha256:hash(configBytes),job_id:config.job_id,
+    candidate:{
+      source_commit:config.source_commit,stage_root:stageRoot,
+      stage_operation_id:`stage-${config.job_id}`,
+      stage_manifest_sha256:stagePlan.manifest_sha256
+    },
+    artifacts,required_checks:checks,
+    observer_policy_sha256:'c'.repeat(64),companion_source_pins
+  };
+  const receipts=options.receipts??checkIds.map(()=>({}));
+  for(let index=0;index<checks.length;index++){
+    const check=checks[index];
+    const receipt={
+      schema:'squire.project_artifact_check_receipt.v2',
+      check_id:check.check_id,definition_sha256:check.definition_pin.sha256,
+      job_id:config.job_id,operation_config_sha256:hash(configBytes),
+      stage_manifest_sha256:stagePlan.manifest_sha256,
+      artifact_subset_sha256:artifactWrapperSubset(
+        {config,configBytes,stagePlan,context},check
+      ),
+      observer_policy_sha256:context.observer_policy_sha256,
+      observer_role:'trusted_owner_fixture',
+      status:'passed',reason:'NONE',
+      terminal:artifactWrapperTerminal(),limitations:[],
+      ...readinessClone(receipts[index])
+    };
+    const receiptBytes=encoder.encode(JSON.stringify(receipt));
+    check.receipt_pin={
+      path:check.receipt_pin.path,
+      bytes:receiptBytes.length,sha256:hash(receiptBytes)
+    };
+    files.set(check.definition_pin.path,new Uint8Array(definitions[index]));
+    files.set(check.receipt_pin.path,receiptBytes);
+  }
+  const artifactContextBytes=encoder.encode(JSON.stringify(context));
+  return {
+    ...prepared,config,configBytes,context,artifactContextBytes,
+    stageRoot,stagePlan,files
+  };
+}
+
+function makeArtifactWrapperPorts(fixture,hooks={}){
+  const nodes=new Map();
+  const calls={verify:[],readBytes:[],lstat:[],realpath:[],open:[],
+    read:[],close:[],readdir:[],mkdir:[],chmod:[],events:[]};
+  let nextInode=10;
+  const directory=path=>{
+    if(nodes.has(path))return nodes.get(path);
+    if(path!=='/')directory(dirname(path));
+    const node={kind:'directory',ino:nextInode++};
+    nodes.set(path,node);
+    return node;
+  };
+  for(const [path,bytes] of fixture.files){
+    directory(dirname(path));
+    nodes.set(path,{
+      kind:'file',ino:nextInode++,bytes:new Uint8Array(bytes)
+    });
+  }
+  const stat=(node,bigint=false)=>{
+    const number=value=>bigint?BigInt(value):value;
+    return {
+      dev:number(1),ino:number(node.ino),
+      size:number(node.kind==='file'?node.bytes.length:1),
+      mtimeNs:number(2),ctimeNs:number(3),
+      mtimeMs:2,ctimeMs:3,
+      mode:number(node.kind==='file'?0o100400:0o040700),
+      uid:number(artifactWrapperUid),nlink:number(1),
+      isFile:()=>node.kind==='file',
+      isDirectory:()=>node.kind==='directory',
+      isSymbolicLink:()=>false
+    };
+  };
+  const missing=()=>Object.assign(new Error('synthetic missing'),{
+    code:'ENOENT'
+  });
+  const fsPort={
+    async lstat(path,options){
+      calls.lstat.push(path);
+      if(hooks.beforeLstat)await hooks.beforeLstat(path,calls);
+      const node=nodes.get(path);
+      if(!node)throw missing();
+      return stat(node,options?.bigint===true);
+    },
+    async realpath(path){
+      calls.realpath.push(path);
+      if(hooks.realpath)return hooks.realpath(path,calls);
+      return path;
+    },
+    async open(path){
+      calls.open.push(path);
+      const node=nodes.get(path);
+      if(!node||node.kind!=='file')throw missing();
+      let closedHandle=false;
+      return {
+        async stat(options){return stat(node,options?.bigint===true);},
+        async read(buffer,offset,length,position){
+          calls.read.push({path,position,length});
+          if(hooks.read)await hooks.read(path,position,calls);
+          const count=Math.min(length,Math.max(0,node.bytes.length-position));
+          if(count)Uint8Array.prototype.set.call(
+            buffer,node.bytes.subarray(position,position+count),offset
+          );
+          return {bytesRead:count};
+        },
+        async close(){
+          if(closedHandle)throw new Error('DOUBLE_SYNTHETIC_CLOSE');
+          closedHandle=true;
+          calls.close.push(path);
+        }
+      };
+    },
+    async readdir(path){
+      calls.readdir.push(path);
+      const entries=[...nodes.keys()].filter(candidate=>
+        candidate!==path&&dirname(candidate)===path
+      ).map(candidate=>candidate.slice(path.length+1));
+      if(hooks.afterReaddir)await hooks.afterReaddir(path,calls);
+      return entries;
+    },
+    async mkdir(path){calls.mkdir.push(path);throw new Error('WRITE_FORBIDDEN');},
+    async chmod(path){calls.chmod.push(path);throw new Error('WRITE_FORBIDDEN');}
+  };
+  const reads={
+    async lstat(path){
+      calls.events.push(`pin-lstat:${path}`);
+      const node=nodes.get(path);
+      if(!node)throw missing();
+      return stat(node,false);
+    },
+    readChunks(path){
+      calls.readChunks??=[];
+      calls.readChunks.push(path);
+      const node=nodes.get(path);
+      if(!node||node.kind!=='file')throw missing();
+      return (async function*(){
+        for(let offset=0;offset<node.bytes.length;offset+=7){
+          yield new Uint8Array(node.bytes.subarray(
+            offset,Math.min(offset+7,node.bytes.length)
+          ));
+        }
+      })();
+    }
+  };
+  const port={
+    fs:fsPort,uid:artifactWrapperUid,reads,
+    async readBytes(path,maxBytes){
+      calls.readBytes.push({path,maxBytes});
+      calls.events.push(`read-bytes:${path}`);
+      if(hooks.beforeReadBytes)await hooks.beforeReadBytes(path,calls);
+      const node=nodes.get(path);
+      if(!node||node.kind!=='file')throw missing();
+      if(node.bytes.length>maxBytes)throw new Error('SYNTHETIC_READ_LIMIT');
+      return new Uint8Array(node.bytes);
+    },
+    async verifyFile(identity,suppliedReads){
+      calls.verify.push(identity.path);
+      calls.events.push(`verify:${identity.path}`);
+      if(hooks.beforeVerify)await hooks.beforeVerify(identity,calls);
+      return verifyExactFile(identity,suppliedReads);
+    }
+  };
+  return {port,calls,nodes};
+}
+
+async function expectArtifactWrapperCode(code,operation){
+  await assert.rejects(operation,error=>
+    error?.code===code&&error?.message===code
+  );
+}
+
+async function settleArtifactWrapperGate(
+  operation,entered,release,beforeRelease=()=>{}
+){
+  const outcome=Promise.resolve(operation).then(
+    value=>({state:'fulfilled',value}),
+    error=>({state:'rejected',error})
+  );
+  let boundary,failure,failureObserved=false;
+  try{
+    boundary=await Promise.race([
+      entered.promise.then(()=>({state:'entered'})),
+      outcome.then(result=>({state:'settled',result}))
+    ]);
+    assert.equal(
+      boundary.state,'entered',
+      boundary.state==='settled'
+        ?`artifact wrapper settled ${boundary.result.state} before its hold`
+        :'artifact wrapper did not enter its hold'
+    );
+    await beforeRelease();
+  }catch(error){
+    failure=error;
+    failureObserved=true;
+  }finally{
+    release.resolve();
+  }
+  const settled=await outcome;
+  if(failureObserved)throw failure;
+  if(settled.state==='rejected')throw settled.error;
+  return settled.value;
+}
+
+test('public artifact wrappers reject malformed envelopes, ports and abort brands before IO',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeArtifactWrapperFixture(root);
+    const harness=makeArtifactWrapperPorts(fixture);
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecksWithPorts(
+        encoder.encode('{}'),fixture.artifactContextBytes,undefined,
+        harness.port
+      )
+    );
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecksWithPorts(
+        fixture.configBytes,encoder.encode('{}'),undefined,harness.port
+      )
+    );
+    let getterCalls=0,proxyTraps=0;
+    const accessor={...harness.port};
+    Object.defineProperty(accessor,'readBytes',{
+      enumerable:true,get(){getterCalls++;return harness.port.readBytes;}
+    });
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecksWithPorts(
+        fixture.configBytes,fixture.artifactContextBytes,undefined,accessor
+      )
+    );
+    const proxy=new Proxy(harness.port,{
+      ownKeys(){proxyTraps++;throw new Error('PRIVATE_PORT_PROXY');}
+    });
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecksWithPorts(
+        fixture.configBytes,fixture.artifactContextBytes,undefined,proxy
+      )
+    );
+    const forged=Object.create(AbortSignal.prototype);
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecksWithPorts(
+        fixture.configBytes,fixture.artifactContextBytes,forged,harness.port
+      )
+    );
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecksWithPorts(
+        fixture.configBytes,fixture.artifactContextBytes,
+        new Proxy(new AbortController().signal,{}),harness.port
+      )
+    );
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecks(
+        new Uint8Array([0x7b]),new Uint8Array(),undefined
+      )
+    );
+    assert.equal(getterCalls,0);
+    assert.equal(proxyTraps,0);
+    assert.deepEqual(harness.calls.verify,[]);
+    assert.deepEqual(harness.calls.readBytes,[]);
+    assert.deepEqual(harness.calls.open,[]);
+  });
+});
+
+test('public wrapper verifies every source pin on warm calls before actual resolver IO',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeArtifactWrapperFixture(root);
+    const harness=makeArtifactWrapperPorts(fixture);
+    const expected=[
+      ...Object.keys(fixture.config.source_pins).sort(),
+      ...artifactWrapperCompanions.map(relative=>
+        join(PROJECT_SOURCE_ROOT,relative)
+      )
+    ];
+    const first=await verifyProjectArtifactChecksWithPorts(
+      fixture.configBytes,fixture.artifactContextBytes,undefined,harness.port
+    );
+    assert.equal(first.sidecar.coverage,'DECLARED_CHECKS_PASSED');
+    assert.equal(first.sidecar.reason,'NONE');
+    assert.deepEqual(
+      first.sidecar.check_results.map(item=>item.check_id),
+      ['first-check','later-check']
+    );
+    assert.ok(first.sidecar.check_results.every(item=>
+      item.status==='passed'&&item.evidence_binding==='verified'
+    ));
+    assert.ok(Object.isFrozen(first));
+    assert.ok(Object.isFrozen(first.sidecar));
+    assert.deepEqual([...first.bytes],[...canonicalBytes(first.sidecar)]);
+    assert.deepEqual(harness.calls.verify.slice(0,expected.length),expected);
+    assert.deepEqual(harness.calls.verify.slice(expected.length),[
+      fixture.context.required_checks[0].definition_pin.path,
+      fixture.context.required_checks[1].definition_pin.path
+    ]);
+    assert.ok(harness.calls.readBytes.every(call=>call.maxBytes<=65536));
+    assert.deepEqual(harness.calls.mkdir,[]);
+    assert.deepEqual(harness.calls.chmod,[]);
+    const before=harness.calls.verify.length;
+    const warm=await verifyProjectArtifactChecksWithPorts(
+      fixture.configBytes,fixture.artifactContextBytes,undefined,harness.port
+    );
+    assert.equal(warm.sidecar.coverage,'DECLARED_CHECKS_PASSED');
+    assert.deepEqual(
+      harness.calls.verify.slice(before,before+expected.length),expected
+    );
+  });
+});
+
+test('public wrapper preserves verified negatives and returns blocked evidence with every check ID',async()=>{
+  await largeRunnerFixture(async root=>{
+    const failed=await makeArtifactWrapperFixture(root,{
+      receipts:[{
+        status:'failed',reason:'CHECK_FAILED',
+        terminal:artifactWrapperTerminal({exit_code:1})
+      },{}]
+    });
+    const failedResult=await verifyProjectArtifactChecksWithPorts(
+      failed.configBytes,failed.artifactContextBytes,undefined,
+      makeArtifactWrapperPorts(failed).port
+    );
+    assert.equal(failedResult.sidecar.coverage,'DECLARED_CHECKS_FAILED');
+    assert.deepEqual(
+      failedResult.sidecar.check_results.map(item=>item.evidence_binding),
+      ['verified','verified']
+    );
+    assert.equal(failedResult.sidecar.check_results[0].status,'failed');
+    assert.equal(failedResult.sidecar.reason,'CHECK_FAILED');
+
+    const missing=await makeArtifactWrapperFixture(root);
+    missing.files.delete(
+      missing.context.required_checks[0].receipt_pin.path
+    );
+    const blockedResult=await verifyProjectArtifactChecksWithPorts(
+      missing.configBytes,missing.artifactContextBytes,undefined,
+      makeArtifactWrapperPorts(missing).port
+    );
+    assert.equal(blockedResult.sidecar.coverage,'BLOCKED');
+    assert.equal(blockedResult.sidecar.reason,'MISSING_EVIDENCE');
+    assert.deepEqual(
+      blockedResult.sidecar.check_results.map(item=>item.check_id),
+      ['first-check','later-check']
+    );
+    assert.equal(blockedResult.sidecar.check_results[0].evidence_binding,
+      'unresolved');
+    assert.equal(blockedResult.sidecar.check_results[1].status,'passed');
+    assert.equal(blockedResult.sidecar.check_results[1].evidence_binding,
+      'verified');
+  });
+});
+
+test('each companion and a base config pin failure stop before resolver reads',async()=>{
+  await largeRunnerFixture(async root=>{
+    for(const relative of artifactWrapperCompanions){
+      const fixture=await makeArtifactWrapperFixture(root);
+      fixture.context.companion_source_pins[relative].sha256='0'.repeat(64);
+      fixture.artifactContextBytes=encoder.encode(
+        JSON.stringify(fixture.context)
+      );
+      const harness=makeArtifactWrapperPorts(fixture);
+      await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+        verifyProjectArtifactChecksWithPorts(
+          fixture.configBytes,fixture.artifactContextBytes,undefined,
+          harness.port
+        )
+      );
+      assert.deepEqual(harness.calls.readBytes,[]);
+      assert.equal(harness.calls.verify.includes(
+        join(PROJECT_SOURCE_ROOT,relative)
+      ),true);
+    }
+
+    const base=await makeArtifactWrapperFixture(root);
+    const basePath=Object.keys(base.config.source_pins).sort()[0];
+    base.config.source_pins[basePath].sha256='0'.repeat(64);
+    base.configBytes=encoder.encode(JSON.stringify(base.config));
+    base.context.operation_config_sha256=hash(base.configBytes);
+    base.artifactContextBytes=encoder.encode(JSON.stringify(base.context));
+    const harness=makeArtifactWrapperPorts(base);
+    await expectArtifactWrapperCode('INVALID_ARTIFACT_CONTEXT',
+      verifyProjectArtifactChecksWithPorts(
+        base.configBytes,base.artifactContextBytes,undefined,harness.port
+      )
+    );
+    assert.equal(harness.calls.verify.includes(basePath),true);
+    assert.deepEqual(harness.calls.readBytes,[]);
+  });
+});
+
+test('read-only artifact calls leave both generation admission fences available',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeArtifactWrapperFixture(root);
+    const artifactHarness=makeArtifactWrapperPorts(fixture);
+    const sidecar=await verifyProjectArtifactChecksWithPorts(
+      fixture.configBytes,fixture.artifactContextBytes,undefined,
+      artifactHarness.port
+    );
+    assert.equal(sidecar.sidecar.coverage,'DECLARED_CHECKS_PASSED');
+
+    const runtime=largeFakeRuntime(largeResultEnvelope(20));
+    const ports=largePreparedPorts(fixture,runtime);
+    const verificationAttempts=[];
+    let proofReads=0;
+    const originalReadBytes=ports.readBytes;
+    ports.readBytes=async function(...args){
+      proofReads++;
+      return Reflect.apply(originalReadBytes,this,args);
+    };
+    const earlyStop=new Error('SYNTHETIC_STOP_AFTER_ADMISSION');
+    ports.verifyFile=async identity=>{
+      verificationAttempts.push(identity.path);
+      throw earlyStop;
+    };
+
+    let observed;
+    try{
+      await runProjectDesktopCodingLargeObservationWithPorts(
+        fixture.configBytes,largePreparedAdmission(fixture),undefined,ports
+      );
+    }catch(error){observed=error;}
+    assert.equal(observed,earlyStop);
+    assert.deepEqual(verificationAttempts,[fixture.config.node.path]);
+    assert.equal(proofReads,0);
+    assert.equal(runtime.calls.length,0);
+  });
+});
+
+test('falsy and private source-pin failures stay fixed and stop before resolver IO',async()=>{
+  let getterCalls=0,proxyTraps=0;
+  const privateError={};
+  Object.defineProperty(privateError,'code',{
+    get(){getterCalls++;throw Error('PRIVATE_CODE_GETTER');}
+  });
+  Object.defineProperty(privateError,'message',{
+    get(){getterCalls++;throw Error('PRIVATE_MESSAGE_GETTER');}
+  });
+  const privateProxy=new Proxy({},{
+    get(){proxyTraps++;throw Error('PRIVATE_PROXY_GET');},
+    ownKeys(){proxyTraps++;throw Error('PRIVATE_PROXY_KEYS');},
+    getOwnPropertyDescriptor(){
+      proxyTraps++;throw Error('PRIVATE_PROXY_DESCRIPTOR');
+    },
+    getPrototypeOf(){
+      proxyTraps++;throw Error('PRIVATE_PROXY_PROTOTYPE');
+    }
+  });
+  const scenarios=[
+    {name:'zero',kind:'base',thrown:0},
+    {name:'null',kind:'base',thrown:null},
+    {name:'undefined',kind:'companion',thrown:undefined},
+    {name:'private-accessors',kind:'companion',thrown:privateError},
+    {name:'private-proxy',kind:'companion',thrown:privateProxy}
+  ];
+  await largeRunnerFixture(async root=>{
+    for(const scenario of scenarios){
+      const fixture=await makeArtifactWrapperFixture(root);
+      const basePaths=Object.keys(fixture.config.source_pins).sort();
+      const failingPath=scenario.kind==='base'
+        ?basePaths[0]
+        :join(PROJECT_SOURCE_ROOT,artifactWrapperCompanions[0]);
+      let failedHookCalls=0;
+      const harness=makeArtifactWrapperPorts(fixture,{
+        beforeVerify(identity){
+          if(identity.path===failingPath){
+            failedHookCalls++;
+            throw scenario.thrown;
+          }
+        }
+      });
+
+      let exposed;
+      try{
+        await verifyProjectArtifactChecksWithPorts(
+          fixture.configBytes,fixture.artifactContextBytes,undefined,
+          harness.port
+        );
+      }catch(error){exposed=error;}
+      assert.equal(failedHookCalls,1,scenario.name);
+      assert.ok(exposed instanceof Error,scenario.name);
+      const code=Object.getOwnPropertyDescriptor(exposed,'code');
+      const message=Object.getOwnPropertyDescriptor(exposed,'message');
+      assert.equal(code?.value,'INVALID_ARTIFACT_CONTEXT',scenario.name);
+      assert.equal(message?.value,'INVALID_ARTIFACT_CONTEXT',scenario.name);
+      assert.doesNotMatch(
+        `${message.value}\n${code.value}\n${JSON.stringify(exposed)}`,
+        /PRIVATE_(?:CODE|MESSAGE|PROXY)/
+      );
+
+      const expectedVerifications=scenario.kind==='base'
+        ?[basePaths[0]]
+        :[
+          ...basePaths,
+          join(PROJECT_SOURCE_ROOT,artifactWrapperCompanions[0])
+        ];
+      assert.deepEqual(
+        harness.calls.verify,expectedVerifications,scenario.name
+      );
+      assert.deepEqual(harness.calls.readBytes,[],scenario.name);
+      assert.deepEqual(harness.calls.open,[],scenario.name);
+      assert.deepEqual(harness.calls.lstat,[],scenario.name);
+      assert.deepEqual(harness.calls.realpath,[],scenario.name);
+      assert.deepEqual(harness.calls.readdir,[],scenario.name);
+      assert.deepEqual(harness.calls.mkdir,[],scenario.name);
+      assert.deepEqual(harness.calls.chmod,[],scenario.name);
+    }
+  });
+  assert.equal(getterCalls,0);
+  assert.equal(proxyTraps,0);
+});
+
+test('public wrapper snapshots caller bytes, method receivers and ports before suspension',async()=>{
+  await largeRunnerFixture(async root=>{
+    const fixture=await makeArtifactWrapperFixture(root);
+    const configBytes=fixture.configBytes;
+    const contextBytes=fixture.artifactContextBytes;
+    const harness=makeArtifactWrapperPorts(fixture);
+    const port=harness.port;
+    let getterCalls=0,receiverMismatch=false;
+    const decorate=(owner,key)=>{
+      const original=owner[key];
+      const wrapped=function(...args){
+        if(this!==owner)receiverMismatch=true;
+        return Reflect.apply(original,this,args);
+      };
+      for(const property of ['name','length']){
+        Object.defineProperty(wrapped,property,{
+          configurable:true,get(){getterCalls++;throw new Error('PRIVATE_METADATA');}
+        });
+      }
+      owner[key]=wrapped;
+    };
+    for(const key of ['open','mkdir','lstat','chmod','readdir','realpath']){
+      decorate(port.fs,key);
+    }
+    for(const key of ['lstat','readChunks'])decorate(port.reads,key);
+    decorate(port,'readBytes');
+    const originalVerify=port.verifyFile;
+    const entered=readinessDeferred(),release=readinessDeferred();
+    let held=false;
+    port.verifyFile=async function(identity,suppliedReads){
+      if(this!==port)receiverMismatch=true;
+      if(!held){
+        held=true;entered.resolve();await release.promise;
+      }
+      return Reflect.apply(originalVerify,this,[identity,suppliedReads]);
+    };
+    const operation=verifyProjectArtifactChecksWithPorts(
+      configBytes,contextBytes,undefined,port
+    );
+    const result=await settleArtifactWrapperGate(
+      operation,entered,release,()=>{
+        configBytes.fill(0);contextBytes.fill(0);
+        port.verifyFile=async()=>{throw new Error('MUTATED_PORT_USED');};
+        port.fs.lstat=async()=>{throw new Error('MUTATED_FS_USED');};
+        port.reads.lstat=async()=>{throw new Error('MUTATED_READS_USED');};
+      }
+    );
+    assert.equal(result.sidecar.coverage,'DECLARED_CHECKS_PASSED');
+    assert.equal(getterCalls,0);
+    assert.equal(receiverMismatch,false);
+  });
+});
+
+test('pre-import abort stops bootstrap while post-bootstrap abort remains a BLOCKED sidecar',async()=>{
+  await largeRunnerFixture(async root=>{
+    const pre=await makeArtifactWrapperFixture(root);
+    const preHarness=makeArtifactWrapperPorts(pre);
+    const controller=new AbortController();
+    controller.abort();
+    await expectArtifactWrapperCode('OPERATION_ABORTED',
+      verifyProjectArtifactChecksWithPorts(
+        pre.configBytes,pre.artifactContextBytes,controller.signal,
+        preHarness.port
+      )
+    );
+    assert.deepEqual(preHarness.calls.verify,[]);
+    assert.deepEqual(preHarness.calls.readBytes,[]);
+
+    const held=await makeArtifactWrapperFixture(root);
+    const heldHarness=makeArtifactWrapperPorts(held);
+    const heldController=new AbortController();
+    const entered=readinessDeferred(),release=readinessDeferred();
+    let paused=false;
+    const originalVerify=heldHarness.port.verifyFile;
+    heldHarness.port.verifyFile=async function(identity,reads){
+      if(!paused){
+        paused=true;entered.resolve();await release.promise;
+      }
+      return Reflect.apply(originalVerify,this,[identity,reads]);
+    };
+    const pending=verifyProjectArtifactChecksWithPorts(
+      held.configBytes,held.artifactContextBytes,heldController.signal,
+      heldHarness.port
+    );
+    await expectArtifactWrapperCode('OPERATION_ABORTED',()=>(
+      settleArtifactWrapperGate(
+        pending,entered,release,()=>heldController.abort()
+      )
+    ));
+    assert.deepEqual(heldHarness.calls.readBytes,[]);
+
+    const post=await makeArtifactWrapperFixture(root);
+    const postController=new AbortController();
+    let aborted=false;
+    const postHarness=makeArtifactWrapperPorts(post,{
+      async afterReaddir(path){
+        if(path===post.stageRoot&&!aborted){
+          aborted=true;postController.abort();
+        }
+      }
+    });
+    const result=await verifyProjectArtifactChecksWithPorts(
+      post.configBytes,post.artifactContextBytes,postController.signal,
+      postHarness.port
+    );
+    assert.equal(result.sidecar.coverage,'BLOCKED');
+    assert.equal(result.sidecar.reason,'ABORTED');
+    assert.ok(result.sidecar.io_failures.includes('ABORTED'));
+    assert.ok(result.sidecar.check_results.every(item=>
+      item.evidence_binding==='unresolved'
+    ));
+    assert.equal(postHarness.calls.mkdir.length,0);
+  });
+});
+
+// Public wrapper additions: 8 integration test bodies; previous 57 retained.
+// Proposed integration total: 65. No tests were run for this proposal.

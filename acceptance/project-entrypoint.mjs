@@ -2,14 +2,14 @@
 import {spawn} from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
-import {join} from 'node:path';
+import {basename,dirname,join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {types} from 'node:util';
 import {readReceiptBytes} from '../bin/squire-report.mjs';
-import {parseReceiptJson} from '../src/offline-run-summary.mjs';
+import {parseReceiptJson,snapshotReceiptData} from '../src/offline-run-summary.mjs';
 import {validateCodexPreflight,verifyExactFile,hash} from '../src/bounded-codegen-plan.mjs';
-import {validateProjectCodexConfig,requireProjectCodexAdmission,validateProjectReceiptDestination,validateDesktopCodegenConfig,requireDesktopCodegenAdmission,validateDesktopCodingLargeObservationConfig,validateDesktopCodingLargeObservationAdmission,requireDesktopCodingLargeObservationAdmission,DESKTOP_CODEGEN_INTENT} from '../src/project-configuration.mjs';
-import {closed,object} from '../src/job-spec.mjs';
+import {PROJECT_SOURCE_ROOT,validateProjectCodexConfig,requireProjectCodexAdmission,validateProjectReceiptDestination,validateDesktopCodegenConfig,requireDesktopCodegenAdmission,validateDesktopCodingLargeObservationConfig,validateDesktopCodingLargeObservationAdmission,requireDesktopCodingLargeObservationAdmission,DESKTOP_CODEGEN_INTENT} from '../src/project-configuration.mjs';
+import {closed,object,artifactPath} from '../src/job-spec.mjs';
 import {writeNativeProjectResultReceipt} from '../src/project-result-receipt.mjs';
 import {runProjectCodexTask,admitDesktopCodegenProjectTask,runDesktopCodingLargeObservationProjectTask,admitDesktopCodingLargeObservationProjectTask} from '../src/project-runner.mjs';
 import {createMonotonicClock} from '../src/node-process-port.mjs';
@@ -341,6 +341,943 @@ export async function runProjectDesktopCodingLargeObservationWithPorts(configByt
   return Object.freeze({...result,operator_admitted:true,operator_receipt:a.operator_receipt,
     direct_child_invocations:Object.freeze({...counts})});
 }
+const READINESS_COMPANION_PATHS=Object.freeze([
+  'src/desktop-readiness-evidence.mjs',
+  'src/project-artifact-check-evidence.mjs',
+  'src/artifact-verifier.mjs',
+  'src/job-record.mjs'
+]);
+const READINESS_SHA256=/^[a-f0-9]{64}$/;
+const READINESS_INPUT_BYTES=65536;
+const READINESS_ROUTE_BYTES=16384;
+const READINESS_DEFINITION_BYTES=1048576;
+const READINESS_COMPANION_TOTAL=4194304;
+const READINESS_CODES=new Set([
+  'INVALID_READINESS_CONTEXT','READINESS_EVIDENCE_BLOCKED',
+  'OPERATION_ABORTED','NATIVE_OPERATION_ALREADY_CONSUMED'
+]);
+const readinessByteLength=Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),'byteLength'
+).get;
+
+function readinessFixedError(code){
+  const error=new Error(code);
+  error.code=code;
+  return error;
+}
+
+// Only fixed own data fields are inspected. In particular, this recognizes
+// the existing shared-admission error by its exact fixed message, without
+// exporting arbitrary error text or invoking a getter or proxy trap.
+function readinessErrorCode(error){
+  if(!error||typeof error!=='object'||types.isProxy(error))return null;
+  try{
+    const code=Object.getOwnPropertyDescriptor(error,'code');
+    if(code&&Object.hasOwn(code,'value')&&READINESS_CODES.has(code.value)){
+      return code.value;
+    }
+    const message=Object.getOwnPropertyDescriptor(error,'message');
+    if(message&&Object.hasOwn(message,'value')&&
+       message.value==='NATIVE_OPERATION_ALREADY_CONSUMED'){
+      return 'NATIVE_OPERATION_ALREADY_CONSUMED';
+    }
+  }catch{}
+  return null;
+}
+
+function copyReadinessInputBytes(value,maxBytes){
+  if(types.isProxy(value)||!types.isUint8Array(value)||
+     Object.getPrototypeOf(value)!==Uint8Array.prototype){
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+  let length;
+  try{length=Reflect.apply(readinessByteLength,value,[]);}
+  catch{throw readinessFixedError('INVALID_READINESS_CONTEXT');}
+  if(!Number.isSafeInteger(length)||length<0||length>maxBytes){
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+  const copy=new Uint8Array(length);
+  try{Uint8Array.prototype.set.call(copy,value);}
+  catch{copy.fill(0);throw readinessFixedError('INVALID_READINESS_CONTEXT');}
+  return copy;
+}
+
+function readinessOwnDataRecord(value,keys,code='INVALID_READINESS_CONTEXT'){
+  try{closed(value,keys,[],code);}
+  catch{throw readinessFixedError(code);}
+  const result=Object.create(null);
+  for(const key of keys){
+    const descriptor=Object.getOwnPropertyDescriptor(value,key);
+    if(!descriptor||!Object.hasOwn(descriptor,'value')){
+      throw readinessFixedError(code);
+    }
+    result[key]=descriptor.value;
+  }
+  return result;
+}
+
+function readinessDataMethod(target,key){
+  if(!target||typeof target!=='object'&&typeof target!=='function'||
+     types.isProxy(target)){
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+  try{
+    for(let current=target;current!==null;current=Object.getPrototypeOf(current)){
+      if(types.isProxy(current))throw 0;
+      const descriptor=Object.getOwnPropertyDescriptor(current,key);
+      if(!descriptor)continue;
+      if(!Object.hasOwn(descriptor,'value')||
+         typeof descriptor.value!=='function'||types.isProxy(descriptor.value)){
+        throw 0;
+      }
+      return descriptor.value;
+    }
+  }catch{throw readinessFixedError('INVALID_READINESS_CONTEXT');}
+  throw readinessFixedError('INVALID_READINESS_CONTEXT');
+}
+
+function readinessBoundMethod(target,key){
+  const method=readinessDataMethod(target,key);
+  return (...args)=>Reflect.apply(method,target,args);
+}
+
+function captureReadinessLargeDesktopPorts(value){
+  const keys=[
+    'fs','spawn','readBytes','verifyFile','reads','now','clock','retention',
+    'environment','uid'
+  ];
+  const supplied=readinessOwnDataRecord(value,keys);
+  for(const key of ['spawn','readBytes','verifyFile','now','retention']){
+    receiptFunction(supplied[key]);
+  }
+  const reads=readinessOwnDataRecord(supplied.reads,['lstat','readChunks']);
+  receiptFunction(reads.lstat);
+  receiptFunction(reads.readChunks);
+  const clock=readinessOwnDataRecord(supplied.clock,['now','schedule']);
+  receiptFunction(clock.now);
+  receiptFunction(clock.schedule);
+  if(!Number.isSafeInteger(supplied.uid)||supplied.uid<0){
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+  try{object(supplied.fs,'readiness_fs');}
+  catch{throw readinessFixedError('INVALID_READINESS_CONTEXT');}
+  const fsMethods=Object.create(null);
+  for(const key of ['lstat','realpath','open','mkdir','chmod','readdir']){
+    fsMethods[key]=readinessBoundMethod(supplied.fs,key);
+  }
+  let environment;
+  try{
+    object(supplied.environment,'readiness_environment');
+    environment=snapshotReceiptData(supplied.environment);
+  }catch{throw readinessFixedError('INVALID_READINESS_CONTEXT');}
+  return Object.freeze({
+    fs:Object.freeze(fsMethods),
+    spawn:readinessBoundMethod(value,'spawn'),
+    readBytes:readinessBoundMethod(value,'readBytes'),
+    verifyFile:readinessBoundMethod(value,'verifyFile'),
+    reads:Object.freeze({
+      lstat:readinessBoundMethod(supplied.reads,'lstat'),
+      readChunks:readinessBoundMethod(supplied.reads,'readChunks')
+    }),
+    now:readinessBoundMethod(value,'now'),
+    clock:Object.freeze({
+      now:readinessBoundMethod(supplied.clock,'now'),
+      schedule:readinessBoundMethod(supplied.clock,'schedule')
+    }),
+    retention:readinessBoundMethod(value,'retention'),
+    environment,uid:supplied.uid
+  });
+}
+
+function captureReadinessCompanionPins(contextBytes){
+  try{
+    const context=snapshotReceiptData(parseReceiptJson(contextBytes));
+    const value=readinessOwnDataRecord(context,[
+      'schema','requirements','proof_pin','observer_definition_pin',
+      'fixture_definition_pin','observer_terminal_pin','probe_artifacts',
+      'companion_source_pins'
+    ]);
+    if(value.schema!=='squire.desktop_readiness_context.v2'){
+      throw readinessFixedError('INVALID_READINESS_CONTEXT');
+    }
+    const supplied=readinessOwnDataRecord(
+      value.companion_source_pins,READINESS_COMPANION_PATHS
+    );
+    let total=0;
+    return READINESS_COMPANION_PATHS.map(relative=>{
+      const pin=readinessOwnDataRecord(supplied[relative],['bytes','sha256']);
+      if(!Number.isSafeInteger(pin.bytes)||pin.bytes<1||
+         pin.bytes>READINESS_DEFINITION_BYTES||
+         typeof pin.sha256!=='string'||!READINESS_SHA256.test(pin.sha256)){
+        throw readinessFixedError('INVALID_READINESS_CONTEXT');
+      }
+      total+=pin.bytes;
+      if(!Number.isSafeInteger(total)||total>READINESS_COMPANION_TOTAL){
+        throw readinessFixedError('INVALID_READINESS_CONTEXT');
+      }
+      return Object.freeze({
+        path:join(PROJECT_SOURCE_ROOT,relative),
+        bytes:pin.bytes,sha256:pin.sha256
+      });
+    });
+  }catch(error){
+    if(readinessErrorCode(error))throw error;
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+}
+
+function readinessBindingSnapshotMatches(api,captured,configBytes,
+  contextBytes,routeBytes,config){
+  const copies=[];
+  try{
+    for(const name of ['config','context','selected_route']){
+      copies.push(api.copyCapturedDesktopReadinessBytes(captured,name));
+    }
+    if(hash(copies[0])!==hash(configBytes)||
+       hash(copies[1])!==hash(contextBytes)||
+       hash(copies[2])!==hash(routeBytes)||
+       captured.config.job_id!==config.job_id||
+       captured.config.scope!==config.scope||
+       captured.config.source_commit!==config.source_commit||
+       captured.context.requirements.operation_config_sha256!==hash(configBytes)||
+       captured.context.requirements.job_id!==config.job_id||
+       captured.context.requirements.scope!==config.scope){
+      throw readinessFixedError('READINESS_EVIDENCE_BLOCKED');
+    }
+  }catch(error){
+    if(readinessErrorCode(error))throw error;
+    throw readinessFixedError('READINESS_EVIDENCE_BLOCKED');
+  }finally{for(const bytes of copies)bytes.fill(0);}
+}
+
+const NATIVE_READINESS_ENVIRONMENT_MAX_KEYS=4096;
+const NATIVE_READINESS_ENVIRONMENT_MAX_BYTES=262144;
+
+function copyNativeReadinessEnvironment(){
+  let source,keys;
+  try{
+    const descriptor=Object.getOwnPropertyDescriptor(process,'env');
+    if(!descriptor||!Object.hasOwn(descriptor,'value'))throw 0;
+    source=descriptor.value;
+    if(!source||typeof source!=='object'||Array.isArray(source)||
+       types.isProxy(source))throw 0;
+    keys=Reflect.ownKeys(source);
+  }catch{
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+  if(!Array.isArray(keys)||keys.length>NATIVE_READINESS_ENVIRONMENT_MAX_KEYS){
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+  const copied={};
+  const encoder=new TextEncoder();
+  let totalBytes=0;
+  try{
+    for(const key of keys){
+      if(typeof key!=='string')throw 0;
+      const property=Object.getOwnPropertyDescriptor(source,key);
+      if(!property||!Object.hasOwn(property,'value')||
+         typeof property.enumerable!=='boolean')throw 0;
+      if(!property.enumerable)continue;
+      if(typeof property.value!=='string'||key.length>4096||
+         property.value.length>NATIVE_READINESS_ENVIRONMENT_MAX_BYTES)throw 0;
+      totalBytes+=encoder.encode(key).length;
+      totalBytes+=encoder.encode(property.value).length;
+      if(!Number.isSafeInteger(totalBytes)||
+         totalBytes>NATIVE_READINESS_ENVIRONMENT_MAX_BYTES)throw 0;
+      Object.defineProperty(copied,key,{
+        value:property.value,enumerable:true,writable:true,configurable:true
+      });
+    }
+    snapshotReceiptData(copied);
+    return copied;
+  }catch{
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }
+}
+
+/**
+ * Explicit readiness-gated large observation. Evidence acquisition and
+ * physical checking stay delegated to the accepted reader and its verifiers.
+ */
+export async function runProjectDesktopCodingLargeObservationNativeWithReadiness(
+  configBytes,admission,readinessContextBytes,selectedRouteBytes,abortSignal
+){
+  const nativePorts=nativeDesktopCodegenPorts();
+  return runProjectDesktopCodingLargeObservationWithReadinessWithPorts(
+    configBytes,admission,readinessContextBytes,selectedRouteBytes,
+    abortSignal,{
+      ...nativePorts,
+      environment:copyNativeReadinessEnvironment()
+    }
+  );
+}
+
+export async function runProjectDesktopCodingLargeObservationWithReadinessWithPorts(
+  configBytes,admission,readinessContextBytes,selectedRouteBytes,abortSignal,ports
+){
+  let privateConfig=null,privateContext=null,privateRoute=null;
+  let privateAdmission=null,promptBytes=null,subscriptionBytes=null;
+  let consumedAtCP1=false;
+  try{
+    const capturedPorts=captureReadinessLargeDesktopPorts(ports);
+    privateConfig=copyReadinessInputBytes(configBytes,READINESS_INPUT_BYTES);
+    privateContext=copyReadinessInputBytes(
+      readinessContextBytes,READINESS_INPUT_BYTES
+    );
+    privateRoute=copyReadinessInputBytes(
+      selectedRouteBytes,READINESS_ROUTE_BYTES
+    );
+    if(abortSignal!==undefined&&
+       (types.isProxy(abortSignal)||!(abortSignal instanceof AbortSignal))){
+      throw readinessFixedError('INVALID_READINESS_CONTEXT');
+    }
+    const config=validateDesktopCodingLargeObservationConfig(
+      parseReceiptJson(privateConfig)
+    );
+    privateAdmission=snapshotReceiptData(admission);
+    const pureAdmission=validateDesktopCodingLargeObservationAdmission(
+      privateAdmission,privateConfig
+    );
+    if(consumed.has(config.job_id)||consumed.has(config.scope)){
+      throw readinessFixedError('NATIVE_OPERATION_ALREADY_CONSUMED');
+    }
+    const companionPins=captureReadinessCompanionPins(privateContext);
+    const controller=new AbortController();
+    const signal=abortSignal
+      ?AbortSignal.any([abortSignal,controller.signal])
+      :controller.signal;
+    let previousNow=-1;
+    const readinessNow=()=>{
+      let value;
+      try{value=Reflect.apply(capturedPorts.now,ports,[]);}
+      catch{throw readinessFixedError('READINESS_EVIDENCE_BLOCKED');}
+      if(!Number.isSafeInteger(value)||value<0||value<previousNow){
+        throw readinessFixedError('READINESS_EVIDENCE_BLOCKED');
+      }
+      previousNow=value;
+      return value;
+    };
+    const checkAbort=()=>{
+      if(signal.aborted)throw readinessFixedError('OPERATION_ABORTED');
+    };
+    const awaitPreflight=async operation=>{
+      checkAbort();
+      const result=await operation();
+      checkAbort();
+      readinessNow();
+      return result;
+    };
+
+    let captured=null,invocation=null;
+    let preflightFailureCode='INVALID_READINESS_CONTEXT';
+    try{
+      readinessNow();
+      const baseIdentities=[
+        config.node,config.codex,config.prompt,
+        ...Object.keys(config.source_pins).sort().map(path=>({
+          path,...config.source_pins[path]
+        }))
+      ];
+      preflightFailureCode='READINESS_EVIDENCE_BLOCKED';
+      for(const identity of baseIdentities){
+        checkAbort();
+        await awaitPreflight(()=>Reflect.apply(
+          capturedPorts.verifyFile,ports,
+          [Object.freeze({...identity}),capturedPorts.reads]
+        ));
+      }
+      for(const identity of companionPins){
+        checkAbort();
+        await awaitPreflight(()=>Reflect.apply(
+          capturedPorts.verifyFile,ports,[identity,capturedPorts.reads]
+        ));
+      }
+
+      const readinessModule=await awaitPreflight(
+        ()=>import('../src/desktop-readiness-evidence.mjs')
+      );
+      captured=await awaitPreflight(()=>
+        readinessModule.captureDesktopReadinessFromFilesWithPorts(
+          privateConfig,privateContext,privateRoute,signal,{
+            readBytes:capturedPorts.readBytes,
+            reads:capturedPorts.reads
+          }
+        )
+      );
+      await awaitPreflight(()=>
+        readinessModule.verifyDesktopReadinessPinnedFilesAndScopeWithPorts(
+          captured,signal,{
+            fs:{
+              realpath:capturedPorts.fs.realpath,
+              lstat:capturedPorts.fs.lstat
+            },
+            verifyFile:capturedPorts.verifyFile,
+            reads:capturedPorts.reads
+          }
+        )
+      );
+      await awaitPreflight(()=>
+        readinessModule.verifyDesktopReadinessProbeArtifactsWithPorts(
+          captured,signal,{
+            fs:{
+              lstat:capturedPorts.fs.lstat,
+              realpath:capturedPorts.fs.realpath,
+              open:capturedPorts.fs.open
+            },
+            uid:capturedPorts.uid
+          }
+        )
+      );
+
+      const receiptBytes=await awaitPreflight(()=>Reflect.apply(
+        capturedPorts.readBytes,ports,
+        [pureAdmission.preflight.evidence_receipt,65536]
+      ));
+      subscriptionBytes=copyReadinessInputBytes(receiptBytes,65536);
+      validateCodexPreflight(
+        parseReceiptJson(subscriptionBytes),config,privateConfig,readinessNow()
+      );
+      const suppliedPrompt=await awaitPreflight(()=>Reflect.apply(
+        capturedPorts.readBytes,ports,[config.prompt.path,32768]
+      ));
+      promptBytes=copyReadinessInputBytes(suppliedPrompt,32768);
+      invocation=buildDesktopCodingLargeObservationInvocation(config,promptBytes);
+      checkAbort();
+
+      readinessBindingSnapshotMatches(
+        readinessModule,captured,privateConfig,privateContext,privateRoute,config
+      );
+      const previousBeforeFinalNow=previousNow;
+      const finalNow=readinessNow();
+      readinessModule.assertDesktopReadinessCurrent(
+        captured,finalNow,previousBeforeFinalNow
+      );
+      checkAbort();
+      if(consumed.has(config.job_id)||consumed.has(config.scope)){
+        throw readinessFixedError('NATIVE_OPERATION_ALREADY_CONSUMED');
+      }
+      // CP1: the existing shared admission fence and this entrypoint's markers
+      // are synchronous with no await between them.
+      const admitted=requireDesktopCodingLargeObservationAdmission(
+        privateAdmission,config,privateConfig
+      );
+      consumed.add(config.job_id);
+      consumed.add(config.scope);
+      consumedAtCP1=true;
+
+      const retentionObject=await Reflect.apply(
+        capturedPorts.retention,ports,[config.job_id]
+      );
+      const retentionPrepare=readinessBoundMethod(retentionObject,'prepare');
+      const retainRejected=readinessBoundMethod(
+        retentionObject,'retainRejected'
+      );
+      const gate=await retentionPrepare();
+      if(gate.capability_status!=='READY'){
+        throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
+      }
+      if(signal.aborted)throw Error('OPERATION_ABORTED');
+      await capturedPorts.fs.mkdir(config.scope,{mode:0o700});
+
+      const counts={generation:0};
+      const result=await runDesktopCodingLargeObservationProjectTask(
+        invocation.specification,
+        {
+          clock:capturedPorts.clock,
+          shutdown:config.generation_shutdown,
+          abortSignal:signal
+        },
+        {
+          fs:capturedPorts.fs,uid:capturedPorts.uid,
+          mode:invocation.mode,
+          operation_intent:invocation.operation_intent,
+          executable:invocation.executable,
+          codex:invocation.codex,
+          environment:capturedPorts.environment,
+          retainRejected,
+          spawn(executable,argv,options){
+            if(signal.aborted||++counts.generation>1||
+               executable!==invocation.executable||options.shell!==false){
+              throw Error('PROJECT_SPAWN_LIMIT');
+            }
+            try{
+              readinessBindingSnapshotMatches(
+                readinessModule,captured,privateConfig,privateContext,
+                privateRoute,config
+              );
+              const previous=previousNow;
+              const current=readinessNow();
+              readinessModule.assertDesktopReadinessCurrent(
+                captured,current,previous
+              );
+              if(signal.aborted)throw Error('OPERATION_ABORTED');
+            }catch{
+              throw Error(signal.aborted
+                ?'OPERATION_ABORTED':'READINESS_EVIDENCE_BLOCKED');
+            }
+            return Reflect.apply(capturedPorts.spawn,ports,[
+              executable,argv,options
+            ]);
+          }
+        }
+      );
+      if(result.schema!==PROJECT_LARGE_OBSERVATION_RESULT_SCHEMA){
+        throw Error('INVALID_LARGE_OBSERVATION_RESULT');
+      }
+      return Object.freeze({
+        ...result,operator_admitted:true,
+        operator_receipt:admitted.operator_receipt,
+        direct_child_invocations:Object.freeze({...counts})
+      });
+    }catch(error){
+      if(consumedAtCP1)throw error;
+      if(signal.aborted)throw readinessFixedError('OPERATION_ABORTED');
+      const code=readinessErrorCode(error);
+      if(code)throw readinessFixedError(code);
+      throw readinessFixedError(preflightFailureCode);
+    }
+  }catch(error){
+    if(consumedAtCP1)throw error;
+    const code=readinessErrorCode(error);
+    if(code)throw readinessFixedError(code);
+    throw readinessFixedError('INVALID_READINESS_CONTEXT');
+  }finally{
+    privateConfig?.fill(0);
+    privateContext?.fill(0);
+    privateRoute?.fill(0);
+    promptBytes?.fill(0);
+    subscriptionBytes?.fill(0);
+  }
+}
+
+// The artifact API has its own closed context and source-pin envelope. It
+// deliberately does not reuse the readiness-context parser above.
+const ARTIFACT_COMPANION_PATHS=Object.freeze([
+  'src/desktop-readiness-evidence.mjs',
+  'src/project-artifact-check-evidence.mjs',
+  'src/artifact-verifier.mjs',
+  'src/job-record.mjs'
+]);
+const ARTIFACT_SHA256=/^[a-f0-9]{64}$/;
+const ARTIFACT_UUID4=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const ARTIFACT_TOKEN=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ARTIFACT_CONTEXT_MAX=65536;
+const ARTIFACT_ROUTE_MAX=16384;
+const ARTIFACT_PIN_MAX=1048576;
+const ARTIFACT_PIN_TOTAL_MAX=4194304;
+const ARTIFACT_FS_KEYS=Object.freeze([
+  'open','mkdir','lstat','chmod','readdir','realpath'
+]);
+const ARTIFACT_ABORTED_GETTER=Object.getOwnPropertyDescriptor(
+  AbortSignal.prototype,'aborted'
+).get;
+const ARTIFACT_ABORT_SIGNAL_PROTOTYPE=AbortSignal.prototype;
+const ARTIFACT_CODES=new Set([
+  'INVALID_ARTIFACT_CONTEXT','OPERATION_ABORTED'
+]);
+
+function artifactFixedError(code){
+  const fixed=ARTIFACT_CODES.has(code)?code:'INVALID_ARTIFACT_CONTEXT';
+  const error=new Error(fixed);
+  error.code=fixed;
+  return error;
+}
+
+function artifactCopyBytes(value,maxBytes){
+  try{
+    if(types.isProxy(value)||!types.isUint8Array(value)||
+       Object.getPrototypeOf(value)!==Uint8Array.prototype)throw 0;
+    const length=Reflect.apply(readinessByteLength,value,[]);
+    if(!Number.isSafeInteger(length)||length<0||length>maxBytes)throw 0;
+    const copy=new Uint8Array(length);
+    Uint8Array.prototype.set.call(copy,value);
+    return copy;
+  }catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+}
+
+function artifactRecord(value,keys){
+  try{closed(value,keys,[],'INVALID_ARTIFACT_CONTEXT');}
+  catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+  const result=Object.create(null);
+  for(const key of keys){
+    const descriptor=Object.getOwnPropertyDescriptor(value,key);
+    if(!descriptor||!Object.hasOwn(descriptor,'value')){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    result[key]=descriptor.value;
+  }
+  return result;
+}
+
+function artifactArray(value,min,max){
+  try{
+    if(types.isProxy(value)||!Array.isArray(value)||
+       Object.getPrototypeOf(value)!==Array.prototype)throw 0;
+    const descriptor=Object.getOwnPropertyDescriptor(value,'length');
+    const length=descriptor?.value;
+    const keys=Reflect.ownKeys(value);
+    if(!Number.isSafeInteger(length)||length<min||length>max||
+       keys.length!==length+1)throw 0;
+    const result=[];
+    for(let index=0;index<length;index++){
+      const item=Object.getOwnPropertyDescriptor(value,String(index));
+      if(!item||!Object.hasOwn(item,'value'))throw 0;
+      result.push(item.value);
+    }
+    for(const key of keys){
+      if(key==='length')continue;
+      if(typeof key!=='string'||!/^(0|[1-9][0-9]*)$/.test(key)||
+         Number(key)>=length)throw 0;
+    }
+    return result;
+  }catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+}
+
+function artifactAbsolutePath(value){
+  return typeof value==='string'&&value.length>0&&value.length<=512&&
+    new TextEncoder().encode(value).length<=512&&value.startsWith('/')&&
+    value!=='/'&&!value.includes('\\')&&
+    !/[\u0000-\u001f\u007f]/u.test(value)&&resolve(value)===value&&
+    value.slice(1).split('/').every(part=>
+      part.length>0&&part!=='.'&&part!=='..'
+    );
+}
+
+function artifactWithin(path,root){
+  return path===root||path.startsWith(`${root}/`);
+}
+
+function artifactPin(value,maxBytes){
+  const pin=artifactRecord(value,['path','bytes','sha256']);
+  if(!artifactAbsolutePath(pin.path)||
+     !Number.isSafeInteger(pin.bytes)||pin.bytes<1||
+     pin.bytes>maxBytes||typeof pin.sha256!=='string'||
+     !ARTIFACT_SHA256.test(pin.sha256)){
+    throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  }
+  return Object.freeze(pin);
+}
+
+function artifactCompanionPins(value){
+  const supplied=artifactRecord(value,ARTIFACT_COMPANION_PATHS);
+  let total=0;
+  return Object.freeze(ARTIFACT_COMPANION_PATHS.map(relative=>{
+    const pin=artifactRecord(supplied[relative],['bytes','sha256']);
+    if(!Number.isSafeInteger(pin.bytes)||pin.bytes<1||
+       pin.bytes>ARTIFACT_PIN_MAX||
+       typeof pin.sha256!=='string'||!ARTIFACT_SHA256.test(pin.sha256)){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    total+=pin.bytes;
+    if(!Number.isSafeInteger(total)||total>ARTIFACT_PIN_TOTAL_MAX){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    return Object.freeze({
+      path:join(PROJECT_SOURCE_ROOT,relative),
+      bytes:pin.bytes,sha256:pin.sha256
+    });
+  }));
+}
+
+function artifactConfigPins(config){
+  const pins=config.source_pins;
+  const paths=Reflect.ownKeys(pins);
+  if(paths.some(path=>typeof path!=='string')) {
+    throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  }
+  paths.sort();
+  return Object.freeze(paths.map(path=>{
+    const descriptor=Object.getOwnPropertyDescriptor(pins,path);
+    if(!descriptor||!Object.hasOwn(descriptor,'value')){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    const pin=artifactRecord(descriptor.value,['bytes','sha256']);
+    if(!Number.isSafeInteger(pin.bytes)||pin.bytes<0||
+       typeof pin.sha256!=='string'||!ARTIFACT_SHA256.test(pin.sha256)){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    return Object.freeze({path,bytes:pin.bytes,sha256:pin.sha256});
+  }));
+}
+
+function validateArtifactContextEnvelope(contextBytes,config,configBytes){
+  let context;
+  try{
+    context=snapshotReceiptData(parseReceiptJson(contextBytes));
+  }catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+  const value=artifactRecord(context,[
+    'schema','operation_config_sha256','job_id','candidate','artifacts',
+    'required_checks','observer_policy_sha256','companion_source_pins'
+  ]);
+  if(value.schema!=='squire.project_artifact_check_context.v2'||
+     value.operation_config_sha256!==hash(configBytes)||
+     value.job_id!==config.job_id||
+     typeof value.observer_policy_sha256!=='string'||
+     !ARTIFACT_SHA256.test(value.observer_policy_sha256)){
+    throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  }
+  const candidate=artifactRecord(value.candidate,[
+    'source_commit','stage_root','stage_operation_id','stage_manifest_sha256'
+  ]);
+  const expectedStage=join(
+    config.scope,'output',`run-${config.job_id}`,'stage'
+  );
+  if(candidate.source_commit!==config.source_commit||
+     candidate.stage_root!==expectedStage||
+     candidate.stage_operation_id!==`stage-${config.job_id}`||
+     !artifactAbsolutePath(candidate.stage_root)||
+     typeof candidate.stage_manifest_sha256!=='string'||
+     !ARTIFACT_SHA256.test(candidate.stage_manifest_sha256)){
+    throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  }
+
+  const artifacts=artifactArray(value.artifacts,1,16);
+  const ids=new Set(),locations=new Set(),byId=new Map();
+  let total=0;
+  const roots=[];
+  for(const raw of artifacts){
+    const item=artifactRecord(raw,[
+      'artifact_id','role','root','relative_path','byte_count','sha256',
+      'staged_artifact_id'
+    ]);
+    if(typeof item.artifact_id!=='string'||
+       !ARTIFACT_TOKEN.test(item.artifact_id)||ids.has(item.artifact_id)||
+       !['staged','delivered_copy'].includes(item.role)||
+       !artifactAbsolutePath(item.root)||
+       typeof item.relative_path!=='string'||
+       !artifactPath(item.relative_path)||item.relative_path.length>256||
+       new TextEncoder().encode(item.relative_path).length>256||
+       item.relative_path.split('/').length>16||
+       !Number.isSafeInteger(item.byte_count)||item.byte_count<1||
+       item.byte_count>67108864||
+       typeof item.sha256!=='string'||!ARTIFACT_SHA256.test(item.sha256)){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    if(item.role==='staged'){
+      if(item.staged_artifact_id!==null||item.root!==candidate.stage_root){
+        throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+      }
+    }else if(typeof item.staged_artifact_id!=='string'||
+             !ARTIFACT_TOKEN.test(item.staged_artifact_id)){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    total+=item.byte_count;
+    if(!Number.isSafeInteger(total)||total>134217728){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    const location=`${item.root}\0${item.relative_path}`;
+    if(locations.has(location))throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    ids.add(item.artifact_id);locations.add(location);
+    byId.set(item.artifact_id,item);
+    roots.push(item.root);
+  }
+  for(const item of artifacts){
+    if(item.role!=='delivered_copy')continue;
+    const source=byId.get(item.staged_artifact_id);
+    if(!source||source.role!=='staged'||
+       source.byte_count!==item.byte_count||source.sha256!==item.sha256||
+       source.root===item.root&&source.relative_path===item.relative_path){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+  }
+
+  const checks=artifactArray(value.required_checks,1,16);
+  const checkIds=new Set();
+  let definitionTotal=0;
+  for(const raw of checks){
+    const check=artifactRecord(raw,[
+      'check_id','definition_pin','receipt_pin','observer_role','artifact_ids'
+    ]);
+    const artifactIds=artifactArray(check.artifact_ids,1,16);
+    if(typeof check.check_id!=='string'||
+       !ARTIFACT_TOKEN.test(check.check_id)||checkIds.has(check.check_id)||
+       check.observer_role!=='trusted_owner_fixture'||
+       artifactIds.some(id=>typeof id!=='string'||!ARTIFACT_TOKEN.test(id)||
+         !ids.has(id))||
+       artifactIds.some((id,index)=>index>0&&artifactIds[index-1]>=id)){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    const definition=artifactPin(check.definition_pin,ARTIFACT_PIN_MAX);
+    artifactPin(check.receipt_pin,65536);
+    definitionTotal+=definition.bytes;
+    if(!Number.isSafeInteger(definitionTotal)||definitionTotal>16777216||
+       roots.some(root=>artifactWithin(definition.path,root))||
+       roots.some(root=>artifactWithin(check.receipt_pin.path,root))){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    checkIds.add(check.check_id);
+  }
+  return artifactCompanionPins(value.companion_source_pins);
+}
+
+function captureArtifactCheckPorts(value){
+  const supplied=artifactRecord(value,[
+    'fs','uid','readBytes','verifyFile','reads'
+  ]);
+  const fsReceiver=supplied.fs;
+  const fsMethods=artifactRecord(fsReceiver,ARTIFACT_FS_KEYS);
+  const readsReceiver=supplied.reads;
+  const readMethods=artifactRecord(readsReceiver,['lstat','readChunks']);
+  const methods=[
+    ...ARTIFACT_FS_KEYS.map(key=>fsMethods[key]),
+    supplied.readBytes,supplied.verifyFile,
+    readMethods.lstat,readMethods.readChunks
+  ];
+  if(!Number.isSafeInteger(supplied.uid)||supplied.uid<0||
+     methods.some(method=>typeof method!=='function'||types.isProxy(method))){
+    throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  }
+  const forward=(method,receiver)=>(...args)=>
+    Reflect.apply(method,receiver,args);
+  const fs=Object.create(null);
+  for(const key of ARTIFACT_FS_KEYS){
+    fs[key]=forward(fsMethods[key],fsReceiver);
+  }
+  return Object.freeze({
+    fs:Object.freeze(fs),uid:supplied.uid,
+    readBytes:forward(supplied.readBytes,value),
+    verifyFile:forward(supplied.verifyFile,value),
+    reads:Object.freeze({
+      lstat:forward(readMethods.lstat,readsReceiver),
+      readChunks:forward(readMethods.readChunks,readsReceiver)
+    })
+  });
+}
+
+function artifactSignalState(signal){
+  if(signal===undefined)return false;
+  if(!signal||typeof signal!=='object'||types.isProxy(signal)){
+    throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  }
+  let current=signal,found=false;
+  while(current!==null){
+    if(types.isProxy(current)){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    let descriptor,next;
+    try{
+      descriptor=Object.getOwnPropertyDescriptor(current,'aborted');
+      next=Object.getPrototypeOf(current);
+    }catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+    if(current===signal&&descriptor){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    if(current===ARTIFACT_ABORT_SIGNAL_PROTOTYPE){
+      if(!descriptor||!Object.hasOwn(descriptor,'get')||
+         descriptor.get!==ARTIFACT_ABORTED_GETTER){
+        throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+      }
+      found=true;
+    }else if(descriptor){
+      throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+    }
+    current=next;
+  }
+  if(!found)throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  try{
+    const value=Reflect.apply(ARTIFACT_ABORTED_GETTER,signal,[]);
+    if(typeof value!=='boolean')throw 0;
+    return value;
+  }catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+}
+
+function checkArtifactBootstrapAbort(signal){
+  if(artifactSignalState(signal)){
+    throw artifactFixedError('OPERATION_ABORTED');
+  }
+}
+
+async function awaitArtifactBootstrap(operation,signal){
+  checkArtifactBootstrapAbort(signal);
+  let value;
+  try{value=await operation();}
+  catch{
+    checkArtifactBootstrapAbort(signal);
+    throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');
+  }
+  checkArtifactBootstrapAbort(signal);
+  return value;
+}
+
+function nativeArtifactCheckPorts(){
+  const nativeFs=Object.freeze({
+    open:fs.open,mkdir:fs.mkdir,lstat:fs.lstat,chmod:fs.chmod,
+    readdir:fs.readdir,realpath:fs.realpath
+  });
+  return Object.freeze({
+    fs:nativeFs,uid:process.getuid(),readBytes:readReceiptBytes,
+    verifyFile:verifyExactFile,
+    reads:Object.freeze({
+      lstat:fs.lstat,readChunks:path=>createReadStream(path)
+    })
+  });
+}
+
+/** Fixed native, read-only artifact sidecar API; no generation admission. */
+export async function verifyProjectArtifactChecks(
+  configBytes,artifactContextBytes,abortSignal
+){
+  let ports;
+  try{ports=nativeArtifactCheckPorts();}
+  catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+  return verifyProjectArtifactChecksWithPorts(
+    configBytes,artifactContextBytes,abortSignal,ports
+  );
+}
+
+/** Explicit injected ArtifactPorts API; it still verifies the full source closure. */
+export async function verifyProjectArtifactChecksWithPorts(
+  configBytes,artifactContextBytes,abortSignal,ports
+){
+  let configCopy=null,contextCopy=null;
+  try{
+    configCopy=artifactCopyBytes(configBytes,ARTIFACT_CONTEXT_MAX);
+    contextCopy=artifactCopyBytes(
+      artifactContextBytes,ARTIFACT_CONTEXT_MAX
+    );
+    const capturedPorts=captureArtifactCheckPorts(ports);
+    artifactSignalState(abortSignal);
+    let config;
+    try{
+      config=validateDesktopCodingLargeObservationConfig(
+        parseReceiptJson(configCopy)
+      );
+    }catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+    const companionPins=validateArtifactContextEnvelope(
+      contextCopy,config,configCopy
+    );
+    const sourcePins=artifactConfigPins(config);
+    checkArtifactBootstrapAbort(abortSignal);
+
+    // Verify every config pin on every call, even when the following literal
+    // module import is already present in the ESM cache.
+    for(const identity of [...sourcePins,...companionPins]){
+      await awaitArtifactBootstrap(()=>Reflect.apply(
+        capturedPorts.verifyFile,capturedPorts,[
+          Object.freeze({...identity}),capturedPorts.reads
+        ]
+      ),abortSignal);
+    }
+
+    // No helper import, fallback or caller-selected loader occurs before the
+    // complete source closure above has verified.
+    const module=await awaitArtifactBootstrap(
+      ()=>import('../src/project-artifact-check-evidence.mjs'),
+      abortSignal
+    );
+    try{
+      return await Reflect.apply(
+        module.resolveProjectArtifactChecksWithPorts,module,[
+          configCopy,contextCopy,abortSignal,capturedPorts
+        ]
+      );
+    }catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
+  }finally{
+    configCopy?.fill(0);
+    contextCopy?.fill(0);
+  }
+}
+
 async function runLargeObservationDiagnostics(kind,configBytes,admission,abortSignal,ports){
   validateLargeDesktopPorts(ports);
   let phaseOrigin=null;
