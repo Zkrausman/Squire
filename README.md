@@ -40,7 +40,7 @@ The previous Squire implementation is retired from the current working tree. Its
 
 This replacement implements the pure SQ-01 library from the owner-approved Lore plan and independently reviewed internal contract: JobSpec validation, final-only JobRecord validation, immutable lifecycle values, permanent cancellation and guarded settlement/final emission. SQ-02 adds a metadata-only execution wrapper and Linux Node launcher candidate, exercised here only through injected operations. It requires supplied owned-group controls; no native descendant observer or signalling implementation is supplied. That older supervision candidate is not a usable task runner. SQ-04 adds a physical local artifact verifier with real temporary-file tests. The older core has no runnable entrypoint; the limited path has a separate explicit acceptance command. No automatic publication is included.
 
-With Node24, run `npm test`. No install or dependencies are needed. The selected tests run in one Node test process, with injected process operations and owned temporary file fixtures. They launch no child processes, models, authentication flows, apps or benchmark workloads.
+With Node24, install the locked project-local development dependency with `npm ci --ignore-scripts --include=dev --no-audit --no-fund` before running `npm test`. The exact test-only Acorn 8.19.0 dependency is recorded in `package.json` and `package-lock.json`; production runtime dependencies remain unchanged. The selected tests run in one Node test process, with injected process operations and owned temporary file fixtures. They launch no child processes, models, authentication flows, apps or benchmark workloads.
 
 ```js
 import {createLifecycle, advanceLifecycle} from './src/lifecycle.mjs';

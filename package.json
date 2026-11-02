@@ -56,5 +56,8 @@
     "test:project-summary": "node --test --test-isolation=none test/project-summary.test.mjs",
     "test:courier-handoff": "node --test --test-isolation=none test/courier-handoff.test.mjs",
     "test:courier-handoff-report": "node --test --test-isolation=none test/courier-handoff-report.test.mjs"
+  },
+  "devDependencies": {
+    "acorn": "8.19.0"
   }
 }
