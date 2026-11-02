@@ -1,3 +1,7 @@
+import {
+  COMPANION_SOURCE_PATHS,SOURCE_CLOSURE_LIMITS,analyzeModuleSource,
+  assertEntrypointLoaderSites,buildSourceClosure,validateCompanionDeclarations
+} from './helpers/source-closure-ast.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
@@ -407,22 +411,575 @@ test('explicit preparation binds desktop data, full selected closure, actual lau
   assert.deepEqual(f.files,before);
 });
 test('selected desktop source inventory covers the actual relative runtime import closure',async()=>{
-  const inventory=new Set(DESKTOP_CODEGEN_SOURCE_FILES.map(name=>join(PROJECT_SOURCE_ROOT,name)));
-  const queue=[
-    join(PROJECT_SOURCE_ROOT,'acceptance/project-entrypoint.mjs'),
-    join(PROJECT_SOURCE_ROOT,'acceptance/prepare-project-task.mjs')
-  ],seen=new Set();
-  while(queue.length){
-    const path=queue.pop();if(seen.has(path))continue;seen.add(path);
-    assert.ok(inventory.has(path),'Missing active source inventory entry: '+path);
-    const text=await fs.readFile(path,'utf8');
-    const imports=/(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g;
-    for(const match of text.matchAll(imports)){
-      const imported=resolve(dirname(path),match[1]);
-      assert.ok(inventory.has(imported),'Missing active source inventory entry: '+imported);
-      queue.push(imported);
+  const sourceRoot=PROJECT_SOURCE_ROOT;
+  const entry=join(sourceRoot,'acceptance/project-entrypoint.mjs');
+  const prepare=join(sourceRoot,'acceptance/prepare-project-task.mjs');
+  const failure=join(sourceRoot,'src/project-failure-diagnostics.mjs');
+  const phase=join(sourceRoot,'src/project-phase-diagnostics.mjs');
+  const companionPaths=COMPANION_SOURCE_PATHS.map(name=>join(sourceRoot,name));
+  const [readiness,artifact,verifier,jobRecord]=companionPaths;
+  const legacyInventory=new Set(DESKTOP_CODEGEN_SOURCE_FILES.map(name=>
+    join(sourceRoot,name)
+  ));
+  const companions=new Set(companionPaths);
+  const companionEdges=new Map([
+    [readiness,new Set([
+      'src/offline-run-summary.mjs','src/bounded-codegen-plan.mjs',
+      'src/job-spec.mjs','src/artifact-verifier.mjs',
+      'src/project-configuration.mjs','src/desktop-profile.mjs'
+    ].map(name=>join(sourceRoot,name)))],
+    [artifact,new Set([
+      'src/offline-run-summary.mjs','src/job-spec.mjs',
+      'src/bounded-codegen-plan.mjs','src/artifact-verifier.mjs',
+      'src/project-configuration.mjs','src/multifile-staging.mjs',
+      'src/desktop-readiness-evidence.mjs'
+    ].map(name=>join(sourceRoot,name)))],
+    [verifier,new Set([
+      jobRecord,join(sourceRoot,'src/job-spec.mjs')
+    ])],
+    [jobRecord,new Set([join(sourceRoot,'src/job-spec.mjs')])]
+  ]);
+  const base={
+    entryPath:entry,preparePath:prepare,sourceRoot,legacyInventory,
+    companions,failurePath:failure,phasePath:phase,companionEdges,
+    readSource:path=>fs.readFile(path,'utf8')
+  };
+  const assertCode=(operation,code)=>{
+    assert.throws(operation,error=>
+      error?.code===code&&error.message===code
+    );
+  };
+  const replaceOnce=(source,needle,replacement)=>{
+    assert.equal(source.split(needle).length-1,1);
+    return source.replace(needle,replacement);
+  };
+  const declarationFor=(source,name)=>
+    validateCompanionDeclarations(source).find(item=>item.name===name);
+  const arrayExpression=values=>
+    `[${values.map(value=>`'${value}'`).join(',')}]`;
+  const replaceArray=(source,name,values)=>{
+    const declaration=declarationFor(source,name);
+    const changed=source.slice(0,declaration.arrayStart)+arrayExpression(values)+
+      source.slice(declaration.arrayEnd);
+    if(values.length===COMPANION_SOURCE_PATHS.length&&
+       values.every((value,index)=>value===COMPANION_SOURCE_PATHS[index])){
+      const roundTrip=validateCompanionDeclarations(changed);
+      assert.deepEqual(roundTrip.map(item=>item.values),[
+        COMPANION_SOURCE_PATHS,COMPANION_SOURCE_PATHS
+      ]);
+    }
+    return changed;
+  };
+  const replaceInitializer=(source,name,initializer)=>{
+    const declaration=declarationFor(source,name);
+    return source.slice(0,declaration.initializerStart)+initializer+
+      source.slice(declaration.initializerEnd);
+  };
+  const captureMarker=
+    'function captureReadinessCompanionPins(contextBytes){';
+  const insertInCapture=(source,statement)=>replaceOnce(
+    source,captureMarker,`${captureMarker}\n${statement}`
+  );
+
+  const entrySource=await fs.readFile(entry,'utf8');
+  const declarations=validateCompanionDeclarations(entrySource);
+  assert.deepEqual(declarations.map(item=>item.name),[
+    'READINESS_COMPANION_PATHS','ARTIFACT_COMPANION_PATHS'
+  ]);
+  for(const declaration of declarations){
+    assert.deepEqual(declaration.values,COMPANION_SOURCE_PATHS);
+    assert.equal(declaration.offsetUnit,'utf16-code-units');
+  }
+
+  const loaderSites=assertEntrypointLoaderSites(
+    entrySource,entry,sourceRoot
+  );
+  assert.deepEqual(loaderSites.map(site=>site.site),[
+    'failure','phase','readiness','artifact'
+  ]);
+  assert.deepEqual(loaderSites.map(site=>[
+    site.kind,site.specifier,site.to
+  ]),[
+    ['dynamic','../src/project-failure-diagnostics.mjs',failure],
+    ['dynamic','../src/project-phase-diagnostics.mjs',phase],
+    ['dynamic','../src/desktop-readiness-evidence.mjs',readiness],
+    ['dynamic','../src/project-artifact-check-evidence.mjs',artifact]
+  ]);
+
+  const eager=await buildSourceClosure({...base,includeDynamic:false});
+  const optional=await buildSourceClosure({...base,includeDynamic:true});
+  const approvedBuiltinEdges=new Map(optional.approvedBuiltinEdges.map(
+    ({path,edges})=>[path,edges]
+  ));
+  const pinnedOptional=await buildSourceClosure({
+    ...base,includeDynamic:true,approvedBuiltinEdges
+  });
+  assert.deepEqual(pinnedOptional.paths,optional.paths);
+  assert.deepEqual(pinnedOptional.edges,optional.edges);
+
+  assert.ok(eager.paths.includes(entry));
+  assert.ok(eager.paths.includes(prepare));
+  assert.equal(eager.paths.includes(failure),false);
+  assert.equal(eager.paths.includes(phase),false);
+  for(const path of companions)assert.equal(eager.paths.includes(path),false);
+  for(const path of eager.paths)assert.ok(legacyInventory.has(path));
+  for(const path of optional.paths){
+    assert.ok(legacyInventory.has(path)||companions.has(path));
+  }
+  for(const path of companions)assert.ok(optional.paths.includes(path));
+  for(const path of companions)assert.equal(legacyInventory.has(path),false);
+  assert.deepEqual(optional.edges.filter(edge=>edge.from===failure&&
+    edge.kind==='dynamic').map(edge=>edge.to),[phase]);
+  assert.ok(optional.edges.every(edge=>
+    edge.resolution==='relative'||edge.resolution==='builtin'
+  ));
+  assert.equal(optional.offsetUnit,'utf16-code-units');
+  assert.ok(optional.sourceBytes<=SOURCE_CLOSURE_LIMITS.aggregateBytes);
+  assert.ok(optional.moduleCount<=SOURCE_CLOSURE_LIMITS.modules);
+  assert.ok(optional.nodeCount<=SOURCE_CLOSURE_LIMITS.nodes);
+
+  const assertClosureCode=async(overrides,code,includeDynamic=true)=>
+    assert.rejects(()=>buildSourceClosure({
+      ...base,includeDynamic,overrides:new Map(overrides),
+      approvedBuiltinEdges
+    }),error=>error?.code===code&&error.message===code);
+
+  const expectedArrays=COMPANION_SOURCE_PATHS;
+  for(const name of ['READINESS_COMPANION_PATHS','ARTIFACT_COMPANION_PATHS']){
+    const invalidArrays=[
+      expectedArrays.slice(0,-1),
+      [...expectedArrays.slice(0,-1),'src/unpinned-companion.mjs'],
+      [...expectedArrays,expectedArrays.at(-1)],
+      [...expectedArrays].reverse()
+    ];
+    for(const values of invalidArrays){
+      const changed=replaceArray(entrySource,name,values);
+      assert.notEqual(changed,entrySource);
+      assertCode(()=>validateCompanionDeclarations(changed),
+        'DECLARATION_MISMATCH');
+      await assertClosureCode([[entry,changed]],'DECLARATION_MISMATCH');
+    }
+
+    const roundTrippedSource=replaceArray(entrySource,name,expectedArrays);
+    const originalDeclarations=validateCompanionDeclarations(entrySource);
+    const roundTrippedDeclarations=
+      validateCompanionDeclarations(roundTrippedSource);
+    assert.deepEqual(roundTrippedDeclarations.map(item=>item.values),[
+      expectedArrays,expectedArrays
+    ]);
+    const selectedDeclaration=roundTrippedDeclarations.find(
+      item=>item.name===name
+    );
+    const otherName=name==='READINESS_COMPANION_PATHS'
+      ?'ARTIFACT_COMPANION_PATHS'
+      :'READINESS_COMPANION_PATHS';
+    const otherDeclaration=roundTrippedDeclarations.find(
+      item=>item.name===otherName
+    );
+    const originalOtherDeclaration=originalDeclarations.find(
+      item=>item.name===otherName
+    );
+    assert.ok(selectedDeclaration);
+    assert.ok(otherDeclaration);
+    assert.ok(originalOtherDeclaration);
+    assert.equal(selectedDeclaration.name,name);
+    assert.deepEqual(selectedDeclaration.values,expectedArrays);
+
+    const selectedArraySource=roundTrippedSource.slice(
+      selectedDeclaration.arrayStart,selectedDeclaration.arrayEnd
+    );
+    const escapedRawLiteral=
+      String.raw`'src/desktop\x2dreadiness-evidence.mjs'`;
+    const originalRawLiteral="'src/desktop-readiness-evidence.mjs'";
+    const escapedSelectedArraySource=replaceOnce(
+      selectedArraySource,originalRawLiteral,escapedRawLiteral
+    );
+    assert.equal(
+      escapedSelectedArraySource.replace(escapedRawLiteral,originalRawLiteral),
+      selectedArraySource
+    );
+    const escapedArray=
+      roundTrippedSource.slice(0,selectedDeclaration.arrayStart)+
+      escapedSelectedArraySource+
+      roundTrippedSource.slice(selectedDeclaration.arrayEnd);
+    const arrayLengthDelta=
+      escapedSelectedArraySource.length-selectedArraySource.length;
+    const otherOffsetShift=otherDeclaration.arrayStart>
+      selectedDeclaration.arrayStart?arrayLengthDelta:0;
+    const otherStart=otherDeclaration.arrayStart+otherOffsetShift;
+    const otherEnd=otherDeclaration.arrayEnd+otherOffsetShift;
+    const originalOtherArray=entrySource.slice(
+      originalOtherDeclaration.arrayStart,originalOtherDeclaration.arrayEnd
+    );
+
+    assert.ok(escapedSelectedArraySource.includes(escapedRawLiteral));
+    assert.equal(
+      escapedArray.slice(0,selectedDeclaration.arrayStart),
+      roundTrippedSource.slice(0,selectedDeclaration.arrayStart)
+    );
+    assert.equal(
+      escapedArray.slice(
+        selectedDeclaration.arrayStart+escapedSelectedArraySource.length
+      ),
+      roundTrippedSource.slice(selectedDeclaration.arrayEnd)
+    );
+    assert.equal(
+      roundTrippedSource.slice(
+        otherDeclaration.arrayStart,otherDeclaration.arrayEnd
+      ),
+      originalOtherArray
+    );
+    assert.equal(escapedArray.slice(otherStart,otherEnd),originalOtherArray);
+
+    assertCode(()=>validateCompanionDeclarations(escapedArray),
+      'DECLARATION_MISMATCH');
+    await assertClosureCode([[entry,escapedArray]],'DECLARATION_MISMATCH');
+    const multiBinding=replaceOnce(
+      entrySource,`const ${name}=Object.freeze([`,
+      `const unused=0,${name}=Object.freeze([`
+    );
+    assertCode(()=>validateCompanionDeclarations(multiBinding),
+      'DECLARATION_MISMATCH');
+    await assertClosureCode([[entry,multiBinding]],'DECLARATION_MISMATCH');
+
+    for(const statement of [
+      `const reference=${name};`,
+      `const unused=0,reference=${name};`,
+      `const reference={${name},[${name}]:${name}};`
+    ]){
+      const withReference=insertInCapture(entrySource,statement);
+      assert.deepEqual(
+        validateCompanionDeclarations(withReference).map(item=>item.values),
+        [expectedArrays,expectedArrays]
+      );
+    }
+
+    for(const [reference,shadow] of [
+      [
+        `const unused=0 in {},reference=${name};`,
+        `const unused=0 in {},${name}=[];`
+      ],
+      [
+        `const unused=0 in ({value:1}),reference=${name};`,
+        `const unused=0 in ({value:1}),${name}=[];`
+      ],
+      [
+        `const of=0;const unused=of,reference=${name};`,
+        `const of=0;const unused=of,${name}=[];`
+      ],
+      ...['in','of',';','(',')','{','}'].map(value=>[
+        `const unused=${JSON.stringify(value)},reference=${name};`,
+        `const unused=${JSON.stringify(value)},${name}=[];`
+      ])
+    ]){
+      const referenceSource=insertInCapture(entrySource,reference);
+      assert.deepEqual(
+        validateCompanionDeclarations(referenceSource).map(item=>item.values),
+        [expectedArrays,expectedArrays]
+      );
+      const shadowSource=insertInCapture(entrySource,shadow);
+      assertCode(()=>validateCompanionDeclarations(shadowSource),
+        'DECLARATION_MISMATCH');
+      await assertClosureCode([[entry,shadowSource]],'DECLARATION_MISMATCH');
+    }
+
+    for(const shadow of [
+      `function shadowPins(${name}){}`,
+      `const shadowPins=(${name})=>0;`,
+      `try{}catch(${name}){}`
+    ]){
+      const changed=insertInCapture(entrySource,shadow);
+      assertCode(()=>validateCompanionDeclarations(changed),
+        'DECLARATION_MISMATCH');
+      await assertClosureCode([[entry,changed]],'DECLARATION_MISMATCH');
+    }
+
+    const declaration=declarationFor(entrySource,name);
+    const actualDeclaration=entrySource.slice(
+      declaration.declarationStart,declaration.declarationEnd
+    );
+    const decoys=`/* ${actualDeclaration} */\n`+
+      `const quotedPinDecoy=${JSON.stringify(actualDeclaration)};\n`;
+    const withDecoys=entrySource.slice(0,declaration.declarationStart)+
+      decoys+entrySource.slice(declaration.declarationStart);
+    assert.deepEqual(
+      validateCompanionDeclarations(withDecoys).map(item=>item.values),
+      [expectedArrays,expectedArrays]
+    );
+    const decoyMissing=replaceArray(
+      withDecoys,name,expectedArrays.slice(0,-1)
+    );
+    assertCode(()=>validateCompanionDeclarations(decoyMissing),
+      'DECLARATION_MISMATCH');
+    await assertClosureCode([[entry,decoyMissing]],'DECLARATION_MISMATCH');
+
+    const duplicate=entrySource.slice(0,declaration.declarationStart)+
+      `${actualDeclaration}\n`+
+      entrySource.slice(declaration.declarationStart);
+    assertCode(()=>validateCompanionDeclarations(duplicate),
+      'INVALID_OR_UNSUPPORTED_SOURCE');
+    await assertClosureCode([[entry,duplicate]],
+      'INVALID_OR_UNSUPPORTED_SOURCE');
+
+    const nestedShadow=insertInCapture(entrySource,actualDeclaration);
+    assertCode(()=>validateCompanionDeclarations(nestedShadow),
+      'DECLARATION_MISMATCH');
+    await assertClosureCode([[entry,nestedShadow]],'DECLARATION_MISMATCH');
+
+    for(const initializer of [
+      `Object.freeze([...${name}])`,
+      'getCompanionPaths()',
+      `Object.freeze([${expectedArrays.map(value=>`'${value}'`).join(',')},getExtraPin()])`
+    ]){
+      const changed=replaceInitializer(entrySource,name,initializer);
+      assertCode(()=>validateCompanionDeclarations(changed),
+        'DECLARATION_MISMATCH');
+      await assertClosureCode([[entry,changed]],'DECLARATION_MISMATCH');
     }
   }
+
+  const changedTarget=replaceOnce(
+    entrySource,
+    "()=>import('../src/project-artifact-check-evidence.mjs'),",
+    "()=>import('../src/unpinned-artifact-helper.mjs'),"
+  );
+  assertCode(()=>assertEntrypointLoaderSites(
+    changedTarget,entry,sourceRoot
+  ),'LOADER_MISMATCH');
+  await assertClosureCode([[entry,changedTarget]],'LOADER_MISMATCH');
+
+  const readinessLoader=
+    "()=>import('../src/desktop-readiness-evidence.mjs')";
+  const artifactLoader=
+    "()=>import('../src/project-artifact-check-evidence.mjs')";
+  const temporaryLoader="()=>import('../src/temporary-loader-sentinel.mjs')";
+  const swappedLoaders=replaceOnce(
+    replaceOnce(
+      replaceOnce(entrySource,readinessLoader,temporaryLoader),
+      artifactLoader,readinessLoader
+    ),
+    temporaryLoader,artifactLoader
+  );
+  assertCode(()=>assertEntrypointLoaderSites(
+    swappedLoaders,entry,sourceRoot
+  ),'LOADER_MISMATCH');
+  await assertClosureCode([[entry,swappedLoaders]],'LOADER_MISMATCH');
+
+  const failureSource=await fs.readFile(failure,'utf8');
+  const phaseSource=await fs.readFile(phase,'utf8');
+  const artifactSource=await fs.readFile(artifact,'utf8');
+  const readinessSource=await fs.readFile(readiness,'utf8');
+
+  const wrongFailureRoute=replaceOnce(
+    failureSource,
+    "import('./project-phase-diagnostics.mjs')",
+    "import('./unlisted-phase-route.mjs')"
+  );
+  await assertClosureCode([[failure,wrongFailureRoute]],'CLOSURE_VIOLATION');
+
+  const phaseCompanion=
+    `${phaseSource}\nimport './desktop-readiness-evidence.mjs';\n`;
+  await assertClosureCode([[phase,phaseCompanion]],'CLOSURE_VIOLATION');
+
+  const unknownTransitive=replaceOnce(
+    artifactSource,
+    "from './desktop-readiness-evidence.mjs';",
+    "from './unregistered-readiness-helper.mjs';"
+  );
+  await assertClosureCode(
+    [[artifact,unknownTransitive]],'CLOSURE_VIOLATION'
+  );
+
+  const wrongCompanionDag=replaceOnce(
+    readinessSource,
+    "from './offline-run-summary.mjs';",
+    "from './project-artifact-check-evidence.mjs';"
+  );
+  await assertClosureCode(
+    [[readiness,wrongCompanionDag]],'CLOSURE_VIOLATION'
+  );
+
+  for(const specifier of [
+    'squire/artifact-verifier','/tmp/unpinned-module.mjs',
+    'https://example.invalid/unpinned-module.mjs',
+    'unregistered-package/subpath','node:unregistered-builtin'
+  ]){
+    const changed=`import '${specifier}';\n${failureSource}`;
+    await assertClosureCode([[failure,changed]],'INVALID_SPECIFIER');
+  }
+
+  const legacyCompanion=
+    `import './desktop-readiness-evidence.mjs';\n${failureSource}`;
+  await assertClosureCode([[failure,legacyCompanion]],'CLOSURE_VIOLATION');
+
+  const legacy=join(sourceRoot,'src/project-task.mjs');
+  const extraDynamic=
+    `${await fs.readFile(legacy,'utf8')}\n`+
+    `const loadUnpinned=()=>import('./unlisted.mjs');`;
+  await assertClosureCode([[legacy,extraDynamic]],'CLOSURE_VIOLATION');
+
+  const accidentalEager=replaceOnce(
+    entrySource,
+    'const READINESS_COMPANION_PATHS=Object.freeze([',
+    "import '../src/desktop-readiness-evidence.mjs';\n"+
+      'const READINESS_COMPANION_PATHS=Object.freeze(['
+  );
+  await assertClosureCode(
+    [[entry,accidentalEager]],'CLOSURE_VIOLATION',false
+  );
+
+  const sameLineEager=replaceOnce(
+    entrySource,
+    'const READINESS_COMPANION_PATHS=Object.freeze([',
+    "const closureSentinel=0;"+
+      "import '../src/desktop-readiness-evidence.mjs';\n"+
+      'const READINESS_COMPANION_PATHS=Object.freeze(['
+  );
+  await assertClosureCode(
+    [[entry,sameLineEager]],'CLOSURE_VIOLATION',false
+  );
+
+  for(const terminator of ['\n','\r','\u2028','\u2029']){
+    const lineCommentEager=
+      `// scanner sentinel${terminator}`+
+      "import '../src/desktop-readiness-evidence.mjs';\n"+
+      entrySource;
+    await assertClosureCode(
+      [[entry,lineCommentEager]],'CLOSURE_VIOLATION',false
+    );
+  }
+
+  const interpolatedImport=replaceOnce(
+    entrySource,
+    'const READINESS_COMPANION_PATHS=Object.freeze([',
+    "const loaderSentinel=`${import('../src/desktop-readiness-evidence.mjs')}`;\n"+
+      'const READINESS_COMPANION_PATHS=Object.freeze(['
+  );
+  const interpolatedAnalysis=analyzeModuleSource(interpolatedImport,{
+    modulePath:entry,sourceRoot
+  });
+  assert.equal(interpolatedAnalysis.imports.filter(edge=>
+    edge.kind==='dynamic'
+  ).length,5);
+  assertCode(()=>assertEntrypointLoaderSites(
+    interpolatedImport,entry,sourceRoot
+  ),'LOADER_MISMATCH');
+  await assertClosureCode([[entry,interpolatedImport]],'LOADER_MISMATCH');
+
+  const importTextDecoys=replaceOnce(
+    entrySource,
+    'const READINESS_COMPANION_PATHS=Object.freeze([',
+    [
+      `/* import '../src/desktop-readiness-evidence.mjs'; */`,
+      `const quotedImportDecoy="import '../src/desktop-readiness-evidence.mjs';";`,
+      `const regexImportDecoy=/import/;`,
+      "const templateImportDecoy=`import '../src/desktop-readiness-evidence.mjs';`;",
+      'const READINESS_COMPANION_PATHS=Object.freeze(['
+    ].join('\n')
+  );
+  const originalImports=analyzeModuleSource(entrySource,{
+    modulePath:entry,sourceRoot
+  }).imports.map(edge=>[
+    edge.kind,edge.specifier,edge.resolution,edge.to
+  ]);
+  const decoyImports=analyzeModuleSource(importTextDecoys,{
+    modulePath:entry,sourceRoot
+  }).imports.map(edge=>[
+    edge.kind,edge.specifier,edge.resolution,edge.to
+  ]);
+  assert.deepEqual(decoyImports,originalImports);
+  const decoyClosure=await buildSourceClosure({
+    ...base,includeDynamic:false,
+    overrides:new Map([[entry,importTextDecoys]]),approvedBuiltinEdges
+  });
+  assert.deepEqual(decoyClosure.paths,eager.paths);
+
+  const unicodeSource=
+    `const lamp='💡';\nimport value from '../src/job-\\u0073pec.mjs';`;
+  const unicodeAnalysis=analyzeModuleSource(unicodeSource,{
+    modulePath:entry,sourceRoot
+  });
+  assert.equal(unicodeAnalysis.imports[0].specifier,'../src/job-spec.mjs');
+  assert.equal(unicodeAnalysis.imports[0].offsetUnit,'utf16-code-units');
+  assert.equal(
+    unicodeSource.slice(
+      unicodeAnalysis.imports[0].sourceStart,
+      unicodeAnalysis.imports[0].sourceEnd
+    ),
+    "'../src/job-\\u0073pec.mjs'"
+  );
+
+  const decoySyntax=[
+    `const quoted="import './fake.mjs';";`,
+    `const pattern=/import\\s*\\(/;`,
+    `const quotient=({value:12}).value / 3;`,
+    `const template=\`import './fake.mjs'; \${import('./inside.mjs')}\`;`,
+    `/* import './fake.mjs'; */`,
+    `import.meta.url;`
+  ].join('\n');
+  const syntaxAnalysis=analyzeModuleSource(decoySyntax,{
+    modulePath:entry,sourceRoot
+  });
+  assert.deepEqual(syntaxAnalysis.imports.map(edge=>edge.specifier),[
+    './inside.mjs'
+  ]);
+  for(const unsupported of [
+    'const load=import(target);',
+    "const load=import(`./${target}.mjs`);",
+    "const load=import('./module.mjs',{with:{type:'json'}});",
+    "import value from './module.mjs' with {};"
+  ]){
+    assertCode(()=>analyzeModuleSource(unsupported,{
+      modulePath:entry,sourceRoot
+    }),'UNSUPPORTED_IMPORT_FORM');
+  }
+  const literalDynamic=analyzeModuleSource(
+    "const load=import('../src/job-\\u0073pec.mjs');",
+    {modulePath:entry,sourceRoot}
+  );
+  assert.deepEqual(literalDynamic.imports.map(edge=>[
+    edge.kind,edge.specifier,edge.resolution,edge.to
+  ]),[[
+    'dynamic','../src/job-spec.mjs','relative',
+    join(sourceRoot,'src/job-spec.mjs')
+  ]]);
+
+  const builtinImport=optional.edges.find(edge=>
+    edge.resolution==='builtin'&&edge.kind==='static'&&
+    edge.nodeType==='ImportDeclaration'&&edge.from!==entry&&
+    edge.from!==failure&&edge.from!==phase&&!companions.has(edge.from)
+  );
+  assert.ok(builtinImport);
+  const builtinSource=await fs.readFile(builtinImport.from,'utf8');
+  const changedBuiltinKind=
+    builtinSource.slice(0,builtinImport.start)+
+    `import(${builtinSource.slice(
+      builtinImport.sourceStart,builtinImport.sourceEnd
+    )});`+
+    builtinSource.slice(builtinImport.end);
+  await assertClosureCode(
+    [[builtinImport.from,changedBuiltinKind]],'CLOSURE_VIOLATION'
+  );
+
+  const addedBuiltin=
+    `${builtinSource}\nimport(${JSON.stringify(builtinImport.specifier)});`;
+  await assertClosureCode(
+    [[builtinImport.from,addedBuiltin]],'CLOSURE_VIOLATION'
+  );
+
+  const wrongBuiltinSource=optional.paths.find(path=>
+    legacyInventory.has(path)&&path!==entry&&path!==failure&&path!==phase&&
+    path!==builtinImport.from&&!companions.has(path)&&
+    !approvedBuiltinEdges.get(path)?.some(edge=>
+      edge.kind==='dynamic'&&edge.specifier===builtinImport.specifier
+    )
+  );
+  assert.ok(wrongBuiltinSource);
+  const wrongSourceText=await fs.readFile(wrongBuiltinSource,'utf8');
+  await assertClosureCode([[
+    wrongBuiltinSource,
+    `${wrongSourceText}\nimport(${JSON.stringify(builtinImport.specifier)});`
+  ]],'CLOSURE_VIOLATION');
 });
 test('preparation rejects wrong target, missing identity and unsupported explicit profiles before writes',async()=>{
   for(const change of [

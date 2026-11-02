@@ -1,3 +1,8 @@
+import {
+  COMPANION_SOURCE_PATHS,SOURCE_CLOSURE_LIMITS,
+  assertEntrypointLoaderSites,buildSourceClosure,
+  validateCompanionDeclarations
+} from './helpers/source-closure-ast.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
@@ -698,43 +703,193 @@ test('successful synthetic staging retains no failure evidence or sidecar',async
   }finally{await nativeFs.rm(root,{recursive:true,force:true});}
 });
 test('legacy eager import closure excludes diagnostics while desktop closure pins the lazy dependency',async()=>{
-  const entry=join(PROJECT_SOURCE_ROOT,'acceptance/project-entrypoint.mjs');
-  const diagnostic=join(PROJECT_SOURCE_ROOT,'src/project-failure-diagnostics.mjs');
-  const staticImports=/^\s*(?:import|export)\s+(?:[^'";]*?\bfrom\s*)?['"](\.[^'"]+)['"]/gm;
-  const dynamicImports=/\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
-  async function closure(includeDynamic){
-    const queue=[entry],seen=new Set();
-    while(queue.length){
-      const path=queue.pop();if(seen.has(path))continue;seen.add(path);
-      const source=await nativeFs.readFile(path,'utf8');
-      for(const match of source.matchAll(staticImports)){
-        queue.push(resolve(dirname(path),match[1]));
-      }
-      if(includeDynamic){
-        for(const match of source.matchAll(dynamicImports)){
-          queue.push(resolve(dirname(path),match[1]));
-        }
-      }
-    }
-    return seen;
+  const sourceRoot=PROJECT_SOURCE_ROOT;
+  const entry=join(sourceRoot,'acceptance/project-entrypoint.mjs');
+  const prepare=join(sourceRoot,'acceptance/prepare-project-task.mjs');
+  const failure=join(sourceRoot,'src/project-failure-diagnostics.mjs');
+  const phase=join(sourceRoot,'src/project-phase-diagnostics.mjs');
+  const companionPaths=COMPANION_SOURCE_PATHS.map(name=>join(sourceRoot,name));
+  const [readiness,artifact,verifier,jobRecord]=companionPaths;
+  const legacyInventory=new Set(DESKTOP_CODEGEN_SOURCE_FILES.map(name=>
+    join(sourceRoot,name)
+  ));
+  const companions=new Set(companionPaths);
+  const companionEdges=new Map([
+    [readiness,new Set([
+      'src/offline-run-summary.mjs','src/bounded-codegen-plan.mjs',
+      'src/job-spec.mjs','src/artifact-verifier.mjs',
+      'src/project-configuration.mjs','src/desktop-profile.mjs'
+    ].map(name=>join(sourceRoot,name)))],
+    [artifact,new Set([
+      'src/offline-run-summary.mjs','src/job-spec.mjs',
+      'src/bounded-codegen-plan.mjs','src/artifact-verifier.mjs',
+      'src/project-configuration.mjs','src/multifile-staging.mjs',
+      'src/desktop-readiness-evidence.mjs'
+    ].map(name=>join(sourceRoot,name)))],
+    [verifier,new Set([
+      jobRecord,join(sourceRoot,'src/job-spec.mjs')
+    ])],
+    [jobRecord,new Set([join(sourceRoot,'src/job-spec.mjs')])]
+  ]);
+  const base={
+    entryPath:entry,preparePath:prepare,sourceRoot,legacyInventory,
+    companions,failurePath:failure,phasePath:phase,companionEdges,
+    readSource:path=>nativeFs.readFile(path,'utf8')
+  };
+  const replaceOnce=(source,needle,replacement)=>{
+    assert.equal(source.split(needle).length-1,1);
+    return source.replace(needle,replacement);
+  };
+
+  const entrySource=await nativeFs.readFile(entry,'utf8');
+  const declarations=validateCompanionDeclarations(entrySource);
+  assert.deepEqual(declarations.map(item=>item.name),[
+    'READINESS_COMPANION_PATHS','ARTIFACT_COMPANION_PATHS'
+  ]);
+  for(const declaration of declarations){
+    assert.deepEqual(declaration.values,COMPANION_SOURCE_PATHS);
+    assert.equal(declaration.offsetUnit,'utf16-code-units');
   }
-  const eager=await closure(false),desktop=await closure(true);
-  assert.ok(eager.has(join(PROJECT_SOURCE_ROOT,'src/project-runner.mjs')));
-  assert.ok(eager.has(join(PROJECT_SOURCE_ROOT,'src/project-result-receipt.mjs')));
-  assert.equal(eager.has(diagnostic),false);
-  assert.equal(desktop.has(diagnostic),true);
-  const inventory=new Set(DESKTOP_CODEGEN_SOURCE_FILES.map(path=>join(PROJECT_SOURCE_ROOT,path)));
-  for(const path of desktop)assert.ok(inventory.has(path),'Missing desktop dependency: '+path);
+
+  const loaderSites=assertEntrypointLoaderSites(entrySource,entry,sourceRoot);
+  assert.deepEqual(loaderSites.map(site=>site.site),[
+    'failure','phase','readiness','artifact'
+  ]);
+  assert.deepEqual(loaderSites.map(site=>[
+    site.kind,site.specifier,site.to
+  ]),[
+    ['dynamic','../src/project-failure-diagnostics.mjs',failure],
+    ['dynamic','../src/project-phase-diagnostics.mjs',phase],
+    ['dynamic','../src/desktop-readiness-evidence.mjs',readiness],
+    ['dynamic','../src/project-artifact-check-evidence.mjs',artifact]
+  ]);
+
+  const eager=await buildSourceClosure({...base,includeDynamic:false});
+  const optional=await buildSourceClosure({...base,includeDynamic:true});
+  const approvedBuiltinEdges=new Map(optional.approvedBuiltinEdges.map(
+    ({path,edges})=>[path,edges]
+  ));
+  const pinnedOptional=await buildSourceClosure({
+    ...base,includeDynamic:true,approvedBuiltinEdges
+  });
+  assert.deepEqual(pinnedOptional.paths,optional.paths);
+  assert.deepEqual(pinnedOptional.edges,optional.edges);
+
+  assert.ok(eager.paths.includes(entry));
+  assert.ok(eager.paths.includes(prepare));
+  assert.ok(eager.paths.includes(join(sourceRoot,'src/project-runner.mjs')));
+  assert.ok(eager.paths.includes(join(sourceRoot,'src/project-result-receipt.mjs')));
+  assert.equal(eager.paths.includes(failure),false);
+  assert.equal(eager.paths.includes(phase),false);
+  for(const path of companions)assert.equal(eager.paths.includes(path),false);
+  for(const path of eager.paths)assert.ok(legacyInventory.has(path));
+
+  assert.ok(optional.paths.includes(failure));
+  assert.ok(optional.paths.includes(phase));
+  for(const path of companions){
+    assert.ok(optional.paths.includes(path));
+    assert.equal(legacyInventory.has(path),false);
+  }
+  for(const path of optional.paths){
+    assert.ok(legacyInventory.has(path)||companions.has(path));
+  }
+  assert.deepEqual(optional.edges.filter(edge=>edge.from===failure&&
+    edge.kind==='dynamic').map(edge=>edge.to),[phase]);
+  assert.ok(optional.edges.every(edge=>
+    edge.resolution==='relative'||edge.resolution==='builtin'
+  ));
+  assert.equal(optional.offsetUnit,'utf16-code-units');
+  assert.ok(optional.sourceBytes<=SOURCE_CLOSURE_LIMITS.aggregateBytes);
+  assert.ok(optional.moduleCount<=SOURCE_CLOSURE_LIMITS.modules);
+  assert.ok(optional.nodeCount<=SOURCE_CLOSURE_LIMITS.nodes);
+
   assert.equal(PROJECT_SOURCE_FILES.includes('src/project-failure-diagnostics.mjs'),false);
-  const source=await nativeFs.readFile(entry,'utf8');
-  const start=source.indexOf('export async function runProjectDesktopCodegenWithFailureDiagnosticsWithPorts(');
-  const end=source.indexOf('// Trusted capability injection',start);
-  assert.ok(start>=0&&end>start);
-  assert.equal(source.slice(start,end).match(
-    /import\('\.\.\/src\/project-failure-diagnostics\.mjs'\)/g
-  )?.length,1);
-  assert.equal(source.slice(0,start).includes("import('../src/project-failure-diagnostics.mjs')"),false);
-  assert.equal(source.slice(end).includes("import('../src/project-failure-diagnostics.mjs')"),false);
+  assert.equal(PROJECT_SOURCE_FILES.includes('src/project-phase-diagnostics.mjs'),false);
+  assert.ok(DESKTOP_CODEGEN_SOURCE_FILES.includes('src/project-failure-diagnostics.mjs'));
+  assert.ok(DESKTOP_CODEGEN_SOURCE_FILES.includes('src/project-phase-diagnostics.mjs'));
+
+  const assertClosureCode=async(overrides,code,includeDynamic=true)=>
+    assert.rejects(()=>buildSourceClosure({
+      ...base,includeDynamic,overrides:new Map(overrides),
+      approvedBuiltinEdges
+    }),error=>error?.code===code&&error.message===code);
+
+  const failureSource=await nativeFs.readFile(failure,'utf8');
+  const wrongFailureRoute=replaceOnce(
+    failureSource,
+    "import('./project-phase-diagnostics.mjs')",
+    "import('./unlisted-phase-route.mjs')"
+  );
+  await assertClosureCode([[failure,wrongFailureRoute]],'CLOSURE_VIOLATION');
+
+  for(const specifier of [
+    'squire/artifact-verifier',
+    'squire/src/project-failure-diagnostics.mjs',
+    '/tmp/unpinned-module.mjs',
+    'https://example.invalid/unpinned-module.mjs',
+    'unregistered-package/subpath',
+    'node:unregistered-builtin'
+  ]){
+    const changed=`import '${specifier}';\n${failureSource}`;
+    await assertClosureCode([[failure,changed]],'INVALID_SPECIFIER');
+  }
+
+  const missingRelative=`import './unlisted-helper.mjs';\n${failureSource}`;
+  await assertClosureCode([[failure,missingRelative]],'CLOSURE_VIOLATION');
+
+  const readinessSource=await nativeFs.readFile(readiness,'utf8');
+  const wrongCompanionDag=replaceOnce(
+    readinessSource,
+    "from './offline-run-summary.mjs';",
+    "from './project-artifact-check-evidence.mjs';"
+  );
+  await assertClosureCode(
+    [[readiness,wrongCompanionDag]],'CLOSURE_VIOLATION'
+  );
+
+  const eagerCompanion=
+    `import '../src/desktop-readiness-evidence.mjs';\n${entrySource}`;
+  await assertClosureCode(
+    [[entry,eagerCompanion]],'CLOSURE_VIOLATION',false
+  );
+
+  const builtinImport=optional.edges.find(edge=>
+    edge.resolution==='builtin'&&edge.kind==='static'&&
+    edge.nodeType==='ImportDeclaration'&&edge.from!==entry&&
+    edge.from!==failure&&edge.from!==phase&&!companions.has(edge.from)
+  );
+  assert.ok(builtinImport);
+  const builtinSource=await nativeFs.readFile(builtinImport.from,'utf8');
+  const changedBuiltinKind=
+    builtinSource.slice(0,builtinImport.start)+
+    `import(${builtinSource.slice(
+      builtinImport.sourceStart,builtinImport.sourceEnd
+    )});`+
+    builtinSource.slice(builtinImport.end);
+  await assertClosureCode(
+    [[builtinImport.from,changedBuiltinKind]],'CLOSURE_VIOLATION'
+  );
+
+  const addedBuiltin=
+    `${builtinSource}\nimport(${JSON.stringify(builtinImport.specifier)});`;
+  await assertClosureCode(
+    [[builtinImport.from,addedBuiltin]],'CLOSURE_VIOLATION'
+  );
+
+  const wrongBuiltinSource=optional.paths.find(path=>
+    legacyInventory.has(path)&&path!==entry&&path!==failure&&path!==phase&&
+    path!==builtinImport.from&&!companions.has(path)&&
+    !approvedBuiltinEdges.get(path)?.some(edge=>
+      edge.kind==='dynamic'&&edge.specifier===builtinImport.specifier
+    )
+  );
+  assert.ok(wrongBuiltinSource);
+  const wrongSourceText=await nativeFs.readFile(wrongBuiltinSource,'utf8');
+  await assertClosureCode([[
+    wrongBuiltinSource,
+    `${wrongSourceText}\nimport(${JSON.stringify(builtinImport.specifier)});`
+  ]],'CLOSURE_VIOLATION');
+
   assert.equal(projectDryRun().status,'DRY_RUN_NATIVE_DISABLED');
   assert.equal(desktopCodegenEntrypointMode([]),'DRY_RUN_NATIVE_DISABLED');
   assert.equal(runProjectDesktopCodegenNativeWithFailureDiagnostics.length,3);
