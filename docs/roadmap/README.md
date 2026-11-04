@@ -342,3 +342,35 @@ The corrected disposition is **NO_CHANGE / NOT_ESTABLISHED**: bounded [App Serve
 A bounded selected-field privacy request and a safe reviewed capture boundary using an existing interface are **PREPARED / PROPOSED**; no live read is released. An actual ordinary Codex task remains **HELD** pending operation-specific safety review and admission, fresh effective approval and sandbox/provider/authentication/no-paid-credit-fallback evidence, plus applicable output, timeout, direct-child observation, and custody evidence. Old-host output, native package/input/capture/full-custody/settlement, and benchmark gates remain held; stronger recovery remains deferred. No diagnostic, launch, replay, or consumed-fixture rerun is released.
 
 Remaining effort is **UNKNOWN**. Acceptance of this appendix remains with the source owner; ordinary documentation checks, draft PR, exact-head CI, merge, and remote verification follow acceptance. Future proposals require separately scoped authorization. This appendix itself grants no implementation authority, new ticket, or formal PR approval.
+
+## Additive delivery-status appendix — 4 November 2026
+
+This entry summarizes the public source-delivery receipts for PRs 199–206, all merged to main. Validation counts below are reported separately by each receipt and are not combined.
+
+### Desktop preparation, syntax evidence, and authentication
+
+[PR 199](https://github.com/Zkrausman/Squire/pull/199) adds an explicit desktop code-generation-only preparation and admitted entrypoint on the existing Codex capture and multifile-staging path; it does not launch the generated application. Its receipt reports 51 focused synthetic tests, 817 existing regression tests, and independent source, accuracy, and privacy review passing. The focused suite runs separately; ordinary CI remained required. Desktop execution and task correctness remain unevaluated.
+
+[PR 200](https://github.com/Zkrausman/Squire/pull/200) adds injected observation of Node `--check` for one selected project `.mjs` file, with bounded child-process evidence. Its receipt reports 17 focused fake-child tests and 817 existing regression tests passing, plus independent source/privacy review after a deadline-capture correction. Ordinary CI remained required on the combined head. This is syntax evidence only; it does not establish artifact identity, functional correctness, installation, descendant shutdown, native qualification, or benchmark success.
+
+[PR 201](https://github.com/Zkrausman/Squire/pull/201) binds desktop codegen preparation and dispatch to the same per-invocation `forced_login_method="chatgpt"` override; legacy routes keep their prior arguments, and persistent settings and credentials are unchanged. Its receipt reports 24 focused synthetic tests and 817 regression tests passing, followed by independent source/privacy review. This does not prove effective authentication, included allowance or credit state, or the identity of a future invocation; each actual admission still needs fresh evidence.
+
+### Project-failure and codegen-phase observations
+
+[PR 202](https://github.com/Zkrausman/Squire/pull/202) adds opt-in, bounded literal-marker counts, EOF/completeness state, and job/outcome binding for project-failure observations. Its separate awaited writer records only a closed projection; marker sightings do not establish a cause. The receipt reports 49 focused diagnostics/desktop tests and 817 existing regression tests passing, independent source/accuracy/privacy review, and the focused test added to CI. It establishes no actual diagnostic use, runtime qualification, or benchmark result; the earlier timeout cause remains unknown.
+
+[PR 203](https://github.com/Zkrausman/Squire/pull/203) adds opt-in phase observations with fixed event counts, bounded elapsed milestones, and conservative reported-usage fields. Progress does not renew deadlines, and primary outcomes and existing deadlines remain unchanged. Its receipt reports 78 focused phase/failure/desktop tests and 817 existing regression tests passing, independent source/privacy review, and the focused phase suite added to CI. The review is static; this delivery does not diagnose a prior timeout, authorize another producer, or qualify native execution.
+
+### Explicit generation profiles
+
+[PR 204](https://github.com/Zkrausman/Squire/pull/204) adds an explicitly selected observation profile with no elapsed generation or whole-operation cutoff. User cancellation, one-child dispatch, output caps, admission/authentication checks, finite shutdown, drain and persistence, and a separate 20-second staging closeout remain. Its receipt reports 136 focused synthetic tests and all 817 tests in the existing 42-file regression suite passing, with independent source/privacy review closing three findings. No code-generation task ran for this change; it establishes no provider duration, spending, descendant settlement, task correctness, or benchmark outcome.
+
+[PR 205](https://github.com/Zkrausman/Squire/pull/205) adds a selectable larger but finite profile: 512 KiB per source file, 2 MiB total source, 4 MiB decoded project/envelope, and 8 MiB stdout transport. Existing defaults and the separate private raw-diagnostic retention limits remain unchanged. The receipt reports 379 focused cases across 15 suites and all 817 original regression cases passing under pinned Node 24; independent source/privacy review and corrections closed four findings. These are synthetic/static results, not provider-duration, native-gameplay, or benchmark qualification; no model workload was rerun.
+
+### Desktop readiness and separate candidate-artifact checks
+
+[PR 206](https://github.com/Zkrausman/Squire/pull/206) adds opt-in readiness validation before admission consumption and a recheck before the backend call, plus a separate read-only artifact-check API bound to the exact candidate. The checks verify staged files and read bounded evidence; they do not launch the candidate. Its receipt reports local static CI/docs checks, controller 353/353 and core 817/817, independent whole-feature and complete ten-path Acorn-correction reviews, and both hosted CI jobs passing on the reviewed head. Those jobs used scripts-disabled dependency installation, literal `npm test`, and `git diff --exit-code`. The receipt states that source and CI acceptance do not establish native liveness, focus, product acceptance, or benchmark success; native use and accounting ingestion remain held.
+
+### Evidence boundaries
+
+These receipts document merged source, reported static/synthetic validation and review, and the hosted CI stated in PR 206. They do not establish actual native generation or use, effective ChatGPT authentication or allowance, installation, product acceptance, native app observation, process custody or full descendant settlement, or benchmark success. The native, benchmark, and no-replay boundaries remain in force; this status entry activates no planning proposal.
