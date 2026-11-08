@@ -201,6 +201,53 @@ function captureSpec(value){
   if(Object.hasOwn(out,'signal'))signalAborted(out.signal);
   return Object.freeze(out);
 }
+// A revision deliberately consumes an original producer candidate, not an
+// arbitrary revision chain. Its original receipt/stage are revalidated below.
+function captureRevisionSpec(value){
+  try{closed(value,['schema','original','prior_candidate','corrections'],[],'project_revision_spec');}catch{invalid();}
+  if(value.schema!=='SQUIRE_PROJECT_REVIEW_REVISION_V1')invalid();
+  const original=captureSpec(value.original);
+  const corrections=[];
+  try{
+    const prior=value.prior_candidate;
+    try{closed(prior,['git_dir','identity','operation_id','commit','tree'],[],'prior_candidate');
+      closed(prior.identity,['dev','ino'],[],'prior_identity');}catch{invalid();}
+    if(!absolutePath(prior.git_dir)||basename(prior.git_dir)==='.git'||
+       typeof prior.operation_id!=='string'||!TOKEN.test(prior.operation_id)||
+       prior.operation_id===original.operation_id||
+       typeof prior.commit!=='string'||!SHA1.test(prior.commit)||
+       typeof prior.tree!=='string'||!SHA1.test(prior.tree)||
+       !Number.isSafeInteger(prior.identity.dev)||prior.identity.dev<0||
+       !Number.isSafeInteger(prior.identity.ino)||prior.identity.ino<0)invalid();
+    const priorCandidate=Object.freeze({git_dir:prior.git_dir,
+      identity:Object.freeze({dev:prior.identity.dev,ino:prior.identity.ino}),
+      operation_id:prior.operation_id,commit:prior.commit,tree:prior.tree});
+    const protectedBase=basename(original.base_git_dir)==='.git'?dirname(original.base_git_dir):original.base_git_dir;
+    for(const path of [protectedBase,original.stage_dir,original.snapshot_dir,original.candidate_dir]){
+      if(pathsOverlap(priorCandidate.git_dir,path))invalid();
+    }
+    const items=denseArray(value.corrections,50);
+    if(items.length===0)invalid();
+    let total=0;
+    for(const item of items){
+      try{closed(item,['path','original','bytes_data'],[],'revision_correction');
+        closed(item.original,['blob','bytes','sha256'],[],'revision_original');}catch{invalid();}
+      if(!stageRelative(item.path)||!original.allowed_changes.some(allow=>allow.path===item.path)||
+         typeof item.original.blob!=='string'||!SHA1.test(item.original.blob)||
+         !Number.isSafeInteger(item.original.bytes)||item.original.bytes<0||item.original.bytes>524288||
+         typeof item.original.sha256!=='string'||!SHA256.test(item.original.sha256))invalid();
+      const bytes=plainBytes(item.bytes_data,Math.min(524288,MAX_PROJECT_BYTES-total));
+      corrections.push(Object.freeze({path:item.path,original:Object.freeze({
+        blob:item.original.blob,bytes:item.original.bytes,sha256:item.original.sha256
+      }),bytes_data:bytes}));
+      total+=bytes.length;if(total>MAX_PROJECT_BYTES)invalid();
+    }
+    if(new Set(corrections.map(item=>item.path)).size!==corrections.length)invalid();
+    checkPathCollisions(corrections.map(item=>item.path));
+    return Object.freeze({schema:'SQUIRE_PROJECT_REVIEW_REVISION_V1',original,prior_candidate:priorCandidate,corrections:Object.freeze(corrections)});
+  }catch(error){original.receipt_bytes.fill(0);for(const item of corrections)item.bytes_data.fill(0);throw error;}
+}
+
 function capturePorts(value,specSignal){
   try{closed(value,PORT_KEYS,OPTIONAL_PORT_KEYS,'project_review_ports');}catch{invalid();}
   if(Object.hasOwn(value,'signal')&&value.signal!==specSignal)invalid();
@@ -628,6 +675,106 @@ async function buildCommit(spec,ports,tree){
   }finally{raw.fill(0);}
   return commit;
 }
+// Git tree IDs can be derived from already-verified entries without writing
+// any object or ref to the prior candidate or to the base repository.
+function entriesTreeOid(entries){
+  const root={files:[],dirs:new Map()};
+  for(const entry of entries){
+    const parts=entry.path.split('/');let node=root;
+    for(const part of parts.slice(0,-1)){
+      if(!node.dirs.has(part))node.dirs.set(part,{files:[],dirs:new Map()});
+      node=node.dirs.get(part);
+    }
+    node.files.push({name:parts.at(-1),mode:entry.mode,oid:entry.oid??gitObjectId('blob',entry.bytes_data),directory:false});
+  }
+  const visit=node=>{
+    const rows=[...node.files];
+    for(const [name,child] of node.dirs)rows.push({name,mode:'40000',oid:visit(child),directory:true});
+    rows.sort((a,b)=>Buffer.compare(Buffer.from(`${a.name}${a.directory?'/':'\0'}`),Buffer.from(`${b.name}${b.directory?'/':'\0'}`)));
+    return gitObjectId('tree',Buffer.concat(rows.flatMap(row=>[
+      Buffer.from(`${row.mode} ${row.name}\0`,'utf8'),Buffer.from(row.oid,'hex')
+    ])));
+  };
+  return visit(root);
+}
+async function validatePriorCandidate(spec,ports,revision,baseEntries,snapshotFiles){
+  const prior=revision.prior_candidate;
+  await ancestorChecks(ports,prior.git_dir);
+  const stat=await lstat(ports,prior.git_dir);
+  if(!statKind(stat,'directory')||stat.uid!==ports.uid||(stat.mode&0o022)!==0||
+     stat.dev!==prior.identity.dev||stat.ino!==prior.identity.ino)rejected();
+  await realPathIsSelf(ports,prior.git_dir);
+  for(const name of ['commondir','gitdir'])if(!await absent(ports,join(prior.git_dir,name)))rejected();
+  for(const path of [join(prior.git_dir,'objects'),join(prior.git_dir,'objects','info')]){
+    const item=await lstat(ports,path);
+    if(!statKind(item,'directory')||item.uid!==ports.uid||(item.mode&0o022)!==0)rejected();
+    await realPathIsSelf(ports,path);
+  }
+  const alternate=await readStableFile(ports,join(prior.git_dir,'objects','info','alternates'),4096,0o600);
+  try{if(!bytesEqual(alternate,encoder.encode(`${join(spec.base_git_dir,'objects')}\n`)))rejected();}
+  finally{alternate.fill(0);}
+  const expectedEntries=baseEntries.map(entry=>Object.freeze({
+    path:entry.path,mode:entry.mode,oid:entry.oid??gitObjectId('blob',entry.bytes_data)
+  }));
+  if(entriesTreeOid(expectedEntries)!==prior.tree)rejected();
+  const raw=plainBytes(await checked(ports,()=>ports.git.inspectCommit({
+    git_dir:prior.git_dir,oid:prior.commit,max_bytes:65536
+  })),65536);
+  try{
+    const commit=parseRawCommit(raw,prior.commit);
+    if(commit.tree!==prior.tree||commit.parents.length!==1||commit.parents[0]!==spec.base_commit)rejected();
+  }finally{raw.fill(0);}
+  const observed=parseTreeListing(await checked(ports,()=>ports.git.inspectTree({
+    git_dir:prior.git_dir,oid:prior.tree,max_entries:MAX_CANDIDATE_ENTRIES,
+    max_metadata_bytes:MAX_CANDIDATE_METADATA_BYTES
+  })),MAX_CANDIDATE_ENTRIES,MAX_CANDIDATE_METADATA_BYTES);
+  if(observed.files.length!==expectedEntries.length||observed.files.some((entry,index)=>
+    entry.path!==expectedEntries[index].path||entry.mode!==expectedEntries[index].mode||entry.oid!==expectedEntries[index].oid
+  )||observed.trees.map(entry=>entry.path).join('\0')!==expectedTreePaths(expectedEntries).join('\0'))rejected();
+  const ref=`refs/heads/candidate-${prior.operation_id}`;
+  if(await checked(ports,()=>ports.git.readRef({git_dir:prior.git_dir,ref}))!==prior.commit)rejected();
+  for(const file of snapshotFiles){
+    const oid=gitObjectId('blob',file.bytes_data);
+    const bytes=plainBytes(await checked(ports,()=>ports.git.readBlob({
+      git_dir:prior.git_dir,oid,max_bytes:file.bytes
+    })),MAX_PROJECT_BYTES);
+    try{if(!bytesEqual(bytes,file.bytes_data)||gitObjectId('blob',bytes)!==oid)rejected();}
+    finally{bytes.fill(0);}
+  }
+  const after=await lstat(ports,prior.git_dir);
+  if(!stable(stat,after)||!statKind(after,'directory')||after.uid!==ports.uid||(after.mode&0o022)!==0)rejected();
+}
+function revisedSnapshotFiles(revision,snapshotFiles){
+  const counts={SOURCE:0,LOCAL_ASSET:0,DOC:0},totals={SOURCE:0,LOCAL_ASSET:0,DOC:0};
+  let total=0;
+  return snapshotFiles.map(file=>{
+    const correction=revision.corrections.find(item=>item.path===file.path);
+    const caps=PROJECT_CLASSES[file.classification];
+    let bytes=file.bytes_data;
+    if(correction){
+      if(correction.original.blob!==gitObjectId('blob',bytes)||
+         correction.original.bytes!==bytes.length||correction.original.sha256!==sha256(bytes)||
+         bytesEqual(bytes,correction.bytes_data))rejected();
+      bytes=correction.bytes_data;
+    }
+    counts[file.classification]++;totals[file.classification]+=bytes.length;total+=bytes.length;
+    if((file.classification==='SOURCE'&&bytes.length===0)||bytes.length>caps.file||counts[file.classification]>caps.count||totals[file.classification]>caps.total||total>MAX_PROJECT_BYTES)rejected();
+    return Object.freeze({...file,bytes_data:bytes,bytes:bytes.length,sha256:sha256(bytes)});
+  });
+}
+function revisionResult(spec,stageAck,tree,commit,paths,revision){
+  return Object.freeze({...resultValue(spec,stageAck,tree,commit,paths),
+    schema:'SQUIRE_PROJECT_REVISION_CANDIDATE_V1',status:'SOURCE_REVISION_CANDIDATE_CREATED',
+    correction_origin:'OPERATOR_SUPPLIED',
+    revision_of:Object.freeze({commit:revision.prior_candidate.commit,tree:revision.prior_candidate.tree}),
+    revised_blobs:Object.freeze([...revision.corrections].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0).map(item=>Object.freeze({
+      path:item.path,previous_blob:item.original.blob,previous_bytes:item.original.bytes,
+      previous_sha256:item.original.sha256,blob:gitObjectId('blob',item.bytes_data),
+      bytes:item.bytes_data.length,sha256:sha256(item.bytes_data)
+    })))
+  });
+}
+
 function resultValue(spec,stageAck,candidateTree,commit,paths){
   return Object.freeze({
     schema:RESULT_SCHEMA,status:'SOURCE_CANDIDATE_CREATED',operation_id:spec.operation_id,
@@ -641,7 +788,7 @@ function resultValue(spec,stageAck,candidateTree,commit,paths){
     base_alternate_dependency:'READ_ONLY_BASE_OBJECT_ALTERNATE'
   });
 }
-async function runImport(spec,ports){
+async function runImport(spec,ports,revision=null){
   let parsedReceipt=null,snapshot=null,finalSnapshot=null;
   try{
     checkAbort(ports.signal);
@@ -706,7 +853,15 @@ async function runImport(spec,ports){
     snapshot=await loadSnapshot(spec,ports,exportVerification,stageAck);
     const snapshotFiles=compareSnapshotToAllowed(snapshot,spec);
 
-    const overlay=await deriveOverlay(spec,ports,base,snapshotFiles);
+    const originalOverlay=await deriveOverlay(spec,ports,base,snapshotFiles);
+    const originalEntries=mergeEntries(base,originalOverlay);
+    if(revision){
+      if(changedPaths(base.entries,originalEntries).length===0)rejected();
+      await validatePriorCandidate(spec,ports,revision,originalEntries,snapshotFiles);
+    }
+    const overlay=revision
+      ?await deriveOverlay(spec,ports,base,revisedSnapshotFiles(revision,snapshotFiles))
+      :originalOverlay;
     const finalEntries=mergeEntries(base,overlay);
     const changes=changedPaths(base.entries,finalEntries);
     if(changes.length===0||changes.some(path=>!spec.allowed_changes.some(item=>item.path===path)))rejected();
@@ -749,6 +904,8 @@ async function runImport(spec,ports){
       entry.path!==tree.entries[index].path||entry.mode!==tree.entries[index].mode||entry.oid!==tree.entries[index].oid
     )||actualDirs.length!==expectedDirs.length||actualDirs.some((path,index)=>path!==expectedDirs[index]))rejected();
 
+    if(revision)await validatePriorCandidate(spec,ports,revision,originalEntries,snapshotFiles);
+
     const ref=`refs/heads/candidate-${spec.operation_id}`;
     if(await checked(ports,()=>ports.git.readRef({git_dir:spec.candidate_dir,ref}))!==null)rejected();
     checkAbort(ports.signal);
@@ -757,7 +914,7 @@ async function runImport(spec,ports){
     }));
     if(await checked(ports,()=>ports.git.readRef({git_dir:spec.candidate_dir,ref}))!==commit)rejected();
     checkAbort(ports.signal);
-    return resultValue(spec,stageAck,tree.tree,commit,changes);
+    return revision?revisionResult(spec,stageAck,tree.tree,commit,changes,revision):resultValue(spec,stageAck,tree.tree,commit,changes);
   }finally{
     spec.receipt_bytes.fill(0);
     for(const snapshotValue of [snapshot,finalSnapshot]){
@@ -778,6 +935,23 @@ export async function buildProjectReviewCandidate(spec,ports){
     if(capabilities?.signal&&signalAborted(capabilities.signal))throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_ABORTED');
     throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_REJECTED');
   }finally{captured?.receipt_bytes.fill(0);}
+}
+
+/** First owner revision of an exact original stage-derived candidate. */
+export async function buildProjectRevisionCandidate(spec,ports){
+  let revision=null,capabilities=null;
+  try{
+    revision=captureRevisionSpec(spec);
+    capabilities=capturePorts(ports,revision.original.signal);
+    return await runImport(revision.original,capabilities,revision);
+  }catch(error){
+    if(error instanceof ReviewCandidateError)throw error;
+    if(capabilities?.signal&&signalAborted(capabilities.signal))throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_ABORTED');
+    throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_REJECTED');
+  }finally{
+    revision?.original.receipt_bytes.fill(0);
+    for(const item of revision?.corrections??[])item.bytes_data.fill(0);
+  }
 }
 
 const FIXED_GIT_CONFIG=Object.freeze([
@@ -1028,6 +1202,14 @@ export async function buildProjectReviewCandidateNative(spec){
   finally{captured.receipt_bytes.fill(0);}
 }
 
+/** Fixed native revision adapter; only fresh output receives Git writes. */
+export async function buildProjectRevisionCandidateNative(spec){
+  const captured=captureRevisionSpec(spec);
+  const native=nativeArtifactCheckPorts(captured.original.signal);
+  try{return await buildProjectRevisionCandidate(captured,{...native,signal:captured.original.signal});}
+  finally{captured.original.receipt_bytes.fill(0);for(const item of captured.corrections)item.bytes_data.fill(0);}
+}
+
 function cliSpec(value){
   const allowed=[...SPEC_KEYS.filter(key=>key!=='receipt_bytes'),'receipt_path'];
   try{closed(value,allowed,[],'project_review_cli_spec');}catch{invalid();}
@@ -1037,7 +1219,7 @@ function cliSpec(value){
   return value.receipt_path;
 }
 function captureCliPorts(value){
-  const keys=['readReceiptBytes','build','stdout','stderr'];
+  const keys=['readReceiptBytes','readCorrectionBytes','build','revise','stdout','stderr'];
   try{closed(value,[],keys,'project_review_cli_ports');}catch{invalid();}
   const output=key=>{
     const stream=value[key]??process[key];
@@ -1045,12 +1227,18 @@ function captureCliPorts(value){
     return (...args)=>Reflect.apply(stream.write,stream,args);
   };
   const readMethod=value.readReceiptBytes??readReceiptBytes;
+  const correctionMethod=value.readCorrectionBytes??readCorrectionBytes;
   const buildMethod=value.build??buildProjectReviewCandidateNative;
+  const reviseMethod=value.revise??buildProjectRevisionCandidateNative;
   if(typeof readMethod!=='function'||types.isProxy(readMethod)||
-     typeof buildMethod!=='function'||types.isProxy(buildMethod))invalid();
+     typeof buildMethod!=='function'||types.isProxy(buildMethod)||
+     typeof reviseMethod!=='function'||types.isProxy(reviseMethod)||
+     typeof correctionMethod!=='function'||types.isProxy(correctionMethod))invalid();
   return Object.freeze({
     read:(...args)=>Reflect.apply(readMethod,value,args),
+    readCorrection:(...args)=>Reflect.apply(correctionMethod,value,args),
     build:(...args)=>Reflect.apply(buildMethod,value,args),
+    revise:(...args)=>Reflect.apply(reviseMethod,value,args),
     stdout:output('stdout'),stderr:output('stderr')
   });
 }
@@ -1081,9 +1269,74 @@ function validateCliResult(value){
   for(let i=1;i<paths.length;i++)if(paths[i-1]>=paths[i])rejected();
   return paths.length;
 }
+// Correction files share the protected no-follow/stable-read policy, but not
+// the receipt reader's independent 256KiB serialization cap.
+async function readCorrectionBytes(path,maxBytes){
+  if(!absolutePath(path)||!Number.isSafeInteger(maxBytes)||maxBytes<0||maxBytes>524288)invalid();
+  return readStableFile(nativeArtifactCheckPortsImpl(undefined),path,maxBytes,0o400);
+}
+function validateRevisedBlobs(value){
+  let items;
+  try{items=denseArray(value,50);}catch{rejected();}
+  if(items.length===0)rejected();
+  let total=0,previousTotal=0,last=null;
+  for(const item of items){
+    try{closed(item,['path','previous_blob','previous_bytes','previous_sha256','blob','bytes','sha256'],[],'revised_blob');}catch{rejected();}
+    if(!stageRelative(item.path)||(last!==null&&last>=item.path)||
+       typeof item.previous_blob!=='string'||!SHA1.test(item.previous_blob)||
+       typeof item.blob!=='string'||!SHA1.test(item.blob)||
+       typeof item.previous_sha256!=='string'||!SHA256.test(item.previous_sha256)||
+       typeof item.sha256!=='string'||!SHA256.test(item.sha256)||
+       !Number.isSafeInteger(item.previous_bytes)||item.previous_bytes<0||item.previous_bytes>524288||
+       !Number.isSafeInteger(item.bytes)||item.bytes<0||item.bytes>524288||item.previous_blob===item.blob)rejected();
+    total+=item.bytes;previousTotal+=item.previous_bytes;
+    if(total>MAX_PROJECT_BYTES||previousTotal>MAX_PROJECT_BYTES)rejected();last=item.path;
+  }
+}
+
+async function revisionCli(value,cli){
+  try{closed(value,['schema','original','prior_candidate','corrections'],[],'revision_cli_spec');}catch{invalid();}
+  const receiptPath=cliSpec(value.original),corrections=[];
+  let receipt=null,total=0;
+  try{
+    receipt=plainBytes(await cli.read(receiptPath,MAX_RECEIPT_BYTES),MAX_RECEIPT_BYTES);
+    for(const item of denseArray(value.corrections,50)){
+      try{closed(item,['path','original','content_path'],[],'revision_cli_correction');}catch{invalid();}
+      if(!absolutePath(item.content_path))invalid();
+      const remaining=Math.min(524288,MAX_PROJECT_BYTES-total);
+      const bytes=plainBytes(await cli.readCorrection(item.content_path,remaining),remaining);
+      corrections.push({path:item.path,original:item.original,bytes_data:bytes});
+      total+=bytes.length;if(total>MAX_PROJECT_BYTES)invalid();
+    }
+    const original={...value.original,receipt_bytes:receipt};delete original.receipt_path;
+    const result=await cli.revise({schema:value.schema,original,prior_candidate:value.prior_candidate,corrections});
+    try{closed(result,[
+      'schema','status','operation_id','candidate_ref','base_commit','base_tree',
+      'candidate_commit','candidate_tree','receipt_sha256','stage_manifest_sha256',
+      'changed_paths','task_correctness','human_review','native_acceptance',
+      'benchmark_acceptance','origin_authenticity','base_alternate_dependency',
+      'correction_origin','revision_of','revised_blobs'
+    ],[],'revision_cli_result');}catch{rejected();}
+    if(result.schema!=='SQUIRE_PROJECT_REVISION_CANDIDATE_V1'||result.status!=='SOURCE_REVISION_CANDIDATE_CREATED'||
+       result.correction_origin!=='OPERATOR_SUPPLIED')rejected();
+    try{closed(result.revision_of,['commit','tree'],[],'revision_of');}catch{rejected();}
+    if(typeof result.revision_of.commit!=='string'||!SHA1.test(result.revision_of.commit)||
+       typeof result.revision_of.tree!=='string'||!SHA1.test(result.revision_of.tree))rejected();
+    validateRevisedBlobs(result.revised_blobs);
+    const {correction_origin,revision_of,revised_blobs,...common}=result;
+    const count=validateCliResult({...common,schema:RESULT_SCHEMA,status:'SOURCE_CANDIDATE_CREATED'});
+    cli.stdout([
+      'SOURCE_REVISION_CANDIDATE_CREATED',`Base commit: ${result.base_commit}`,`Base tree: ${result.base_tree}`,
+      `Candidate commit: ${result.candidate_commit}`,`Candidate tree: ${result.candidate_tree}`,
+      `Revision of commit: ${revision_of.commit}`,`Revision of tree: ${revision_of.tree}`,`Changed path count: ${count}`,''
+    ].join('\n'));
+    return 0;
+  }finally{receipt?.fill(0);for(const item of corrections)item.bytes_data.fill(0);}
+}
+
 export async function runProjectReviewCandidateCli(argv,ports={}){
   const cli=captureCliPorts(ports);
-  if(!Array.isArray(argv)||argv.length!==2||argv[0]!=='--build'||
+  if(!Array.isArray(argv)||argv.length!==2||!['--build','--revise'].includes(argv[0])||
      typeof argv[1]!=='string'||!absolutePath(argv[1])){
     cli.stderr('Usage: node bin/squire-project-review.mjs --build <spec.json>\n');
     return 2;
@@ -1093,6 +1346,7 @@ export async function runProjectReviewCandidateCli(argv,ports={}){
     const specBytes=plainBytes(await cli.read(argv[1],MAX_SPEC_BYTES),MAX_SPEC_BYTES);
     try{
       const value=parseReceiptJson(specBytes);
+      if(argv[0]==='--revise')return await revisionCli(value,cli);
       const receiptPath=cliSpec(value);
       receipt=plainBytes(await cli.read(receiptPath,MAX_RECEIPT_BYTES),MAX_RECEIPT_BYTES);
       const mutable={...value,receipt_bytes:receipt};delete mutable.receipt_path;

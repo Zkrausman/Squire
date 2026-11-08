@@ -127,3 +127,95 @@ plumbing checks source objects and refs; it never imports or executes candidate
 files. These checks establish the bridge's source behavior under those fixtures,
 not an actual generation, application run or human acceptance result. The focused
 suite is included in the ordinary CI command separately from `npm test`.
+
+## First owner-supplied revision
+
+After inspecting an original stage-derived candidate, an owner may supply exact
+replacement bytes with `buildProjectRevisionCandidate(spec, ports)` or
+`buildProjectRevisionCandidateNative(spec)`. This creates a **fresh** review
+candidate; it neither changes the original candidate nor claims another producer
+completion. This first slice supports one revision of the original staged
+candidate, not a chain of revisions, arbitrary Git commits, merging, deletions or
+renames. Ordinary manual Git editing remains an alternative outside this API.
+
+The closed revision schema is `SQUIRE_PROJECT_REVIEW_REVISION_V1`, with:
+
+- `original`: the complete `SQUIRE_PROJECT_REVIEW_IMPORT_V1` specification,
+  including the saved receipt, stage, allowed paths and original base witnesses.
+  Use a new `operation_id` and fresh `snapshot_dir` / `candidate_dir`. The
+  receipt and original stage bytes remain unchanged.
+- `prior_candidate`: `{git_dir, identity: {dev, ino}, operation_id, commit, tree}`.
+  This is the exact original bare candidate repository, its physical identity,
+  original import operation ID and commit/tree, not moving branch selection.
+- `corrections`: one to 50 unique `{path, original: {blob, bytes, sha256},
+  bytes_data}` records. Each `bytes_data` is a plain `Uint8Array` captured before
+  asynchronous IO. Each old witness describes that file in the prior candidate,
+  not the file in the original base. Bytes are supplied by the owner and are not
+  evaluated as code.
+
+Only existing declared project paths may be replaced, including paths originally
+added by staging. Their classifications come from the pinned original manifest;
+corrections cannot add an unrelated path or relabel evidence. Existing profile
+limits apply to the **complete revised project**: SOURCE files are nonempty,
+25 files / 512 KiB each / 2 MiB total; LOCAL_ASSET has 20 files / 512 KiB each /
+2 MiB total; DOC has five files / 64 KiB each / 128 KiB total. The whole project
+remains at most 50 files and 4 MiB. Each listed correction must change bytes, and
+the resulting candidate must still differ from the original base.
+
+The bridge revalidates the final producer receipt and original stage. It derives
+the original candidate tree from those verified files and the pinned original
+base without writing to either input repository. The prior commit must have
+exactly that tree and the single original base parent; its original candidate ref
+must still select that commit. Every original project blob is read and checked,
+including files without corrections. Missing receipt or staging acknowledgement
+cannot be recovered from existing Git objects or refs. A prior output that has
+already been revised is rejected rather than silently inheriting its history.
+
+The prior candidate must satisfy the owner, physical identity, ancestor,
+nonsymlink and quiescent-custody checks. Redirecting `gitdir`/`commondir` metadata
+rejects. Its only permitted alternate is exactly the independently validated
+original base object store; nested or substituted alternate chains reject. All
+input roots and fresh output roots must be disjoint. Nothing repairs permissions
+or grants authority to use an input merely because its identity matches.
+
+The new commit has the **same original base parent**, not the prior candidate as
+parent. All original non-base project blobs are copied into the new output,
+including uncorrected additions, so it never depends on the prior candidate's
+object store. The new output still depends on the original base's protected
+alternate store. Corrected files are nonexecutable; restoring exact original base
+bytes preserves the original base mode. Old candidate, stage, export, base refs
+and working files remain unchanged. Prior identities, objects and ref selection
+are checked again before the new create-only ref is published. Failure or
+cancellation retains partial fresh output without successful acknowledgement;
+there is no automatic replay or rollback.
+
+Success returns `SQUIRE_PROJECT_REVISION_CANDIDATE_V1` /
+`SOURCE_REVISION_CANDIDATE_CREATED`, plus the usual base/new object IDs,
+`revision_of: {commit, tree}`, `correction_origin: OPERATOR_SUPPLIED` and private
+`revised_blobs` old/new blob, byte-count and SHA-256 bindings. Human review starts
+at `PENDING`; task correctness remains `NOT_EVALUATED`, origin remains
+`SUPPLIED_NOT_AUTHENTICATED`, and native/benchmark acceptance stays
+`NOT_ESTABLISHED`. A supplied correction does not resolve a review finding or
+inherit an earlier verdict. A human must review the new exact diff.
+
+For explicit CLI intake, use:
+
+```text
+node bin/squire-project-review.mjs --revise <revision-spec.json>
+```
+
+Its `original` object uses `receipt_path` instead of `receipt_bytes`. Each
+correction uses `content_path` instead of `bytes_data`; these must be explicit
+bounded local regular files. Correction files use a separate private stable,
+no-follow reader requiring owner UID, one link and mode `0400`, with protected
+ancestors; the existing receipt reader and its 256 KiB cap are unchanged.
+The JSON specification remains limited to 65,536 bytes. Receipt bytes are at
+most 262,144; each captured correction is at most 524,288 bytes and all captured
+corrections together are at most 4 MiB. Each read is additionally capped by the
+remaining aggregate allowance, with at most one sentinel byte to detect growth.
+This is a correction-payload bound, not a total process-allocation guarantee:
+validation also retains bounded copies and original stage/snapshot buffers. CLI output includes fixed status, base/new/prior object IDs
+and a changed-path count, never relative filenames, source bytes, local paths,
+operation labels or raw errors. Existing `--build` input/result behavior is
+unchanged. The API's relative paths and source witnesses remain private review
+material rather than a public receipt format.
