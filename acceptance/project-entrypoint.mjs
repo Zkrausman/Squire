@@ -1199,10 +1199,38 @@ async function awaitArtifactBootstrap(operation,signal){
   return value;
 }
 
-function nativeArtifactCheckPorts(){
+async function readNativeArtifactDirectory(path,signal){
+  const names=[];
+  let directory=null,failed=false,failure;
+  try{
+    checkArtifactBootstrapAbort(signal);
+    directory=await fs.opendir(path,{bufferSize:1});
+    checkArtifactBootstrapAbort(signal);
+    while(true){
+      checkArtifactBootstrapAbort(signal);
+      const entry=await directory.read();
+      checkArtifactBootstrapAbort(signal);
+      if(entry===null)break;
+      if(names.length===51)throw Error('ARTIFACT_DIRECTORY_LIMIT');
+      names.push(entry.name);
+    }
+  }catch(error){
+    failed=true;failure=error;
+  }finally{
+    if(directory!==null){
+      try{await directory.close();}
+      catch(error){if(!failed){failed=true;failure=error;}}
+    }
+  }
+  checkArtifactBootstrapAbort(signal);
+  if(failed)throw failure;
+  return names;
+}
+
+function nativeArtifactCheckPorts(signal){
   const nativeFs=Object.freeze({
     open:fs.open,mkdir:fs.mkdir,lstat:fs.lstat,chmod:fs.chmod,
-    readdir:fs.readdir,realpath:fs.realpath
+    readdir:path=>readNativeArtifactDirectory(path,signal),realpath:fs.realpath
   });
   return Object.freeze({
     fs:nativeFs,uid:process.getuid(),readBytes:readReceiptBytes,
@@ -1218,7 +1246,7 @@ export async function verifyProjectArtifactChecks(
   configBytes,artifactContextBytes,abortSignal
 ){
   let ports;
-  try{ports=nativeArtifactCheckPorts();}
+  try{ports=nativeArtifactCheckPorts(abortSignal);}
   catch{throw artifactFixedError('INVALID_ARTIFACT_CONTEXT');}
   return verifyProjectArtifactChecksWithPorts(
     configBytes,artifactContextBytes,abortSignal,ports
