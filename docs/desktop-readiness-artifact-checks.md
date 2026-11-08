@@ -189,10 +189,22 @@ This allowance applies to artifact witness reads, not stage reads.
 The stage verifier is reused unchanged. Its 4 MiB project limit describes the
 accepted decoded package; it is not a total physical-read or memory bound.
 Stage file reads can reach the classification cap plus one byte before a
-declared-size mismatch is rejected. Its directory inventory materializes
-`readdir()` results before checking them, without a bounded enumeration
-guarantee. Callers must provide quiescent, owner-managed staging; this slice
-does not change the walker.
+declared-size mismatch is rejected. The native read-only artifact-check
+wrapper supplies a private `readdir` adapter that uses `opendir()` with
+`bufferSize: 1` and awaits one `Dir.read()` at a time. It retains at most 51
+entry names and rejects the 52nd before retaining it. The cap accommodates a
+stage manifest plus the verifier's maximum 50 declared files. Every acquired
+directory is closed in `finally`, including read failures and cancellation;
+the adapter checks cancellation before and after acquisition, around each
+read (including EOF), and after close.
+
+This is a per-listing guarantee for the native read-only artifact-check
+wrapper. The injected API may supply any `readdir` implementation, and the
+readiness and generation routes keep their existing filesystem adapters. The
+stage verifier itself, its inventory and custody checks remain unchanged; an
+oversized listing continues through its existing stage-corrupt/incomplete
+reduction. The adapter does not bound total process memory. Callers must
+provide quiescent, owner-managed staging.
 
 Filesystem IO is cooperative and may block; abort signals do not preempt a
 blocked host call. Process identities in the route and terminal, and socket
