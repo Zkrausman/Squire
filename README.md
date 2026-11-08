@@ -34,6 +34,12 @@ one bounded file envelope, persists its exact bytes and then obtains a separate
 PR176 stage acknowledgement. Candidate staging is never functional acceptance;
 imports/default entrypoints are inert and actual calls require separate admission.
 
+The [local multifile review-candidate bridge](docs/project-review-candidate.md)
+turns an explicitly supplied completed large-project stage into a base-bound Git
+candidate in a fresh local repository. It does not execute generated code,
+modify the base checkout or publish the candidate. Human review and functional
+acceptance remain separate.
+
 The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
