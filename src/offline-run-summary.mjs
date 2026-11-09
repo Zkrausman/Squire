@@ -76,9 +76,15 @@ const emptySyntax = () => ({wrapper_status:'NOT_RUN',observed_exit_code:null,syn
 const emptyArtifact = () => ({witness_present:false,sha256:null,byte_count:null,format_inspection:null,safety_evidence:null});
 const emptyFixtures = () => ({total_matrix:null,passed_count:null,failed_count:null,not_run_count:null,cases:null});
 function base() {return {schema_version:'squire1.offline_summary.v1',overall_outcome:'INVALID_RECEIPT',campaign:{raw_status:'UNKNOWN',raw_reason:null,denominator:null},admission:{operator_admitted:false,runtime_admitted_marker:null,has_operator_receipt:false},generation:emptyGeneration(),syntax:emptySyntax(),artifact:emptyArtifact(),fixtures:emptyFixtures(),execution:{child_invocations:{generation:null,syntax:null,fixtures:null},workspace_disposition:'UNKNOWN',descendant_guarantee:'NONE'},diagnostic:{stage:null,reason:null}};}
+export const OFFLINE_REPORT_REJECTION_CODES=Object.freeze([
+  'MALFORMED_UTF8','MALFORMED_JSON','DUPLICATE_KEY_CONFLICT','SCHEMA_MISMATCH',
+  'FINITE_FIXTURE_MATRIX_REQUIRED','DUPLICATE_FIXTURE_ID','CONTRADICTORY_COUNTS',
+  'UNSUPPORTED_NON_NUMERIC_COUNTER','NEGATIVE_COUNTER_REJECTED','SOURCE_IDENTITY_CHANGED',
+  'READ_FAILED','FILE_NOT_FOUND','SPECIAL_FILE_REJECTED','FILE_TOO_LARGE'
+]);
+const invalidSummaryReasons=new Set(OFFLINE_REPORT_REJECTION_CODES);
 export function invalidRunSummary(reason='SCHEMA_MISMATCH') {
-  const allowed=new Set(['MALFORMED_UTF8','MALFORMED_JSON','DUPLICATE_KEY_CONFLICT','SCHEMA_MISMATCH','FINITE_FIXTURE_MATRIX_REQUIRED','DUPLICATE_FIXTURE_ID','CONTRADICTORY_COUNTS','UNSUPPORTED_NON_NUMERIC_COUNTER','NEGATIVE_COUNTER_REJECTED','SOURCE_IDENTITY_CHANGED','READ_FAILED','FILE_NOT_FOUND','SPECIAL_FILE_REJECTED','FILE_TOO_LARGE']);
-  const out=base();out.diagnostic={stage:'RECEIPT_VALIDATION',reason:allowed.has(reason)?reason:'SCHEMA_MISMATCH'};return freeze(out);
+  const out=base();out.diagnostic={stage:'RECEIPT_VALIDATION',reason:invalidSummaryReasons.has(reason)?reason:'SCHEMA_MISMATCH'};return freeze(out);
 }
 function counter(v) {if(v===null||v==='UNKNOWN'||v===undefined)return null;if(typeof v!=='number'||!Number.isSafeInteger(v))invalid('UNSUPPORTED_NON_NUMERIC_COUNTER');if(v<0)invalid('NEGATIVE_COUNTER_REJECTED');return v;}
 function count(v,max) {if(!integer(v)||v>max)invalid('CONTRADICTORY_COUNTS');return v;}
