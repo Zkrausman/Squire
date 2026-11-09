@@ -6,6 +6,35 @@ Read one explicit, previously saved Q218 JSON receipt:
 node bin/squire-report.mjs <receipt-path>
 ```
 
+Consumers can inspect the fixed report interface without supplying a receipt:
+
+```
+node bin/squire-report.mjs --capabilities --json
+```
+
+This exact two-argument form prints one minified UTF-8
+`SQUIRE_OFFLINE_REPORT_CAPABILITIES_V1` object followed by one LF and exits 0.
+It performs no receipt read, file check, report projection, process spawn, or
+provider call. The inventory is generated from the same closed route descriptors
+that select the live projectors and formatters. It lists the seven accepted
+versioned input schemas, the three closed unversioned legacy shapes, route output
+kinds, exits, and route-applicable fixed stderr labels. Its total size is limited to
+16 KiB; a serialization or size failure returns the fixed
+`CAPABILITIES_INTERNAL_ERROR` diagnostic without writing partial JSON.
+
+The listed rejection codes describe labels the CLI writes to stderr. The legacy
+campaign terminal can also show finite producer diagnostic reasons from its
+separate projection allowlist. Those `diagnostic.reason` values are not all
+stderr labels; only codes listed for a route are promised by the V1 inventory.
+
+The capability document introduces a versioned promise for its listed fields,
+route and code meanings. It does not assert that these labels or meanings were
+stable across earlier releases. A new receipt route or a newly listed rejection
+code requires a reviewed discovery schema version. Receipt paths, receipt data,
+environment values, raw exceptions, source text, and host or provider state are
+not included. Capability data describes report selection only; it grants no
+execution, admission, authenticity, or artifact-verification authority.
+
 The command reads a regular file up to 256 KiB, rejects a leaf symlink or special
 file, and prints a plain-text projection. It does not discover receipts, read the
 recorded artifact, launch a task, recover a run or write files. Paths and raw
