@@ -40,6 +40,11 @@ candidate in a fresh local repository. It does not execute generated code,
 modify the base checkout or publish the candidate. Human review and functional
 acceptance remain separate.
 
+The [portable review snapshot](docs/project-portable-candidate-snapshot.md)
+packages one original PR210 candidate's two selected trees and required blobs
+for private local inspection, with an offline verifier. It does not package
+history, execute candidate bytes, authenticate the producer, or publish source.
+
 The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
