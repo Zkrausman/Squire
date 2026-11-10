@@ -41,6 +41,7 @@
     "./project-runner": "./src/project-runner.mjs",
     "./project-summary": "./src/project-summary.mjs",
     "./project-result-receipt": "./src/project-result-receipt.mjs",
+    "./project-portable-candidate-snapshot": "./src/project-portable-candidate-snapshot.mjs",
     "./project-configuration": "./src/project-configuration.mjs",
     "./blackjack-contract": "./src/blackjack-contract.mjs",
     "./blackjack-controller": "./src/blackjack-controller.mjs",
@@ -55,7 +56,8 @@
     "test:project-entrypoint-receipt": "node --test --test-isolation=none test/project-entrypoint-receipt.test.mjs",
     "test:project-summary": "node --test --test-isolation=none test/project-summary.test.mjs",
     "test:courier-handoff": "node --test --test-isolation=none test/courier-handoff.test.mjs",
-    "test:courier-handoff-report": "node --test --test-isolation=none test/courier-handoff-report.test.mjs"
+    "test:courier-handoff-report": "node --test --test-isolation=none test/courier-handoff-report.test.mjs",
+    "test:portable-candidate-snapshot": "node --test --test-isolation=none test/project-portable-candidate-snapshot.test.mjs"
   },
   "devDependencies": {
     "acorn": "8.19.0"

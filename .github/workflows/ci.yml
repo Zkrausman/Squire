@@ -22,6 +22,6 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci --ignore-scripts --include=dev --no-audit --no-fund
-      - run: node --test --test-isolation=none test/project-coding-profile.test.mjs test/desktop-codegen.test.mjs test/project-native-result.test.mjs test/project-summary.test.mjs test/project-phase-diagnostics.test.mjs test/project-failure-diagnostics.test.mjs test/project-large-output.test.mjs test/desktop-readiness-evidence.test.mjs test/project-artifact-check-evidence.test.mjs test/source-closure-ast.test.mjs test/native-artifact-directory.test.mjs test/project-review-candidate.test.mjs
+      - run: node --test --test-isolation=none test/project-coding-profile.test.mjs test/desktop-codegen.test.mjs test/project-native-result.test.mjs test/project-summary.test.mjs test/project-phase-diagnostics.test.mjs test/project-failure-diagnostics.test.mjs test/project-large-output.test.mjs test/desktop-readiness-evidence.test.mjs test/project-artifact-check-evidence.test.mjs test/source-closure-ast.test.mjs test/native-artifact-directory.test.mjs test/project-review-candidate.test.mjs test/project-portable-candidate-snapshot.test.mjs
       - run: npm test
       - run: git diff --exit-code
