@@ -1335,3 +1335,125 @@ export async function runProjectPortableCandidateSnapshotCli(argv,ports={}){
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   process.exitCode=await runProjectPortableCandidateSnapshotCli(process.argv.slice(2));
 }
+
+// Separate P1b source reader. It binds three pinned stores and two direct endpoint
+// comparisons; the original PR210 reader above intentionally remains unchanged.
+export async function readProjectRevisionReviewSource(spec,options={}){
+  let signal;
+  try{
+    closed(options,[],['fs']);const fsPort=captureFsPort(options.fs);
+    closed(spec,['schema','original_result','revised_result','base_git_dir','base_git_identity',
+      'original_git_dir','original_git_identity','revised_git_dir','revised_git_identity','output_dir'],['signal']);
+    if(spec.schema!=='SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1')invalid();
+    signal=captureSignal(spec.signal);
+    const original=captureResult(spec.original_result);
+    const revision=spec.revised_result;
+    closed(revision,[...RESULT_KEYS,'correction_origin','revision_of','revised_blobs']);
+    if(revision.schema!=='SQUIRE_PROJECT_REVISION_CANDIDATE_V1'||revision.status!=='SOURCE_REVISION_CANDIDATE_CREATED'||
+      revision.correction_origin!=='OPERATOR_SUPPLIED')invalid();
+    const {correction_origin,revision_of,revised_blobs,...common}=revision;
+    captureResult({...common,schema:RESULT_SCHEMA,status:'SOURCE_CANDIDATE_CREATED'});
+    closed(revision_of,['commit','tree']);
+    if(revision_of.commit!==original.candidate_commit||revision_of.tree!==original.candidate_tree||
+       revision.base_commit!==original.base_commit||revision.base_tree!==original.base_tree||
+       revision.receipt_sha256!==original.receipt_sha256||
+       revision.stage_manifest_sha256!==original.stage_manifest_sha256||
+       revision.candidate_commit===original.candidate_commit)rejected();
+    const witnesses=denseArray(revised_blobs,50);
+    if(witnesses.length<1)rejected();
+    let prior='',newTotal=0,oldTotal=0;for(const row of witnesses){
+      closed(row,['path','previous_blob','previous_bytes','previous_sha256','blob','bytes','sha256']);
+      if(!stageRelative(row.path)||row.path<=prior||!SHA1.test(row.previous_blob)||!SHA1.test(row.blob)||
+         !SHA256.test(row.previous_sha256)||!SHA256.test(row.sha256)||
+         !Number.isSafeInteger(row.previous_bytes)||row.previous_bytes<0||row.previous_bytes>524288||
+         !Number.isSafeInteger(row.bytes)||row.bytes<0||row.bytes>524288||row.previous_blob===row.blob)rejected();newTotal+=row.bytes;oldTotal+=row.previous_bytes;
+      if(newTotal>4*1024*1024||oldTotal>4*1024*1024)rejected();prior=row.path;
+    }
+    for(const key of ['base_git_dir','original_git_dir','revised_git_dir','output_dir'])if(!absolutePath(spec[key]))invalid();
+    if(basename(spec.original_git_dir)==='.git'||basename(spec.revised_git_dir)==='.git')invalid();
+    const protectedBase=basename(spec.base_git_dir)==='.git'?dirname(spec.base_git_dir):spec.base_git_dir;
+    const roots=[protectedBase,spec.original_git_dir,spec.revised_git_dir,spec.output_dir];
+    for(let i=0;i<roots.length;i++)for(let j=i+1;j<roots.length;j++)if(pathsOverlap(roots[i],roots[j]))invalid();
+    const ids=['base_git_identity','original_git_identity','revised_git_identity'].map(key=>captureIdentity(spec[key]));
+    return await fsContext.run(fsPort,()=>signalContext.run(signal,async()=>{
+      checkAbort(signal);
+      const base=await sourceDirectory(spec.base_git_dir,ids[0],{bare:basename(spec.base_git_dir)!=='.git',forbidAlternates:true});
+      const orig=await sourceDirectory(spec.original_git_dir,ids[1],{bare:true});
+      const rev=await sourceDirectory(spec.revised_git_dir,ids[2],{bare:true});
+      await readAlternate(orig.path,base.objects);await readAlternate(rev.path,base.objects);
+      const refs=[[orig,original],[rev,revision]];
+      for(const [repo,result] of refs)if(await readRef(repo.path,result.candidate_ref)!==result.candidate_commit)rejected();
+      const baseCommit=parseCommit(await catObject(base.path,'commit',original.base_commit,MAX_COMMIT_BYTES),original.base_commit);
+      if(baseCommit.tree!==original.base_tree)rejected();
+      for(const [repo,result] of refs){
+        const commit=parseCommit(await catObject(repo.path,'commit',result.candidate_commit,MAX_COMMIT_BYTES),result.candidate_commit);
+        if(commit.tree!==result.candidate_tree||commit.parents.length!==1||commit.parents[0]!==result.base_commit)rejected();
+      }
+      const specs=[[base,original.base_tree,MAX_BASE_FILES,MAX_BASE_METADATA_BYTES],
+        [orig,original.candidate_tree,MAX_CANDIDATE_FILES,MAX_CANDIDATE_METADATA_BYTES],
+        [rev,revision.candidate_tree,MAX_CANDIDATE_FILES,MAX_CANDIDATE_METADATA_BYTES]];
+      const listings=[];
+      for(const [repo,tree,maxFiles,maxMeta] of specs){
+        const listing=parseGitTreeListing(await gitBytes(repo.path,['ls-tree','-rtz','--full-tree',tree],maxMeta),maxFiles,maxMeta);
+        const kinds=new Map();for(const row of listing.trees)addExpectedKind(kinds,row.oid,'tree');addExpectedKind(kinds,tree,'tree');
+        const raw=new Map();let treeBytes=0,treeOids=[...kinds.keys()].sort();
+        for(let start=0;start<treeOids.length;start+=4096){
+          const group=treeOids.slice(start,start+4096),groupKinds=new Map(group.map(oid=>[oid,'tree']));
+          const sizes=await checkBatchSizes(repo.path,group,groupKinds);
+          const groupBytes=[...sizes.values()].reduce((sum,n)=>sum+n,0);treeBytes+=groupBytes;
+          if(treeBytes>maxMeta)rejected();
+          for(const [key,value] of await fetchBatch(repo.path,group,groupKinds,sizes,groupBytes))raw.set(key,value);
+        }
+        const objects=new Map(raw);
+        for(const row of listing.files)if(!objects.has(row.oid))objects.set(row.oid,{kind:'blob',payload:Buffer.alloc(0)});
+        const checked=collectRawTree(tree,objects,maxFiles,maxMeta);
+        if(!sameListing(listing,checked))rejected();
+        const blobs=[...new Set(checked.files.map(row=>row.oid))].sort();
+        for(let start=0;start<blobs.length;start+=4096){const group=blobs.slice(start,start+4096);
+          await checkBatchSizes(repo.path,group,new Map(group.map(oid=>[oid,'blob'])));}
+        listings.push(checked);
+      }
+      const [baseTree,originalTree,revisedTree]=listings;
+      const baseToOriginal=computeChanges(baseTree.files,originalTree.files);
+      if(!compareLists(baseToOriginal,original.changed_paths))rejected();
+      const baseMap=new Map(baseTree.files.map(row=>[row.path,row]));
+      for(const listing of [originalTree,revisedTree])for(const row of listing.files)if(row.mode==='100755'){
+        const old=baseMap.get(row.path);if(!old||old.mode!=='100755'||old.oid!==row.oid)rejected();}
+      const baseToRevised=computeChanges(baseTree.files,revisedTree.files);
+      const originalToRevised=computeChanges(originalTree.files,revisedTree.files);
+      if(!compareLists(baseToRevised,revision.changed_paths)||!compareLists(originalToRevised,witnesses.map(row=>row.path)))rejected();
+      const union=[...new Set([...baseToRevised,...originalToRevised])].sort();if(union.length>50)rejected();
+      for(const path of union)if(!stageRelative(path))rejected();checkPathCollisions(union);
+      const maps=listings.map(listing=>new Map(listing.files.map(row=>[row.path,row])));
+      for(const path of union){const row=maps[2].get(path),baseRow=maps[0].get(path);
+        if(!row||(row.mode!=='100644'&&!(row.mode==='100755'&&baseRow?.mode==='100755'&&baseRow.oid===row.oid)))rejected();}
+      const files=[];let copyBytes=0;
+      for(const path of union){
+        const sides=[];
+        for(let i=0;i<3;i++){
+          const needed=i===2||(i===0?baseToRevised.includes(path):originalToRevised.includes(path));
+          const row=needed?maps[i].get(path):null;if(!row){sides.push(null);continue;}
+          const bytes=await catObject(specs[i][0].path,'blob',row.oid,MAX_BLOB_BYTES);
+          const side={mode:row.mode,git_sha1:row.oid,bytes:bytes.length,sha256:sha256(bytes),data:bytes};
+          if(bytes.length>4*1024*1024)rejected();copyBytes+=bytes.length;sides.push(side);
+        }
+        const witness=witnesses.find(row=>row.path===path);
+        if(witness){const [,,next]=sides,prev=sides[1];if(!prev||
+          witness.previous_blob!==prev.git_sha1||witness.previous_bytes!==prev.bytes||witness.previous_sha256!==prev.sha256||
+          witness.blob!==next.git_sha1||witness.bytes!==next.bytes||witness.sha256!==next.sha256)rejected();}
+        files.push({path,base:sides[0],original:sides[1],revised:sides[2]});
+      }
+      if(copyBytes>12*1024*1024)rejected();
+      for(const [repo,result] of refs)if(await readRef(repo.path,result.candidate_ref)!==result.candidate_commit)rejected();
+      for(const [repo,path,id,bare] of [[base,spec.base_git_dir,ids[0],basename(spec.base_git_dir)!=='.git'],
+        [orig,spec.original_git_dir,ids[1],true],[rev,spec.revised_git_dir,ids[2],true]]){
+        const after=await sourceDirectory(path,id,{bare,forbidAlternates:repo===base});
+        if(!stable(repo.stat,after.stat)||!stable(repo.objectStat,after.objectStat))rejected();
+        if(repo!==base)await readAlternate(repo.path,base.objects);
+      }
+      return Object.freeze({original_result:original,revised_result:revision,
+        original_result_sha256:sha256(canonicalBytes(original)),revised_result_sha256:sha256(canonicalBytes(revision)),
+        base_to_revised:baseToRevised,original_to_revised:originalToRevised,files});
+    }));
+  }catch(error){if(error instanceof SnapshotError)throw error;if(signal&&signalAborted(signal))aborted();rejected();}
+}
