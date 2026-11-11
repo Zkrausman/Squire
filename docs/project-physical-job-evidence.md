@@ -1,5 +1,24 @@
 # Bounded private evidence for one physical project job
 
+An owner can verify the copy integrity of one selected attempt offline, without
+writing an API caller:
+
+```text
+node bin/squire-physical-evidence.mjs verify <absolute-attempt-dir> <expected-manifest-sha256> [--json]
+```
+
+The expected lowercase SHA-256 must come from the caller's separate retained
+evidence status; the command never discovers a root or derives an expected
+digest from the selected directory. The selected path must identify exactly one
+`attempts/<job-id>` directory. Exit 0 means its bounded files passed the shipped
+custody and byte-integrity verifier. Text and JSON success output contain only
+fixed copy-integrity and acknowledgement-UNKNOWN labels. Exit 1 reports a
+fixed verifier rejection code; exit 2 is usage. `--help` exits 0 without reading
+an attempt. Neither output includes private paths, job IDs, raw streams, result
+contents or exception text. Verification cannot establish the producer's
+identity, original acknowledgement, job success, descendant settlement, retry
+authority or native acceptance.
+
 The opt-in `runProjectCodexTaskWithPhysicalEvidence(spec, options, ports,
 evidenceSpec)` route is for one legacy bounded `PROJECT_CODEGEN_V1` attempt.
 When the original runner returns in time, its `result` is returned unchanged
