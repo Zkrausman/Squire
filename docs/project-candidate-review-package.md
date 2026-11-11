@@ -41,6 +41,10 @@ has `path`, `old_sha256` (nullable for additions), `new_sha256`, and
 `binary_inspected`. `ACCEPT` requires one matching attestation per path and
 explicit binary acknowledgement. The fresh decision directory contains one
 mode-`0400` `decision.json`; prior decisions and the package are untouched.
+Canonical decision bytes have a shared 96 KiB ceiling, checked before reserving
+the fresh directory. This accommodates the existing 50-path and 4,096-byte
+note profile even when JSON escaping expands the note; it does not reduce
+those input limits. P1b consumes prior P1 decisions under the same ceiling.
 Conflicting decisions can coexist. A consumer must select and reverify an
 exact decision; presence or recency grants no authority. The label reports
 what the caller supplied and does not authenticate human identity or attention.
