@@ -63,7 +63,8 @@
     "test:portable-candidate-snapshot": "node --test --test-isolation=none test/project-portable-candidate-snapshot.test.mjs",
     "test:project-candidate-review-package": "node --test --test-isolation=none test/project-candidate-review-package.test.mjs",
     "test:project-revision-review-package": "node --test --test-isolation=none test/project-revision-review-package.test.mjs",
-    "test:project-physical-job-evidence": "node --test --test-isolation=none test/project-physical-job-evidence.test.mjs"
+    "test:project-physical-job-evidence": "node --test --test-isolation=none test/project-physical-job-evidence.test.mjs",
+    "test:project-physical-evidence-cli": "node --test --test-isolation=none test/project-physical-evidence-cli.test.mjs"
   },
   "devDependencies": {
     "acorn": "8.19.0"
