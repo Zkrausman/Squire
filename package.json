@@ -41,6 +41,7 @@
     "./project-runner": "./src/project-runner.mjs",
     "./project-summary": "./src/project-summary.mjs",
     "./project-result-receipt": "./src/project-result-receipt.mjs",
+    "./project-physical-job-evidence": "./src/project-physical-job-evidence.mjs",
     "./project-portable-candidate-snapshot": "./src/project-portable-candidate-snapshot.mjs",
     "./project-candidate-review-package": "./src/project-candidate-review-package.mjs",
     "./project-revision-review-package": "./src/project-revision-review-package.mjs",
@@ -61,7 +62,8 @@
     "test:courier-handoff-report": "node --test --test-isolation=none test/courier-handoff-report.test.mjs",
     "test:portable-candidate-snapshot": "node --test --test-isolation=none test/project-portable-candidate-snapshot.test.mjs",
     "test:project-candidate-review-package": "node --test --test-isolation=none test/project-candidate-review-package.test.mjs",
-    "test:project-revision-review-package": "node --test --test-isolation=none test/project-revision-review-package.test.mjs"
+    "test:project-revision-review-package": "node --test --test-isolation=none test/project-revision-review-package.test.mjs",
+    "test:project-physical-job-evidence": "node --test --test-isolation=none test/project-physical-job-evidence.test.mjs"
   },
   "devDependencies": {
     "acorn": "8.19.0"
