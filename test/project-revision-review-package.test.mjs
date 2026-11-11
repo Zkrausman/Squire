@@ -16,23 +16,28 @@ function blob(dir,data){return git(dir,['hash-object','-w','--stdin','--no-filte
 function tree(dir,rows){const root={dirs:new Map(),files:[]};for(const row of rows){const parts=row.path.split('/');let node=root;for(const p of parts.slice(0,-1)){if(!node.dirs.has(p))node.dirs.set(p,{dirs:new Map(),files:[]});node=node.dirs.get(p);}node.files.push({...row,name:parts.at(-1)});}const build=node=>{const list=[];for(const [name,child] of node.dirs)list.push({name,key:name+'/',mode:'040000',type:'tree',oid:build(child)});for(const row of node.files)list.push({name:row.name,key:row.name,mode:row.mode??'100644',type:'blob',oid:row.oid});list.sort((a,b)=>Buffer.compare(Buffer.from(a.key),Buffer.from(b.key)));return git(dir,['mktree','-z'],Buffer.concat(list.map(x=>Buffer.from(`${x.mode} ${x.type} ${x.oid}\t${x.name}\0`))));};return build(root);}
 function commit(dir,t,parent){return git(dir,['commit-tree',t,...(parent?['-p',parent]:[]),'-m','fixture']);}
 const sha=b=>createHash('sha256').update(b).digest('hex');
-async function fixture(extraPaths=0,executableRestore=false,badExecutableRestore=false,largeBaseApp=false,largeDisplay=false,displayBaseLines=900000,displayTail=""){const root=await fs.mkdtemp(join(tmpdir(),'squire-p1b-'));await fs.chmod(root,0o700);const base=join(root,'base.git'),original=join(root,'original.git'),revised=join(root,'revised.git');for(const dir of [base,original,revised])execFileSync(GIT,['init','--bare','--shared=0600','--quiet','--template=/dev/null',dir],{env});
+async function fixture(extraPaths=0,executableRestore=false,badExecutableRestore=false,largeBaseApp=false,largeDisplay=false,displayBaseLines=900000,displayTail="",maxViews=false){const root=await fs.mkdtemp(join(tmpdir(),'squire-p1b-'));await fs.chmod(root,0o700);const base=join(root,'base.git'),original=join(root,'original.git'),revised=join(root,'revised.git');for(const dir of [base,original,revised])execFileSync(GIT,['init','--bare','--shared=0600','--quiet','--template=/dev/null',dir],{env});
   const b={app:largeDisplay?Buffer.concat([Buffer.alloc(displayBaseLines,10),Buffer.from(displayTail)]):largeBaseApp?Buffer.alloc(4*1024*1024,0):Buffer.from('base\n'),restore:Buffer.from('base restore\n'),unchanged:Buffer.from('base unchanged\n')};
   const o={app:Buffer.from('original\n'),restore:Buffer.from('original restore\n'),unchanged:Buffer.from('original unchanged\n'),bin:Buffer.from([0,255,1])};
-  const r={app:largeDisplay?Buffer.alloc(400000,10):Buffer.from('revised\n'),restore:b.restore,unchanged:o.unchanged,bin:Buffer.from([0,255,2]),added:Buffer.from('added\n')};
+  const r={app:largeDisplay?Buffer.alloc(400000,10):Buffer.from('revised\n'),restore:maxViews?Buffer.from('revised restore\n'):b.restore,unchanged:maxViews?Buffer.from('revised unchanged\n'):o.unchanged,bin:Buffer.from([0,255,2]),added:Buffer.from('added\n')};
+  const extraPath=i=>maxViews?`docs/${Array(5).fill('x'.repeat(42)).join('/')}/${'z'.repeat(34)}${String(i).padStart(2,'0')}`:`docs/extra-${String(i).padStart(2,'0')}.md`;
   const baseRows=[{path:'src/app.mjs',oid:blob(base,b.app)},{path:'src/restore.mjs',mode:executableRestore?'100755':'100644',oid:blob(base,b.restore)},{path:'src/unchanged.mjs',oid:blob(base,b.unchanged)}];
   const baseTree=tree(base,baseRows),baseCommit=commit(base,baseTree);
   for(const dir of [original,revised])await fs.writeFile(join(dir,'objects','info','alternates'),join(base,'objects')+'\n',{mode:0o600});
   const origRows=[{path:'src/app.mjs',oid:blob(original,o.app)},{path:'src/restore.mjs',oid:blob(original,o.restore)},{path:'src/unchanged.mjs',oid:blob(original,o.unchanged)},{path:'assets/icon.bin',oid:blob(original,o.bin)},{path:'docs/added.md',oid:blob(original,r.added)}];
-  for(let i=0;i<extraPaths;i++)origRows.push({path:`docs/extra-${String(i).padStart(2,'0')}.md`,oid:blob(original,Buffer.from(`extra ${i}\n`))});
+  for(let i=0;i<extraPaths;i++)origRows.push({path:extraPath(i),oid:blob(original,Buffer.from(`extra ${i}\n`))});
   const originalTree=tree(original,origRows),originalCommit=commit(original,originalTree,baseCommit);git(original,['update-ref','refs/heads/candidate-original',originalCommit]);
-  const revRows=[{path:'src/app.mjs',oid:blob(revised,r.app)},{path:'src/restore.mjs',mode:executableRestore?'100755':'100644',oid:badExecutableRestore?blob(revised,Buffer.from('wrong executable\n')):baseRows[1].oid},{path:'src/unchanged.mjs',oid:blob(revised,o.unchanged)},{path:'assets/icon.bin',oid:blob(revised,r.bin)},{path:'docs/added.md',oid:blob(revised,r.added)}];
-  for(let i=0;i<extraPaths;i++)revRows.push({path:`docs/extra-${String(i).padStart(2,'0')}.md`,oid:blob(revised,Buffer.from(`extra ${i}\n`))});
+  const revRows=[{path:'src/app.mjs',oid:blob(revised,r.app)},{path:'src/restore.mjs',mode:executableRestore?'100755':'100644',oid:maxViews?blob(revised,r.restore):badExecutableRestore?blob(revised,Buffer.from('wrong executable\n')):baseRows[1].oid},{path:'src/unchanged.mjs',oid:blob(revised,r.unchanged)},{path:'assets/icon.bin',oid:blob(revised,r.bin)},{path:'docs/added.md',oid:blob(revised,maxViews?Buffer.from('revised added\n'):r.added)}];
+  for(let i=0;i<extraPaths;i++)revRows.push({path:extraPath(i),oid:blob(revised,Buffer.from(`${maxViews?'revised ':''}extra ${i}\n`))});
   const revisedTree=tree(revised,revRows),revisedCommit=commit(revised,revisedTree,baseCommit);git(revised,['update-ref','refs/heads/candidate-revised',revisedCommit]);
   const common={base_commit:baseCommit,base_tree:baseTree,receipt_sha256:'a'.repeat(64),stage_manifest_sha256:'b'.repeat(64),task_correctness:'NOT_EVALUATED',human_review:'PENDING',native_acceptance:'NOT_ESTABLISHED',benchmark_acceptance:'NOT_ESTABLISHED',origin_authenticity:'SUPPLIED_NOT_AUTHENTICATED',base_alternate_dependency:'READ_ONLY_BASE_OBJECT_ALTERNATE'};
-  const originalResult={schema:'SQUIRE_PROJECT_REVIEW_CANDIDATE_V1',status:'SOURCE_CANDIDATE_CREATED',operation_id:'original',candidate_ref:'refs/heads/candidate-original',candidate_commit:originalCommit,candidate_tree:originalTree,changed_paths:['assets/icon.bin','docs/added.md',...Array.from({length:extraPaths},(_,i)=>`docs/extra-${String(i).padStart(2,'0')}.md`),'src/app.mjs','src/restore.mjs','src/unchanged.mjs'],...common};
+  const originalResult={schema:'SQUIRE_PROJECT_REVIEW_CANDIDATE_V1',status:'SOURCE_CANDIDATE_CREATED',operation_id:'original',candidate_ref:'refs/heads/candidate-original',candidate_commit:originalCommit,candidate_tree:originalTree,changed_paths:['assets/icon.bin','docs/added.md',...Array.from({length:extraPaths},(_,i)=>extraPath(i)),'src/app.mjs','src/restore.mjs','src/unchanged.mjs'],...common};
   const witness=(path,oldData,newData,oldOid,newOid)=>({path,previous_blob:oldOid,previous_bytes:oldData.length,previous_sha256:sha(oldData),blob:newOid,bytes:newData.length,sha256:sha(newData)});
-  const revisedResult={...originalResult,schema:'SQUIRE_PROJECT_REVISION_CANDIDATE_V1',status:'SOURCE_REVISION_CANDIDATE_CREATED',operation_id:'revised',candidate_ref:'refs/heads/candidate-revised',candidate_commit:revisedCommit,candidate_tree:revisedTree,changed_paths:['assets/icon.bin','docs/added.md',...Array.from({length:extraPaths},(_,i)=>`docs/extra-${String(i).padStart(2,'0')}.md`),'src/app.mjs','src/unchanged.mjs'],correction_origin:'OPERATOR_SUPPLIED',revision_of:{commit:originalCommit,tree:originalTree},revised_blobs:[witness('assets/icon.bin',o.bin,r.bin,origRows[3].oid,revRows[3].oid),witness('src/app.mjs',o.app,r.app,origRows[0].oid,revRows[0].oid),witness('src/restore.mjs',o.restore,badExecutableRestore?Buffer.from('wrong executable\n'):r.restore,origRows[1].oid,revRows[1].oid)]};
+  const extraWitnesses=maxViews?[
+    witness('docs/added.md',r.added,Buffer.from('revised added\n'),origRows[4].oid,revRows[4].oid),
+    ...Array.from({length:extraPaths},(_,i)=>{const path=extraPath(i);return witness(path,Buffer.from(`extra ${i}\n`),Buffer.from(`revised extra ${i}\n`),origRows[5+i].oid,revRows[5+i].oid);})
+  ]:[];
+  const revisedResult={...originalResult,schema:'SQUIRE_PROJECT_REVISION_CANDIDATE_V1',status:'SOURCE_REVISION_CANDIDATE_CREATED',operation_id:'revised',candidate_ref:'refs/heads/candidate-revised',candidate_commit:revisedCommit,candidate_tree:revisedTree,changed_paths:['assets/icon.bin','docs/added.md',...Array.from({length:extraPaths},(_,i)=>extraPath(i)),'src/app.mjs',...(maxViews?['src/restore.mjs']:[]),'src/unchanged.mjs'],correction_origin:'OPERATOR_SUPPLIED',revision_of:{commit:originalCommit,tree:originalTree},revised_blobs:[witness('assets/icon.bin',o.bin,r.bin,origRows[3].oid,revRows[3].oid),...extraWitnesses,witness('src/app.mjs',o.app,r.app,origRows[0].oid,revRows[0].oid),witness('src/restore.mjs',o.restore,badExecutableRestore?Buffer.from('wrong executable\n'):r.restore,origRows[1].oid,revRows[1].oid),...(maxViews?[witness('src/unchanged.mjs',o.unchanged,r.unchanged,origRows[2].oid,revRows[2].oid)]:[])]};
   const id=async dir=>{const s=await fs.stat(dir);return {dev:s.dev,ino:s.ino};};
   const pkg=join(root,'original-package');const p1=await buildProjectCandidateReviewPackage({schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',result:originalResult,candidate_git_dir:original,candidate_git_identity:await id(original),base_git_dir:base,base_git_identity:await id(base),output_dir:pkg});
   const priorDir=join(root,'prior');const prior=await recordProjectCandidateDecision(pkg,{schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1',decision_id:'prior',reviewer_label:'owner',review_package_sha256:p1.manifest_sha256,base_commit:baseCommit,base_tree:baseTree,candidate_commit:originalCommit,candidate_tree:originalTree,choice:'REVISE',attestations:[]},priorDir);
@@ -91,6 +96,68 @@ test('source ref drift during package write retains partial output',async()=>{co
   assert.equal((await fs.lstat(f.spec.output_dir)).isDirectory(),true);
 }finally{await fs.rm(f.root,{recursive:true,force:true});}});
 test('50 changed union paths fit the private inventory bound',async()=>{const f=await fixture(45);try{const b=await buildProjectRevisionReviewPackage(f.spec);assert.equal(b.base_to_revised_count,49);assert.equal(b.original_to_revised_count,3);assert.equal((await verifyProjectRevisionReviewPackage(f.spec.output_dir)).manifest_sha256,b.manifest_sha256);}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('a valid full P1 REVISE decision with escaped note remains consumable by P1b',async()=>{const f=await fixture(45);try{
+  const pm=JSON.parse(await fs.readFile(join(f.spec.original_package.dir,'review-manifest.json')));
+  assert.equal(pm.paths.length,50);
+  const attestations=pm.paths.map(x=>({path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:x.binary_review_required}));
+  const dir=join(f.root,'full-prior');
+  const d=await recordProjectCandidateDecision(f.spec.original_package.dir,{schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1',decision_id:'fullprior',reviewer_label:'owner',review_package_sha256:f.p1.manifest_sha256,base_commit:pm.base_commit,base_tree:pm.base_tree,candidate_commit:pm.candidate_commit,candidate_tree:pm.candidate_tree,choice:'REVISE',attestations,note:'\u0000'.repeat(4096)},dir);
+  assert.ok((await fs.stat(join(dir,'decision.json'))).size>16384);
+  f.spec.prior_decisions=[{dir,file_sha256:d.decision_sha256}];f.spec.selected_decision_id='fullprior';
+  const built=await buildProjectRevisionReviewPackage(f.spec);
+  assert.equal((await verifyProjectRevisionReviewPackage(f.spec.output_dir)).manifest_sha256,built.manifest_sha256);
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('a valid two-view revised ACCEPT with escaped note verifies after write',async()=>{const f=await fixture(45);try{
+  const built=await buildProjectRevisionReviewPackage(f.spec);
+  const m=JSON.parse(await fs.readFile(join(f.spec.output_dir,'revision-review-manifest.json')));
+  const attestations=[...m.base_to_revised.map(x=>({view:'base_to_revised',path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:x.binary_review_required})),...m.original_to_revised.map(x=>({view:'original_to_revised',path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:x.binary_review_required}))];
+  assert.equal(attestations.length,52);
+  const dir=join(f.root,'full-revised');
+  const d={schema:'SQUIRE_PROJECT_REVISION_DECISION_V1',decision_id:'fullrevised',reviewer_label:'owner',revision_package_sha256:built.manifest_sha256,original_package_sha256:f.p1.manifest_sha256,prior_revise_decision_sha256:f.prior.decision_sha256,base_commit:m.base_commit,base_tree:m.base_tree,original_commit:m.original_commit,original_tree:m.original_tree,revised_commit:m.revised_commit,revised_tree:m.revised_tree,choice:'ACCEPT',attestations,note:'\u0000'.repeat(4096)};
+  const recorded=await recordProjectRevisionDecision(f.spec.output_dir,d,dir);
+  assert.ok((await fs.stat(join(dir,'decision.json'))).size>16384);
+  assert.equal((await verifyProjectRevisionDecision(f.spec.output_dir,dir,recorded.decision_sha256)).choice,'ACCEPT');
+  await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>verifyProjectRevisionDecision(f.spec.output_dir,dir,'0'.repeat(64)));
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('structural and note overflow reject before reserving either decision destination',async()=>{const f=await fixture(45);try{
+  const pm=JSON.parse(await fs.readFile(join(f.spec.original_package.dir,'review-manifest.json')));
+  const prior={schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1',decision_id:'overflow',reviewer_label:'owner',review_package_sha256:f.p1.manifest_sha256,base_commit:pm.base_commit,base_tree:pm.base_tree,candidate_commit:pm.candidate_commit,candidate_tree:pm.candidate_tree,choice:'REVISE',attestations:pm.paths.map(x=>({path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:false}))};
+  for(const [name,decision] of [['p1-count',{...prior,attestations:[...prior.attestations,prior.attestations[0]]}],['p1-note',{...prior,note:'x'.repeat(4097)}]]){
+    const dir=join(f.root,name);await fail('INVALID_PROJECT_CANDIDATE_REVIEW_SPEC',()=>recordProjectCandidateDecision(f.spec.original_package.dir,decision,dir));await assert.rejects(fs.lstat(dir),{code:'ENOENT'});
+  }
+  const built=await buildProjectRevisionReviewPackage(f.spec);const m=JSON.parse(await fs.readFile(join(f.spec.output_dir,'revision-review-manifest.json')));
+  const revised={schema:'SQUIRE_PROJECT_REVISION_DECISION_V1',decision_id:'overflow',reviewer_label:'owner',revision_package_sha256:built.manifest_sha256,original_package_sha256:f.p1.manifest_sha256,prior_revise_decision_sha256:f.prior.decision_sha256,base_commit:m.base_commit,base_tree:m.base_tree,original_commit:m.original_commit,original_tree:m.original_tree,revised_commit:m.revised_commit,revised_tree:m.revised_tree,choice:'REVISE',attestations:[]};
+  const rows=[...m.base_to_revised.map(x=>({view:'base_to_revised',path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:false})),...m.original_to_revised.map(x=>({view:'original_to_revised',path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:false}))];
+  for(const [name,decision] of [['p1b-count',{...revised,attestations:Array.from({length:101},(_,i)=>rows[i%rows.length])}],['p1b-note',{...revised,note:'x'.repeat(4097)}]]){
+    const dir=join(f.root,name);await fail('INVALID_PROJECT_REVISION_REVIEW_SPEC',()=>recordProjectRevisionDecision(f.spec.output_dir,decision,dir));await assert.rejects(fs.lstat(dir),{code:'ENOENT'});
+  }
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('oversized externally modified prior decision rejects before revision output',async()=>{const f=await fixture();try{
+  const leaf=join(f.spec.prior_decisions[0].dir,'decision.json');await fs.chmod(leaf,0o600);await fs.writeFile(leaf,Buffer.alloc(96*1024+1,0x78));await fs.chmod(leaf,0o400);
+  await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>buildProjectRevisionReviewPackage(f.spec));
+  await assert.rejects(fs.lstat(f.spec.output_dir),{code:'ENOENT'});
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('oversized externally modified revised decision rejects offline verification',async()=>{const f=await fixture();try{
+  const built=await buildProjectRevisionReviewPackage(f.spec);
+  const m=JSON.parse(await fs.readFile(join(f.spec.output_dir,'revision-review-manifest.json')));
+  const dir=join(f.root,'modified-decision');
+  const d={schema:'SQUIRE_PROJECT_REVISION_DECISION_V1',decision_id:'modified',reviewer_label:'owner',revision_package_sha256:built.manifest_sha256,original_package_sha256:f.p1.manifest_sha256,prior_revise_decision_sha256:f.prior.decision_sha256,base_commit:m.base_commit,base_tree:m.base_tree,original_commit:m.original_commit,original_tree:m.original_tree,revised_commit:m.revised_commit,revised_tree:m.revised_tree,choice:'REVISE',attestations:[]};
+  const recorded=await recordProjectRevisionDecision(f.spec.output_dir,d,dir);
+  const leaf=join(dir,'decision.json');await fs.chmod(leaf,0o600);await fs.writeFile(leaf,Buffer.alloc(96*1024+1,0x78));await fs.chmod(leaf,0o400);
+  await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>verifyProjectRevisionDecision(f.spec.output_dir,dir,recorded.decision_sha256));
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('maximum 50 plus 50 direct-view attestations with escaped note stay readable',async()=>{const f=await fixture(45,false,false,false,false,900000,'',true);try{
+  const built=await buildProjectRevisionReviewPackage(f.spec);
+  assert.equal(built.base_to_revised_count,50);assert.equal(built.original_to_revised_count,50);
+  const m=JSON.parse(await fs.readFile(join(f.spec.output_dir,'revision-review-manifest.json')));
+  assert.equal(m.base_to_revised.filter(x=>x.path.length===256).length,45);
+  const attestations=[...m.base_to_revised.map(x=>({view:'base_to_revised',path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:x.binary_review_required})),...m.original_to_revised.map(x=>({view:'original_to_revised',path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:x.binary_review_required}))];
+  const dir=join(f.root,'max-decision');
+  const d={schema:'SQUIRE_PROJECT_REVISION_DECISION_V1',decision_id:'maximum',reviewer_label:'owner',revision_package_sha256:built.manifest_sha256,original_package_sha256:f.p1.manifest_sha256,prior_revise_decision_sha256:f.prior.decision_sha256,base_commit:m.base_commit,base_tree:m.base_tree,original_commit:m.original_commit,original_tree:m.original_tree,revised_commit:m.revised_commit,revised_tree:m.revised_tree,choice:'ACCEPT',attestations,note:'\u0000'.repeat(4096)};
+  const recorded=await recordProjectRevisionDecision(f.spec.output_dir,d,dir);
+  assert.ok((await fs.stat(join(dir,'decision.json'))).size<96*1024);
+  assert.equal((await verifyProjectRevisionDecision(f.spec.output_dir,dir,recorded.decision_sha256)).attested_path_count,100);
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
 test('nested accessor inputs reject before invoking caller code',async()=>{const f=await fixture();try{
   let calls=0;const pkg={manifest_sha256:f.p1.manifest_sha256};Object.defineProperty(pkg,'dir',{enumerable:true,get(){calls++;return f.spec.original_package.dir;}});
   await fail('INVALID_PROJECT_REVISION_REVIEW_SPEC',()=>buildProjectRevisionReviewPackage({...f.spec,original_package:pkg}));

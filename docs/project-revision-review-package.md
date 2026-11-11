@@ -58,6 +58,10 @@ acknowledgement. The fresh decision directory is append-only relative to old
 packages and decisions. `verifyProjectRevisionDecision(packageDir,
 decisionDir, expectedSha256, ports)` verifies one explicitly selected record;
 there is no implicit winner among later conflicting decisions.
+Canonical decision bytes have the shared 96 KiB ceiling before a new directory
+is reserved and on offline readback. The bound includes the existing 100
+two-view attestations and 4,096-byte note with JSON escaping; path, note and
+attestation profiles remain unchanged. Oversized existing records reject.
 
 These APIs return fixed statuses, digests, object IDs and counts without
 private paths or source contents. A decision records only a supplied source

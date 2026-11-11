@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {dirname,join,parse,resolve} from 'node:path';
 import {types} from 'node:util';
 import {readProjectCandidateReviewSource} from './project-portable-candidate-snapshot.mjs';
+import {MAX_REVIEW_DECISION_BYTES} from './project-review-decision-limits.mjs';
 
 const PACKAGE_SCHEMA='SQUIRE_PROJECT_CANDIDATE_REVIEW_PACKAGE_V1';
 const DECISION_SCHEMA='SQUIRE_PROJECT_CANDIDATE_DECISION_V1';
@@ -326,7 +327,7 @@ export async function recordProjectCandidateDecision(reviewPackageDir,decision,f
          (captured.choice==='ACCEPT'&&path.binary_review_required&&!item.binary_inspected))rejected();
     }
     if(captured.choice==='ACCEPT'&&captured.attestations.length!==manifest.paths.length)rejected();
-    const bytes=encode(captured);
+    const bytes=encode(captured);if(bytes.length>MAX_REVIEW_DECISION_BYTES)invalid();
     await reserve(fs,freshDecisionDir,undefined);
     await writeFile(fs,freshDecisionDir,'decision.json',bytes,undefined);
     const readback=await readFile(fs,join(freshDecisionDir,'decision.json'),bytes.length,undefined);

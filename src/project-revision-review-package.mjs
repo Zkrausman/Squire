@@ -7,6 +7,7 @@ import {dirname,join,parse,resolve} from 'node:path';
 import {types} from 'node:util';
 import {readProjectRevisionReviewSource} from './project-portable-candidate-snapshot.mjs';
 import {verifyProjectCandidateReviewPackage} from './project-candidate-review-package.mjs';
+import {MAX_REVIEW_DECISION_BYTES} from './project-review-decision-limits.mjs';
 
 const PACKAGE_SCHEMA='SQUIRE_PROJECT_REVISION_REVIEW_PACKAGE_V1';
 const DECISION_SCHEMA='SQUIRE_PROJECT_REVISION_DECISION_V1';
@@ -220,7 +221,7 @@ async function priorLinks(fs,spec,source,signal){
   for(const item of records){closed(item,['dir','file_sha256']);if(!absolute(item.dir)||!SHA256.test(item.file_sha256))invalid();
     await ancestors(fs,item.dir);const s=await stat(fs,item.dir);if(!dir(s)||s.uid!==process.getuid()||(s.mode&0o7777)!==0o700||await fs.realpath(item.dir)!==item.dir)rejected();
     if((await listPackage(fs,item.dir,signal)).join('|')!=='decision.json')rejected();
-    const bytes=await readFile(fs,join(item.dir,'decision.json'),16384,signal);let d;
+    const bytes=await readFile(fs,join(item.dir,'decision.json'),MAX_REVIEW_DECISION_BYTES,signal);let d;
     try{d=JSON.parse(decoder.decode(bytes));}catch{rejected();}
     if(digest(bytes)!==item.file_sha256||!Buffer.from(encode(d)).equals(bytes)||
       !matchesKeys(d,['schema','decision_id','reviewer_label','review_package_sha256','base_commit','base_tree','candidate_commit','candidate_tree','choice','attestations','note','boundaries'])||
@@ -319,7 +320,7 @@ async function verifyDecisionInternal(fs,packageDir,decisionDir,expectedSha256){
   const v=await verifyInternal(fs,packageDir,undefined);await ancestors(fs,decisionDir);const s=await stat(fs,decisionDir);
   if(!dir(s)||s.uid!==process.getuid()||(s.mode&0o7777)!==0o700||await fs.realpath(decisionDir)!==decisionDir||
     (await listPackage(fs,decisionDir,undefined)).join('|')!=='decision.json')rejected();
-  const bytes=await readFile(fs,join(decisionDir,'decision.json'),16384,undefined);let raw;
+  const bytes=await readFile(fs,join(decisionDir,'decision.json'),MAX_REVIEW_DECISION_BYTES,undefined);let raw;
   try{raw=JSON.parse(decoder.decode(bytes));}catch{rejected();}
   if(digest(bytes)!==expectedSha256||!Buffer.from(encode(raw)).equals(bytes)||
     !matchesKeys(raw,['schema','decision_id','reviewer_label','revision_package_sha256','original_package_sha256',
@@ -336,7 +337,7 @@ export async function verifyProjectRevisionDecision(revisionPackageDir,decisionD
 export async function recordProjectRevisionDecision(revisionPackageDir,decision,freshDecisionDir,ports={}){try{
   const fs=capturePort(ports),d=captureDecision(decision);if(!absolute(freshDecisionDir)||!absolute(revisionPackageDir)||
     freshDecisionDir===revisionPackageDir||freshDecisionDir.startsWith(revisionPackageDir+'/')||revisionPackageDir.startsWith(freshDecisionDir+'/'))invalid();
-  const v=await verifyInternal(fs,revisionPackageDir,undefined);validateDecision(d,v);const bytes=encode(d);
+  const v=await verifyInternal(fs,revisionPackageDir,undefined);validateDecision(d,v);const bytes=encode(d);if(bytes.length>MAX_REVIEW_DECISION_BYTES)invalid();
   await reserve(fs,freshDecisionDir,undefined);await writeFile(fs,freshDecisionDir,'decision.json',bytes,undefined);
   const checked=await verifyDecisionInternal(fs,revisionPackageDir,freshDecisionDir,digest(bytes));
   return Object.freeze({status:'PROJECT_REVISION_DECISION_RECORDED',choice:d.choice,decision_sha256:checked.decision_sha256,
