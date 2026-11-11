@@ -1189,6 +1189,105 @@ export async function verifyProjectPortableCandidateSnapshot(snapshotDir,options
   }
 }
 
+// Shared, read-only PR210 source inspection for the bounded changed-file review
+// package. It deliberately does not build a portable inventory or read unchanged
+// blobs. Snapshot entry points above retain their original behavior.
+export async function readProjectCandidateReviewSource(spec,options={}){
+  let request;
+  try{
+    closed(options,[],['fs']);
+    const fsPort=captureFsPort(options.fs);
+    closed(spec,['schema','result','candidate_git_dir','candidate_git_identity',
+      'base_git_dir','base_git_identity','output_dir'],['signal']);
+    if(spec.schema!=='SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1')invalid();
+    request=captureRequest({...spec,schema:REQUEST_SCHEMA});
+    return await fsContext.run(fsPort,()=>signalContext.run(request.signal,async()=>{
+      checkAbort(request.signal);
+      const candidateRepo=await sourceDirectory(request.candidate_git_dir,request.candidate_git_identity,{bare:true});
+      const baseRepo=await sourceDirectory(request.base_git_dir,request.base_git_identity,{
+        bare:basename(request.base_git_dir)!=='.git',forbidAlternates:true
+      });
+      await readAlternate(candidateRepo.path,baseRepo.objects);
+      const result=request.result;
+      if(await readRef(candidateRepo.path,result.candidate_ref)!==result.candidate_commit)rejected();
+      const candidateCommit=parseCommit(await catObject(candidateRepo.path,'commit',result.candidate_commit,MAX_COMMIT_BYTES),result.candidate_commit);
+      const baseCommit=parseCommit(await catObject(baseRepo.path,'commit',result.base_commit,MAX_COMMIT_BYTES),result.base_commit);
+      if(candidateCommit.tree!==result.candidate_tree||candidateCommit.parents.length!==1||
+         candidateCommit.parents[0]!==result.base_commit||baseCommit.tree!==result.base_tree)rejected();
+      const candidateListing=parseGitTreeListing(await gitBytes(candidateRepo.path,
+        ['ls-tree','-rtz','--full-tree',result.candidate_tree],MAX_CANDIDATE_METADATA_BYTES),
+        MAX_CANDIDATE_FILES,MAX_CANDIDATE_METADATA_BYTES);
+      const baseListing=parseGitTreeListing(await gitBytes(baseRepo.path,
+        ['ls-tree','-rtz','--full-tree',result.base_tree],MAX_BASE_METADATA_BYTES),
+        MAX_BASE_FILES,MAX_BASE_METADATA_BYTES);
+      const changed=computeChanges(baseListing.files,candidateListing.files);
+      if(!compareLists(changed,result.changed_paths))rejected();
+      for(const path of changed)if(!stageRelative(path))rejected();
+      const baseByPath=new Map(baseListing.files.map(row=>[row.path,row]));
+      const candidateByPath=new Map(candidateListing.files.map(row=>[row.path,row]));
+      for(const path of changed)if(candidateByPath.get(path)?.mode!=='100644')rejected();
+      for(const row of candidateListing.files){
+        const old=baseByPath.get(row.path);
+        if(row.mode==='100755'&&(!old||old.mode!=='100755'||old.oid!==row.oid))rejected();
+      }
+      const kinds=new Map();
+      for(const row of [...candidateListing.trees,...baseListing.trees])addExpectedKind(kinds,row.oid,'tree');
+      addExpectedKind(kinds,result.candidate_tree,'tree');addExpectedKind(kinds,result.base_tree,'tree');
+      const treeOids=[...kinds.keys()].sort();
+      const raw=new Map();let totalTreeBytes=0;
+      // The review profile permits the PR210 tree-record ceiling even when
+      // it exceeds the portable snapshot's 8,192-object inventory ceiling.
+      for(let start=0;start<treeOids.length;start+=4096){
+        const group=treeOids.slice(start,start+4096);
+        const groupKinds=new Map(group.map(oid=>[oid,'tree']));
+        const sizes=await checkBatchSizes(candidateRepo.path,group,groupKinds);
+        const groupBytes=[...sizes.values()].reduce((sum,size)=>sum+size,0);
+        totalTreeBytes+=groupBytes;
+        if(totalTreeBytes>MAX_BASE_METADATA_BYTES+MAX_CANDIDATE_METADATA_BYTES)rejected();
+        for(const [oid,record] of await fetchBatch(candidateRepo.path,group,groupKinds,sizes,groupBytes))raw.set(oid,record);
+      }
+      const objects=new Map(raw);
+      for(const row of [...candidateListing.files,...baseListing.files]){
+        if(objects.has(row.oid)&&objects.get(row.oid).kind!=='blob')rejected();
+        if(!objects.has(row.oid))objects.set(row.oid,{kind:'blob',payload:Buffer.alloc(0)});
+      }
+      const candidateTree=collectRawTree(result.candidate_tree,objects,MAX_CANDIDATE_FILES,MAX_CANDIDATE_METADATA_BYTES);
+      const baseTree=collectRawTree(result.base_tree,objects,MAX_BASE_FILES,MAX_BASE_METADATA_BYTES);
+      if(!sameListing(candidateListing,candidateTree)||!sameListing(baseListing,baseTree)||
+         !compareLists(computeChanges(baseTree.files,candidateTree.files),changed))rejected();
+      const blobOids=[...new Set([...candidateTree.files,...baseTree.files].map(row=>row.oid))].sort();
+      for(let start=0;start<blobOids.length;start+=4096){
+        const group=blobOids.slice(start,start+4096);
+        await checkBatchSizes(candidateRepo.path,group,new Map(group.map(oid=>[oid,'blob'])));
+      }
+      const files=[];let copied=0;
+      for(const path of changed){
+        const old=baseByPath.get(path)??null,next=candidateByPath.get(path);
+        const oldBytes=old?await catObject(baseRepo.path,'blob',old.oid,MAX_BLOB_BYTES):null;
+        const newBytes=await catObject(candidateRepo.path,'blob',next.oid,MAX_BLOB_BYTES);
+        copied+=(oldBytes?.length??0)+newBytes.length;
+        if(copied>8*1024*1024)rejected();
+        files.push(Object.freeze({path,
+          old:old?Object.freeze({mode:old.mode,git_sha1:old.oid,bytes:oldBytes.length,sha256:sha256(oldBytes),data:oldBytes}):null,
+          new:Object.freeze({mode:next.mode,git_sha1:next.oid,bytes:newBytes.length,sha256:sha256(newBytes),data:newBytes})}));
+      }
+      if(await readRef(candidateRepo.path,result.candidate_ref)!==result.candidate_commit)rejected();
+      const candidateAfter=await sourceDirectory(request.candidate_git_dir,request.candidate_git_identity,{bare:true});
+      const baseAfter=await sourceDirectory(request.base_git_dir,request.base_git_identity,{
+        bare:basename(request.base_git_dir)!=='.git',forbidAlternates:true
+      });
+      if(!stable(candidateRepo.stat,candidateAfter.stat)||!stable(baseRepo.stat,baseAfter.stat)||
+         !stable(candidateRepo.objectStat,candidateAfter.objectStat)||!stable(baseRepo.objectStat,baseAfter.objectStat))rejected();
+      await readAlternate(candidateRepo.path,baseRepo.objects);
+      return Object.freeze({result,input_result_sha256:sha256(canonicalBytes(result)),files:Object.freeze(files)});
+    }));
+  }catch(error){
+    if(error instanceof SnapshotError)throw error;
+    if(request?.signal&&signalAborted(request.signal))aborted();
+    rejected();
+  }
+}
+
 function publicLines(result){
   return [
     result.status,`Candidate commit: ${result.candidate_commit}`,`Candidate tree: ${result.candidate_tree}`,
