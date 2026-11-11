@@ -9,6 +9,7 @@ import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} f
 import {createCodexProjectStreamCollector,createCodexLargeProjectStreamCollector} from './project-stream-collector.mjs';
 import {planStaging,writeStage,planLargeProjectStaging,writeLargeProjectStage,safeMultifileErrorCode} from './multifile-staging.mjs';
 import {runForeground} from './internal/limited-core.mjs';
+import {preparePhysicalJobEvidence,unknownPhysicalJobEvidence} from './project-physical-job-evidence.mjs';
 import {NODE_RUNTIME,GENERATION_SHUTDOWN,canonicalBytes,hash} from './bounded-codegen-plan.mjs';
 import {
  PROJECT_CODING_OBSERVATION_PROFILE,PROJECT_CODING_OBSERVATION_RESULT_SCHEMA,
@@ -75,10 +76,52 @@ async function persistEnvelope(fs,path,input,signal,large=false){
 export async function runProjectCodexTask(specification,options,ports){
  return runProjectTask(specification,options,ports,false);
 }
+// Opt-in evidence is a separate result envelope; ordinary project results and
+// their shutdown path do not acquire an asynchronous stream writer.
+export async function runProjectCodexTaskWithPhysicalEvidence(specification,options,ports,evidenceSpec){
+ const admitted=admitProjectCodexTask(specification);
+ closed(options,['clock','shutdown','abortSignal'],[],'project_options');
+ closed(options.clock,['now','schedule'],[],'project_clock');
+ if(typeof options.clock.now!=='function'||typeof options.clock.schedule!=='function'||
+    !(options.abortSignal instanceof AbortSignal)||hash(canonicalBytes(options.shutdown))!==hash(canonicalBytes(GENERATION_SHUTDOWN)))fail('project_options');
+ const start=options.clock.now();if(!Number.isSafeInteger(start)||start<0||start>Number.MAX_SAFE_INTEGER-140000)fail('project_options');
+ const gate=new AbortController();let settleCut,cancel=null,done=false;
+ const cut=new Promise(resolve=>{settleCut=resolve;});
+ const stop=()=>{if(done)return;gate.abort();settleCut();};
+ const checkCutoff=()=>{try{const current=options.clock.now();if(!Number.isSafeInteger(current)||current<start||current>=start+140000)stop();}catch{stop();}};
+ options.abortSignal.addEventListener('abort',stop,{once:true});
+ try{
+  if(options.abortSignal.aborted){stop();return Object.freeze({result:null,evidence:unknownPhysicalJobEvidence('CANCELED')});}
+  let returned=false,inline=false;
+  cancel=options.clock.schedule(140000,()=>{if(!returned){inline=true;return;}stop();});
+  returned=true;
+  if(typeof cancel!=='function'||inline){stop();return Object.freeze({result:null,evidence:unknownPhysicalJobEvidence('CLOCK_UNAVAILABLE')});}
+  const session=await Promise.race([
+   preparePhysicalJobEvidence(evidenceSpec,admitted,ports,gate.signal,checkCutoff),
+   cut.then(()=>null)
+  ]);
+  checkCutoff();if(session===null||gate.signal.aborted)return Object.freeze({result:null,evidence:unknownPhysicalJobEvidence('PREFLIGHT_UNKNOWN')});
+  const result=await Promise.race([
+   runProjectTask(admitted,{clock:options.clock,shutdown:options.shutdown,abortSignal:gate.signal},ports,false,session),
+   cut.then(()=>null)
+  ]);
+  checkCutoff();if(result===null||gate.signal.aborted)return Object.freeze({result:result??null,evidence:unknownPhysicalJobEvidence('RUNNER_UNKNOWN')});
+  const evidence=await Promise.race([session.publish(result,gate.signal),cut.then(()=>unknownPhysicalJobEvidence('PUBLICATION_UNKNOWN'))]);
+  checkCutoff();if(gate.signal.aborted)return Object.freeze({result,evidence:unknownPhysicalJobEvidence('PUBLICATION_UNKNOWN')});
+  return Object.freeze({result,evidence});
+ }catch(error){
+  if(gate.signal.aborted)return Object.freeze({result:null,evidence:unknownPhysicalJobEvidence('CUTOFF_UNKNOWN')});
+  if(error?.name==='ProjectPhysicalEvidenceError')return Object.freeze({result:null,evidence:unknownPhysicalJobEvidence(error.code)});
+  throw error;
+ }finally{
+  done=true;options.abortSignal.removeEventListener('abort',stop);
+  try{cancel?.();}catch{}
+ }
+}
 export async function runDesktopCodingLargeObservationProjectTask(specification,options,ports){
  return runProjectTask(specification,options,ports,true);
 }
-async function runProjectTask(specification,options,ports,largeObservation){
+async function runProjectTask(specification,options,ports,largeObservation,evidenceSession=null){
  const desktopCodegen=ports?.mode==='DESKTOP_CODEGEN_ONLY';
  if(largeObservation&&!desktopCodegen)fail('desktop_codegen_intent');
  const spec=largeObservation
@@ -145,7 +188,7 @@ async function runProjectTask(specification,options,ports,largeObservation){
   const taskClass=largeObservation?PROJECT_LARGE_OBSERVATION_TASK_CLASS:'PROJECT_CODEGEN_V1';
   generation=await runForeground({...spec,provider_id:'native_codex',task_class:taskClass},{executable:ports.executable,args:profile.argv,stdin_bytes:spec.prompt_bytes},
    {clock:options.clock,shutdown:GENERATION_SHUTDOWN,abortSignal:controller.signal,output_path:envelopePath,enableDiagnosticRetention:true},
-   {clock:options.clock,spawn(...args){if(controller.signal.aborted||++spawns>1)throw Error('PROJECT_SPAWN_LIMIT');return ports.spawn(...args);},environment:codexEnvironment(spec.task_scope,ports.environment??{}),createCollector:largeObservation?createCodexLargeProjectStreamCollector:createCodexProjectStreamCollector,retainRejected:ports.retainRejected,persist:async(bytes,signal)=>{const p=await persistEnvelope(fs,envelopePath,bytes,signal,largeObservation);if(finished||controller.signal.aborted){clearFiles(p);throw Error('PERSISTENCE_ABORTED');}payload=p;}});
+   {clock:options.clock,spawn(...args){if(controller.signal.aborted||++spawns>1)throw Error('PROJECT_SPAWN_LIMIT');return ports.spawn(...args);},environment:codexEnvironment(spec.task_scope,ports.environment??{}),createCollector:evidenceSession?()=>evidenceSession.collectorFactory(createCodexProjectStreamCollector):largeObservation?createCodexLargeProjectStreamCollector:createCodexProjectStreamCollector,retainRejected:ports.retainRejected,persist:async(bytes,signal)=>{const p=await persistEnvelope(fs,envelopePath,bytes,signal,largeObservation);if(finished||controller.signal.aborted){clearFiles(p);throw Error('PERSISTENCE_ABORTED');}payload=p;}});
   if(generation.record.lifecycle_status!=='LIMITED_SUCCESS')return finish(['LIMITED_TIMEOUT','LIMITED_USER_ABORT'].includes(generation.record.lifecycle_status)?'INCOMPLETE':'GENERATION_REJECTED','GENERATION_REJECTED');check();
   if(observation){closeoutStatus='FAILED_OR_UNCERTAIN';arm(bounds.post_generation_closeout_ms);check();}
   if(!payload)throw Error('PROJECT_PAYLOAD_UNAVAILABLE');
