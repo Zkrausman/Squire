@@ -1,6 +1,6 @@
 import {join,dirname} from 'node:path';
 import {createHash} from 'node:crypto';
-import {closed} from './job-spec.mjs';
+import {closed,object} from './job-spec.mjs';
 
 export const NODE_RUNTIME=Object.freeze({path:'/home/zack/.local/share/squire-toolchain/node-v24.21.0-linux-x64/bin/node',bytes:126595440,
  sha256:'7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c'});
@@ -58,9 +58,28 @@ export function requireCodexAdmission(bundle,config,configBytes){
  return Object.freeze({...bundle,preflight:Object.freeze({...bundle.preflight})});
 }
 export function validateCodexPreflight(proof,c,configBytes,now_ms){
+ object(proof,'codex_preflight');
+ if(Object.getOwnPropertyDescriptor(proof,'schema')?.value==='SQUIRE_CODEX_INCLUDED_OBSERVATION_V1')return validateIncludedObservation(proof,c,configBytes,now_ms);
  closed(proof,['operation_config_sha256','observed_at_ms','provider_id','cli_version','executable_sha256','requested_model','effort','operator_receipt','subscription','allowance_available','effective_provider','no_api_or_paid_fallback','sandbox','approval_mode','output_contract','installed_flags_verified'],[],'codex_preflight');
  if(proof.operation_config_sha256!==hash(configBytes)||!Number.isSafeInteger(proof.observed_at_ms)||!Number.isSafeInteger(now_ms)||now_ms-proof.observed_at_ms<0||now_ms-proof.observed_at_ms>c.preflight_freshness_ms||
  proof.provider_id!=='native_codex'||proof.cli_version!==c.codex.version||proof.executable_sha256!==c.codex.sha256||proof.requested_model!==c.requested_model||proof.effort!==c.effort||proof.operator_receipt!==c.authorization.operator_receipt||
  proof.subscription!==true||proof.allowance_available!==true||proof.effective_provider!=='openai_subscription'||proof.no_api_or_paid_fallback!==true||proof.sandbox!==c.permissions.sandbox||proof.approval_mode!==c.permissions.approval_mode||proof.output_contract!==c.permissions.output_contract||proof.installed_flags_verified!==true)throw Error('EFFECTIVE_CODEX_PREFLIGHT_UNESTABLISHED');
+ return true;
+}
+// Observation plus explicitly authorized execution policy, not a billing lock,
+// reservation, or assertion of the child's effective settings.
+function validateIncludedObservation(p,c,configBytes,now){
+ closed(p,['schema','operation_config_sha256','observed_at_ms','provider_id','cli_version','executable_sha256','requested_model','effort','operator_receipt','subscription','configured_sandbox','configured_approval_mode','output_contract','installed_flags_verified','allowance','execution_policy'],[],'codex_included_observation');
+ closed(p.allowance,['used_percent','window_minutes','resets_at_ms','ordinary_usage_allowed','spend_control_reached','has_credits','unlimited_credits','credit_balance','auto_reload'],[],'codex_included_allowance');
+ closed(p.execution_policy,['route','funding','fallback','billing_actions','on_quota_or_payment'],[],'codex_included_policy');
+ const a=p.allowance,e=p.execution_policy,integer=v=>Number.isSafeInteger(v)&&v>=0;
+ if(c.schema!=='SQUIRE2_PROJECT_OPERATION_V1'||Object.hasOwn(c,'runtime_target')&&c.runtime_target!=='node24-esm'||c.requested_model!=='gpt-6-luna'||c.effort!=='xhigh'||c.generation_wall_ms!==120000||c.outer_observation_ms!==140000||c.preflight_freshness_ms!==300000||
+ c.permissions.sandbox!=='read-only'||c.permissions.approval_mode!=='never'||c.permissions.output_contract!=='CODEX_JSONL_SINGLE_AGENT_V1'||
+ p.operation_config_sha256!==hash(configBytes)||!integer(p.observed_at_ms)||!integer(now)||now<p.observed_at_ms||now-p.observed_at_ms>c.preflight_freshness_ms||
+ p.provider_id!=='native_codex'||p.cli_version!==c.codex.version||p.executable_sha256!==c.codex.sha256||p.requested_model!==c.requested_model||p.effort!==c.effort||p.operator_receipt!==c.authorization.operator_receipt||p.subscription!==true||
+ p.configured_sandbox!==c.permissions.sandbox||p.configured_approval_mode!==c.permissions.approval_mode||p.output_contract!==c.permissions.output_contract||p.installed_flags_verified!==true||
+ typeof a.used_percent!=='number'||!Number.isFinite(a.used_percent)||a.used_percent<0||a.used_percent>=100||!integer(a.window_minutes)||a.window_minutes===0||!integer(a.resets_at_ms)||a.resets_at_ms<=now||
+ ![true,null].includes(a.ordinary_usage_allowed)||![false,null].includes(a.spend_control_reached)||a.has_credits!==false||a.unlimited_credits!==false||a.credit_balance!=='0'||a.auto_reload!=='UNKNOWN'||
+ e.route!=='CHATGPT_LOGIN_ONLY'||e.funding!=='ORDINARY_INCLUDED_USE'||e.fallback!=='NONE'||e.billing_actions!=='NONE'||e.on_quota_or_payment!=='STOP_WITHOUT_RETRY')throw Error('INCLUDED_CODEX_OBSERVATION_REJECTED');
  return true;
 }
