@@ -151,9 +151,12 @@ function runtime(){
   };
 }
 async function owned(fn){
-  const root=await fs.mkdtemp(join(tmpdir(),'squire-observation-'));
-  await fs.chmod(root,0o700);
-  try{return await fn(root);}finally{await fs.rm(root,{recursive:true,force:true});}
+  const container=await fs.mkdtemp(join(tmpdir(),'squire-observation-'));
+  await fs.chmod(container,0o700);
+  await fs.mkdir(join(container,'.git'),{mode:0o700});
+  await fs.writeFile(join(container,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});
+  const root=join(container,'scope');await fs.mkdir(root,{mode:0o700});
+  try{return await fn(root);}finally{await fs.rm(container,{recursive:true,force:true});}
 }
 async function until(predicate){
   for(let i=0;i<1000;i++){

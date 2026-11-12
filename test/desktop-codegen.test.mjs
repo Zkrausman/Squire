@@ -72,10 +72,13 @@ const jsonl=enc([
   {type:'turn.completed',usage:{input_tokens:1,output_tokens:2,cached_input_tokens:0,reasoning_output_tokens:0}}
 ].map(v=>JSON.stringify(v)).join('\n')+'\n');
 async function owned(fn){
-  const root=await fs.mkdtemp(join(tmpdir(),'squire-desktop-codegen-'));
-  await fs.chmod(root,0o700);
+  const container=await fs.mkdtemp(join(tmpdir(),'squire-desktop-codegen-'));
+  await fs.chmod(container,0o700);
+  await fs.mkdir(join(container,'.git'),{mode:0o700});
+  await fs.writeFile(join(container,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});
+  const root=join(container,'scope');await fs.mkdir(root,{mode:0o700});
   try{return await fn(root);}
-  finally{await fs.rm(root,{recursive:true,force:true});}
+  finally{await fs.rm(container,{recursive:true,force:true});}
 }
 function runtime(){
   let time=100;
@@ -218,6 +221,12 @@ async function fixture(root,observation=false){
     run(signal){return runProjectDesktopCodegenWithPorts(this.configBytes,admission,signal,ports);}
   };
 }
+test('desktop codegen common runner requires Git readiness before fake dispatch',async()=>owned(async root=>{
+  const f=await fixture(root);await fs.rm(join(root,'..','.git'),{recursive:true,force:true});
+  const result=await f.run();assert.equal(result.status,'FAILED');assert.equal(result.generation,null);
+  assert.equal(result.direct_child_invocations.generation,0);assert.equal(f.rt.calls.length,0);
+  assert.deepEqual(await fs.readdir(f.config.scope),[]);
+}));
 async function cli(f,args=['--run-admitted-desktop-codegen','config','admission']){
   let out='',err='';
   const code=await runProjectEntrypointCli(args,{

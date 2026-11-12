@@ -26,7 +26,7 @@ function runtime(mode='normal',raw=stream(),stderrData=null){
  const clock={now:()=>time,schedule(delay,fn){const t={at:time+delay,fn,active:true};timers.push(t);return()=>{t.active=false;};}};
  return {clock,controller,calls,kills,timers,spawn(...args){calls.push(args);queueMicrotask(()=>child.emit('spawn'));return child;},async advance(n){time=n;for(const t of [...timers].sort((a,b)=>a.at-b.at))if(t.active&&t.at<=time){t.active=false;t.fn();}await flush();},child};
 }
-async function fixture(fn){const root=await fs.mkdtemp('/tmp/squire-physical-evidence-fixture-');await fs.chmod(root,0o700);const evidence=join(root,'evidence');await fs.mkdir(evidence,{mode:0o700});try{return await fn(root,evidence);}finally{await fs.rm(root,{recursive:true,force:true});}}
+async function fixture(fn){const container=await fs.mkdtemp('/tmp/squire-physical-evidence-fixture-');await fs.chmod(container,0o700);await fs.mkdir(join(container,'.git'),{mode:0o700});await fs.writeFile(join(container,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});const root=join(container,'scope');await fs.mkdir(root,{mode:0o700});const evidence=join(root,'evidence');await fs.mkdir(evidence,{mode:0o700});try{return await fn(root,evidence);}finally{await fs.rm(container,{recursive:true,force:true});}}
 function inputs(root,evidence,rt){const spec={job_id:id(),task_scope:root,requested_model:MODEL,effort:EFFORT,max_wall_clock_sec:120,prompt_bytes:buildProjectCodegenPrompt(request)},options={clock:rt.clock,shutdown:GENERATION_SHUTDOWN,abortSignal:rt.controller.signal},ports={fs,uid:process.getuid(),spawn:rt.spawn,executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}},environment:{PUBLIC:'synthetic'}};return {spec,options,ports,evidenceSpec:{root:evidence,operation_config_sha256:projectPhysicalEvidenceConfigSha256(spec)}};}
 
 test('one synthetic physical attempt publishes bounded raw streams and offline integrity, without changing result',async()=>fixture(async(root,evidence)=>{
@@ -45,6 +45,14 @@ test('wrong supplied config rejects before spawn or reservation',async()=>fixtur
  const rt=runtime(),a=inputs(root,evidence,rt),out=await runProjectCodexTaskWithPhysicalEvidence(a.spec,a.options,a.ports,{...a.evidenceSpec,operation_config_sha256:'0'.repeat(64)});
  assert.equal(out.result,null);assert.equal(out.evidence.status,'UNKNOWN');assert.equal(rt.calls.length,0);
  assert.deepEqual(await fs.readdir(evidence),[]);
+}));
+
+test('physical evidence wrapper does not dispatch when the shared runner lacks Git context',async()=>fixture(async(root,evidence)=>{
+ await fs.rm(join(root,'..','.git'),{recursive:true,force:true});const rt=runtime(),a=inputs(root,evidence,rt);
+ a.spec.job_id='9a70b844-f122-46ab-b7d8-100000000001';a.evidenceSpec.operation_config_sha256=projectPhysicalEvidenceConfigSha256(a.spec);
+ const out=await runProjectCodexTaskWithPhysicalEvidence(a.spec,a.options,a.ports,a.evidenceSpec);
+ assert.equal(out.result?.status,'FAILED');assert.equal(out.result?.generation,null);
+ assert.equal(out.result?.direct_child_invocations.generation,0);assert.equal(rt.calls.length,0);
 }));
 
 test('public UNKNOWN projection rejects arbitrary private reason text',()=>{

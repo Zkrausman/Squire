@@ -40,12 +40,15 @@ function nullGenerationResult() {
 }
 
 async function owned(run) {
-  const directory = await fs.mkdtemp(join(tmpdir(), 'squire-result-receipt-'));
-  await fs.chmod(directory, 0o700);
+  const container = await fs.mkdtemp(join(tmpdir(), 'squire-result-receipt-'));
+  await fs.chmod(container, 0o700);
+  await fs.mkdir(join(container,'.git'),{mode:0o700});
+  await fs.writeFile(join(container,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});
+  const directory=join(container,'scope');await fs.mkdir(directory,{mode:0o700});
   try {
     await run(directory);
   } finally {
-    await fs.rm(directory, {recursive: true, force: true});
+    await fs.rm(container, {recursive: true, force: true});
   }
 }
 

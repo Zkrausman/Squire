@@ -9,6 +9,7 @@ import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} f
 import {createCodexProjectStreamCollector,createCodexLargeProjectStreamCollector} from './project-stream-collector.mjs';
 import {planStaging,writeStage,planLargeProjectStaging,writeLargeProjectStage,safeMultifileErrorCode} from './multifile-staging.mjs';
 import {runForeground} from './internal/limited-core.mjs';
+import {validateProjectScopeAncestry,requireProjectGitContext,validateProjectStageAncestry} from './internal/multifile-core.mjs';
 import {preparePhysicalJobEvidence,unknownPhysicalJobEvidence} from './project-physical-job-evidence.mjs';
 import {NODE_RUNTIME,GENERATION_SHUTDOWN,canonicalBytes,hash} from './bounded-codegen-plan.mjs';
 import {
@@ -183,8 +184,11 @@ async function runProjectTask(specification,options,ports,largeObservation,evide
   };
   if(!observation)arm(bounds.outer_observation_ms);
   const check=()=>{const current=now();if(deadline!==null&&current>=deadline){expired=true;controller.abort();}if(controller.signal.aborted)throw Error('OPERATION_ABORTED');};check();
-  const st=await wait(()=>fs.lstat(spec.task_scope));check();if(!st.isDirectory()||st.isSymbolicLink())throw Error('SCOPE_REQUIRED');
+  await wait(()=>validateProjectScopeAncestry(spec.task_scope,{fs,uid:ports.uid,signal:controller.signal}));check();
+  await wait(()=>requireProjectGitContext(spec.task_scope,{fs,uid:ports.uid,signal:controller.signal}));check();
   await wait(()=>fs.mkdir(join(spec.task_scope,'output'),{mode:0o700}));check();await wait(()=>fs.mkdir(run,{mode:0o700}));check();await wait(()=>fs.mkdir(join(spec.task_scope,'.tmp'),{mode:0o700}));check();
+  await wait(()=>validateProjectStageAncestry(join(run,'stage'),{fs,uid:ports.uid,signal:controller.signal}));check();
+  await wait(()=>requireProjectGitContext(spec.task_scope,{fs,uid:ports.uid,signal:controller.signal}));check();
   const taskClass=largeObservation?PROJECT_LARGE_OBSERVATION_TASK_CLASS:'PROJECT_CODEGEN_V1';
   generation=await runForeground({...spec,provider_id:'native_codex',task_class:taskClass},{executable:ports.executable,args:profile.argv,stdin_bytes:spec.prompt_bytes},
    {clock:options.clock,shutdown:GENERATION_SHUTDOWN,abortSignal:controller.signal,output_path:envelopePath,enableDiagnosticRetention:true},
