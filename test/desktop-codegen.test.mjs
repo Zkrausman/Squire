@@ -1292,12 +1292,12 @@ test('old Node, desktop simulation, old native admission and default entrypoint 
     {mode:'SOURCE_SIMULATION',fs,uid:process.getuid(),spawn:rt.spawn,executable:c.codex.path,
       codex:{observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions}});
   assert.equal(simulated.status,'CANDIDATE_STAGED');assert.equal(rt.calls.length,1);
-  assert.deepEqual(rt.calls[0][1],prepareCodexArgv({
+  assert.deepEqual(rt.calls[0][1],prepareChatgptOnlyCodexArgv({
     observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,
     requested_model:legacySpec.requested_model,effort:legacySpec.effort,
     prompt_bytes:legacySpec.prompt_bytes
   }).argv);
-  assert.equal(rt.calls[0][1].some(value=>value.startsWith('forced_login_method=')),false);
+  assert.equal(rt.calls[0][1].filter(value=>value==='forced_login_method="chatgpt"').length,1);
   assert.equal(projectEntrypointMode([]),'DRY_RUN_NATIVE_DISABLED');
   assert.equal(projectEntrypointMode(['--run-admitted','c','a']),'EXPLICIT_ADMISSION_REQUIRED');
   assert.equal(projectEntrypointMode(['--run-admitted-desktop-codegen','c','a']),'DRY_RUN_NATIVE_DISABLED');
@@ -1315,14 +1315,14 @@ test('legacy Node preparation still omits desktop and operation fields',async()=
   }
   assert.equal(c.schema,'SQUIRE2_PROJECT_OPERATION_V1');
   const manifest=parseReceiptJson(p.files.get(join(root,'operation-manifest.json')));
-  assert.deepEqual(manifest.generation.argv,prepareCodexArgv({
+  assert.deepEqual(manifest.generation.argv,prepareChatgptOnlyCodexArgv({
     requested_model:data.requested_model,effort:data.effort,
     observed_cli_version:data.codex.version,authorization:data.authorization,
     permissions:data.permissions,prompt_bytes:buildProjectCodegenPrompt({...request,runtime_target:'node24-esm'})
   }).argv);
-  assert.equal(manifest.generation.argv.some(value=>value.startsWith('forced_login_method=')),false);
+  assert.equal(manifest.generation.argv.filter(value=>value==='forced_login_method="chatgpt"').length,1);
 });
-test('original Node runner keeps its original argv without a desktop auth override',async()=>owned(async root=>{
+test('Node runner restricts the child to ChatGPT authentication',async()=>owned(async root=>{
   const data=inputs(root),rt=runtime();
   const spec={
     job_id:data.job_id,task_scope:root,requested_model:data.requested_model,
@@ -1340,10 +1340,10 @@ test('original Node runner keeps its original argv without a desktop auth overri
   });
   assert.equal(result.status,'CANDIDATE_STAGED');
   assert.equal(rt.calls.length,1);
-  assert.deepEqual(rt.calls[0][1],prepareCodexArgv({
+  assert.deepEqual(rt.calls[0][1],prepareChatgptOnlyCodexArgv({
     ...codex,requested_model:spec.requested_model,effort:spec.effort,prompt_bytes:spec.prompt_bytes
   }).argv);
-  assert.equal(rt.calls[0][1].some(value=>value.startsWith('forced_login_method=')),false);
+  assert.equal(rt.calls[0][1].filter(value=>value==='forced_login_method="chatgpt"').length,1);
 }));
 test('CLI emits only a bounded path-free codegen acknowledgement, exits one and refuses replay',async()=>owned(async root=>{
   const f=await fixture(root),r=await cli(f);
