@@ -61,7 +61,7 @@ function stat({file=false,uid=1234,nlink=1,mode=file?0o100600:0o40700,ino=1,size
     isFile:()=>file,isDirectory:()=>!file,isSymbolicLink:()=>false
   };
 }
-function memoryFs(change={}){
+function memoryFs(change={},gitScope){
   const files=new Map(),opened=[],closed=[],directories=new Map();
   let sequence=20;
   const fs={
@@ -103,6 +103,8 @@ function memoryFs(change={}){
     }
   };
   function baseStat(path){
+    if(gitScope&&path===join(gitScope,'.git'))return stat({uid:1234,ino:8});
+    if(gitScope&&path===join(gitScope,'.git','HEAD'))return stat({file:true,uid:1234,ino:9});
     if(files.has(path)){
       const item=files.get(path);
       return stat({
@@ -443,7 +445,7 @@ test('writer rejects arbitrary payloads, hooks, proxies and destinations without
 let fixtureNumber=1;
 function fixture(kind='nonzero',selectedScope){
   const id=`00000000-0000-4000-8000-${String(++fixtureNumber).padStart(12,'0')}`;
-  const taskScope=selectedScope??'/owned/scope-'+fixtureNumber,m=memoryFs();
+  const taskScope=selectedScope??'/owned/scope-'+fixtureNumber,m=memoryFs({},taskScope);
   const prompt=buildProjectCodegenPrompt({
     schema:'SQUIRE2_PROJECT_REQUEST_V1',task_id:'synthetic-failure-evidence',
     task_prompt:'Public synthetic source request.',
@@ -633,8 +635,12 @@ test('observation wrapper starts zero diagnostic FS operations even if they woul
   const f=fixture();
   let diagnosticCalls=0;
   const originalLstat=f.ports.fs.lstat;
+  const preflightPaths=new Set([
+    '/', '/owned', f.c.scope, join(f.c.scope,'.git'),join(f.c.scope,'.git','HEAD'),
+    join(f.c.scope,'output'),join(f.c.scope,'output','run-'+f.c.job_id)
+  ]);
   f.ports.fs.lstat=async path=>{
-    if(path!==f.c.scope){
+    if(!preflightPaths.has(path)){
       diagnosticCalls++;
       return new Promise(()=>{});
     }
@@ -684,6 +690,8 @@ test('admission throws remain throws and create no diagnostic artifacts',async()
 test('successful synthetic staging retains no failure evidence or sidecar',async()=>{
   const root=await nativeFs.mkdtemp(join(tmpdir(),'squire-failure-evidence-'));
   await nativeFs.chmod(root,0o700);
+  await nativeFs.mkdir(join(root,'.git'),{mode:0o700});
+  await nativeFs.writeFile(join(root,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});
   try{
     const f=fixture('success',join(root,'scope'));
     f.ports.fs=nativeFs;f.ports.uid=process.getuid();

@@ -63,12 +63,49 @@ function fakeRuntime(response=envelope(),mode='normal'){
  const clock={now:()=>time,schedule(delay,fn){const t={at:time+delay,fn,active:true};timers.push(t);return()=>{t.active=false;if(mode==='cancel-throws'&&delay===140000)throw Error('PRIVATE_CANCEL');if(mode==='cancel-aborts'&&delay===140000)controller.abort();if(mode==='cancel-expires'&&delay===140000)time=140000;};}};
  return {clock,controller,calls,kills,timers,spawn(...args){calls.push(args);queueMicrotask(()=>child.emit('spawn'));return child;},async advance(n){time=n;for(const t of [...timers].sort((a,b)=>a.at-b.at))if(t.active&&t.at<=time){t.active=false;t.fn();}await flush();},child};
 }
-async function owned(fn){const root=await fs.mkdtemp('/tmp/squire-project-source-fixture-');await fs.chmod(root,0o700);try{await fn(root);}finally{await fs.rm(root,{recursive:true,force:true});}}
+async function owned(fn){const container=await fs.mkdtemp('/tmp/squire-project-source-fixture-');await fs.chmod(container,0o700);await fs.mkdir(join(container,'.git'),{mode:0o700});await fs.writeFile(join(container,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});const root=join(container,'scope');await fs.mkdir(root,{mode:0o700});try{await fn(root);}finally{await fs.rm(container,{recursive:true,force:true});}}
 function inputs(root,runtime){const spec={job_id:id(),task_scope:root,requested_model:MODEL,effort:EFFORT,max_wall_clock_sec:120,prompt_bytes:buildProjectCodegenPrompt(request)},options={clock:runtime.clock,shutdown:GENERATION_SHUTDOWN,abortSignal:runtime.controller.signal},ports={fs,uid:process.getuid(),spawn:runtime.spawn,executable:'/synthetic/codex',codex:{observed_cli_version:'0.160.0',authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}},environment:{PUBLIC:'synthetic'}};return {spec,options,ports};}
 test('fake provider and owned files produce exact envelope custody and separate physical stage ACK',async()=>owned(async root=>{
  const raw=' \n'+envelope([file(),file('assets/x.bin','LOCAL_ASSET','base64','AP8=')])+'\t',rt=fakeRuntime(raw),a=inputs(root,rt),r=await runProjectCodexTask(a.spec,a.options,a.ports);
  assert.equal(r.status,'CANDIDATE_STAGED');assert.equal(r.generation.record.task_class,'PROJECT_CODEGEN_V1');assert.equal(r.generation.record.output_custody.byte_count,enc(raw).length);assert.equal(await fs.readFile(r.generation.record.output_custody.path,'utf8'),raw);assert.equal(r.staging.operation_acknowledgement,'ACKNOWLEDGED');assert.notEqual(r.staging.total_bytes,enc(raw).length);assert.equal(r.task_correctness,'NOT_EVALUATED');assert.equal(r.runtime_admitted,false);assert.equal(r.operator_admitted,false);assert.equal(r.direct_child_invocations.generation,1);assert.equal(JSON.stringify(r).includes('publicSynthetic'),false);
  const stage=join(root,'output','run-'+a.spec.job_id,'stage');assert.equal((await verifyStage(stage,{fs,uid:process.getuid()})).status,'VERIFIED');assert.equal((await fs.stat(join(stage,'src/index.mjs'))).mode&0o777,0o400);assert.equal(rt.calls.length,1);assert.equal(rt.calls[0][2].shell,false);
+}));
+test('pre-generation context rejects missing Git before creating output or invoking the provider',async()=>owned(async root=>{
+ await fs.rm(join(root,'..','.git'),{recursive:true,force:true});const rt=fakeRuntime(),a=inputs(root,rt),r=await runProjectCodexTask(a.spec,a.options,a.ports);
+ assert.equal(r.status,'FAILED');assert.equal(r.reason,'OPERATION_FAILED_OR_UNCERTAIN');assert.equal(r.generation,null);assert.equal(r.direct_child_invocations.generation,0);assert.equal(rt.calls.length,0);assert.deepEqual(await fs.readdir(root),[]);
+}));
+test('pre-generation context rejects group-writable ancestry before creating output or invoking the provider',async()=>owned(async root=>{
+ const unsafe=join(root,'unsafe'),scope=join(unsafe,'scope');await fs.mkdir(unsafe,{mode:0o700});await fs.chmod(unsafe,0o775);await fs.mkdir(scope,{mode:0o700});const rt=fakeRuntime(),a=inputs(scope,rt),r=await runProjectCodexTask(a.spec,a.options,a.ports);
+ assert.equal(r.status,'FAILED');assert.equal(r.reason,'OPERATION_FAILED_OR_UNCERTAIN');assert.equal(r.generation,null);assert.equal(r.direct_child_invocations.generation,0);assert.equal(rt.calls.length,0);assert.deepEqual(await fs.readdir(scope),[]);
+}));
+test('pre-generation context accepts protected linked-worktree Git marker and preserves staging',async()=>owned(async root=>{
+ await fs.rm(join(root,'..','.git'),{recursive:true,force:true});await fs.writeFile(join(root,'.git'),'gitdir: /synthetic/worktrees/project\n',{mode:0o600});const rt=fakeRuntime(),a=inputs(root,rt),r=await runProjectCodexTask(a.spec,a.options,a.ports);
+ assert.equal(r.status,'CANDIDATE_STAGED');assert.equal(r.staging.operation_acknowledgement,'ACKNOWLEDGED');assert.equal(rt.calls.length,1);
+}));
+test('pre-generation context rejects Git marker symlinks and lstat errors without private diagnostics',async()=>owned(async root=>{
+ const target=join(root,'git-target');await fs.mkdir(target,{mode:0o700});await fs.writeFile(join(target,'HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});await fs.symlink(target,join(root,'.git'));
+ const rt=fakeRuntime(),a=inputs(root,rt),r=await runProjectCodexTask(a.spec,a.options,a.ports);assert.equal(r.status,'FAILED');assert.equal(rt.calls.length,0);assert.equal(JSON.stringify(r).includes(target),false);
+ await owned(async errorRoot=>{const errorRuntime=fakeRuntime(),errorInputs=inputs(errorRoot,errorRuntime),gitPath=join(errorRoot,'..','.git');const io={...fs,async lstat(path,...args){if(path===gitPath){const error=Error('PRIVATE_LSTAT_SENTINEL');error.code='EACCES';throw error;}return fs.lstat(path,...args);}};
+  const failed=await runProjectCodexTask(errorInputs.spec,errorInputs.options,{...errorInputs.ports,fs:io});assert.equal(failed.status,'FAILED');assert.equal(failed.direct_child_invocations.generation,0);assert.equal(errorRuntime.calls.length,0);assert.equal(JSON.stringify(failed).includes('PRIVATE_LSTAT_SENTINEL'),false);assert.equal(JSON.stringify(failed).includes(errorRoot),false);
+ });
+}));
+test('pre-generation context rejects missing or symlinked Git HEAD markers',async()=>{
+ for(const marker of ['missing-head','symlink-head'])await owned(async root=>{
+  const git=join(root,'.git');await fs.mkdir(git,{mode:0o700});
+  if(marker==='symlink-head'){const target=join(root,'real-head');await fs.writeFile(target,'ref: refs/heads/synthetic\n',{mode:0o600});await fs.symlink(target,join(git,'HEAD'));}
+  const rt=fakeRuntime(),a=inputs(root,rt),r=await runProjectCodexTask(a.spec,a.options,a.ports);
+  assert.equal(r.status,'FAILED');assert.equal(r.generation,null);assert.equal(r.direct_child_invocations.generation,0);assert.equal(rt.calls.length,0);
+ });
+});
+test('pre-generation recheck rejects newly unsafe output ancestry before dispatch',async()=>owned(async root=>{
+ const rt=fakeRuntime(),a=inputs(root,rt),run=join(root,'output','run-'+a.spec.job_id),io={...fs,async mkdir(path,...args){const result=await fs.mkdir(path,...args);if(path===run)await fs.chmod(path,0o775);return result;}};
+ const r=await runProjectCodexTask(a.spec,a.options,{...a.ports,fs:io});assert.equal(r.status,'FAILED');assert.equal(r.generation,null);assert.equal(r.direct_child_invocations.generation,0);assert.equal(rt.calls.length,0);
+}));
+test('pre-generation context cancellation during Git lookup suppresses dispatch',async()=>owned(async root=>{
+ const rt=fakeRuntime(),a=inputs(root,rt),gitPath=join(root,'..','.git');let release,entered;const enteredLookup=new Promise(resolve=>{entered=resolve;}),hold=new Promise(resolve=>{release=resolve;});
+ const io={...fs,async lstat(path,...args){if(path===gitPath){entered();await hold;}return fs.lstat(path,...args);}};
+ const pending=runProjectCodexTask(a.spec,a.options,{...a.ports,fs:io});await enteredLookup;rt.controller.abort();release();const r=await pending;
+ assert.equal(r.status,'INCOMPLETE');assert.equal(r.reason,'CANCELED');assert.equal(r.generation,null);assert.equal(rt.calls.length,0);assert.deepEqual(await fs.readdir(root),[]);
 }));
 test('physical stage EEXIST never rewrites successful envelope custody or fabricates ACK',async()=>owned(async root=>{
  const rt=fakeRuntime(),a=inputs(root,rt);let sentinel;

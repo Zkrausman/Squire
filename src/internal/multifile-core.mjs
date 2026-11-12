@@ -97,21 +97,49 @@ function snapshot(v,depth=0,budget={nodes:0,chars:0}){
 }
 function parseManifest(bytes){try{return JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes));}catch{stop('INVALID_MANIFEST');}}
 function portsOf(p){closed(p,['fs','uid'],['signal'],'ports');if(!integer(p.uid)||!p.fs)stop('PACKAGE_IO_ERROR');for(const k of ['open','mkdir','lstat','chmod','readdir'])if(typeof p.fs[k]!=='function')stop('PACKAGE_IO_ERROR');if(p.signal!==undefined&&(types.isProxy(p.signal)||!(p.signal instanceof AbortSignal)))stop('PACKAGE_IO_ERROR');return {fs:p.fs,uid:p.uid,signal:p.signal};}
+function preflightPortsOf(p){closed(p,['fs','uid'],['signal'],'ports');if(!integer(p.uid)||!p.fs||types.isProxy(p.fs)||typeof p.fs.lstat!=='function')stop('PACKAGE_IO_ERROR');if(p.signal!==undefined&&(types.isProxy(p.signal)||!(p.signal instanceof AbortSignal)))stop('PACKAGE_IO_ERROR');return {fs:p.fs,uid:p.uid,signal:p.signal};}
 const check=p=>{if(p.signal?.aborted)stop('PACKAGE_ABORTED');};
 async function checked(p,fn){check(p);const v=await fn();check(p);return v;}
 function selected(v){if(typeof v!=='string'||!v||v.includes('\0')||v.includes('\\')||v.split('/').includes('..'))stop('SPECIAL_FILE_REJECTED');const s=resolve(v);if(s===parse(s).root)stop('SPECIAL_FILE_REJECTED');return s;}
 function statMetadata(s){if(!s||typeof s!=='object'||types.isProxy(s)||!integer(s.uid)||!integer(s.mode))stop('SPECIAL_FILE_REJECTED');}
 function directory(s){statMetadata(s);if(typeof s.isDirectory!=='function'||typeof s.isSymbolicLink!=='function'||s.isDirectory()!==true||s.isSymbolicLink()!==false)stop('SPECIAL_FILE_REJECTED');for(const k of ['isSocket','isFIFO','isCharacterDevice','isBlockDevice'])if(s[k]!==undefined&&(typeof s[k]!=='function'||s[k]()!==false))stop('SPECIAL_FILE_REJECTED');}
-async function validateAncestors(target,p){
- const parent=dirname(target),root=parse(parent).root,paths=[root];let current=root;
+async function validateAncestorDirectory(parent,p){
+ const root=parse(parent).root,paths=[root];let current=root;
  for(const c of parent.slice(root.length).split('/').filter(Boolean)){current=join(current,c);paths.push(current);}
  for(const path of paths){const s=await checked(p,()=>p.fs.lstat(path));directory(s);const protectedMode=(s.mode&0o022)===0,rootSticky=s.uid===0&&(s.mode&0o1000)===0o1000;
   const permitted=path===parent?(s.uid===p.uid&&protectedMode)||rootSticky:((s.uid===0||s.uid===p.uid)&&protectedMode)||rootSticky;
   if(!permitted)stop('SPECIAL_FILE_REJECTED');
  }
 }
+async function validateAncestors(target,p){await validateAncestorDirectory(dirname(target),p);}
 async function validateTarget(root,p){const s=await checked(p,()=>p.fs.lstat(root));directory(s);if(s.uid!==p.uid||(s.mode&0o777)!==0o700)stop('SPECIAL_FILE_REJECTED');}
 async function rootCheck(root,p){await validateAncestors(root,p);await validateTarget(root,p);}
+function protectedGitFile(s,p){statMetadata(s);if(typeof s.isFile!=='function'||typeof s.isSymbolicLink!=='function'||s.isFile()!==true||s.isSymbolicLink()!==false||![0,p.uid].includes(s.uid)||(s.mode&0o022)!==0)stop('SPECIAL_FILE_REJECTED');}
+function protectedGitDirectory(s,p){directory(s);if(![0,p.uid].includes(s.uid)||(s.mode&0o022)!==0)stop('SPECIAL_FILE_REJECTED');}
+async function hasGitMarker(directoryPath,p){
+ let marker;
+ try{marker=await checked(p,()=>p.fs.lstat(join(directoryPath,'.git')));}
+ catch(error){if(errorCode(error)==='ENOENT')return false;throw error;}
+ if(marker.isFile?.()===true){protectedGitFile(marker,p);return true;}
+ protectedGitDirectory(marker,p);
+ let head;
+ try{head=await checked(p,()=>p.fs.lstat(join(directoryPath,'.git','HEAD')));}
+ catch(error){if(errorCode(error)==='ENOENT')stop('SPECIAL_FILE_REJECTED');throw error;}
+ protectedGitFile(head,p);return true;
+}
+export async function validateProjectScopeAncestry(scope,ports){
+ const p=preflightPortsOf(ports),selectedScope=selected(scope);await validateAncestorDirectory(selectedScope,p);
+}
+export async function requireProjectGitContext(scope,ports){
+ const p=preflightPortsOf(ports),selectedScope=selected(scope);let current=selectedScope;
+ while(true){if(await hasGitMarker(current,p))return;
+  const parent=dirname(current);if(parent===current)break;current=parent;
+ }
+ stop('SPECIAL_FILE_REJECTED');
+}
+export async function validateProjectStageAncestry(stage_dir,ports){
+ const p=preflightPortsOf(ports),stage=selected(stage_dir);await validateAncestors(stage,p);
+}
 async function reserve(root,p){await validateAncestors(root,p);try{await checked(p,()=>p.fs.mkdir(root,{recursive:false,mode:0o700}));}catch(e){if(errorCode(e)==='EEXIST')stop('DESTINATION_ALREADY_EXISTS');throw e;}await validateTarget(root,p);}
 function regular(s,p,mode){statMetadata(s);if(typeof s.isFile!=='function'||typeof s.isSymbolicLink!=='function'||s.isFile()!==true||s.isSymbolicLink()!==false||s.uid!==p.uid||s.nlink!==1||(s.mode&0o777)!==mode)stop('SPECIAL_FILE_REJECTED');}
 async function read(path,max,p,mode=0o400){await rootCheck(dirname(path),p);let h;try{

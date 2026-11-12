@@ -86,10 +86,12 @@ function stat({file=false,uid=1234,ino=1,nlink=1,mode=file?0o100600:0o40700,size
   return {dev:1,ino,nlink,uid,mode,size,mtimeMs:1,ctimeMs:1,
     isFile:()=>file,isDirectory:()=>!file,isSymbolicLink:()=>false};
 }
-function memoryFs(change={}){
+function memoryFs(change={},gitScope){
   const files=new Map(),directories=new Map(),opened=[],closed=[];
   let sequence=20;
   function base(path){
+    if(gitScope&&path===join(gitScope,'.git'))return stat({uid:1234,ino:8});
+    if(gitScope&&path===join(gitScope,'.git','HEAD'))return stat({file:true,uid:1234,ino:9});
     if(files.has(path)){
       const item=files.get(path);
       return stat({file:true,ino:item.ino,size:item.bytes.length,...change.leaf});
@@ -788,7 +790,7 @@ let fixtureNumber=0;
 function fixture(kind='nonzero',selectedScope){
   const number=++fixtureNumber;
   const id=`20000000-0000-4000-8000-${String(number).padStart(12,'0')}`;
-  const taskScope=selectedScope??'/owned/phase-'+number,m=memoryFs();
+  const taskScope=selectedScope??'/owned/phase-'+number,m=memoryFs({},taskScope);
   const prompt=buildProjectCodegenPrompt({
     schema:'SQUIRE2_PROJECT_REQUEST_V1',task_id:'synthetic-phase',
     task_prompt:'Public synthetic source request.',
@@ -1143,8 +1145,12 @@ test('A12/A13: observation starts no diagnostic FS work; explicit writer cannot 
   const f=fixture();
   let diagnosticCalls=0;
   const lstat=f.ports.fs.lstat;
+  const preflightPaths=new Set([
+    '/', '/owned', f.c.scope, join(f.c.scope,'.git'),join(f.c.scope,'.git','HEAD'),
+    join(f.c.scope,'output'),join(f.c.scope,'output','run-'+f.c.job_id)
+  ]);
   f.ports.fs.lstat=async name=>{
-    if(name!==f.c.scope){diagnosticCalls++;return new Promise(()=>{});}
+    if(!preflightPaths.has(name)){diagnosticCalls++;return new Promise(()=>{});}
     return lstat(name);
   };
   f.ports.fs.open=()=>{diagnosticCalls++;return new Promise(()=>{});};
@@ -1162,6 +1168,8 @@ test('A12/A13: observation starts no diagnostic FS work; explicit writer cannot 
 test('A13: synthetic successful staging keeps readiness and returns separate phase evidence',async()=>{
   const root=await fs.mkdtemp(join(tmpdir(),'squire-phase-'));
   await fs.chmod(root,0o700);
+  await fs.mkdir(join(root,'.git'),{mode:0o700});
+  await fs.writeFile(join(root,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});
   try{
     const f=fixture('success',join(root,'scope'));
     f.ports.fs=fs;f.ports.uid=process.getuid();

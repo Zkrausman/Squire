@@ -48,6 +48,22 @@ at `output/run-<job>/candidate-envelope.json`, using exclusive creation and
 bounded handle readback. The foreground record's output path and byte count
 describe that envelope only. Its LimitedJobRecord task class is PROJECT_CODEGEN_V1.
 
+Before starting a generation child, the shared runner checks the existing scope
+and staging ancestry against the same ownership, directory, symlink and mode
+rules used by multifile staging. It checks the newly created output ancestry
+again before dispatch. It also requires a visible ancestor Git marker: a regular
+`.git` file (including a linked-worktree marker), or a `.git` directory with a
+regular, non-symlink `HEAD`. Git marker metadata must also be owned by the
+caller or root and not group/other-writable. No Git subprocess or generated
+code runs for these checks. Invalid setup fails without a generation invocation; the quarantined
+scope is not automatically retried or cleaned.
+
+This is a read-only readiness check, not Git object validation, a lock against
+concurrent filesystem changes, or proof that the eventual child will succeed.
+The staging writer still performs its own custody and integrity checks after
+generation. Source changes require a newly prepared, matching source inventory;
+old prepared operations and unknown outcomes are not upgraded or replayed.
+
 Only after foreground success does the runner pass independently decoded file
 buffers to PR176 `planStaging` / `writeStage` at `output/run-<job>/stage`.
 The returned `squire4.stage_receipt.v1` is a separate physical copy-integrity ACK,

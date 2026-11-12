@@ -1138,9 +1138,12 @@ function largeFakeRuntime(response,{mode='immediate',stderrBytes=0,stdoutBytes=n
   };
 }
 async function largeRunnerFixture(fn){
-  const root=await fs.mkdtemp('/tmp/squire-large-project-runner-');
-  await fs.chmod(root,0o700);
-  try{await fn(root);}finally{await fs.rm(root,{recursive:true,force:true});}
+  const container=await fs.mkdtemp('/tmp/squire-large-project-runner-');
+  await fs.chmod(container,0o700);
+  await fs.mkdir(join(container,'.git'),{mode:0o700});
+  await fs.writeFile(join(container,'.git','HEAD'),'ref: refs/heads/synthetic\n',{mode:0o600});
+  const root=join(container,'scope');await fs.mkdir(root,{mode:0o700});
+  try{await fn(root);}finally{await fs.rm(container,{recursive:true,force:true});}
 }
 function largeResultEnvelope(sourceSize=100000){
   const files=Array.from({length:3},(_,index)=>({
@@ -1149,6 +1152,21 @@ function largeResultEnvelope(sourceSize=100000){
   }));
   return new TextDecoder().decode(envelope(files));
 }
+
+test('large observation common runner requires Git readiness before fake dispatch',async()=>{
+  await largeRunnerFixture(async root=>{
+    await fs.rm(join(root,'..','.git'),{recursive:true,force:true});
+    const runtime=largeFakeRuntime('{}'),result=await runDesktopCodingLargeObservationProjectTask(
+      largeRunnerSpec(root),
+      {clock:runtime.clock,shutdown:GENERATION_SHUTDOWN,
+       abortSignal:runtime.controller.signal},
+      largeRunnerPorts(runtime,{fs})
+    );
+    assert.equal(result.status,'FAILED');assert.equal(result.generation,null);
+    assert.equal(result.direct_child_invocations.generation,0);assert.equal(runtime.calls.length,0);
+    assert.deepEqual(await fs.readdir(root),[]);
+  });
+});
 
 test('large observation admission is explicit, closed and fixed-profiled before spawn',async()=>{
   await largeRunnerFixture(async root=>{
