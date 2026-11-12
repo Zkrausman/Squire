@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {join,basename} from 'node:path';
 import {hash} from '../src/bounded-codegen-plan.mjs';
-import {planReviewPackage,buildReviewPackage,writeReviewPackage,verifyReviewPackage} from '../src/human-review-package.mjs';
-import {runPackageCli} from '../bin/squire-package.mjs';
+import {planReviewPackage,buildReviewPackage,writeReviewPackage,verifyReviewPackage,safePackageErrorCode} from '../src/human-review-package.mjs';
+import {runPackageCli,nativePackageInventory} from '../bin/squire-package.mjs';
 
 const source=new TextEncoder().encode('// PUBLIC_SYNTHETIC_CODE_BODY_NEVER_REPORT\n'+('export const publicExample = 1;\n').repeat(5));
 const id='ba586107-7240-4d89-88d3-d71005bce32f';
@@ -39,6 +39,33 @@ test('owned-file build produces four independent copies and read-only verificati
  for(const n of names)assert.equal((await fs.stat(join(f.spec.output_dir,n))).mode&0o777,0o400);
  const v=await verifyReviewPackage(f.spec.output_dir,f.ports);assert.equal(v.status,'VERIFIED');assert.equal(v.original_operation_acknowledgement,'UNKNOWN');assert.equal(v.provenance_authenticity,'NOT_ESTABLISHED');
 }));
+test('native CLI builds and verifies the exact four-name inventory without changing its output',async()=>fixture(async f=>{
+ let out='',err='';const ports={stdout:{write:s=>out+=s},stderr:{write:s=>err+=s}};
+ assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],ports),0);
+ assert.equal(err,'');assert.match(out,/Squire local review package: COMPLETE/);
+ out='';assert.equal(await runPackageCli(['--verify',f.spec.output_dir],ports),0);
+ assert.equal(err,'');assert.match(out,/Squire local review package: VERIFIED/);
+ assert.deepEqual((await fs.readdir(f.spec.output_dir)).sort(),[...names].sort());
+ await fs.writeFile(join(f.spec.output_dir,'fifth'),'X',{flag:'wx',mode:0o400});
+ out='';assert.equal(await runPackageCli(['--verify',f.spec.output_dir],ports),2);
+ assert.equal(out,'');assert.equal(err,'CORRUPT_OR_INCOMPLETE\n');
+}));
+test('native inventory stops at fifth entry, closes on error or abort, and does not expose private messages',async()=>{
+ for(const kind of ['four','fifth','open','read','close','abort']){
+  const seen={reads:0,closes:0,opens:0};const controller=new AbortController();
+  const fake={async opendir(path,options){assert.equal(path,'/private');assert.deepEqual(options,{bufferSize:1});seen.opens++;if(kind==='open')throw Error('PRIVATE_OPEN');return {
+   async read(){seen.reads++;if(kind==='read'&&seen.reads===2)throw Error('PRIVATE_READ');
+    if(kind==='abort'&&seen.reads===1)controller.abort();
+    return seen.reads>(kind==='fifth'?5:4)?null:{name:`name-${seen.reads}`};},
+   async close(){seen.closes++;if(kind==='close')throw Error('PRIVATE_CLOSE');},
+  };}};
+  if(kind==='four')assert.deepEqual(await nativePackageInventory(fake,'/private',controller.signal),['name-1','name-2','name-3','name-4']);
+  else await assert.rejects(nativePackageInventory(fake,'/private',controller.signal),e=>{
+   assert.equal(safePackageErrorCode(e),kind==='abort'?'PACKAGE_ABORTED':'PACKAGE_IO_ERROR');return true;});
+  assert.equal(seen.opens,1);assert.equal(seen.closes,kind==='open'?0:1);
+  assert.equal(seen.reads,['four','fifth','close'].includes(kind)?5:kind==='open'?0:kind==='abort'?1:2);
+ }
+});
 test('generic candidate package retains NOT_EVALUATED and no invented17-fixture PASS',async()=>fixture(async f=>{
  let out='',err='';const ports={...f.ports,stdout:{write:s=>out+=s},stderr:{write:s=>err+=s}};
  assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],ports),1);assert.equal(err,'');assert.match(out,/CANDIDATE_READY/);assert.equal(out.includes(f.root),false);

@@ -51,6 +51,14 @@ returns `VERIFIED` or `CORRUPT_OR_INCOMPLETE`, always leaving original operation
 acknowledgement UNKNOWN. It proves neither provenance authenticity nor crash
 durability. Verification cannot repair an earlier failed operation.
 
+The CLI's default native filesystem adapter enumerates this exact inventory
+incrementally with `opendir` using a one-entry internal buffer, retaining at
+most five names and rejecting the
+fifth; it closes the directory handle on success, failure, and cancellation.
+The injected filesystem port keeps its existing `readdir` callback contract.
+Its caller controls that callback, so this allocation bound does not apply to
+arbitrary injected implementations.
+
 CLI exit 0 means a valid package whose recorded Q218 task conformance is PASS;
 exit 1 means a valid package with failed/incomplete conformance or generic
 `CANDIDATE_READY` / `NOT_EVALUATED`; exit 2 means packaging/verification failed.
