@@ -115,7 +115,7 @@ exclusive envelope persistence and physical multifile staging. It never launches
 GJS, generated files, syntax checks, tests, a desktop application or a grader.
 
 The existing Node route and desktop `SOURCE_SIMULATION` route retain their
-schemas and behavior. Original project admission, receipt-destination validation
+schemas and admission behavior. Original project admission, receipt-destination validation
 and `--run-admitted` continue to reject desktop activation. The original desktop
 profile document describes that older source simulation route. This document
 defines the separate production code-generation seam.
@@ -154,11 +154,12 @@ the exact desktop prefix identity and the prospective identity. Other policy
 fields retain the existing source, Node, Codex, prompt, retention, shutdown,
 environment, 120-second generation, 140-second observation and one-child bounds.
 
-Only `DESKTOP_CODEGEN_ONLY` prepends the fixed global arguments
+Both `DESKTOP_CODEGEN_ONLY` and the Node `PROJECT_CODEGEN_V1` route prepend the fixed global arguments
 `-c 'forced_login_method="chatgpt"'` before the existing Codex argv and `exec`
 command. Preparation, config validation and generation use the same pure
-ChatGPT-only profile helper. The original Node, default, receipt,
-`SOURCE_SIMULATION` and other Codex profiles keep their existing argv.
+ChatGPT-only profile helper. The `SOURCE_SIMULATION` project's child uses the
+same restriction; receipt and legacy single-JavaScript routes keep their
+existing argv.
 Operation inputs cannot select another auth method, provider or extra arguments.
 This per-process restriction writes no persistent config and authorizes no
 manual login, logout or credential changes. The existing six scoped API key

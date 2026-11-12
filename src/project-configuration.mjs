@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {closed,object,fail} from './job-spec.mjs';
 import {parseReceiptJson,snapshotReceiptData} from './offline-run-summary.mjs';
 import {NODE_RUNTIME,GENERATION_SHUTDOWN,hash,canonicalBytes,verifyExactFile} from './bounded-codegen-plan.mjs';
-import {prepareCodexArgv,prepareChatgptOnlyCodexArgv,CODEX_REQUIRED_VERSION,validateCodexPermissions} from './codex-profile.mjs';
+import {prepareChatgptOnlyCodexArgv,CODEX_REQUIRED_VERSION,validateCodexPermissions} from './codex-profile.mjs';
 import {buildProjectCodegenPrompt,validateProjectRequest,PROJECT_PREFIX_IDENTITY} from './project-task.mjs';
 import {DESKTOP_TARGET,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} from './desktop-profile.mjs';
 import {RETENTION_POLICY,createNativeRejectedRetention} from './local-rejected-retention.mjs';
@@ -84,7 +84,7 @@ function validateProjectConfig(value,desktopCodegen,largeObservation=false){
   for(const p of Object.values(c.source_pins)){closed(p,['bytes','sha256'],[],'project_source_pin');if(!Number.isSafeInteger(p.bytes)||p.bytes<0||!digest(p.sha256))fail('project_source_pin');}
   validateCodexPermissions(c.permissions);
   if(largeObservation&&c.permissions.approval_mode!=='on-request')fail('project_policy');
-  (desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({requested_model:c.requested_model,effort:c.effort,observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,prompt_bytes:new Uint8Array([65])});
+  prepareChatgptOnlyCodexArgv({requested_model:c.requested_model,effort:c.effort,observed_cli_version:c.codex.version,authorization:c.authorization,permissions:c.permissions,prompt_bytes:new Uint8Array([65])});
   closed(c.target_mode,['mode','stage_subpath'],[],'project_target');
   if((c.target_mode.mode!=='multifile_stage'||c.target_mode.stage_subpath!=='stage')||!same(c.diagnostic_retention,RETENTION_POLICY)||!same(c.generation_shutdown,GENERATION_SHUTDOWN)||!same(c.environment_policy,PROJECT_ENVIRONMENT_POLICY)||c.preflight_freshness_ms!==300000||c.outer_observation_ms!==bounds.outer_observation_ms||c.generation_wall_ms!==bounds.generation_wall_ms||c.max_direct_child_spawns!==1)fail('project_policy');
   if(largeObservation)return Object.freeze({...c,
@@ -204,7 +204,7 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   if(!absolute(root)||typeof source_commit!=='string'||!/^[a-f0-9]{40}$/.test(source_commit))fail('project_preparation');
   const fsPort=ports.fs??fs,verify=ports.verifyFile??verifyExactFile,reads={lstat:fsPort.lstat,readChunks:ports.readChunks??(p=>createReadStream(p))};
   const prompt=buildProjectCodegenPrompt(req),source_pins={};pin(inputs.codex,true);
-  const profile=(desktopCodegen?prepareChatgptOnlyCodexArgv:prepareCodexArgv)({requested_model:inputs.requested_model,effort:inputs.effort,observed_cli_version:inputs.codex.version,prompt_bytes:prompt,authorization:inputs.authorization,permissions});
+  const profile=prepareChatgptOnlyCodexArgv({requested_model:inputs.requested_model,effort:inputs.effort,observed_cli_version:inputs.codex.version,prompt_bytes:prompt,authorization:inputs.authorization,permissions});
   for(const name of desktopCodegen?DESKTOP_CODEGEN_SOURCE_FILES:PROJECT_SOURCE_FILES){const p=join(PROJECT_SOURCE_ROOT,name),b=await fsPort.readFile(p);source_pins[p]={bytes:b.length,sha256:hash(b)};}
   const config={schema:'SQUIRE2_PROJECT_OPERATION_V1',runtime_admitted:false,provider_id:'native_codex',job_id:inputs.job_id,scope:inputs.scope,source_commit,source_pins,node:NODE_RUNTIME,codex:inputs.codex,requested_model:inputs.requested_model,effort:inputs.effort,authorization:inputs.authorization,permissions,prompt:{path:join(root,'prompt.utf8'),bytes:prompt.length,sha256:hash(prompt)},target_mode:{mode:'multifile_stage',stage_subpath:'stage'},diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,outer_observation_ms:140000,generation_wall_ms:120000,max_direct_child_spawns:1,environment_policy:PROJECT_ENVIRONMENT_POLICY};
   if(desktop)Object.assign(config,{runtime_target:DESKTOP_TARGET,prefix_identity:DESKTOP_PREFIX_IDENTITY,desktop_runtime_identity:desktop});

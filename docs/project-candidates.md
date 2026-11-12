@@ -81,7 +81,11 @@ profile containing read-only sandbox, `on-request` or `never` approval mode, and
 the supported JSONL output contract; there is no production model, provider,
 effort or permission-mode default. The manifest emits
 `--ask-for-approval <mode>` before `exec` and the declared sandbox through
-`--sandbox`. Missing, extra or unsupported permission fields reject before
+`--sandbox`. The Node project route also places
+`-c 'forced_login_method="chatgpt"'` before that existing argv, matching the
+desktop codegen route. This restricts the child to ChatGPT authentication; it
+does not establish allowance, the effective provider for a later child, or
+permission enforcement. Missing, extra or unsupported permission fields reject before
 dispatch. These flags record intent and do not prove effective enforcement.
 After source changes, prepare a fresh config and manifest with matching source
 pins. Removing API key environment variables does not prove effective
