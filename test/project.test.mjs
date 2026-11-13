@@ -1,4 +1,5 @@
 import test from 'node:test';
+import * as projectConfiguration from '../src/project-configuration.mjs';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {join} from 'node:path';
@@ -162,4 +163,60 @@ test('project payload enforces independent aggregate caps and canonical base64 b
  const tooManyBytes=envelope(Array.from({length:9},(_,i)=>file('f'+i,'SOURCE','utf-8','x'.repeat(65536))));assert.throws(()=>validateProjectPayloadJson(enc(tooManyBytes)),e=>e.field==='PROJECT_AGGREGATE_CAPACITY_EXCEEDED');
  assert.throws(()=>validateProjectPayloadJson(enc(envelope([file('a','SOURCE','utf-8','é'.repeat(65536))]))),e=>e.field==='PROJECT_FILE_SIZE_EXCEEDED');
  assert.throws(()=>validateProjectPayloadJson(new Uint8Array(1048577)),e=>e.field==='PROJECT_PAYLOAD_TOO_LARGE');
+});
+
+// Pure admission fixtures: preparation uses only injected in-memory files.
+async function pureAdmissionFixture(){
+ const job=id(),scope='/synthetic/pure-admission-'+job,root='/synthetic/prepared-'+job,files=new Map();
+ const io={readFile:async path=>files.get(path)??enc('PUBLIC SYNTHETIC SOURCE'),mkdir:async()=>{},writeFile:async(path,bytes)=>files.set(path,new Uint8Array(bytes))};
+ await prepareProjectCodexTask(root,'a'.repeat(40),request,{job_id:job,scope,codex:{path:'/synthetic/codex',bytes:1,sha256:'a'.repeat(64),version:'0.160.0'},requested_model:MODEL,effort:EFFORT,authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}},{fs:io,verifyFile:async()=>{},retention:()=>({prepare:async()=>({capability_status:'READY'})})});
+ const bytes=files.get(join(root,'config.json')),config=validateProjectCodexConfig(JSON.parse(decode(bytes)));
+ const admission={provider_id:'native_codex',operator_receipt:authorization.operator_receipt,config_sha256:hash(bytes),job_id:job,scope,project_admitted:true,preflight:{evidence_receipt:'/synthetic/preflight'}};
+ return {bytes,config,admission};
+}
+function projectAdmissionValidator(){
+ const validate=projectConfiguration.validateProjectCodexAdmission;
+ assert.equal(typeof validate,'function','project-only non-consuming admission API');return validate;
+}
+test('project admission validation is repeatable before once-only native consumption',async()=>{
+ const validate=projectAdmissionValidator(),f=await pureAdmissionFixture();
+ for(let n=0;n<3;n++)assert.deepEqual(validate(f.admission,f.bytes),f.admission);
+ assert.equal(requireProjectCodexAdmission(f.admission,f.config,f.bytes).project_admitted,true);
+ assert.throws(()=>requireProjectCodexAdmission(f.admission,f.config,f.bytes),/NATIVE_OPERATION_ALREADY_CONSUMED/);
+ // Binding validation itself remains available after consumption; it grants no replay.
+ assert.equal(validate(f.admission,f.bytes).project_admitted,true);
+ assert.throws(()=>requireProjectCodexAdmission(f.admission,f.config,f.bytes),/NATIVE_OPERATION_ALREADY_CONSUMED/);
+});
+test('project admission validation rejects generic fix17 shape without consuming',async()=>{
+ const validate=projectAdmissionValidator(),f=await pureAdmissionFixture();
+ const {project_admitted,...generic}=f.admission;generic.fix17_paths_admitted=true;
+ assert.throws(()=>validate(generic,f.bytes),e=>e.field==='project_admission');
+ assert.equal(validate(f.admission,f.bytes).project_admitted,true);
+ assert.equal(requireProjectCodexAdmission(f.admission,f.config,f.bytes).project_admitted,true);
+});
+test('project admission validation rejects mismatched bindings without consuming or echoing data',async()=>{
+ const validate=projectAdmissionValidator(),f=await pureAdmissionFixture();
+ const bad=[{provider_id:'api'},{config_sha256:'0'.repeat(64)},{job_id:id()},{scope:'/synthetic/other'},{operator_receipt:'PRIVATE_SENTINEL'},{project_admitted:false},{unexpected:'PRIVATE_SENTINEL'},{preflight:{evidence_receipt:'relative-PRIVATE_SENTINEL'}},{preflight:{evidence_receipt:'/synthetic/preflight',unexpected:'PRIVATE_SENTINEL'}}];
+ for(const change of bad)assert.throws(()=>validate({...f.admission,...change},f.bytes),e=>!String(e).includes('PRIVATE_SENTINEL'));
+ assert.equal(requireProjectCodexAdmission(f.admission,f.config,f.bytes).project_admitted,true);
+});
+test('project admission validation rejects accessors and proxies without evaluating them',async()=>{
+ const validate=projectAdmissionValidator(),f=await pureAdmissionFixture();let traps=0;
+ const accessor={...f.admission};Object.defineProperty(accessor,'project_admitted',{enumerable:true,get(){traps++;throw Error('PRIVATE_SENTINEL');}});
+ const nested={...f.admission,preflight:{}};Object.defineProperty(nested.preflight,'evidence_receipt',{enumerable:true,get(){traps++;throw Error('PRIVATE_SENTINEL');}});
+ const proxy=new Proxy(f.admission,{ownKeys(){traps++;throw Error('PRIVATE_SENTINEL');}});
+ for(const value of [accessor,nested,proxy])assert.throws(()=>validate(value,f.bytes));
+ assert.equal(traps,0);assert.equal(requireProjectCodexAdmission(f.admission,f.config,f.bytes).project_admitted,true);
+});
+test('project admission validation binds exact config bytes and returns an isolated frozen snapshot',async()=>{
+ const validate=projectAdmissionValidator(),f=await pureAdmissionFixture(),bytes=enc(' '+decode(f.bytes)+'\n'),admission={...f.admission,config_sha256:hash(bytes)};
+ assert.throws(()=>validate(f.admission,bytes));const checked=validate(admission,bytes);
+ assert.ok(Object.isFrozen(checked));assert.ok(Object.isFrozen(checked.preflight));assert.notEqual(checked,admission);assert.notEqual(checked.preflight,admission.preflight);
+ admission.preflight.evidence_receipt='/synthetic/changed';assert.equal(checked.preflight.evidence_receipt,'/synthetic/preflight');
+ assert.equal(requireProjectCodexAdmission(checked,f.config,bytes).project_admitted,true);
+});
+test('project admission validation rejects invalid config without consuming a valid admission',async()=>{
+ const validate=projectAdmissionValidator(),f=await pureAdmissionFixture();
+ for(const bytes of [enc('{'),enc(JSON.stringify({...f.config,schema:'OTHER'})),enc(JSON.stringify({...f.config,generation_wall_ms:360000}))])assert.throws(()=>validate(f.admission,bytes));
+ assert.equal(requireProjectCodexAdmission(f.admission,f.config,f.bytes).project_admitted,true);
 });
