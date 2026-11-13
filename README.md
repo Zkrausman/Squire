@@ -35,8 +35,9 @@ PR176 stage acknowledgement. Candidate staging is never functional acceptance;
 imports/default entrypoints are inert and actual calls require separate admission.
 
 The [local multifile review-candidate bridge](docs/project-review-candidate.md)
-turns an explicitly supplied completed large-project stage into a base-bound Git
-candidate in a fresh local repository. It does not execute generated code,
+turns an explicitly supplied completed large-project stage, or a standard native
+project stage through its separate API, into a base-bound Git candidate in a
+fresh local repository. It does not execute generated code,
 modify the base checkout or publish the candidate. Human review and functional
 acceptance remain separate.
 

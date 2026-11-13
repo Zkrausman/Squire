@@ -219,3 +219,41 @@ and a changed-path count, never relative filenames, source bytes, local paths,
 operation labels or raw errors. Existing `--build` input/result behavior is
 unchanged. The API's relative paths and source witnesses remain private review
 material rather than a public receipt format.
+
+
+## Standard native project intake
+
+The separate `buildStandardProjectReviewCandidate(spec, ports)` and
+`buildStandardProjectReviewCandidateNative(spec)` APIs accept the standard
+native result and stage profile. Their closed specification uses
+`SQUIRE_STANDARD_PROJECT_REVIEW_IMPORT_V1` with the same explicit input fields
+as the large importer. Existing large, revision and CLI entry points retain
+their existing profile; there is no profile autodetection or conversion.
+
+Supply a validated `SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1` containing a
+standard `SQUIRE2_PROJECT_RESULT_V1`, final `CANDIDATE_STAGED` and its exact
+complete `squire4.stage_receipt.v1` acknowledgement. Use the existing
+`createNativeProjectResultReceipt` to capture a live result when needed;
+do not strip or rewrite fields to pass validation. A recorded
+`operator_admitted` boolean remains a supplied claim with admission authority
+unestablished. It does not authorize a new import. Physical verification alone
+cannot recover an original acknowledgement.
+
+The standard adapter uses `verifyStage`, `buildExport` and `verifyExport`,
+including the final source/snapshot recheck. It exports no evidence files.
+Standard class limits remain SOURCE: 25 files, 65,536 bytes per file and
+524,288 aggregate; LOCAL_ASSET: 20 files, 524,288 bytes per file and 2,097,152
+aggregate; DOC: 5 files, 65,536 bytes per file and 131,072 aggregate. The native
+receipt additionally limits the entire acknowledged project to **1,048,576
+bytes**, so the adapter enforces the intersection of those limits. A larger
+standalone standard stage is insufficient. Serialized receipt bytes remain
+capped at 262,144, and stage/export manifests at 65,536/131,072 bytes.
+
+The same pinned-base, original-byte, path, custody, fresh-output, inert Git,
+cancellation and partial-output rules apply. The result retains
+`SQUIRE_PROJECT_REVIEW_CANDIDATE_V1` and can enter the original-candidate
+review-package and portable-snapshot APIs subject to their own checks. It is a
+source candidate with human review pending and correctness unevaluated; an
+external functional grade does not select an owner decision, authorize a
+merge or establish native acceptance. First-owner-revision intake remains
+outside this standard entry point. No generated source is executed.
