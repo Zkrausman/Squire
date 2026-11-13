@@ -9,16 +9,17 @@ import {pathToFileURL} from 'node:url';
 import {types} from 'node:util';
 import {closed} from './job-spec.mjs';
 import {parseReceiptJson} from './offline-run-summary.mjs';
-import {projectNativeProjectLargeObservationReceiptBytesSummary} from './project-summary.mjs';
+import {projectNativeProjectRunSummary,projectNativeProjectLargeObservationReceiptBytesSummary} from './project-summary.mjs';
 import {
   PROJECT_OUTPUT_LARGE_PROFILE,PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA,
   validateProjectOutputLargeProfile
 } from './project-coding-profile.mjs';
-import {verifyLargeProjectStage} from './multifile-staging.mjs';
-import {buildLargeProjectExport,verifyLargeProjectExport} from './multifile-export.mjs';
+import {verifyStage,verifyLargeProjectStage} from './multifile-staging.mjs';
+import {buildExport,verifyExport,buildLargeProjectExport,verifyLargeProjectExport} from './multifile-export.mjs';
 import {readReceiptBytes} from '../bin/squire-report.mjs';
 
 const SPEC_SCHEMA='SQUIRE_PROJECT_REVIEW_IMPORT_V1';
+const STANDARD_SPEC_SCHEMA='SQUIRE_STANDARD_PROJECT_REVIEW_IMPORT_V1';
 const RESULT_SCHEMA='SQUIRE_PROJECT_REVIEW_CANDIDATE_V1';
 const MAX_RECEIPT_BYTES=262144;
 const MAX_SPEC_BYTES=65536;
@@ -50,6 +51,25 @@ const PROJECT_CLASSES=Object.freeze({
   SOURCE:Object.freeze({count:25,file:524288,total:2097152}),
   LOCAL_ASSET:Object.freeze({count:20,file:524288,total:2097152}),
   DOC:Object.freeze({count:5,file:65536,total:131072})
+});
+// Explicit internal profiles; callers cannot select or mutate these capabilities.
+const LARGE_IMPORT=Object.freeze({
+  receiptSchema:PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA,
+  stageSchema:'squire4.large_project_stage_receipt.v1',
+  exportSchema:'squire4.large_project_export_manifest.v1',
+  classes:PROJECT_CLASSES,maxBytes:MAX_PROJECT_BYTES,
+  verifyStage:verifyLargeProjectStage,buildExport:buildLargeProjectExport,
+  verifyExport:verifyLargeProjectExport,large:true
+});
+const STANDARD_IMPORT=Object.freeze({
+  receiptSchema:'SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1',
+  stageSchema:'squire4.stage_receipt.v1',exportSchema:'squire4.export_manifest.v1',
+  classes:Object.freeze({
+    SOURCE:Object.freeze({count:25,file:65536,total:524288}),
+    LOCAL_ASSET:Object.freeze({count:20,file:524288,total:2097152}),
+    DOC:Object.freeze({count:5,file:65536,total:131072})
+  }),maxBytes:1048576,
+  verifyStage,buildExport,verifyExport,large:false
 });
 const ABORTED_GETTER=Object.getOwnPropertyDescriptor(
   AbortSignal.prototype,'aborted'
@@ -152,7 +172,7 @@ function checkPathCollisions(paths){
     for(let i=1;i<parts.length;i++)if(folded.has(parts.slice(0,i).join('/')))invalid();
   }
 }
-function captureSpec(value){
+function captureSpec(value,schema=SPEC_SCHEMA){
   try{closed(value,SPEC_KEYS,['signal'],'project_review_spec');}catch{invalid();}
   const out=Object.create(null);
   for(const key of [...SPEC_KEYS,...(Object.hasOwn(value,'signal')?['signal']:[])]){
@@ -160,7 +180,7 @@ function captureSpec(value){
     if(!descriptor||!Object.hasOwn(descriptor,'value'))invalid();
     out[key]=descriptor.value;
   }
-  if(out.schema!==SPEC_SCHEMA||typeof out.operation_id!=='string'||!TOKEN.test(out.operation_id)||
+  if(out.schema!==schema||typeof out.operation_id!=='string'||!TOKEN.test(out.operation_id)||
      typeof out.caller_label!=='string'||!TOKEN.test(out.caller_label)||
      typeof out.receipt_sha256!=='string'||!SHA256.test(out.receipt_sha256)||
      typeof out.stage_manifest_sha256!=='string'||!SHA256.test(out.stage_manifest_sha256)||
@@ -472,9 +492,9 @@ function parseTreeListing(value,maxEntries,maxMetadataBytes){
   }
   return Object.freeze({files:Object.freeze(files),trees:Object.freeze(trees)});
 }
-function validateManifest(value,verification,spec,stageAck){
+function validateManifest(value,verification,spec,stageAck,profile){
   try{closed(value,[
-    'schema_version','output_profile','export_operation_id','caller_label',
+    'schema_version',...(profile.large?['output_profile']:[]),'export_operation_id','caller_label',
     'stage_binding','file_counts','total_files','total_bytes','files'
   ],[],'large_export_manifest');}catch{rejected();}
   try{
@@ -483,14 +503,14 @@ function validateManifest(value,verification,spec,stageAck){
       'source','local_asset','doc','evidence_log','frame_capture'
     ],[],'file_counts');
   }catch{rejected();}
-  try{validateProjectOutputLargeProfile(value.output_profile);}catch{rejected();}
-  if(value.schema_version!=='squire4.large_project_export_manifest.v1'||
+  if(profile.large)try{validateProjectOutputLargeProfile(value.output_profile);}catch{rejected();}
+  if(value.schema_version!==profile.exportSchema||
      value.export_operation_id!==spec.operation_id||
      value.stage_binding?.stage_operation_id!==stageAck.stage_operation_id||
      value.stage_binding?.stage_manifest_sha256!==spec.stage_manifest_sha256||
      value.total_files!==verification.total_files||value.total_bytes!==verification.total_bytes||
      !Number.isSafeInteger(value.total_files)||value.total_files<1||value.total_files>50||
-     !Number.isSafeInteger(value.total_bytes)||value.total_bytes<0||value.total_bytes>MAX_PROJECT_BYTES)rejected();
+     !Number.isSafeInteger(value.total_bytes)||value.total_bytes<0||value.total_bytes>profile.maxBytes)rejected();
   const files=denseArray(value.files,50);
   if(files.length!==value.total_files)rejected();
   const counts={SOURCE:0,LOCAL_ASSET:0,DOC:0};
@@ -498,12 +518,12 @@ function validateManifest(value,verification,spec,stageAck){
   let total=0;
   const captured=files.map(file=>{
     try{closed(file,['path','classification','bytes','sha256','export_subpath'],[],'export_file');}catch{rejected();}
-    const caps=PROJECT_CLASSES[file.classification];
+    const caps=profile.classes[file.classification];
     if(!caps||!stageRelative(file.path)||file.export_subpath!==`project/${file.path}`||
        !Number.isSafeInteger(file.bytes)||file.bytes<0||file.bytes>caps.file||
        !SHA256.test(file.sha256))rejected();
     counts[file.classification]++;totals[file.classification]+=file.bytes;total+=file.bytes;
-    if(counts[file.classification]>caps.count||totals[file.classification]>caps.total||total>MAX_PROJECT_BYTES)rejected();
+    if(counts[file.classification]>caps.count||totals[file.classification]>caps.total||total>profile.maxBytes)rejected();
     return Object.freeze({path:file.path,classification:file.classification,bytes:file.bytes,sha256:file.sha256});
   });
   checkPathCollisions(captured.map(file=>file.path));
@@ -512,16 +532,16 @@ function validateManifest(value,verification,spec,stageAck){
      Object.keys(counts).some(key=>value.file_counts?.[key.toLowerCase()]!==counts[key]))rejected();
   return Object.freeze(captured);
 }
-async function loadSnapshot(spec,ports,verification,stageAck){
+async function loadSnapshot(spec,ports,verification,stageAck,profile){
   const manifestBytes=await readStableFile(ports,join(spec.snapshot_dir,'export-manifest.json'),MAX_EXPORT_MANIFEST_BYTES);
   try{
     if(sha256(manifestBytes)!==verification.manifest_sha256)rejected();
     const manifest=parseReceiptJson(manifestBytes);
-    const files=validateManifest(manifest,verification,spec,stageAck);
+    const files=validateManifest(manifest,verification,spec,stageAck,profile);
     const contents=[];let retained=false;
     try{
       for(const file of files){
-        const cap=PROJECT_CLASSES[file.classification].file;
+        const cap=profile.classes[file.classification].file;
         const bytes=await readStableFile(ports,join(spec.snapshot_dir,'project',file.path),cap);
         if(bytes.length!==file.bytes||sha256(bytes)!==file.sha256){bytes.fill(0);rejected();}
         contents.push(Object.freeze({...file,bytes_data:bytes}));
@@ -788,28 +808,30 @@ function resultValue(spec,stageAck,candidateTree,commit,paths){
     base_alternate_dependency:'READ_ONLY_BASE_OBJECT_ALTERNATE'
   });
 }
-async function runImport(spec,ports,revision=null){
+async function runImport(spec,ports,revision=null,profile=LARGE_IMPORT){
   let parsedReceipt=null,snapshot=null,finalSnapshot=null;
   try{
     checkAbort(ports.signal);
     if(spec.signal!==undefined&&spec.signal!==ports.signal)invalid();
-    const summary=projectNativeProjectLargeObservationReceiptBytesSummary(spec.receipt_bytes);
+    parsedReceipt=parseReceiptJson(spec.receipt_bytes);
+    const summary=profile.large
+      ?projectNativeProjectLargeObservationReceiptBytesSummary(spec.receipt_bytes)
+      :projectNativeProjectRunSummary(parsedReceipt);
     if(summary?.readiness!=='CANDIDATE_STAGED'||summary.task_correctness!=='NOT_EVALUATED'||
        summary.task_outcome_evaluated!==false||summary.staging===null)rejected();
-    validateProjectOutputLargeProfile(summary.output_profile);
+    if(profile.large)validateProjectOutputLargeProfile(summary.output_profile);
     if(summary.staging.completion_status!=='COMPLETE'||
        summary.staging.operation_acknowledgement!=='ACKNOWLEDGED'||
        summary.staging.manifest_sha256!==spec.stage_manifest_sha256)rejected();
-    parsedReceipt=parseReceiptJson(spec.receipt_bytes);
-  if(parsedReceipt?.schema!==PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA||
+    if(parsedReceipt?.schema!==profile.receiptSchema||
        !parsedReceipt.result||parsedReceipt.result.status!=='CANDIDATE_STAGED')rejected();
     const stageAck=parsedReceipt.result.staging;
     try{closed(stageAck,[
-      'schema_version','output_profile','stage_operation_id','caller_label',
+      'schema_version',...(profile.large?['output_profile']:[]),'stage_operation_id','caller_label',
       'completion_status','manifest_sha256','file_count','total_bytes',
       'operation_acknowledgement','provenance_authenticity','crash_durability'
     ],[],'stage_ack');}catch{rejected();}
-    if(stageAck.schema_version!=='squire4.large_project_stage_receipt.v1'||
+    if(stageAck.schema_version!==profile.stageSchema||
        stageAck.caller_label!=='project_candidate_stager'||
        stageAck.completion_status!=='COMPLETE'||
        stageAck.operation_acknowledgement!=='ACKNOWLEDGED'||
@@ -819,7 +841,7 @@ async function runImport(spec,ports,revision=null){
        stageAck.total_bytes!==summary.staging.total_bytes||
        stageAck.provenance_authenticity!=='NOT_ESTABLISHED'||
        stageAck.crash_durability!=='NOT_ESTABLISHED'||!TOKEN.test(stageAck.stage_operation_id))rejected();
-    validateProjectOutputLargeProfile(stageAck.output_profile);
+    if(profile.large)validateProjectOutputLargeProfile(stageAck.output_profile);
 
     // Pin and verify the complete explicit base before reading stage content or
     // creating the export snapshot. These checks bind every declared preimage.
@@ -827,7 +849,7 @@ async function runImport(spec,ports,revision=null){
     const base=await inspectBase(spec,ports);
     await verifyBasePreimages(spec,ports,base);
 
-    const stageVerification=await checked(ports,()=>verifyLargeProjectStage(
+    const stageVerification=await checked(ports,()=>profile.verifyStage(
       spec.stage_dir,{fs:ports.fs,uid:ports.uid,signal:ports.signal}
     ));
     if(stageVerification.status!=='VERIFIED'||
@@ -836,13 +858,13 @@ async function runImport(spec,ports,revision=null){
        stageVerification.file_count!==stageAck.file_count||
        stageVerification.total_bytes!==stageAck.total_bytes)rejected();
 
-    await checked(ports,()=>buildLargeProjectExport({
+    await checked(ports,()=>profile.buildExport({
       export_operation_id:spec.operation_id,caller_label:'project_review_candidate',
-      output_profile:PROJECT_OUTPUT_LARGE_PROFILE,stage_dir:spec.stage_dir,
+      ...(profile.large?{output_profile:PROJECT_OUTPUT_LARGE_PROFILE}:{}),stage_dir:spec.stage_dir,
       export_dir:spec.snapshot_dir,stage_manifest_sha256:spec.stage_manifest_sha256,
       evidence_files:[]
     },{fs:ports.fs,uid:ports.uid,signal:ports.signal}));
-    const exportVerification=await checked(ports,()=>verifyLargeProjectExport(
+    const exportVerification=await checked(ports,()=>profile.verifyExport(
       spec.snapshot_dir,{fs:ports.fs,uid:ports.uid,signal:ports.signal}
     ));
     if(exportVerification.status!=='VERIFIED'||
@@ -850,7 +872,7 @@ async function runImport(spec,ports,revision=null){
        exportVerification.stage_binding?.stage_manifest_sha256!==spec.stage_manifest_sha256||
        exportVerification.total_files!==stageAck.file_count||
        exportVerification.total_bytes!==stageAck.total_bytes)rejected();
-    snapshot=await loadSnapshot(spec,ports,exportVerification,stageAck);
+    snapshot=await loadSnapshot(spec,ports,exportVerification,stageAck,profile);
     const snapshotFiles=compareSnapshotToAllowed(snapshot,spec);
 
     const originalOverlay=await deriveOverlay(spec,ports,base,snapshotFiles);
@@ -869,19 +891,19 @@ async function runImport(spec,ports,revision=null){
     const tree=await createCandidateTree(spec,ports,finalEntries,baseObjects);
     const commit=await buildCommit(spec,ports,tree.tree);
 
-    const finalStage=await checked(ports,()=>verifyLargeProjectStage(
+    const finalStage=await checked(ports,()=>profile.verifyStage(
       spec.stage_dir,{fs:ports.fs,uid:ports.uid,signal:ports.signal}
     ));
     if(finalStage.status!=='VERIFIED'||finalStage.stage_operation_id!==stageAck.stage_operation_id||
        finalStage.manifest_sha256!==stageAck.manifest_sha256||
        finalStage.file_count!==stageAck.file_count||finalStage.total_bytes!==stageAck.total_bytes)rejected();
-    const finalExport=await checked(ports,()=>verifyLargeProjectExport(
+    const finalExport=await checked(ports,()=>profile.verifyExport(
       spec.snapshot_dir,{fs:ports.fs,uid:ports.uid,signal:ports.signal}
     ));
     if(finalExport.status!=='VERIFIED'||finalExport.manifest_sha256!==snapshot.manifest_sha256||
        finalExport.stage_binding?.stage_operation_id!==stageAck.stage_operation_id||
        finalExport.stage_binding?.stage_manifest_sha256!==spec.stage_manifest_sha256)rejected();
-    finalSnapshot=await loadSnapshot(spec,ports,finalExport,stageAck);
+    finalSnapshot=await loadSnapshot(spec,ports,finalExport,stageAck,profile);
     if(finalSnapshot.manifest_sha256!==snapshot.manifest_sha256||
        finalSnapshot.files.length!==snapshot.files.length||
        finalSnapshot.files.some((file,index)=>file.path!==snapshot.files[index].path||
@@ -930,6 +952,20 @@ export async function buildProjectReviewCandidate(spec,ports){
     captured=captureSpec(spec);
     capabilities=capturePorts(ports,captured.signal);
     return await runImport(captured,capabilities);
+  }catch(error){
+    if(error instanceof ReviewCandidateError)throw error;
+    if(capabilities?.signal&&signalAborted(capabilities.signal))throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_ABORTED');
+    throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_REJECTED');
+  }finally{captured?.receipt_bytes.fill(0);}
+}
+
+/** Standard native receipt/stage intake. The existing large entry points stay distinct. */
+export async function buildStandardProjectReviewCandidate(spec,ports){
+  let captured=null,capabilities=null;
+  try{
+    captured=captureSpec(spec,STANDARD_SPEC_SCHEMA);
+    capabilities=capturePorts(ports,captured.signal);
+    return await runImport(captured,capabilities,null,STANDARD_IMPORT);
   }catch(error){
     if(error instanceof ReviewCandidateError)throw error;
     if(capabilities?.signal&&signalAborted(capabilities.signal))throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_ABORTED');
@@ -1199,6 +1235,14 @@ export async function buildProjectReviewCandidateNative(spec){
   const captured=captureSpec(spec);
   const native=nativeArtifactCheckPorts(captured.signal);
   try{return await buildProjectReviewCandidate(captured,{...native,signal:captured.signal});}
+  finally{captured.receipt_bytes.fill(0);}
+}
+
+/** Fixed native standard adapter; no generated source is executed. */
+export async function buildStandardProjectReviewCandidateNative(spec){
+  const captured=captureSpec(spec,STANDARD_SPEC_SCHEMA);
+  const native=nativeArtifactCheckPorts(captured.signal);
+  try{return await buildStandardProjectReviewCandidate(captured,{...native,signal:captured.signal});}
   finally{captured.receipt_bytes.fill(0);}
 }
 

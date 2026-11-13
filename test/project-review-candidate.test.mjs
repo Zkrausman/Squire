@@ -16,19 +16,22 @@ import {
   PROJECT_OUTPUT_LARGE_PROFILE as LARGE_PROFILE
 } from '../src/project-coding-profile.mjs';
 import {
-  createNativeProjectLargeObservationResultReceipt
+  createNativeProjectResultReceipt,createNativeProjectLargeObservationResultReceipt
 } from '../src/project-result-receipt.mjs';
 import {
+  planStaging,writeStage,verifyStage,
   planLargeProjectStaging,
   writeLargeProjectStage,
   verifyLargeProjectStage
 } from '../src/multifile-staging.mjs';
 import {
+  buildStandardProjectReviewCandidate,buildStandardProjectReviewCandidateNative,
   buildProjectReviewCandidate,
   buildProjectReviewCandidateNative,
   buildProjectRevisionCandidate,
   buildProjectRevisionCandidateNative
 } from '../src/project-review-candidate.mjs';
+import {buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage} from '../src/project-candidate-review-package.mjs';
 import {runProjectReviewCandidateCli} from '../bin/squire-project-review.mjs';
 
 const GIT='/usr/bin/git';
@@ -291,7 +294,7 @@ async function makeBase(root,files,{bare=true,extraTreeEntries=[],signedBase=fal
   };
 }
 
-function makeLargeCompletedReceipt({jobId,stagePlan,stageAck,operatorAdmitted=false}){
+function makeLargeCompletedReceipt({jobId,stagePlan,stageAck,operatorAdmitted=false,standard=false,rawReceipt=false}){
   const staging={
     schema_version:stageAck.schema_version,
     output_profile:stageAck.output_profile,
@@ -358,7 +361,18 @@ function makeLargeCompletedReceipt({jobId,stagePlan,stageAck,operatorAdmitted=fa
     output_profile:LARGE_PROFILE,
     post_generation_closeout:{status:'COMPLETE',limit_ms:20000}
   };
-  const envelope=createNativeProjectLargeObservationResultReceipt(result);
+  // Producer-shaped deterministic standard fixture, not conversion of real output.
+  if(standard){
+    result.schema='SQUIRE2_PROJECT_RESULT_V1';
+    result.generation.record.task_class='PROJECT_CODEGEN_V1';
+    result.generation.runtime_evidence.deadline_ms=120000;
+    result.outer_observation_target_ms=140000;
+    delete result.generation.record.output_profile;
+    delete result.staging.output_profile;
+    delete result.execution_profile;delete result.output_profile;delete result.post_generation_closeout;
+  }
+  const envelope=rawReceipt?{schema:'SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1',result}:
+    standard?createNativeProjectResultReceipt(result):createNativeProjectLargeObservationResultReceipt(result);
   const receiptBytes=utf8.encode(`${JSON.stringify(envelope)}\n`);
   return {envelope,receiptBytes,receiptSha256:hashBytes(receiptBytes)};
 }
@@ -371,24 +385,25 @@ const docFile=(path,content)=>({path,classification:'DOC',content:asBytes(conten
 async function makeReviewFixture(root,{
   stageFiles,baseFiles=[],extraTreeEntries=[],bare=true,signedBase=false,
   operationId='review-test',
-  jobId='20000000-0000-4000-8000-000000000001',receiptOverride=null
+  jobId='20000000-0000-4000-8000-000000000001',receiptOverride=null,
+  standard=false,operatorAdmitted=false,rawReceipt=false
 }){
   const base=await makeBase(root,baseFiles,{bare,extraTreeEntries,signedBase});
   const stageDir=join(root,'stage');
   const snapshotDir=join(root,'snapshot');
   const candidateDir=join(root,'candidate.git');
-  const stagePlan=planLargeProjectStaging({
+  const stagePlan=(standard?planStaging:planLargeProjectStaging)({
     stage_operation_id:`stage-${jobId}`,
     caller_label:'project_candidate_stager',
-    output_profile:LARGE_PROFILE,
+    ...(standard?{}:{output_profile:LARGE_PROFILE}),
     files:stageFiles.map(file=>({
       path:file.path,classification:file.classification,
       content:asBytes(file.content)
     }))
   });
-  const stageAck=await writeLargeProjectStage(stagePlan,stageDir,{fs:fixtureFs,uid});
-  assert.equal((await verifyLargeProjectStage(stageDir,{fs:fixtureFs,uid})).status,'VERIFIED');
-  const savedReceipt=receiptOverride??makeLargeCompletedReceipt({jobId,stagePlan,stageAck});
+  const stageAck=await (standard?writeStage:writeLargeProjectStage)(stagePlan,stageDir,{fs:fixtureFs,uid});
+  assert.equal((await (standard?verifyStage:verifyLargeProjectStage)(stageDir,{fs:fixtureFs,uid})).status,'VERIFIED');
+  const savedReceipt=receiptOverride??makeLargeCompletedReceipt({jobId,stagePlan,stageAck,standard,operatorAdmitted,rawReceipt});
   const preimages=new Map(baseFiles.map(file=>[file.path,asBytes(file.bytes)]));
   const allowedChanges=stageFiles.map(file=>{
     const original=preimages.get(file.path);
@@ -400,7 +415,7 @@ async function makeReviewFixture(root,{
     }};
   }).sort((a,b)=>a.path.localeCompare(b.path,'en'));
   const spec={
-    schema:'SQUIRE_PROJECT_REVIEW_IMPORT_V1',
+    schema:standard?'SQUIRE_STANDARD_PROJECT_REVIEW_IMPORT_V1':'SQUIRE_PROJECT_REVIEW_IMPORT_V1',
     operation_id:operationId,caller_label:'review-test',
     receipt_bytes:new Uint8Array(savedReceipt.receiptBytes),
     receipt_sha256:savedReceipt.receiptSha256,
@@ -666,10 +681,10 @@ test('the native path accepts the exact 50-file large-profile ceiling',async()=>
   });
 });
 
-async function expectRejectedWithoutPromotion(fixture,spec,{git=makeGitPort(),portsFs=fixtureFs,signal}={}){
+async function expectRejectedWithoutPromotion(fixture,spec,{git=makeGitPort(),portsFs=fixtureFs,signal,build=buildProjectReviewCandidate}={}){
   const ports=testPorts(git.port??git,{fsPort:portsFs,signal});
   let error=null;
-  try{await buildProjectReviewCandidate(spec,ports);}catch(value){error=value;}
+  try{await build(spec,ports);}catch(value){error=value;}
   assert.ok(error,'candidate import unexpectedly succeeded');
   assert.equal(String(error).includes(fixture.root),false,'error leaked a local path');
   assert.equal(String(error).includes('SQUIRE_GENERATED_CODE_EXECUTED'),false,
@@ -1917,5 +1932,133 @@ test('revision rejects reuse of the prior operation ID before filesystem or Git 
     assert.equal(filesystemCalls,0);assert.equal(calls.length,0);
     assert.equal(await fs.access(fixture.revision.original.snapshot_dir).then(()=>true,()=>false),false);
     assert.equal(await fs.access(fixture.revision.original.candidate_dir).then(()=>true,()=>false),false);
+  });
+});
+
+
+// Standard-profile acceptance was frozen before this implementation. All contents
+// and stores below are synthetic; no generated program is imported or executed.
+const rejectStandard=(fixture,spec=fixture.spec,options={})=>
+  expectRejectedWithoutPromotion(fixture,spec,{...options,build:buildStandardProjectReviewCandidate});
+
+test('standard native intake preserves exact source/base and feeds the existing review package',async()=>{
+  for(const operatorAdmitted of [false,true])await ownedDirectory(async root=>{
+    const bytes=utf8.encode('throw new Error("SQUIRE_GENERATED_CODE_EXECUTED");\n');
+    const f=await makeReviewFixture(root,{standard:true,operatorAdmitted,
+      stageFiles:[sourceFile('src/main.js',bytes),assetFile('assets/icon.bin',new Uint8Array([0,255,4]))],
+      baseFiles:[{path:'src/main.js',bytes:utf8.encode('old\n')},{path:'docs/keep.md',bytes:utf8.encode('keep\n')}]});
+    const before=await repoFileDigest(f.base.gitDir);
+    const result=await buildStandardProjectReviewCandidateNative(f.spec);
+    assert.equal(result.schema,'SQUIRE_PROJECT_REVIEW_CANDIDATE_V1');
+    assert.equal(result.human_review,'PENDING');assert.equal(result.task_correctness,'NOT_EVALUATED');
+    assert.deepEqual(result.changed_paths,['assets/icon.bin','src/main.js']);
+    const entries=readTreeMap(f.candidateDir,result.candidate_tree);
+    assert.deepEqual(readGitBlob(f.candidateDir,entries.get('src/main.js').oid),bytes);
+    const st=await fs.lstat(f.candidateDir),output=join(root,'review-package');
+    const packaged=await buildProjectCandidateReviewPackage({schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',
+      result,candidate_git_dir:f.candidateDir,candidate_git_identity:{dev:st.dev,ino:st.ino},
+      base_git_dir:f.base.gitDir,base_git_identity:f.base.identity,output_dir:output});
+    assert.equal(packaged.changed_path_count,2);
+    const verified=await verifyProjectCandidateReviewPackage(output);
+    assert.equal(verified.status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');
+    assert.equal(verified.manifest_sha256,packaged.manifest_sha256);
+    assert.deepEqual(await repoFileDigest(f.base.gitDir),before);
+    assert.equal(JSON.stringify(result).includes(root),false);
+  });
+});
+
+test('standard native intake accepts exact 1MiB and 50-path bounds with unchanged class caps',async()=>{
+  for(const maximum of ['bytes','paths'])await ownedDirectory(async root=>{
+    const files=maximum==='bytes'?[sourceFile('src/main.js',new Uint8Array(65536).fill(65)),
+      assetFile('assets/a.bin',new Uint8Array(524288)),assetFile('assets/b.bin',new Uint8Array(458752))]:
+      [...Array.from({length:25},(_,i)=>sourceFile(`src/a${i}.js`,'a')),
+        ...Array.from({length:20},(_,i)=>assetFile(`assets/a${i}.bin`,new Uint8Array([1]))),
+        ...Array.from({length:5},(_,i)=>docFile(`docs/a${i}.md`,'d'))];
+    const f=await makeReviewFixture(root,{standard:true,stageFiles:files});
+    assert.equal(f.stageAck.total_bytes,maximum==='bytes'?1048576:50);
+    assert.equal((await buildStandardProjectReviewCandidateNative(f.spec)).changed_paths.length,files.length);
+  });
+});
+
+test('standard native intake rejects a physically valid stage above its 1MiB receipt ceiling',async()=>{
+  await ownedDirectory(async root=>{
+    const f=await makeReviewFixture(root,{standard:true,rawReceipt:true,stageFiles:[
+      sourceFile('src/main.js',new Uint8Array(65536).fill(65)),
+      assetFile('assets/a.bin',new Uint8Array(524288)),assetFile('assets/b.bin',new Uint8Array(458753))]});
+    assert.equal(f.stageAck.total_bytes,1048577);
+    const calls=[],git=makeGitPort({calls});await rejectStandard(f,f.spec,{git});
+    assert.equal(calls.length,0);await assert.rejects(fs.lstat(f.snapshotDir),{code:'ENOENT'});
+  });
+});
+
+test('standard and large entry points reject wrong profiles and relabel-only mutants',async()=>{
+  for(const standard of [true,false])await ownedDirectory(async root=>{
+    const f=await makeReviewFixture(root,{standard,stageFiles:[sourceFile('src/main.js','safe bytes\n')]});
+    const wrong={...f.spec,schema:standard?'SQUIRE_PROJECT_REVIEW_IMPORT_V1':'SQUIRE_STANDARD_PROJECT_REVIEW_IMPORT_V1'};
+    if(standard)await expectRejectedWithoutPromotion(f,wrong);else await rejectStandard(f,wrong);
+    const envelope=structuredClone(f.receipt.envelope);
+    envelope.schema=standard?'SQUIRE3_NATIVE_PROJECT_LARGE_OBSERVATION_RESULT_RECEIPT_V1':'SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1';
+    const bytes=utf8.encode(JSON.stringify(envelope));
+    const mutation={...wrong,receipt_bytes:bytes,receipt_sha256:hashBytes(bytes),
+      snapshot_dir:join(root,'mutant-snapshot'),candidate_dir:join(root,'mutant.git')};
+    if(standard)await expectRejectedWithoutPromotion(f,mutation);else await rejectStandard(f,mutation);
+  });
+});
+
+test('standard receipt cap is exactly 256KiB and malformed bindings reject before promotion',async()=>{
+  await ownedDirectory(async root=>{
+    const f=await makeReviewFixture(root,{standard:true,stageFiles:[sourceFile('src/main.js','new\n')]});
+    const padded=new Uint8Array(262144).fill(32);padded.set(f.spec.receipt_bytes);
+    const exact={...f.spec,receipt_bytes:padded,receipt_sha256:hashBytes(padded)};
+    assert.equal((await buildStandardProjectReviewCandidateNative(exact)).status,'SOURCE_CANDIDATE_CREATED');
+    const tooLarge=new Uint8Array(262145).fill(32);tooLarge.set(f.spec.receipt_bytes);
+    await rejectStandard(f,{...candidateSpec(f,'overflow'),receipt_bytes:tooLarge,receipt_sha256:hashBytes(tooLarge)});
+    for(const [index,mutate] of [
+      e=>{e.result.staging.operation_acknowledgement='UNKNOWN';},
+      e=>{e.result.staging.manifest_sha256='f'.repeat(64);},
+      e=>{e.result.staging.file_count++;},
+      e=>{e.result.staging.stage_operation_id='stage-wrong';},
+      e=>{e.result.status='FAILED';},
+      e=>{e.result.staging.output_profile=LARGE_PROFILE;}
+    ].entries()){
+      const e=structuredClone(f.receipt.envelope);mutate(e);const bytes=utf8.encode(JSON.stringify(e));
+      await rejectStandard(f,{...candidateSpec(f,`bad-${index}`),receipt_bytes:bytes,receipt_sha256:hashBytes(bytes)});
+    }
+    await rejectStandard(f,{...candidateSpec(f,'digest'),receipt_sha256:'f'.repeat(64)});
+    await rejectStandard(f,{...candidateSpec(f,'path'),allowed_changes:[{path:'.git/config',original:null}]});
+    await rejectStandard(f,{...candidateSpec(f,'base'),base_tree:'f'.repeat(40)});
+  });
+});
+
+test('standard intake final rechecks catch stage and snapshot mutation while retaining partial output',async()=>{
+  for(const mutation of ['stage','snapshot'])await ownedDirectory(async root=>{
+    const f=await makeReviewFixture(root,{standard:true,stageFiles:[sourceFile('src/main.js','new\n')]});
+    const calls=[],git=makeGitPort({calls,faults:{writeBlob:async(_args,write)=>{
+      const oid=await write(),p=mutation==='stage'?join(f.stageDir,'src/main.js'):join(f.snapshotDir,'project/src/main.js');
+      await fs.chmod(p,0o600);await fs.writeFile(p,'mutated\n');await fs.chmod(p,0o400);return oid;
+    }}});
+    await rejectStandard(f,f.spec,{git});assert.equal(calls.filter(c=>c.name==='createRef').length,0);
+    assert.equal((await fs.lstat(f.candidateDir)).isDirectory(),true);
+  });
+});
+
+test('standard intake abort and sanitized I/O failures never promote or retry',async()=>{
+  for(const fault of ['abort','mkdir','close','symlink'])await ownedDirectory(async root=>{
+    const f=await makeReviewFixture(root,{standard:true,stageFiles:[sourceFile('src/main.js','new\n')]});
+    const controller=new AbortController(),calls=[];let fsPort=fixtureFs;
+    const git=makeGitPort({calls,faults:fault==='abort'?{writeBlob:async(_a,write)=>{
+      const oid=await write();controller.abort();return oid;}}:{}});
+    if(fault==='mkdir')fsPort={...fixtureFs,mkdir:async(p,...args)=>{
+      if(p===f.snapshotDir)throw new Error(`PRIVATE_SENTINEL ${root}`);return fs.mkdir(p,...args);}};
+    if(fault==='close')fsPort={...fixtureFs,open:async(...args)=>{
+      const h=await fs.open(...args);return {stat:()=>h.stat(),read:(...a)=>h.read(...a),writeFile:(...a)=>h.writeFile(...a),
+        close:async()=>{await h.close();throw new Error(`PRIVATE_SENTINEL ${root}`);}};}};
+    if(fault==='symlink'){
+      await fs.unlink(join(f.stageDir,'src/main.js'));await fs.symlink('/no/private/access',join(f.stageDir,'src/main.js'));
+    }
+    f.spec.signal=controller.signal;
+    const error=await rejectStandard(f,f.spec,{git,portsFs:fsPort,signal:controller.signal});
+    assert.equal(String(error).includes('PRIVATE_SENTINEL'),false);
+    assert.equal(calls.filter(c=>c.name==='createRef').length,0);
   });
 });
