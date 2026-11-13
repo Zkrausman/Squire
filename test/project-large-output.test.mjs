@@ -1290,23 +1290,40 @@ test('large foreground path accepts large envelope/source/stderr and records act
 test('large observation has no elapsed generation cutoff and starts its fixed closeout afterward',async()=>{
   await largeRunnerFixture(async root=>{
     const runtime=largeFakeRuntime(largeResultEnvelope(70000),{mode:'pending'});
+    const spawned=new Promise(resolve=>runtime.child.once('spawn',resolve));
     const pending=runDesktopCodingLargeObservationProjectTask(
       largeRunnerSpec(root),
       {clock:runtime.clock,shutdown:GENERATION_SHUTDOWN,
        abortSignal:runtime.controller.signal},
       largeRunnerPorts(runtime,{fs})
     );
-    for(let i=0;i<100&&!runtime.calls.length;i++){
-      await new Promise(resolve=>setImmediate(resolve));
+    let spawnGuard,finished=false;
+    try{
+      const guardedSpawn=new Promise(resolve=>{
+        spawnGuard=setTimeout(()=>resolve(false),55000);
+      });
+      const boundary=await Promise.race([
+        spawned.then(()=>true),
+        pending.then(()=>false,()=>false),
+        guardedSpawn
+      ]);
+      clearTimeout(spawnGuard);
+      assert.equal(boundary,true,'fake child did not spawn within the bounded guard');
+      assert.equal(runtime.calls.length,1);
+      runtime.advance(125000);
+      runtime.finish();finished=true;
+      const result=await pending;
+      assert.equal(result.status,'CANDIDATE_STAGED');
+      assert.equal(result.generation.record.process_exit.process_wall_ms,125000);
+      assert.equal(result.post_generation_closeout.limit_ms,20000);
+      assert.equal(runtime.timers.some(timer=>timer.delay===120000||timer.delay===140000),false);
+    }finally{
+      clearTimeout(spawnGuard);
+      if(!finished){
+        runtime.controller.abort();runtime.finish();
+        await pending.catch(()=>{});
+      }
     }
-    assert.equal(runtime.calls.length,1);
-    runtime.advance(125000);
-    runtime.finish();
-    const result=await pending;
-    assert.equal(result.status,'CANDIDATE_STAGED');
-    assert.equal(result.generation.record.process_exit.process_wall_ms,125000);
-    assert.equal(result.post_generation_closeout.limit_ms,20000);
-    assert.equal(runtime.timers.some(timer=>timer.delay===120000||timer.delay===140000),false);
   });
 });
 
