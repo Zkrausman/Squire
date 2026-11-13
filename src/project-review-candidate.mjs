@@ -54,6 +54,7 @@ const PROJECT_CLASSES=Object.freeze({
 });
 // Explicit internal profiles; callers cannot select or mutate these capabilities.
 const LARGE_IMPORT=Object.freeze({
+  specSchema:SPEC_SCHEMA,revisionSchema:'SQUIRE_PROJECT_REVIEW_REVISION_V1',
   receiptSchema:PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA,
   stageSchema:'squire4.large_project_stage_receipt.v1',
   exportSchema:'squire4.large_project_export_manifest.v1',
@@ -62,6 +63,7 @@ const LARGE_IMPORT=Object.freeze({
   verifyExport:verifyLargeProjectExport,large:true
 });
 const STANDARD_IMPORT=Object.freeze({
+  specSchema:STANDARD_SPEC_SCHEMA,revisionSchema:'SQUIRE_STANDARD_PROJECT_REVIEW_REVISION_V1',
   receiptSchema:'SQUIRE3_NATIVE_PROJECT_RESULT_RECEIPT_V1',
   stageSchema:'squire4.stage_receipt.v1',exportSchema:'squire4.export_manifest.v1',
   classes:Object.freeze({
@@ -223,10 +225,10 @@ function captureSpec(value,schema=SPEC_SCHEMA){
 }
 // A revision deliberately consumes an original producer candidate, not an
 // arbitrary revision chain. Its original receipt/stage are revalidated below.
-function captureRevisionSpec(value){
+function captureRevisionSpec(value,profile=LARGE_IMPORT){
   try{closed(value,['schema','original','prior_candidate','corrections'],[],'project_revision_spec');}catch{invalid();}
-  if(value.schema!=='SQUIRE_PROJECT_REVIEW_REVISION_V1')invalid();
-  const original=captureSpec(value.original);
+  if(value.schema!==profile.revisionSchema)invalid();
+  const original=captureSpec(value.original,profile.specSchema);
   const corrections=[];
   try{
     const prior=value.prior_candidate;
@@ -256,15 +258,15 @@ function captureRevisionSpec(value){
          typeof item.original.blob!=='string'||!SHA1.test(item.original.blob)||
          !Number.isSafeInteger(item.original.bytes)||item.original.bytes<0||item.original.bytes>524288||
          typeof item.original.sha256!=='string'||!SHA256.test(item.original.sha256))invalid();
-      const bytes=plainBytes(item.bytes_data,Math.min(524288,MAX_PROJECT_BYTES-total));
+      const bytes=plainBytes(item.bytes_data,Math.min(524288,profile.maxBytes-total));
       corrections.push(Object.freeze({path:item.path,original:Object.freeze({
         blob:item.original.blob,bytes:item.original.bytes,sha256:item.original.sha256
       }),bytes_data:bytes}));
-      total+=bytes.length;if(total>MAX_PROJECT_BYTES)invalid();
+      total+=bytes.length;if(total>profile.maxBytes)invalid();
     }
     if(new Set(corrections.map(item=>item.path)).size!==corrections.length)invalid();
     checkPathCollisions(corrections.map(item=>item.path));
-    return Object.freeze({schema:'SQUIRE_PROJECT_REVIEW_REVISION_V1',original,prior_candidate:priorCandidate,corrections:Object.freeze(corrections)});
+    return Object.freeze({schema:profile.revisionSchema,original,prior_candidate:priorCandidate,corrections:Object.freeze(corrections)});
   }catch(error){original.receipt_bytes.fill(0);for(const item of corrections)item.bytes_data.fill(0);throw error;}
 }
 
@@ -764,12 +766,12 @@ async function validatePriorCandidate(spec,ports,revision,baseEntries,snapshotFi
   const after=await lstat(ports,prior.git_dir);
   if(!stable(stat,after)||!statKind(after,'directory')||after.uid!==ports.uid||(after.mode&0o022)!==0)rejected();
 }
-function revisedSnapshotFiles(revision,snapshotFiles){
+function revisedSnapshotFiles(revision,snapshotFiles,profile){
   const counts={SOURCE:0,LOCAL_ASSET:0,DOC:0},totals={SOURCE:0,LOCAL_ASSET:0,DOC:0};
   let total=0;
   return snapshotFiles.map(file=>{
     const correction=revision.corrections.find(item=>item.path===file.path);
-    const caps=PROJECT_CLASSES[file.classification];
+    const caps=profile.classes[file.classification];
     let bytes=file.bytes_data;
     if(correction){
       if(correction.original.blob!==gitObjectId('blob',bytes)||
@@ -778,7 +780,7 @@ function revisedSnapshotFiles(revision,snapshotFiles){
       bytes=correction.bytes_data;
     }
     counts[file.classification]++;totals[file.classification]+=bytes.length;total+=bytes.length;
-    if((file.classification==='SOURCE'&&bytes.length===0)||bytes.length>caps.file||counts[file.classification]>caps.count||totals[file.classification]>caps.total||total>MAX_PROJECT_BYTES)rejected();
+    if((file.classification==='SOURCE'&&bytes.length===0)||bytes.length>caps.file||counts[file.classification]>caps.count||totals[file.classification]>caps.total||total>profile.maxBytes)rejected();
     return Object.freeze({...file,bytes_data:bytes,bytes:bytes.length,sha256:sha256(bytes)});
   });
 }
@@ -882,7 +884,7 @@ async function runImport(spec,ports,revision=null,profile=LARGE_IMPORT){
       await validatePriorCandidate(spec,ports,revision,originalEntries,snapshotFiles);
     }
     const overlay=revision
-      ?await deriveOverlay(spec,ports,base,revisedSnapshotFiles(revision,snapshotFiles))
+      ?await deriveOverlay(spec,ports,base,revisedSnapshotFiles(revision,snapshotFiles,profile))
       :originalOverlay;
     const finalEntries=mergeEntries(base,overlay);
     const changes=changedPaths(base.entries,finalEntries);
@@ -980,6 +982,23 @@ export async function buildProjectRevisionCandidate(spec,ports){
     revision=captureRevisionSpec(spec);
     capabilities=capturePorts(ports,revision.original.signal);
     return await runImport(revision.original,capabilities,revision);
+  }catch(error){
+    if(error instanceof ReviewCandidateError)throw error;
+    if(capabilities?.signal&&signalAborted(capabilities.signal))throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_ABORTED');
+    throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_REJECTED');
+  }finally{
+    revision?.original.receipt_bytes.fill(0);
+    for(const item of revision?.corrections??[])item.bytes_data.fill(0);
+  }
+}
+
+/** First explicitly supplied owner revision of a standard native candidate. */
+export async function buildStandardProjectRevisionCandidate(spec,ports){
+  let revision=null,capabilities=null;
+  try{
+    revision=captureRevisionSpec(spec,STANDARD_IMPORT);
+    capabilities=capturePorts(ports,revision.original.signal);
+    return await runImport(revision.original,capabilities,revision,STANDARD_IMPORT);
   }catch(error){
     if(error instanceof ReviewCandidateError)throw error;
     if(capabilities?.signal&&signalAborted(capabilities.signal))throw new ReviewCandidateError('PROJECT_REVIEW_CANDIDATE_ABORTED');
@@ -1251,6 +1270,14 @@ export async function buildProjectRevisionCandidateNative(spec){
   const captured=captureRevisionSpec(spec);
   const native=nativeArtifactCheckPorts(captured.original.signal);
   try{return await buildProjectRevisionCandidate(captured,{...native,signal:captured.original.signal});}
+  finally{captured.original.receipt_bytes.fill(0);for(const item of captured.corrections)item.bytes_data.fill(0);}
+}
+
+/** Fixed native standard revision adapter; fresh output only. */
+export async function buildStandardProjectRevisionCandidateNative(spec){
+  const captured=captureRevisionSpec(spec,STANDARD_IMPORT);
+  const native=nativeArtifactCheckPorts(captured.original.signal);
+  try{return await buildStandardProjectRevisionCandidate(captured,{...native,signal:captured.original.signal});}
   finally{captured.original.receipt_bytes.fill(0);for(const item of captured.corrections)item.bytes_data.fill(0);}
 }
 

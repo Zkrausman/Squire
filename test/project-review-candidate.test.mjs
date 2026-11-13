@@ -26,12 +26,14 @@ import {
 } from '../src/multifile-staging.mjs';
 import {
   buildStandardProjectReviewCandidate,buildStandardProjectReviewCandidateNative,
+  buildStandardProjectRevisionCandidate,buildStandardProjectRevisionCandidateNative,
   buildProjectReviewCandidate,
   buildProjectReviewCandidateNative,
   buildProjectRevisionCandidate,
   buildProjectRevisionCandidateNative
 } from '../src/project-review-candidate.mjs';
-import {buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage} from '../src/project-candidate-review-package.mjs';
+import {buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage,recordProjectCandidateDecision} from '../src/project-candidate-review-package.mjs';
+import {buildProjectRevisionReviewPackage,verifyProjectRevisionReviewPackage,recordProjectRevisionDecision,verifyProjectRevisionDecision} from '../src/project-revision-review-package.mjs';
 import {runProjectReviewCandidateCli} from '../bin/squire-project-review.mjs';
 
 const GIT='/usr/bin/git';
@@ -1496,12 +1498,12 @@ async function makeRevisionFixture(root,options={}){
       {path:'unchanged.sh',bytes:utf8.encode('inert executable-shaped bytes\n'),mode:'100755'}],
     operationId:'original',...options
   });
-  const priorResult=await buildProjectReviewCandidateNative(fixture.spec);
+  const priorResult=await (options.standard?buildStandardProjectReviewCandidateNative:buildProjectReviewCandidateNative)(fixture.spec);
   const priorStat=await fs.lstat(fixture.candidateDir);
   const first=fixture.stageFiles[0];
   const firstBytes=asBytes(first.content);
   const revision={
-    schema:'SQUIRE_PROJECT_REVIEW_REVISION_V1',
+    schema:options.standard?'SQUIRE_STANDARD_PROJECT_REVIEW_REVISION_V1':'SQUIRE_PROJECT_REVIEW_REVISION_V1',
     original:{...candidateSpec(fixture,'revision'),operation_id:'revision'},
     prior_candidate:{git_dir:fixture.candidateDir,identity:{dev:priorStat.dev,ino:priorStat.ino},
       operation_id:fixture.spec.operation_id,commit:priorResult.candidate_commit,tree:priorResult.candidate_tree},
@@ -1518,12 +1520,12 @@ async function revisionInputsDigest(fixture){
     snapshot:await repoFileDigest(fixture.snapshotDir)
   };
 }
-async function rejectRevision(fixture,revision=fixture.revision,{git,fsPort=fixtureFs,native=false}={}){
+async function rejectRevision(fixture,revision=fixture.revision,{git,fsPort=fixtureFs,native=false,standard=false}={}){
   const before=await revisionInputsDigest(fixture);
   let error;
   try{
-    if(native)await buildProjectRevisionCandidateNative(revision);
-    else await buildProjectRevisionCandidate(revision,testPorts(git??makeGitPort(),{fsPort,
+    if(native)await (standard?buildStandardProjectRevisionCandidateNative:buildProjectRevisionCandidateNative)(revision);
+    else await (standard?buildStandardProjectRevisionCandidate:buildProjectRevisionCandidate)(revision,testPorts(git??makeGitPort(),{fsPort,
       signal:revision.original.signal}));
   }catch(value){error=value;}
   assert.ok(error,'invalid revision was acknowledged');
@@ -2060,5 +2062,190 @@ test('standard intake abort and sanitized I/O failures never promote or retry',a
     const error=await rejectStandard(f,f.spec,{git,portsFs:fsPort,signal:controller.signal});
     assert.equal(String(error).includes('PRIVATE_SENTINEL'),false);
     assert.equal(calls.filter(c=>c.name==='createRef').length,0);
+  });
+});
+
+
+const standardRevisionCorrection=(fixture,path,bytes)=>{
+  const previous=asBytes(fixture.stageFiles.find(file=>file.path===path).content);
+  return {path,original:{blob:sha1Git('blob',previous),bytes:previous.length,sha256:hashBytes(previous)},
+    bytes_data:asBytes(bytes)};
+};
+const standardRevisionSpec=(fixture,suffix,corrections)=>({...fixture.revision,
+  original:{...candidateSpec(fixture,`standard-revision-${suffix}`),operation_id:`standard-revision-${suffix}`},corrections});
+const rejectStandardRevision=(f,r=f.revision,options={})=>rejectRevision(f,r,{...options,standard:true});
+
+test('standard revision feeds existing two-view review and explicit synthetic decisions',async()=>{
+  await ownedDirectory(async root=>{
+    const baseRestore=utf8.encode('base restored bytes\n');
+    const f=await makeRevisionFixture(root,{standard:true,
+      stageFiles:[sourceFile('src/main.js','original main\n'),sourceFile('src/restore.js','original restore\n'),
+        sourceFile('src/unchanged.js','unchanged original\n'),assetFile('assets/icon.bin',new Uint8Array([0,255,1]))],
+      baseFiles:[{path:'src/main.js',bytes:utf8.encode('base main\n')},
+        {path:'src/restore.js',bytes:baseRestore},{path:'src/unchanged.js',bytes:utf8.encode('base unchanged\n')}]});
+    const before=await revisionInputsDigest(f);
+    const corrections=[standardRevisionCorrection(f,'src/main.js','owner corrected\n'),
+      standardRevisionCorrection(f,'src/restore.js',baseRestore),
+      standardRevisionCorrection(f,'assets/icon.bin',new Uint8Array([0,255,2]))];
+    const revision=standardRevisionSpec(f,'positive',corrections);
+    const revised=await buildStandardProjectRevisionCandidateNative(revision);
+    assert.equal(revised.schema,'SQUIRE_PROJECT_REVISION_CANDIDATE_V1');
+    assert.equal(revised.correction_origin,'OPERATOR_SUPPLIED');assert.equal(revised.human_review,'PENDING');
+    assert.deepEqual(revised.revision_of,{commit:f.priorResult.candidate_commit,tree:f.priorResult.candidate_tree});
+    assert.equal(revised.receipt_sha256,f.priorResult.receipt_sha256);
+    assert.equal(revised.stage_manifest_sha256,f.priorResult.stage_manifest_sha256);
+    assert.deepEqual(await revisionInputsDigest(f),before);
+    const identity=async dir=>{const st=await fs.lstat(dir);return {dev:st.dev,ino:st.ino};};
+    const originalDir=join(root,'original-review');
+    const originalPackage=await buildProjectCandidateReviewPackage({schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',
+      result:f.priorResult,candidate_git_dir:f.candidateDir,candidate_git_identity:await identity(f.candidateDir),
+      base_git_dir:f.base.gitDir,base_git_identity:f.base.identity,output_dir:originalDir});
+    const priorDir=join(root,'synthetic-prior-decision');
+    const prior=await recordProjectCandidateDecision(originalDir,{
+      schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1',decision_id:'synthetic-prior',reviewer_label:'synthetic-fixture',
+      review_package_sha256:originalPackage.manifest_sha256,base_commit:f.base.commit,base_tree:f.base.tree,
+      candidate_commit:f.priorResult.candidate_commit,candidate_tree:f.priorResult.candidate_tree,
+      choice:'REVISE',attestations:[]},priorDir);
+    const output=join(root,'revision-review');
+    const built=await buildProjectRevisionReviewPackage({schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1',
+      original_result:f.priorResult,revised_result:revised,
+      base_git_dir:f.base.gitDir,base_git_identity:f.base.identity,
+      original_git_dir:f.candidateDir,original_git_identity:await identity(f.candidateDir),
+      revised_git_dir:revision.original.candidate_dir,revised_git_identity:await identity(revision.original.candidate_dir),
+      output_dir:output,original_package:{dir:originalDir,manifest_sha256:originalPackage.manifest_sha256},
+      prior_decisions:[{dir:priorDir,file_sha256:prior.decision_sha256}],selected_decision_id:'synthetic-prior'});
+    const manifest=JSON.parse(await fs.readFile(join(output,'revision-review-manifest.json')));
+    assert.equal(built.base_to_revised_count,3);assert.equal(built.original_to_revised_count,3);
+    assert.equal(manifest.original_to_revised.find(x=>x.path==='src/restore.js').classification,'RESTORED_BASE');
+    assert.ok(manifest.base_to_revised.some(x=>x.path==='src/unchanged.js'));
+    assert.equal((await verifyProjectRevisionReviewPackage(output)).manifest_sha256,built.manifest_sha256);
+    const attestations=['base_to_revised','original_to_revised'].flatMap(view=>manifest[view].map(item=>({
+      view,path:item.path,old_sha256:item.old?.sha256??null,new_sha256:item.new.sha256,
+      binary_inspected:item.binary_review_required})));
+    const decision={schema:'SQUIRE_PROJECT_REVISION_DECISION_V1',decision_id:'synthetic-fresh',reviewer_label:'synthetic-fixture',
+      revision_package_sha256:built.manifest_sha256,original_package_sha256:originalPackage.manifest_sha256,
+      prior_revise_decision_sha256:prior.decision_sha256,base_commit:manifest.base_commit,base_tree:manifest.base_tree,
+      original_commit:manifest.original_commit,original_tree:manifest.original_tree,
+      revised_commit:manifest.revised_commit,revised_tree:manifest.revised_tree,choice:'ACCEPT',attestations};
+    const decisionDir=join(root,'synthetic-new-decision');
+    const recorded=await recordProjectRevisionDecision(output,decision,decisionDir);
+    assert.equal((await verifyProjectRevisionDecision(output,decisionDir,recorded.decision_sha256)).choice,'ACCEPT');
+    await assert.rejects(()=>recordProjectRevisionDecision(output,{...decision,decision_id:'missing-view',
+      attestations:attestations.slice(1)},join(root,'missing-view')));
+    assert.deepEqual(await revisionInputsDigest(f),before);
+  });
+});
+
+test('standard revision enforces actual class limits and full project bytes including unchanged paths',async()=>{
+  await ownedDirectory(async root=>{
+    const f=await makeRevisionFixture(root,{standard:true,stageFiles:[sourceFile('src/main.js','old'),
+      assetFile('assets/a.bin',new Uint8Array([1])),assetFile('assets/b.bin',new Uint8Array([2]))]});
+    const exact=standardRevisionSpec(f,'exact',[standardRevisionCorrection(f,'src/main.js','n'),
+      standardRevisionCorrection(f,'assets/a.bin',new Uint8Array(524288)),
+      standardRevisionCorrection(f,'assets/b.bin',new Uint8Array(524287))]);
+    assert.equal((await buildStandardProjectRevisionCandidateNative(exact)).status,'SOURCE_REVISION_CANDIDATE_CREATED');
+    const fullOverflow=standardRevisionSpec(f,'full-overflow',[
+      standardRevisionCorrection(f,'assets/a.bin',new Uint8Array(524288)),
+      standardRevisionCorrection(f,'assets/b.bin',new Uint8Array(524288))]);
+    const calls=[],git=makeGitPort({calls});await rejectStandardRevision(f,fullOverflow,{git});
+    assert.equal(calls.some(c=>c.name==='initBare'),false,'full revised ceiling must precede candidate writes');
+    const captureOverflow=standardRevisionSpec(f,'capture-overflow',exact.corrections.map(item=>
+      item.path==='src/main.js'?standardRevisionCorrection(f,'src/main.js','nn'):item));
+    await rejectStandardRevision(f,captureOverflow);
+    await rejectStandardRevision(f,standardRevisionSpec(f,'source-overflow',[
+      standardRevisionCorrection(f,'src/main.js',new Uint8Array(65537).fill(65))]));
+    await rejectStandardRevision(f,standardRevisionSpec(f,'asset-overflow',[
+      standardRevisionCorrection(f,'assets/a.bin',new Uint8Array(524289))]));
+    await rejectStandardRevision(f,standardRevisionSpec(f,'source-empty',[
+      standardRevisionCorrection(f,'src/main.js',new Uint8Array())]));
+    assert.equal((await buildStandardProjectRevisionCandidateNative(standardRevisionSpec(f,'source-exact',[
+      standardRevisionCorrection(f,'src/main.js',new Uint8Array(65536).fill(65))]))).status,'SOURCE_REVISION_CANDIDATE_CREATED');
+  });
+  await ownedDirectory(async root=>{
+    const f=await makeRevisionFixture(root,{standard:true,
+      stageFiles:Array.from({length:9},(_,i)=>sourceFile(`src/a${i}.js`,'a'))});
+    const atCap=Array.from({length:8},(_,i)=>standardRevisionCorrection(f,`src/a${i}.js`,new Uint8Array(65536).fill(65)));
+    // Nine one-byte SOURCEs:8*64KiB+one unchanged byte exceeds512KiB.
+    await rejectStandardRevision(f,standardRevisionSpec(f,'source-aggregate-over',atCap));
+    const exact=atCap.map((x,i)=>i===7?{...x,bytes_data:new Uint8Array(65535).fill(65)}:x);
+    assert.equal((await buildStandardProjectRevisionCandidateNative(standardRevisionSpec(f,'source-aggregate-exact',exact))).status,
+      'SOURCE_REVISION_CANDIDATE_CREATED');
+  });
+});
+
+test('standard revision accepts fifty corrections and preserves larger unchanged base preimages',async()=>{
+  await ownedDirectory(async root=>{
+    const files=[...Array.from({length:25},(_,i)=>sourceFile(`src/a${i}.js`,'a')),
+      ...Array.from({length:20},(_,i)=>assetFile(`assets/a${i}.bin`,new Uint8Array([1]))),
+      ...Array.from({length:5},(_,i)=>docFile(`docs/a${i}.md`,'d'))];
+    const f=await makeRevisionFixture(root,{standard:true,stageFiles:files});
+    const corrections=files.map(file=>standardRevisionCorrection(f,file.path,
+      file.classification==='LOCAL_ASSET'?new Uint8Array([2]):'z'));
+    const calls=[],git=makeGitPort({calls});
+    await rejectStandardRevision(f,standardRevisionSpec(f,'fifty-one',[...corrections,corrections[0]]),{git});
+    assert.equal(calls.length,0,'correction count overflow must reject before Git I/O');
+    const revised=await buildStandardProjectRevisionCandidateNative(standardRevisionSpec(f,'fifty',corrections));
+    assert.equal(revised.revised_blobs.length,50);
+  });
+  await ownedDirectory(async root=>{
+    const f=await makeRevisionFixture(root,{standard:true,
+      stageFiles:[sourceFile('src/main.js','new')],baseFiles:[{path:'src/main.js',bytes:new Uint8Array(2*1048576)}]});
+    assert.equal((await buildStandardProjectRevisionCandidateNative(f.revision)).status,'SOURCE_REVISION_CANDIDATE_CREATED');
+  });
+});
+
+test('standard revision rejects cross-profile, witness, identity, chain and scope mutants',async()=>{
+  await ownedDirectory(async root=>{
+    const f=await makeRevisionFixture(root,{standard:true});
+    for(const [i,mutate] of [
+      r=>{r.schema='SQUIRE_PROJECT_REVIEW_REVISION_V1';},
+      r=>{r.original.schema='SQUIRE_PROJECT_REVIEW_IMPORT_V1';},
+      r=>{r.prior_candidate.identity.ino++;},
+      r=>{r.prior_candidate.tree='f'.repeat(40);},
+      r=>{r.prior_candidate.commit='f'.repeat(40);},
+      r=>{r.prior_candidate.operation_id='wrong-ref';},
+      r=>{r.corrections[0].original.sha256='f'.repeat(64);},
+      r=>{r.corrections[0].bytes_data=asBytes(f.stageFiles[0].content);},
+      r=>{r.corrections[0].path='src/outside.js';},
+      r=>{r.original.receipt_sha256='f'.repeat(64);}
+    ].entries()){
+      const r=standardRevisionSpec(f,`mutant-${i}`,f.revision.corrections.map(c=>({...c,original:{...c.original}})));
+      r.prior_candidate={...r.prior_candidate,identity:{...r.prior_candidate.identity}};mutate(r);
+      await rejectStandardRevision(f,r);
+    }
+    await assert.rejects(()=>buildProjectRevisionCandidateNative(f.revision));
+    const revised=await buildStandardProjectRevisionCandidateNative(f.revision);
+    const st=await fs.lstat(f.revision.original.candidate_dir);
+    const chain=standardRevisionSpec(f,'chain',f.revision.corrections);
+    chain.prior_candidate={git_dir:f.revision.original.candidate_dir,identity:{dev:st.dev,ino:st.ino},
+      operation_id:revised.operation_id,commit:revised.candidate_commit,tree:revised.candidate_tree};
+    await rejectStandardRevision(f,chain);
+  });
+  await ownedDirectory(async root=>{
+    const f=await makeRevisionFixture(root);
+    await rejectStandardRevision(f,{...f.revision,schema:'SQUIRE_STANDARD_PROJECT_REVIEW_REVISION_V1'});
+  });
+});
+
+test('standard revision abort, final prior mutation and Git I/O errors withhold promotion',async()=>{
+  for(const failure of ['abort','prior-ref','io'])await ownedDirectory(async root=>{
+    const f=await makeRevisionFixture(root,{standard:true});const controller=new AbortController();
+    f.revision.original.signal=controller.signal;
+    let calls=0;
+    const git=makeGitPort({faults:{writeBlob:async(_args,write)=>{
+      calls++;const oid=await write();
+      if(failure==='abort')controller.abort();
+      if(failure==='prior-ref')runGit(f.candidateDir,['update-ref',`refs/heads/candidate-${f.spec.operation_id}`,f.base.commit]);
+      if(failure==='io')throw new Error(`PRIVATE_ERROR ${root}`);
+      return oid;
+    }}});
+    if(failure==='prior-ref'){
+      // The deliberate fault changes a synthetic prior ref; assert rejection
+      // directly rather than asking the preservation helper to bless the mutation.
+      await assert.rejects(()=>buildStandardProjectRevisionCandidate(f.revision,testPorts(git,{signal:controller.signal})),
+        e=>e.code==='PROJECT_REVIEW_CANDIDATE_REJECTED'&&!String(e).includes(root));
+      assert.equal(readRef(f.revision.original.candidate_dir,'refs/heads/candidate-revision'),null);
+    }else await rejectStandardRevision(f,f.revision,{git});
+    assert.equal(calls,failure==='prior-ref'?3:1);
   });
 });
