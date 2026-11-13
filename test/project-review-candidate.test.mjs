@@ -2252,7 +2252,7 @@ test('standard revision abort, final prior mutation and Git I/O errors withhold 
 
 test('standard CLI builds a disposable candidate through the standard native adapter',async()=>{
   await ownedDirectory(async root=>{
-    const f=await makeReviewFixture(root,{standard:true});
+    const f=await makeReviewFixture(root,{standard:true,stageFiles:[sourceFile('src/main.js','synthetic candidate source\n')]});
     const receiptPath=join(root,'receipt.json'),specPath=join(root,'spec.json');
     const {receipt_bytes,...fields}=f.spec;
     await fs.writeFile(receiptPath,receipt_bytes,{mode:0o400});
