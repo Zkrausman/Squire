@@ -1,4 +1,5 @@
 import test from 'node:test';
+import * as projectConfiguration from '../src/project-configuration.mjs';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {join,dirname} from 'node:path';
@@ -116,4 +117,12 @@ test('prospective desktop and Codex launcher cannot alias host Node identity',as
 });
 test('desktop source inputs retain exact immutable baseline public bytes without pretending current qualification',async()=>{
  const {DESKTOP_BASE_SOURCE_PINS}=await import('../src/desktop-profile.mjs');assert.equal(DESKTOP_BASE_SOURCE_PINS.length,9);for(const pin of DESKTOP_BASE_SOURCE_PINS){const b=await readBaseline(pin.path);assert.equal(b.length,pin.bytes);assert.equal(hash(b),pin.sha256);}assert.notEqual(hash(new Uint8Array(await fs.readFile(join(source,'src/project-task.mjs')))),DESKTOP_BASE_SOURCE_PINS.find(x=>x.path==='src/project-task.mjs').sha256);
+});
+
+test('project admission validation rejects a valid source-only desktop configuration',async()=>{
+ const validate=projectConfiguration.validateProjectCodexAdmission;assert.equal(typeof validate,'function');
+ const a=fakePreparation();await prepareProjectCodexTask(a.root,'a'.repeat(40),request,a.inputs,a.ports);
+ const bytes=a.map.get(join(a.root,'config.json')),config=validateProjectCodexConfig(JSON.parse(decode(bytes)));
+ const admission={provider_id:'native_codex',operator_receipt:authorization.operator_receipt,config_sha256:hash(bytes),job_id:config.job_id,scope:config.scope,project_admitted:true,preflight:{evidence_receipt:'/synthetic/preflight'}};
+ assert.throws(()=>validate(admission,bytes),e=>e.field==='desktop_native_disabled');
 });

@@ -138,24 +138,31 @@ export function requireDesktopCodegenAdmission(bundle,c,configBytes){
   admittedJobs.add(c.job_id);admittedScopes.add(c.scope);
   return admission;
 }
-export function requireProjectCodexAdmission(bundle,c,bytes){
-  c=validateProjectCodexConfig(c);if(c.runtime_target===DESKTOP_TARGET)fail('desktop_native_disabled');bundle=snapshotReceiptData(bundle);
+function projectAdmissionBinding(bundle,c,bytes){
+  if(c.runtime_target===DESKTOP_TARGET)fail('desktop_native_disabled');
+  bundle=snapshotReceiptData(bundle);
   closed(bundle,['provider_id','operator_receipt','config_sha256','job_id','scope','project_admitted','preflight'],[],'project_admission');closed(bundle.preflight,['evidence_receipt'],[],'project_preflight');
   if(bundle.provider_id!=='native_codex'||bundle.operator_receipt!==c.authorization.operator_receipt||bundle.config_sha256!==hash(bytes)||bundle.job_id!==c.job_id||bundle.scope!==c.scope||bundle.project_admitted!==true||!absolute(bundle.preflight.evidence_receipt))fail('project_admission');
-  if(admittedJobs.has(c.job_id)||admittedScopes.has(c.scope))throw Error('NATIVE_OPERATION_ALREADY_CONSUMED');admittedJobs.add(c.job_id);admittedScopes.add(c.scope);
   return Object.freeze({...bundle,preflight:Object.freeze({...bundle.preflight})});
+}
+// Pure project-only binding check: no I/O, preflight observation, token consumption
+// or native authority. The exact supplied config bytes are validated and hashed.
+export function validateProjectCodexAdmission(bundle,configBytes){
+  const c=validateProjectCodexConfig(parseReceiptJson(configBytes));
+  return projectAdmissionBinding(bundle,c,configBytes);
+}
+export function requireProjectCodexAdmission(bundle,c,bytes){
+  c=validateProjectCodexConfig(c);
+  const admission=projectAdmissionBinding(bundle,c,bytes);
+  if(admittedJobs.has(c.job_id)||admittedScopes.has(c.scope))throw Error('NATIVE_OPERATION_ALREADY_CONSUMED');admittedJobs.add(c.job_id);admittedScopes.add(c.scope);
+  return admission;
 }
 // Pure binding check only: no admission token consumption or authority is supplied here.
 export function validateProjectReceiptDestination(value,configBytes,admission){
   const c=validateProjectCodexConfig(parseReceiptJson(configBytes));
   if(c.runtime_target===DESKTOP_TARGET)fail('desktop_native_disabled');
-  const bundle=snapshotReceiptData(admission),descriptor=snapshotReceiptData(value);
-  closed(bundle,['provider_id','operator_receipt','config_sha256','job_id','scope','project_admitted','preflight'],[],'project_admission');
-  closed(bundle.preflight,['evidence_receipt'],[],'project_preflight');
-  const config_sha256=hash(configBytes);
-  if(bundle.provider_id!=='native_codex'||bundle.operator_receipt!==c.authorization.operator_receipt||
-     bundle.config_sha256!==config_sha256||bundle.job_id!==c.job_id||bundle.scope!==c.scope||
-     bundle.project_admitted!==true||!absolute(bundle.preflight.evidence_receipt))fail('project_admission');
+  projectAdmissionBinding(admission,c,configBytes);
+  const descriptor=snapshotReceiptData(value),config_sha256=hash(configBytes);
   closed(descriptor,['schema','config_sha256','job_id','scope','destination','source_pins'],[],'project_receipt_destination');
   if(descriptor.schema!==PROJECT_RECEIPT_DESTINATION_SCHEMA||descriptor.config_sha256!==config_sha256||
      descriptor.job_id!==c.job_id||descriptor.scope!==c.scope)fail('project_receipt_binding');

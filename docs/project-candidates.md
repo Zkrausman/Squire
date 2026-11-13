@@ -117,6 +117,18 @@ requested-on-request/reported-Never mismatch remains unexplained. Admission
 tokens are consumed in memory; no reset/reuse/retry
 or durable recovery is supplied. This source approval grants no actual launch.
 
+For a prelaunch binding check, use
+`validateProjectCodexAdmission(admission, configBytes)` from
+`src/project-configuration.mjs`. It validates the exact configuration bytes and
+project-specific `project_admitted` shape and returns a frozen copy of the
+binding. The generic `fix17_paths_admitted` shape does not satisfy this API.
+Validation is repeatable and does not consume an admission token; a subsequent
+`requireProjectCodexAdmission` still consumes the job and scope once. The pure
+check reads no files, observes no allowance or effective permissions, and
+launches nothing. It supplies no native authority, retry permission or proof of
+process settlement. Receipt-destination validation uses the same project
+binding checks.
+
 The optional receipt-saving shape is
 `--run-admitted-save-receipt <config.json> <admission.json> <destination.json> <destination-sha256>`.
 It uses a separately hash-bound destination descriptor and passes the original
