@@ -255,5 +255,43 @@ cancellation and partial-output rules apply. The result retains
 review-package and portable-snapshot APIs subject to their own checks. It is a
 source candidate with human review pending and correctness unevaluated; an
 external functional grade does not select an owner decision, authorize a
-merge or establish native acceptance. First-owner-revision intake remains
-outside this standard entry point. No generated source is executed.
+merge or establish native acceptance. First-owner revisions use the separate standard revision APIs below. No
+generated source is executed.
+
+
+## First owner revision of a standard candidate
+
+`buildStandardProjectRevisionCandidate(spec, ports)` and
+`buildStandardProjectRevisionCandidateNative(spec)` accept a closed
+`SQUIRE_STANDARD_PROJECT_REVIEW_REVISION_V1` specification. Fields are
+`original`, `prior_candidate` and `corrections`, matching the existing revision
+API. The `original` specification must use
+`SQUIRE_STANDARD_PROJECT_REVIEW_IMPORT_V1` and fresh output roots with a new
+operation ID. The prior store, commit, tree, base parent and original standard
+receipt/stage are reverified. Revision chains are excluded.
+
+Each correction supplies an exact declared path, its previous blob/byte-count/
+SHA-256 witness and caller-owned `bytes_data`. There are one to 50 corrections,
+confined to the original project's declared paths. No-op, deletion, rename,
+empty SOURCE, unsafe path or wrong witness rejects. Input capture permits at
+most 524,288 bytes per correction and 1,048,576 bytes in total. After the stage
+classifications are known, each corrected file and the complete revised project
+must satisfy the standard class limits and the 1,048,576-byte project ceiling,
+including unchanged files. A SOURCE correction therefore remains at most
+65,536 bytes. These project limits do not lower the existing unrelated
+base/preimage limits.
+
+The result remains `SQUIRE_PROJECT_REVISION_CANDIDATE_V1`, with exact
+`revision_of` and `revised_blobs` witnesses, the original base parent and
+receipt/stage digests, and `correction_origin: OPERATOR_SUPPLIED`. It reports
+human review pending and task correctness unevaluated. The old candidate,
+source stage, packages and decisions are preserved; a fresh partial output is
+retained on failure without acknowledgement or retry.
+
+The [revision review package](project-revision-review-package.md) can consume
+the standard original/revision pair under its own source and size checks. It
+requires an explicitly selected prior `REVISE` decision and preserves both
+base-to-revised and original-to-revised views. Its fresh decision is explicitly
+supplied by the caller; creating a revision selects no decision and grants no
+integration, execution or disclosure authority. This additive API does not
+change the large-profile revision API or the existing CLI.
