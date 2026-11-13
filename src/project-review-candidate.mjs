@@ -1290,7 +1290,7 @@ function cliSpec(value){
   return value.receipt_path;
 }
 function captureCliPorts(value){
-  const keys=['readReceiptBytes','readCorrectionBytes','build','revise','stdout','stderr'];
+  const keys=['readReceiptBytes','readCorrectionBytes','build','revise','buildStandard','reviseStandard','stdout','stderr'];
   try{closed(value,[],keys,'project_review_cli_ports');}catch{invalid();}
   const output=key=>{
     const stream=value[key]??process[key];
@@ -1301,15 +1301,21 @@ function captureCliPorts(value){
   const correctionMethod=value.readCorrectionBytes??readCorrectionBytes;
   const buildMethod=value.build??buildProjectReviewCandidateNative;
   const reviseMethod=value.revise??buildProjectRevisionCandidateNative;
+  const standardBuild=value.buildStandard??buildStandardProjectReviewCandidateNative;
+  const standardRevise=value.reviseStandard??buildStandardProjectRevisionCandidateNative;
   if(typeof readMethod!=='function'||types.isProxy(readMethod)||
      typeof buildMethod!=='function'||types.isProxy(buildMethod)||
      typeof reviseMethod!=='function'||types.isProxy(reviseMethod)||
-     typeof correctionMethod!=='function'||types.isProxy(correctionMethod))invalid();
+     typeof correctionMethod!=='function'||types.isProxy(correctionMethod)||
+     typeof standardBuild!=='function'||types.isProxy(standardBuild)||
+     typeof standardRevise!=='function'||types.isProxy(standardRevise))invalid();
   return Object.freeze({
     read:(...args)=>Reflect.apply(readMethod,value,args),
     readCorrection:(...args)=>Reflect.apply(correctionMethod,value,args),
     build:(...args)=>Reflect.apply(buildMethod,value,args),
     revise:(...args)=>Reflect.apply(reviseMethod,value,args),
+    buildStandard:(...args)=>Reflect.apply(standardBuild,value,args),
+    reviseStandard:(...args)=>Reflect.apply(standardRevise,value,args),
     stdout:output('stdout'),stderr:output('stderr')
   });
 }
@@ -1365,8 +1371,9 @@ function validateRevisedBlobs(value){
   }
 }
 
-async function revisionCli(value,cli){
+async function revisionCli(value,cli,profile=LARGE_IMPORT){
   try{closed(value,['schema','original','prior_candidate','corrections'],[],'revision_cli_spec');}catch{invalid();}
+  if(!profile.large&&(value.schema!==profile.revisionSchema||value.original?.schema!==profile.specSchema))invalid();
   const receiptPath=cliSpec(value.original),corrections=[];
   let receipt=null,total=0;
   try{
@@ -1374,13 +1381,14 @@ async function revisionCli(value,cli){
     for(const item of denseArray(value.corrections,50)){
       try{closed(item,['path','original','content_path'],[],'revision_cli_correction');}catch{invalid();}
       if(!absolutePath(item.content_path))invalid();
-      const remaining=Math.min(524288,MAX_PROJECT_BYTES-total);
+      const remaining=Math.min(524288,profile.maxBytes-total);
       const bytes=plainBytes(await cli.readCorrection(item.content_path,remaining),remaining);
       corrections.push({path:item.path,original:item.original,bytes_data:bytes});
-      total+=bytes.length;if(total>MAX_PROJECT_BYTES)invalid();
+      total+=bytes.length;if(total>profile.maxBytes)invalid();
     }
     const original={...value.original,receipt_bytes:receipt};delete original.receipt_path;
-    const result=await cli.revise({schema:value.schema,original,prior_candidate:value.prior_candidate,corrections});
+    const revise=profile.large?cli.revise:cli.reviseStandard;
+    const result=await revise({schema:value.schema,original,prior_candidate:value.prior_candidate,corrections});
     try{closed(result,[
       'schema','status','operation_id','candidate_ref','base_commit','base_tree',
       'candidate_commit','candidate_tree','receipt_sha256','stage_manifest_sha256',
@@ -1407,7 +1415,11 @@ async function revisionCli(value,cli){
 
 export async function runProjectReviewCandidateCli(argv,ports={}){
   const cli=captureCliPorts(ports);
-  if(!Array.isArray(argv)||argv.length!==2||!['--build','--revise'].includes(argv[0])||
+  if(Array.isArray(argv)&&argv.length===1&&argv[0]==='--help'){
+    cli.stdout('Usage: node bin/squire-project-review.mjs <--build|--revise|--build-standard|--revise-standard> <spec.json>\n');
+    return 0;
+  }
+  if(!Array.isArray(argv)||argv.length!==2||!['--build','--revise','--build-standard','--revise-standard'].includes(argv[0])||
      typeof argv[1]!=='string'||!absolutePath(argv[1])){
     cli.stderr('Usage: node bin/squire-project-review.mjs --build <spec.json>\n');
     return 2;
@@ -1417,11 +1429,14 @@ export async function runProjectReviewCandidateCli(argv,ports={}){
     const specBytes=plainBytes(await cli.read(argv[1],MAX_SPEC_BYTES),MAX_SPEC_BYTES);
     try{
       const value=parseReceiptJson(specBytes);
-      if(argv[0]==='--revise')return await revisionCli(value,cli);
+      if(argv[0]==='--revise'||argv[0]==='--revise-standard')return await revisionCli(value,cli,
+        argv[0]==='--revise-standard'?STANDARD_IMPORT:LARGE_IMPORT);
+      if(argv[0]==='--build-standard'&&value.schema!==STANDARD_SPEC_SCHEMA)invalid();
       const receiptPath=cliSpec(value);
       receipt=plainBytes(await cli.read(receiptPath,MAX_RECEIPT_BYTES),MAX_RECEIPT_BYTES);
       const mutable={...value,receipt_bytes:receipt};delete mutable.receipt_path;
-      const result=await cli.build(mutable);
+      const build=argv[0]==='--build-standard'?cli.buildStandard:cli.build;
+      const result=await build(mutable);
       const changedPathCount=validateCliResult(result);
       cli.stdout([
         'SOURCE_CANDIDATE_CREATED',

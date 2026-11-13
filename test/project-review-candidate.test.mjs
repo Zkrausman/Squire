@@ -2249,3 +2249,39 @@ test('standard revision abort, final prior mutation and Git I/O errors withhold 
     assert.equal(calls,failure==='prior-ref'?3:1);
   });
 });
+
+test('standard CLI builds a disposable candidate through the standard native adapter',async()=>{
+  await ownedDirectory(async root=>{
+    const f=await makeReviewFixture(root,{standard:true});
+    const receiptPath=join(root,'receipt.json'),specPath=join(root,'spec.json');
+    const {receipt_bytes,...fields}=f.spec;
+    await fs.writeFile(receiptPath,receipt_bytes,{mode:0o400});
+    await fs.writeFile(specPath,JSON.stringify({...fields,receipt_path:receiptPath}),{mode:0o400});
+    const stdout=[],stderr=[];
+    assert.equal(await runProjectReviewCandidateCli(['--build-standard',specPath],{
+      stdout:{write:s=>stdout.push(s)},stderr:{write:s=>stderr.push(s)}}),0);
+    assert.deepEqual(stderr,[]);assert.match(stdout.join(''),/^SOURCE_CANDIDATE_CREATED\n/);
+    assert.match(readRef(f.candidateDir,`refs/heads/candidate-${f.spec.operation_id}`),/^[a-f0-9]{40}$/);
+    assert.equal(stdout.join('').includes(root),false);
+  });
+});
+
+test('standard CLI revisions preserve prior inputs and create a fresh candidate',async()=>{
+  await ownedDirectory(async root=>{
+    const f=await makeRevisionFixture(root,{standard:true}),before=await revisionInputsDigest(f);
+    const receiptPath=join(root,'receipt.json'),contentPath=join(root,'correction.bin'),specPath=join(root,'spec.json');
+    await fs.writeFile(receiptPath,f.receipt.receiptBytes,{mode:0o400});
+    await fs.writeFile(contentPath,f.revision.corrections[0].bytes_data,{mode:0o400});
+    const {receipt_bytes,...original}=f.revision.original;
+    const {bytes_data,...correction}=f.revision.corrections[0];
+    await fs.writeFile(specPath,JSON.stringify({...f.revision,original:{...original,receipt_path:receiptPath},
+      corrections:[{...correction,content_path:contentPath}]}),{mode:0o400});
+    const stdout=[],stderr=[];
+    assert.equal(await runProjectReviewCandidateCli(['--revise-standard',specPath],{
+      stdout:{write:s=>stdout.push(s)},stderr:{write:s=>stderr.push(s)}}),0);
+    assert.deepEqual(stderr,[]);assert.match(stdout.join(''),/^SOURCE_REVISION_CANDIDATE_CREATED\n/);
+    assert.ok(stdout.join('').includes(f.priorResult.candidate_commit));
+    assert.equal(stdout.join('').includes(root),false);
+    assert.deepEqual(await revisionInputsDigest(f),before);
+  });
+});

@@ -295,3 +295,37 @@ base-to-revised and original-to-revised views. Its fresh decision is explicitly
 supplied by the caller; creating a revision selects no decision and grants no
 integration, execution or disclosure authority. This additive API does not
 change the large-profile revision API or the existing CLI.
+
+## Explicit standard-profile CLI
+
+Owners of an acknowledged standard native project result can use the same
+local CLI without writing an API caller:
+
+```sh
+node bin/squire-project-review.mjs --build-standard /absolute/path/to/spec.json
+node bin/squire-project-review.mjs --revise-standard /absolute/path/to/revision-spec.json
+node bin/squire-project-review.mjs --help
+```
+
+For `--build-standard`, use `SQUIRE_STANDARD_PROJECT_REVIEW_IMPORT_V1` and the
+standard API fields described above, replacing `receipt_bytes` with an absolute
+`receipt_path`. For `--revise-standard`, use
+`SQUIRE_STANDARD_PROJECT_REVIEW_REVISION_V1`, the standard original import fields
+with that same receipt substitution, and corrections whose `bytes_data` is
+replaced by an absolute `content_path`. These are explicit selected files;
+commands do not discover receipts or select a profile from their contents.
+
+Spec JSON remains bounded to 64 KiB and receipt JSON to 256 KiB. Standard
+correction inputs are bounded to 512 KiB each and 1 MiB combined; the existing
+standard API also enforces its per-class and complete-project limits. A source
+correction remains subject to the standard 64 KiB source-file limit, even
+though a local asset can be larger. The existing `--build` and `--revise`
+commands retain their large-profile behavior and limits.
+
+Success exits 0 with fixed status, Git object IDs and a changed-path count;
+input or operation rejection exits 2 with the fixed rejection diagnostic.
+`--help` exits 0 and reads no input. Existing default invocation remains usage
+only, with exit 2. Terminal output omits source, file paths and owner labels.
+These commands create local review candidates only: they do not execute the
+candidate, accept its content, integrate it into an existing checkout, or
+establish task correctness or native/benchmark acceptance.
