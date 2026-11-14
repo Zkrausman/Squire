@@ -49,4 +49,11 @@ async function runPackageCliInternal(args,ports,stdout,stderr){
     stdout.write('Squire local review package: '+(result.status==='VERIFIED'?'VERIFIED':'COMPLETE')+'\nSchema: squire3.package_manifest.v1\nManifest SHA256: '+result.manifest_sha256+'\nFiles: artifact.mjs, summary.json, README.txt, package-manifest.json\nOutcome: '+result.readiness_or_outcome+'\nTask correctness: '+result.task_correctness+'\nOriginal acknowledgement/provenance/crash durability are not proven by verification.\n');return result.exit_code;
   }catch(e){stderr.write(safePackageErrorCode(e)+'\n');return 2;}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)process.exitCode=await runPackageCli(process.argv.slice(2));
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
+  // Executable lifetime only: observe errors without retrying output or artifacts.
+  let outputFailed=false;
+  const outputError=()=>{outputFailed=true;process.exitCode=2;};
+  process.stdout.on('error',outputError);process.stderr.on('error',outputError);
+  const code=await runPackageCli(process.argv.slice(2));
+  process.exitCode=outputFailed?2:code;
+}

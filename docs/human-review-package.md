@@ -86,3 +86,19 @@ that no mutation occurred. Later byte verification cannot establish the failed
 operation's acknowledgement; existing partial-output/nonreuse rules still
 apply. Imports remain inert. This boundary covers synchronous failures only,
 not later stream error events, drain/flush or consumer receipt.
+
+## Executable stdio error observation
+
+`node bin/squire-package.mjs` installs stdout/stderr error observers before calling the CLI and retains
+them for the executable lifetime. An observed error latches exit 2 without
+inspecting/logging the error or attempting output, retry, rollback or cleanup.
+The latch survives the normal CLI-result assignment and covers later events
+observed before process termination. Importing the module installs no process
+observers; exported CLI callers still own asynchronous errors on their streams.
+
+Healthy bytes and exits remain unchanged. Partial acknowledgement or a complete
+artifact can remain after exit 2; missing output does not prove no mutation, and
+no retry or reuse is authorized. The executable does not end/destroy streams,
+await drain/flush or certify consumer delivery, original acknowledgement, or
+errors not observed before termination. No generation or artifact execution is
+added.
