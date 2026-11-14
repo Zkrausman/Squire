@@ -329,3 +329,23 @@ only, with exit 2. Terminal output omits source, file paths and owner labels.
 These commands create local review candidates only: they do not execute the
 candidate, accept its content, integrate it into an existing checkout, or
 establish task correctness or native/benchmark acceptance.
+
+## Synchronous CLI acknowledgement failure
+
+Help, usage, rejection diagnostics and successful candidate acknowledgements
+share a private synchronous output-failure boundary. Selected write methods are
+captured with their receivers before input reads or dispatch. A failed lookup
+or write returns 2 without raw exception text. After the first failed write,
+further output on either channel is suppressed rather than retried or replaced
+with a rejection diagnostic. Healthy operation rejection still uses the fixed
+`PROJECT_REVIEW_CANDIDATE_REJECTED` line; successful bytes and exit meanings are
+unchanged. A `write(false)` return retains its backpressure meaning.
+
+An output failure may occur after a candidate was created, including after
+partial acknowledgement bytes were emitted. Exit 2 does not prove that no
+candidate exists, select a REJECT decision, authorize replay or clean up the
+output namespace. Existing receipt/correction buffer clearing still runs; no
+output-driven filesystem cleanup, rollback or retry is added. Preserve the
+existing nonreuse and partial-output rules. Imports remain inert. Later
+asynchronous stream errors, drain/flush and consumer receipt are outside this
+synchronous boundary.

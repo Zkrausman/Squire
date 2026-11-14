@@ -25,7 +25,22 @@ export async function nativePackageInventory(native,path,signal){
   }finally{await dir?.close();}
 }
 export async function runPackageCli(args,ports={}){
-  const stdout=ports.stdout??process.stdout,stderr=ports.stderr??process.stderr;
+  try{
+    let outputFailed=false;
+    const output=key=>{
+      const stream=ports[key]??process[key],method=stream.write;
+      if(typeof method!=='function')throw null;
+      return {write(...args){
+        if(outputFailed)return;
+        try{return Reflect.apply(method,stream,args);}catch{outputFailed=true;}
+      }};
+    };
+    const stdout=output('stdout'),stderr=output('stderr');
+    const code=await runPackageCliInternal(args,ports,stdout,stderr);
+    return outputFailed?2:code;
+  }catch{return 2;}
+}
+async function runPackageCliInternal(args,ports,stdout,stderr){
   if(!Array.isArray(args)||!((args[0]==='--build'&&args.length===4)||(args[0]==='--verify'&&args.length===2))){stderr.write('Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir>\n');return 2;}
   try{
     const io={fs:ports.fs??{...fs,readdir:path=>nativePackageInventory(fs,path,ports.signal)},uid:ports.uid??(typeof process.getuid==='function'?process.getuid():null),signal:ports.signal};

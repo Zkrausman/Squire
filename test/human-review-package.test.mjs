@@ -131,3 +131,40 @@ test('CLI errors suppress private paths, native messages and Proxy error callbac
  let out='',err='',traps=0;const ports={...f.ports,stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},fs:{...fs,mkdir:async()=>{throw new Proxy(Error('PRIVATE_SECRET'),{get(){traps++;throw Error('PRIVATE_GETTER');},getPrototypeOf(){traps++;throw Error('PRIVATE_PROTOTYPE');}});}}};
  assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],ports),2);assert.equal(out,'');assert.equal(err,'PACKAGE_IO_ERROR\n');assert.equal(traps,0);assert.equal((out+err).includes(f.root),false);
 }));
+
+test('acknowledgement package usage sink failures stay inert and bounded',async()=>{
+ for(const args of [[],['--help']])for(const sink of [{},{write:7},{write(){throw Error('PRIVATE_USAGE');}},
+  Object.defineProperty({},'write',{get(){throw Error('PRIVATE_GETTER');}})]){
+  let calls=0;assert.equal(await runPackageCli(args,{stdout:{write(){calls++;}},stderr:sink,
+   fs:{mkdir(){calls++;throw Error('UNEXPECTED_FS');}}}),2);assert.equal(calls,0);
+ }
+});
+test('acknowledgement package build failure never leaks a failing diagnostic sink',async()=>fixture(async f=>{
+ let errors=0,out=0;
+ assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],{
+  ...f.ports,fs:{...fs,mkdir:async()=>{throw Error('PRIVATE_BUILD');}},stdout:{write(){out++;}},
+  stderr:{write(){errors++;throw Error('PRIVATE_DIAGNOSTIC');}}}),2);
+ assert.equal(errors,1);assert.equal(out,0);
+}));
+test('acknowledgement failure retains a completed synthetic package without retry or cleanup',async()=>fixture(async f=>{
+ let output=0,errors=0,cleanup=0,partial='';
+ const io={...fs,rm:async()=>{cleanup++;throw Error('NO_CLEANUP');},unlink:async()=>{cleanup++;throw Error('NO_CLEANUP');}};
+ assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],{
+  ...f.ports,fs:io,stdout:{write(text){output++;partial+=text.slice(0,10);throw Error('PRIVATE_OUTPUT');}},
+  stderr:{write(){errors++;throw Error('PRIVATE_FALLBACK');}}}),2);
+ assert.equal(output,1);assert.equal(errors,0);assert.equal(cleanup,0);assert.ok(partial.length>0);
+ assert.deepEqual((await fs.readdir(f.spec.output_dir)).sort(),[...names].sort());
+ const verified=await verifyReviewPackage(f.spec.output_dir,f.ports);assert.equal(verified.status,'VERIFIED');
+ assert.equal(verified.original_operation_acknowledgement,'UNKNOWN');
+ let verifyWrites=0;
+ assert.equal(await runPackageCli(['--verify',f.spec.output_dir],{...f.ports,fs:io,
+  stdout:{write(){verifyWrites++;throw Error('PRIVATE_VERIFY_OUTPUT');}},stderr:{write(){errors++;}}}),2);
+ assert.equal(verifyWrites,1);assert.equal(errors,0);assert.equal(cleanup,0);
+ assert.equal((await verifyReviewPackage(f.spec.output_dir,f.ports)).status,'VERIFIED');
+}));
+test('acknowledgement package false-return sinks preserve successful output and receiver',async()=>fixture(async f=>{
+ const out={text:'',write(text){assert.equal(this,out);this.text+=text;return false;}};
+ assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],{...f.ports,stdout:out,
+  stderr:{write(){throw Error('UNEXPECTED_DIAGNOSTIC');}}}),0);
+ assert.match(out.text,/Squire local review package: COMPLETE/);
+}));
