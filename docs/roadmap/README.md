@@ -392,3 +392,154 @@ Pinned public design references are limited to interface lessons: [Astryx derive
 **Decision: DEFER / NO WORKFLOW CHANGE.** Chen et al. report 5,000 mini-SWE-agent runs on SWE-bench Verified: 3,000 baseline trajectories across six models and 2,000 paired revised-prompt runs across four. No model showed a statistically significant resolution difference; this is not evidence of equivalence. Resource use differed significantly for three models, and equal resolution totals could conceal different tasks solved. The study covers Python repository issues under one lightweight scaffold; each task/condition was observed once; some scaffold versions and API routes differed; detected test-file writing omits inline-only checks, unchanged repository tests, and indirect writes. [Chen et al., v3 (9 November 2026)](https://arxiv.org/html/2602.07900v3).
 
 Generated test files may mix assertions with diagnostic prints or inspection; they do not replace independent frozen acceptance. In Squire, `CANDIDATE_READY` means staging/syntax only, while Q218 separates generation success from task correctness and defines a frozen 17-case public oracle ([single-JavaScript contract](../single-js-tasks.md#bounded-single-javascript-task-preparation), [Q218 public freeze](../Q218-source-only-coding.md#public-freeze)). Retain required tests and `UNKNOWN`/`NOT_EVALUATED` states. Defer any blanket test-writing prompt change until a named future consumer and frozen, independent per-task outcome/resource evaluation are specified. No benefit or runtime authority is established; no ticket or workflow change follows. The narrow historical T1/T3 repair-feedback refinement noted above is already implemented; this note proposes no duplicate.
+
+
+## Additive delivery-status appendix — 14 November 2026
+
+This source-status reconciliation covers merged PRs 207–231 through main
+[`0bec928`](https://github.com/Zkrausman/Squire/commit/0bec9287ce8a43affae7aa66c6ccc4783f6e9c9b).
+Earlier text and planning history are preserved. Historical “pending” wording
+is superseded only for the source deliveries identified here; it does not
+release a runtime operation or activate another proposal. Validation below is
+attributed to each linked PR receipt. Separate suites can overlap and are not
+summed; merge status alone is not a test, review or CI receipt.
+
+### Roadmap, contracts and delivery guidance
+
+[PR 207](https://github.com/Zkrausman/Squire/pull/207) published the PR199–206
+status appendix. [PR 208](https://github.com/Zkrausman/Squire/pull/208) clarified
+SQ-04 input/output and runtime-binding boundaries without changing its verifier.
+[PR 212](https://github.com/Zkrausman/Squire/pull/212) published the offline-report
+capability proposal; its implementation followed in
+[PR 213](https://github.com/Zkrausman/Squire/pull/213). The implemented
+`node bin/squire-report.mjs --capabilities --json` returns bounded static route
+metadata without reading a receipt or dispatching a task. The two-token form
+preserves existing single-argument receipt-path interpretations. Its receipt
+reports focused and repository tests plus independent source/contract/privacy
+review, and explicitly distinguishes its unavailable local dependency-backed
+suite from hosted CI.
+
+[PR 222](https://github.com/Zkrausman/Squire/pull/222) added the test-writing
+research defer decision already above: no blanket prompt or required-test
+change follows. [PR 226](https://github.com/Zkrausman/Squire/pull/226) added the
+scoped-delivery skill, distinguishing native scope preparation and generation,
+candidate, harness and unknown outcomes. Its receipt reports skill validation
+and independent accuracy/privacy review, with no measured improvement from its
+small forward check. Documentation and guidance do not grant execution authority.
+
+### Local candidates, portable inspection and explicit owner decisions
+
+[PR 210](https://github.com/Zkrausman/Squire/pull/210) bridges a verified large
+project stage to a fresh, base-pinned Git candidate using exact original-byte
+witnesses; the candidate depends on the original base object store remaining
+available. [PR 211](https://github.com/Zkrausman/Squire/pull/211) adds one bounded
+owner-supplied revision, preserving the original candidate, receipt and stage.
+Their receipts report separate synthetic/disposable-Git tests and independent
+source/fixture/privacy review. These operations execute no candidate files and
+leave substantive review pending.
+
+[PR 214](https://github.com/Zkrausman/Squire/pull/214) adds a finite private
+snapshot and offline verifier for one original candidate's selected base and
+candidate trees. It permits copy inspection after the original stores are
+unavailable; it is not a full ancestry export or revision-chain feature.
+[PR 215](https://github.com/Zkrausman/Squire/pull/215) adds the original-candidate
+review package and an explicitly supplied ACCEPT, REVISE or REJECT record.
+[PR 216](https://github.com/Zkrausman/Squire/pull/216) adds first-revision review,
+with direct base-to-revised and original-to-revised views and a fresh decision
+bound to the selected prior REVISE record. Their receipts report independent
+source/fixture/privacy review and separate synthetic/Git suites. An offline
+integrity check does not authenticate a reviewer or producer, prove task
+correctness, or grant integration, execution or disclosure authority.
+
+[PR 219](https://github.com/Zkrausman/Squire/pull/219) aligns P1/P1b decision
+writers and readers on a finite 96 KiB serialized ceiling, preserving the
+accepted path, attestation and note profiles. Its receipt records disposable
+reproductions, maximum-profile and rejection tests, and independent review;
+I/O failure still retains partial output without acknowledged success.
+
+### Bounded readers and retained-evidence interfaces
+
+[PR 209](https://github.com/Zkrausman/Squire/pull/209) bounds the native artifact
+adapter's incremental directory enumeration, preserving its existing injected
+filesystem contract. [PR 220](https://github.com/Zkrausman/Squire/pull/220) does
+the same for the native single-file review-package inventory. Their receipts
+report deterministic adapter/regression coverage and independent review.
+Incremental allocation guarantees apply to those native adapters, not arbitrary
+caller-injected readers; these are source regressions, not generation benchmarks.
+
+[PR 217](https://github.com/Zkrausman/Squire/pull/217) adds opt-in bounded private
+physical-attempt stream retention, immutable publication and an offline
+byte-integrity verifier. [PR 218](https://github.com/Zkrausman/Squire/pull/218)
+adds an explicit verifier command requiring a selected attempt directory and a
+separately supplied expected manifest digest. Their receipts report synthetic
+fixtures, regression suites and independent source/privacy review. Lost or
+partial publication remains UNKNOWN; verified copy integrity does not establish
+original acknowledgement, provider finality, descendant settlement or retry
+authority. Actual private retention and disposal remain separately scoped.
+
+### Preparation, routing and admission source
+
+[PR 221](https://github.com/Zkrausman/Squire/pull/221) fixes the Node project
+child's ChatGPT-only login override without changing credentials or persistent
+settings. [PR 223](https://github.com/Zkrausman/Squire/pull/223) adds an isolated
+bounded App Server event mapper; it remains inactive in the production route
+and does not manufacture process/EOF or usage evidence. Their receipts report
+independent review and deterministic source tests; neither delivery attests a
+future child's effective configuration or a generation-quality improvement.
+
+[PR 224](https://github.com/Zkrausman/Squire/pull/224) adds a closed, bounded
+included-use observation admission alternative. It records the selected route,
+observed allowance and unknown billing preferences without claiming an upstream
+billing lock or reservation; no Squire fallback, billing action or automatic
+retry is added. [PR 225](https://github.com/Zkrausman/Squire/pull/225) rejects
+invalid Git-marker/staging ancestry before generation dispatch.
+[PR 230](https://github.com/Zkrausman/Squire/pull/230) adds non-consuming
+project-admission validation; actual admission still consumes one-use tokens.
+Their receipts report independent source/fixture/privacy review and separate
+deterministic regressions. PR230's exact-head
+[CI](https://github.com/Zkrausman/Squire/actions/runs/43367167967) and
+[desktop source acceptance](https://github.com/Zkrausman/Squire/actions/runs/43367167981)
+passed. These source interfaces do not supply runtime permission, account
+capacity, process custody or settlement evidence for a future operation.
+
+### Standard-profile delivery path and current boundaries
+
+[PR 227](https://github.com/Zkrausman/Squire/pull/227) adds explicit standard
+native stage intake to the Git-review bridge, preserving its 1 MiB project and
+256 KiB receipt limits. [PR 229](https://github.com/Zkrausman/Squire/pull/229)
+adds first owner-supplied standard revisions and their existing two-view review
+handoff. Their receipts report independent exact-source/fixture/privacy review
+and separate boundary, regression and synthetic handoff suites; no owner
+content decision is inferred. [PR 228](https://github.com/Zkrausman/Squire/pull/228)
+corrects a test's asynchronous setup wait after the PR227 postmerge failure;
+it changes no production deadline or generation acceptance assertion. The failed
+run remains distinct from the later corrected source revision.
+
+[PR 231](https://github.com/Zkrausman/Squire/pull/231) exposes explicit
+`--build-standard` and `--revise-standard` commands plus input-free `--help`.
+Large-profile commands and default behavior remain unchanged. Its receipt
+reports independent review and a fixture-correction closure, separate local
+and hosted tests, and final-head
+[CI](https://github.com/Zkrausman/Squire/actions/runs/43530361442) and
+[desktop source acceptance](https://github.com/Zkrausman/Squire/actions/runs/43530361236).
+Automatic postmerge
+[CI](https://github.com/Zkrausman/Squire/actions/runs/43530866984) and
+[desktop source acceptance](https://github.com/Zkrausman/Squire/actions/runs/43530866662)
+also passed. Its initial missing-input fixture failure is retained separately;
+the corrected checks do not replace that history.
+
+D2's next integration step still needs an owner-selected destination repository,
+pinned base and target ref, and an explicit content decision. A reviewable
+candidate is not that decision. P3/P4 still depend on qualified process-identity,
+settlement and host evidence; Go-dependent tasks require a verified installed
+toolchain and supported build/run isolation. These dependencies are not ready
+capacity and are not resolved by this appendix.
+
+Merged source, attributed tests/review and cited hosted CI remain distinct from
+installation, real private-candidate use, effective runtime authentication or
+allowance, native application acceptance and benchmark performance. This entry
+reports no new runtime or benchmark result. Historical unknown or denied
+operations, custody limits and no-replay holds remain unchanged; no old outcome
+is inferred from later source delivery. Future actual use needs its own
+applicable authorization and operation-scoped evidence. No planning proposal,
+model-selection change, workload, installation or recovery action is activated.
