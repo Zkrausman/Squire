@@ -349,3 +349,20 @@ output-driven filesystem cleanup, rollback or retry is added. Preserve the
 existing nonreuse and partial-output rules. Imports remain inert. Later
 asynchronous stream errors, drain/flush and consumer receipt are outside this
 synchronous boundary.
+
+## Executable stdio error observation
+
+Both existing project entry points, `node bin/squire-project-review.mjs` and
+`node src/project-review-candidate.mjs`, install stdout/stderr error observers before calling the CLI and retains
+them for the executable lifetime. An observed error latches exit 2 without
+inspecting/logging the error or attempting output, retry, rollback or cleanup.
+The latch survives the normal CLI-result assignment and covers later events
+observed before process termination. Importing the module installs no process
+observers; exported CLI callers still own asynchronous errors on their streams.
+
+Healthy bytes and exits remain unchanged. Partial acknowledgement or a complete
+artifact can remain after exit 2; missing output does not prove no mutation, and
+no retry or reuse is authorized. The executable does not end/destroy streams,
+await drain/flush or certify consumer delivery, original acknowledgement, or
+errors not observed before termination. No generation or artifact execution is
+added.

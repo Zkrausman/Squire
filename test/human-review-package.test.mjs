@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {join,basename} from 'node:path';
+import {artifactCliChild} from './helpers/artifact-cli-child.mjs';
 import {hash} from '../src/bounded-codegen-plan.mjs';
 import {planReviewPackage,buildReviewPackage,writeReviewPackage,verifyReviewPackage,safePackageErrorCode} from '../src/human-review-package.mjs';
 import {runPackageCli,nativePackageInventory} from '../bin/squire-package.mjs';
@@ -167,4 +168,28 @@ test('acknowledgement package false-return sinks preserve successful output and 
  assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],{...f.ports,stdout:out,
   stderr:{write(){throw Error('UNEXPECTED_DIAGNOSTIC');}}}),0);
  assert.match(out.text,/Squire local review package: COMPLETE/);
+}));
+
+for(const timing of ['closed','early','late'])test(`artifact package executable stdout ${timing} retains completed package`,async()=>fixture(async f=>{
+ const before=timing==='closed'?'':`const stream=process.stdout,write=stream.write.bind(stream);stream.write=(...args)=>{const result=write(...args);
+  ${timing==='early'?"stream.emit('error',Error('PRIVATE_PACKAGE_STREAM'));":"setImmediate(()=>stream.emit('error',Error('PRIVATE_PACKAGE_STREAM')));"}return result;};`;
+ const r=await artifactCliChild(new URL('../bin/squire-package.mjs',import.meta.url),
+  ['--build',f.spec.receipt_path,f.path,f.spec.output_dir],{closed:timing==='closed'?'stdout':null,before});
+ assert.deepEqual((await fs.readdir(f.spec.output_dir)).sort(),[...names].sort());
+ const verified=await verifyReviewPackage(f.spec.output_dir,f.ports);assert.equal(verified.status,'VERIFIED');
+ assert.equal(verified.original_operation_acknowledgement,'UNKNOWN');
+ assert.equal(r.stderr,'',`closed/failed output terminal code${r.code}`);assert.equal(r.code,2);assert.equal(r.signal,null);
+ if(timing==='closed')assert.equal(r.stdout,'');else assert.match(r.stdout,/Squire local review package: COMPLETE/);
+ assert.deepEqual(await fs.readFile(f.path),Buffer.from(source));
+}));
+test('artifact package executable healthy build and verify preserve exact output and exits',async()=>fixture(async f=>{
+ let expectedBuild='',expectedVerify='';
+ assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,join(f.root,'expected-package')],{
+  ...f.ports,stdout:{write:s=>expectedBuild+=s},stderr:{write(){throw Error('UNEXPECTED_DIAGNOSTIC');}}}),0);
+ const built=await artifactCliChild(new URL('../bin/squire-package.mjs',import.meta.url),['--build',f.spec.receipt_path,f.path,f.spec.output_dir]);
+ assert.equal(built.code,0);assert.equal(built.signal,null);assert.equal(built.stdout,expectedBuild);assert.equal(built.stderr,'');
+ assert.equal(await runPackageCli(['--verify',f.spec.output_dir],{...f.ports,
+  stdout:{write:s=>expectedVerify+=s},stderr:{write(){throw Error('UNEXPECTED_DIAGNOSTIC');}}}),0);
+ const verified=await artifactCliChild(new URL('../bin/squire-package.mjs',import.meta.url),['--verify',f.spec.output_dir]);
+ assert.equal(verified.code,0);assert.equal(verified.signal,null);assert.equal(verified.stdout,expectedVerify);assert.equal(verified.stderr,'');
 }));

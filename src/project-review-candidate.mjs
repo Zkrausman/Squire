@@ -1467,5 +1467,10 @@ async function runProjectReviewCandidateCliInternal(argv,cli){
   }finally{receipt?.fill(0);}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
-  process.exitCode=await runProjectReviewCandidateCli(process.argv.slice(2));
+  // Executable lifetime only: observe errors without retrying output or artifacts.
+  let outputFailed=false;
+  const outputError=()=>{outputFailed=true;process.exitCode=2;};
+  process.stdout.on('error',outputError);process.stderr.on('error',outputError);
+  const code=await runProjectReviewCandidateCli(process.argv.slice(2));
+  process.exitCode=outputFailed?2:code;
 }
