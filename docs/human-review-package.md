@@ -61,7 +61,7 @@ arbitrary injected implementations.
 
 CLI exit 0 means a valid package whose recorded Q218 task conformance is PASS;
 exit 1 means a valid package with failed/incomplete conformance or generic
-`CANDIDATE_READY` / `NOT_EVALUATED`; exit 2 means packaging/verification failed.
+`CANDIDATE_READY` / `NOT_EVALUATED`; exit 2 means packaging/verification or synchronous CLI output failed.
 A verified generic package never becomes functional PASS. Output uses fixed
 labels and package-relative names, without caller paths or native exception text.
 
@@ -70,3 +70,19 @@ not provide hostile-code containment, same-user tamper resistance, race-free
 custody, descendant tracking or power-loss durability. The artifact remains
 untrusted and local-only until a human explicitly reviews execution or disclosure.
 No provider run or generated-program execution is needed to build a package.
+
+## Synchronous CLI acknowledgement failure
+
+The CLI captures selected write methods with their receivers before work. A
+synchronous sink lookup/call failure returns 2 without exposing its exception.
+After a failed output attempt, both channels suppress further writes: there is
+no diagnostic fallback, retry, overwrite or output-driven cleanup. Healthy
+operation errors retain their existing fixed diagnostics and successful output
+and exit meanings remain unchanged; `write(false)` remains backpressure.
+
+A completed package can therefore remain after exit 2, and a sink can emit
+partial bytes before throwing. Neither missing output nor exit 2 establishes
+that no mutation occurred. Later byte verification cannot establish the failed
+operation's acknowledgement; existing partial-output/nonreuse rules still
+apply. Imports remain inert. This boundary covers synchronous failures only,
+not later stream error events, drain/flush or consumer receipt.

@@ -1292,10 +1292,16 @@ function cliSpec(value){
 function captureCliPorts(value){
   const keys=['readReceiptBytes','readCorrectionBytes','build','revise','buildStandard','reviseStandard','stdout','stderr'];
   try{closed(value,[],keys,'project_review_cli_ports');}catch{invalid();}
+  let outputFailed=false;
   const output=key=>{
     const stream=value[key]??process[key];
-    if(!stream||typeof stream.write!=='function'||types.isProxy(stream.write))invalid();
-    return (...args)=>Reflect.apply(stream.write,stream,args);
+    if(!stream)invalid();
+    const method=stream.write;
+    if(typeof method!=='function'||types.isProxy(method))invalid();
+    return (...args)=>{
+      if(outputFailed)return;
+      try{return Reflect.apply(method,stream,args);}catch{outputFailed=true;}
+    };
   };
   const readMethod=value.readReceiptBytes??readReceiptBytes;
   const correctionMethod=value.readCorrectionBytes??readCorrectionBytes;
@@ -1316,7 +1322,7 @@ function captureCliPorts(value){
     revise:(...args)=>Reflect.apply(reviseMethod,value,args),
     buildStandard:(...args)=>Reflect.apply(standardBuild,value,args),
     reviseStandard:(...args)=>Reflect.apply(standardRevise,value,args),
-    stdout:output('stdout'),stderr:output('stderr')
+    stdout:output('stdout'),stderr:output('stderr'),outputFailed:()=>outputFailed
   });
 }
 function validateCliResult(value){
@@ -1414,7 +1420,13 @@ async function revisionCli(value,cli,profile=LARGE_IMPORT){
 }
 
 export async function runProjectReviewCandidateCli(argv,ports={}){
-  const cli=captureCliPorts(ports);
+  try{
+    const cli=captureCliPorts(ports);
+    const code=await runProjectReviewCandidateCliInternal(argv,cli);
+    return cli.outputFailed()?2:code;
+  }catch{return 2;}
+}
+async function runProjectReviewCandidateCliInternal(argv,cli){
   if(Array.isArray(argv)&&argv.length===1&&argv[0]==='--help'){
     cli.stdout('Usage: node bin/squire-project-review.mjs <--build|--revise|--build-standard|--revise-standard> <spec.json>\n');
     return 0;

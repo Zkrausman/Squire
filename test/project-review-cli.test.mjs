@@ -71,3 +71,33 @@ test('standard adapter failures expose fixed diagnostics and clear receipt/corre
   assert.ok(h.buffers.every(b=>b.every(v=>v===0)));
  }
 });
+
+test('acknowledgement project help and usage sink failures occur before input or build',async()=>{
+ for(const [args,channel] of [[['--help'],'stdout'],[[],'stderr']])for(const sink of [{},{write:7},
+  {write(){throw Error('PRIVATE_USAGE');}},Object.defineProperty({},'write',{get(){throw Error('PRIVATE_GETTER');}})]){
+  const h=harness(spec(true));h.ports[channel]=sink;assert.equal(await run(args,h.ports),2);
+  assert.deepEqual(h.reads,[]);assert.deepEqual(h.routes,[]);
+ }
+});
+test('acknowledgement project output failure preserves simulated creation across all four modes',async()=>{
+ for(const [mode,standard,revise] of [['--build',false,false],['--revise',false,true],['--build-standard',true,false],['--revise-standard',true,true]]){
+  const h=harness(revise?revision(standard):spec(standard));let writes=0,diagnostics=0,partial='';
+  h.ports.stdout={write(text){writes++;partial+=text.slice(0,10);throw Error('PRIVATE_CREATED_OUTPUT');}};
+  h.ports.stderr={write(){diagnostics++;throw Error('PRIVATE_FALLBACK');}};
+  assert.equal(await run([mode,'/private/spec'],h.ports),2);
+  // The injected adapter's completed route is retained; the CLI does not run it again.
+  assert.equal(h.routes.length,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.ok(partial.length>0);
+  assert.ok(h.buffers.every(b=>b.every(v=>v===0)));
+ }
+});
+test('acknowledgement project operation rejection attempts a failing diagnostic once',async()=>{
+ const h=harness(spec(true),{fail:true});let calls=0;
+ h.ports.stderr={write(){calls++;throw Error('PRIVATE_DIAGNOSTIC');}};
+ assert.equal(await run(['--build-standard','/private/spec'],h.ports),2);assert.equal(calls,1);
+ assert.equal(h.routes.length,1);assert.deepEqual(h.out,[]);assert.ok(h.buffers.every(b=>b.every(v=>v===0)));
+});
+test('acknowledgement project false-return sink preserves receiver and successful status',async()=>{
+ const h=harness(spec(true));const out={text:'',write(text){assert.equal(this,out);this.text+=text;return false;}};
+ h.ports.stdout=out;assert.equal(await run(['--build-standard','/private/spec'],h.ports),0);
+ assert.match(out.text,/^SOURCE_CANDIDATE_CREATED\n/);assert.deepEqual(h.err,[]);
+});
