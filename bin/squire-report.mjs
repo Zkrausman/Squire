@@ -246,4 +246,12 @@ async function runOfflineReportCliInternal(argv,ports) {
   }
   return route.write(route,summary,handoffReport,stdout,stderr);
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)process.exitCode=await runOfflineReportCli(process.argv.slice(2));
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
+  // Only the executable owns these process-lifetime observers. Do not log or
+  // retry output on an error, including one emitted after the CLI resolves.
+  let outputFailed=false;
+  const outputError=()=>{outputFailed=true;process.exitCode=2;};
+  process.stdout.on('error',outputError);process.stderr.on('error',outputError);
+  const code=await runOfflineReportCli(process.argv.slice(2));
+  process.exitCode=outputFailed?2:code;
+}

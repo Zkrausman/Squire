@@ -85,8 +85,25 @@ No failed channel is retried and no new capability rejection label is added.
 
 A sink may emit bytes before throwing, so exit 2 can accompany partial output
 or an already emitted report. The CLI cannot retract those bytes or certify
-complete delivery. This boundary covers synchronous failures only: it does not
+complete delivery. The imported reporter API boundary covers synchronous failures only: it does not
 handle later stream error events, await drain or flush, or prove consumer
 receipt. A `write()` return value of `false` retains its existing backpressure
 meaning and is not classified as a synchronous failure. Successful report text,
 route exits and capability JSON remain unchanged.
+
+## Executable stdio error observation
+
+The `node bin/squire-report.mjs` entry point installs stdout/stderr error
+listeners before invoking the reporter and retains them for that executable's
+lifetime. An observed stream error sets and latches exit 2 without logging the
+error, attempting a diagnostic fallback, or retrying output. The latch prevents
+an error before CLI completion from being overwritten by its ordinary result;
+a later error can also change the exit code before process termination. A
+closed pipe therefore withholds success without an uncaught stream-error stack.
+
+Importing the module installs no process listeners and leaves exit state and
+output untouched. Callers of the exported API still own asynchronous errors on
+their supplied streams. The executable does not end or destroy streams, await
+drain/flush, or prove consumer receipt. Already emitted bytes may remain, and
+errors not observed before process termination cannot be certified. Successful
+report bytes, receipt/readiness semantics and capability schema are unchanged.

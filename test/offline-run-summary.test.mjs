@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {projectRunSummary,formatSummaryTerminal,parseReceiptJson,REPORT_MAX_BYTES,OFFLINE_REPORT_REJECTION_CODES} from '../src/offline-run-summary.mjs';
 import {runOfflineReportCli,readReceiptBytes,serializeOfflineReportCapabilities,writeOfflineReportCapabilities} from '../bin/squire-report.mjs';
@@ -249,4 +251,18 @@ test('synchronous write false preserves existing report and capability success e
  let json='';assert.equal(await runOfflineReportCli(['--capabilities','--json'],{
   stdout:{write:s=>{json+=s;return false;}},stderr:{write(){throw Error('UNEXPECTED_DIAGNOSTIC');}}}),0);
  assert.equal(json,serializeOfflineReportCapabilities());
+});
+
+test('executable preserves valid campaign0 and typed observation1 bytes',async()=>{
+ const root=await fs.mkdtemp('/tmp/squire-report-executable-');
+ const cliPath=fileURLToPath(new URL('../bin/squire-report.mjs',import.meta.url));
+ try{
+  for(const [value,expected] of [[receipt(),0],[largeObservationReceipt(),1]]){
+   const path=join(root,`receipt-${expected}.json`);await fs.writeFile(path,encode(value),{mode:0o600});
+   const projected=await cli(value);assert.equal(projected.code,expected);
+   const observed=spawnSync(process.execPath,[cliPath,path],{encoding:'utf8',timeout:10000,maxBuffer:65536});
+   assert.equal(observed.error,undefined);assert.equal(observed.signal,null);assert.equal(observed.status,expected);
+   assert.equal(observed.stdout,projected.out);assert.equal(observed.stderr,projected.err);
+  }
+ }finally{await fs.rm(root,{recursive:true,force:true});}
 });
