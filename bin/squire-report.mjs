@@ -210,10 +210,16 @@ export function serializeOfflineReportCapabilities(routes=REPORT_ROUTES){
 }
 export function writeOfflineReportCapabilities(stdout,stderr,routes=REPORT_ROUTES){
   try{const output=serializeOfflineReportCapabilities(routes);stdout.write(output);return 0;}
-  catch{stderr.write(CAPABILITIES_INTERNAL_ERROR+'\n');return 2;}
+  catch{try{stderr.write(CAPABILITIES_INTERNAL_ERROR+'\n');}catch{}return 2;}
 }
 
+// Synchronous sink failures withhold success, without retrying output or
+// exposing the thrown value. Already emitted bytes cannot be retracted.
 export async function runOfflineReportCli(argv,ports={}) {
+  try{return await runOfflineReportCliInternal(argv,ports);}
+  catch{return 2;}
+}
+async function runOfflineReportCliInternal(argv,ports) {
   const stdout=ports.stdout??process.stdout,stderr=ports.stderr??process.stderr;
   if(Array.isArray(argv)&&argv.length===2&&argv[0]==='--capabilities'&&argv[1]==='--json'){
     return writeOfflineReportCapabilities(stdout,stderr);

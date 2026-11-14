@@ -978,3 +978,13 @@ test('campaign, single-JavaScript and project CLI routes retain their existing f
     assert.equal(result.out.includes('Squire courier handoff report'), false);
   }
 });
+
+test('synchronous courier stdout failures return2 without retry or raw exception',async()=>{
+  let writes=0,diagnostics=0,partial='';
+  const observed=await cliValue(capturedPositiveInput(),{
+    stdout:{write(text){writes++;partial+=text.slice(0,10);throw Error('PRIVATE_COURIER_OUTPUT_ERROR');}},
+    stderr:{write(){diagnostics++;}}
+  });
+  assert.equal(observed.code,2);assert.equal(writes,1);assert.equal(diagnostics,0);assert.ok(partial.length>0);
+  assert.doesNotMatch(partial,/PRIVATE_COURIER_OUTPUT_ERROR/);
+});

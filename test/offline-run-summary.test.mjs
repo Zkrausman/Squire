@@ -193,3 +193,60 @@ test('native offline reader uses only owned synthetic files and refuses symlink/
  try{const p=join(root,'receipt.json');await fs.writeFile(p,encode(receipt()));assert.equal(projectRunSummary(parseReceiptJson(await readReceiptBytes(p))).overall_outcome,'PASS');await fs.symlink(p,join(root,'link'));await assert.rejects(readReceiptBytes(join(root,'link')));await assert.rejects(readReceiptBytes(root));await fs.writeFile(join(root,'large'),new Uint8Array(REPORT_MAX_BYTES+1));await assert.rejects(readReceiptBytes(join(root,'large')));await assert.rejects(readReceiptBytes(join(root,'absent')));}
  finally{await fs.rm(root,{recursive:true});}
 });
+
+// Synchronous sink failures are terminal output failures, never receipt failures.
+test('synchronous ordinary stdout failures return2 without a diagnostic retry',async()=>{
+ for(const sink of [{},{write:7},{write(){throw Error('PRIVATE_OUTPUT_ERROR');}},
+  Object.defineProperty({},'write',{get(){throw Error('PRIVATE_WRITE_GETTER');}})]){
+  let stderrCalls=0;
+  for(const value of [receipt(),largeObservationReceipt(),{schema:'SQUIRE2_PROJECT_RESULT_V1'}]){
+   const observed=await cli(value,{stdout:sink,stderr:{write(){stderrCalls++;}}});
+   assert.equal(observed.code,2);assert.equal(stderrCalls,0);
+  }
+ }
+});
+test('synchronous output failures preserve partial bytes without retry',async()=>{
+ let writes=0,partial='',diagnostics=0;
+ const first=await cli(receipt(),{stdout:{write(text){writes++;partial+=text.slice(0,10);throw Error('PRIVATE_OUTPUT_ERROR');}},
+  stderr:{write(){diagnostics++;}}});
+ assert.equal(first.code,2);assert.equal(writes,1);assert.ok(partial.length>0);assert.equal(diagnostics,0);
+ let errorCalls=0,errorPrefix='';
+ const second=await cli({schema:'SQUIRE2_PROJECT_RESULT_V1'},{stderr:{write(text){errorCalls++;errorPrefix+=text.slice(0,6);throw Error('PRIVATE_OUTPUT_ERROR');}}});
+ assert.equal(second.code,2);assert.equal(errorCalls,1);assert.equal(errorPrefix,'SCHEMA');assert.match(second.out,/INVALID_RECEIPT/);
+ assert.doesNotMatch(second.out,/PRIVATE_OUTPUT_ERROR/);
+});
+test('synchronous usage and sink selection failures remain inert',async()=>{
+ for(const field of ['stdout','stderr']){
+  let reads=0;
+  const ports={readFile(){reads++;},stat(){reads++;}};
+  Object.defineProperty(ports,field,{get(){throw Error('PRIVATE_SINK_GETTER');}});
+  assert.equal(await runOfflineReportCli([],ports),2);assert.equal(reads,0);
+ }
+ for(const sink of [{},{write(){throw Error('PRIVATE_USAGE_ERROR');}},
+  Object.defineProperty({},'write',{get(){throw Error('PRIVATE_USAGE_GETTER');}})]){
+  let reads=0,outs=0;
+  assert.equal(await runOfflineReportCli([],{stderr:sink,stdout:{write(){outs++;}},readFile(){reads++;},stat(){reads++;}}),2);
+  assert.equal(reads,0);assert.equal(outs,0);
+ }
+});
+test('synchronous capability output failure has one bounded existing diagnostic attempt',async()=>{
+ const before=serializeOfflineReportCapabilities();
+ for(const direct of [false,true]){
+  let writes=0,diagnostics=[];
+  const out={write(){writes++;throw Error('PRIVATE_CAPABILITY_ERROR');}};
+  const err={write:s=>diagnostics.push(s)};
+  assert.equal(direct?writeOfflineReportCapabilities(out,err):await runOfflineReportCli(['--capabilities','--json'],{stdout:out,stderr:err}),2);
+  assert.equal(writes,1);assert.deepEqual(diagnostics,['CAPABILITIES_INTERNAL_ERROR\n']);
+  for(const failed of [{},{write(){throw Error('PRIVATE_DIAGNOSTIC_ERROR');}},
+   Object.defineProperty({},'write',{get(){throw Error('PRIVATE_DIAGNOSTIC_GETTER');}})]){
+   assert.equal(direct?writeOfflineReportCapabilities(out,failed):await runOfflineReportCli(['--capabilities','--json'],{stdout:out,stderr:failed}),2);
+  }
+ }
+ assert.equal(serializeOfflineReportCapabilities(),before);
+});
+test('synchronous write false preserves existing report and capability success exits',async()=>{
+ const ordinary=await cli(receipt(),{stdout:{write(){return false;}}});assert.equal(ordinary.code,0);
+ let json='';assert.equal(await runOfflineReportCli(['--capabilities','--json'],{
+  stdout:{write:s=>{json+=s;return false;}},stderr:{write(){throw Error('UNEXPECTED_DIAGNOSTIC');}}}),0);
+ assert.equal(json,serializeOfflineReportCapabilities());
+});
