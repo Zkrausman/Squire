@@ -43,7 +43,7 @@ it cannot authenticate a receipt or reverify its artifact or operator admission.
 Changing files concurrently remains outside an atomic snapshot guarantee.
 
 Exit codes are 0 for complete reported task PASS, 1 for FAIL or INCOMPLETE, and
-2 for invalid input or a read error. Diagnostics use fixed codes without native
+2 for invalid input, a read error, or a synchronous output failure. Diagnostics use fixed codes without native
 exception text. Empty/missing/extra arguments print fixed usage and return 2.
 
 `projectRunSummary(receipt)` is the synchronous pure API. It accepts parsed JSON
@@ -72,3 +72,21 @@ The command grants no descendant containment, hostile-code safety, crash
 recovery, automatic workspace reuse or general software-quality guarantee.
 Generic single-JavaScript task reporting is a separate versioned successor;
 this format must not invent 17-fixture acceptance for such a task.
+
+## Synchronous output failures
+
+A missing/non-callable selected sink write method or a synchronous exception
+while selecting a sink, accessing its write method, or writing output returns
+exit 2 without exposing the thrown value. Ordinary report and usage failures
+do not attempt another write or a diagnostic fallback. Capability serialization
+or stdout failure retains its existing one best-effort
+`CAPABILITIES_INTERNAL_ERROR` stderr write; failure of that write also returns 2.
+No failed channel is retried and no new capability rejection label is added.
+
+A sink may emit bytes before throwing, so exit 2 can accompany partial output
+or an already emitted report. The CLI cannot retract those bytes or certify
+complete delivery. This boundary covers synchronous failures only: it does not
+handle later stream error events, await drain or flush, or prove consumer
+receipt. A `write()` return value of `false` retains its existing backpressure
+meaning and is not classified as a synchronous failure. Successful report text,
+route exits and capability JSON remain unchanged.
