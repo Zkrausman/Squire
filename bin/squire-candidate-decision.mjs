@@ -3,8 +3,7 @@ import {pathToFileURL} from 'node:url';
 import {resolve,parse} from 'node:path';
 import {types} from 'node:util';
 import {closed} from '../src/job-spec.mjs';
-import {parseReceiptJson} from '../src/offline-run-summary.mjs';
-import {parseBoundedJson} from '../src/internal/bounded-json.mjs';
+import {parseReceiptJson,parseRevisionDecisionJson} from '../src/offline-run-summary.mjs';
 import {readReceiptBytes} from './squire-report.mjs';
 import {recordProjectCandidateDecision} from '../src/project-candidate-review-package.mjs';
 import {recordProjectRevisionDecision} from '../src/project-revision-review-package.mjs';
@@ -47,7 +46,7 @@ export async function runCandidateDecisionCli(argv,ports={}){
       if(!types.isUint8Array(raw)||types.isProxy(raw))throw null;
       const length=Reflect.apply(byteLength,raw,[]);if(length>MAX_REVIEW_DECISION_BYTES)throw null;
       bytes=new Uint8Array(length);Uint8Array.prototype.set.call(bytes,raw);
-      const request=revision?parseBoundedJson(bytes,MAX_REVIEW_DECISION_BYTES,100):parseReceiptJson(bytes);
+      const request=revision?parseRevisionDecisionJson(bytes):parseReceiptJson(bytes);
       const result=await Reflect.apply(record,ports,[packageDir,request,decisionDir]);
       const status=result?.status,packageDigest=result?.[digestKey],decisionDigest=result?.decision_sha256;
       if(status!==statusExpected||typeof packageDigest!=='string'||!SHA256.test(packageDigest)||

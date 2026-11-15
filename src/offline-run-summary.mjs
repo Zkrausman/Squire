@@ -1,6 +1,5 @@
 // Offline receipt projection only. No artifact reads, execution or admission authority.
 import {types} from 'node:util';
-import {parseBoundedJson} from './internal/bounded-json.mjs';
 import {validateLimitedJobRecord} from './limited-job-record.mjs';
 
 export const REPORT_MAX_BYTES = 262144;
@@ -44,8 +43,37 @@ function copy(v, depth=0, seen=new Set(), budget={remaining:REPORT_MAX_BYTES}) {
   seen.delete(v);return out;
 }
 
-// Receipt profile is unchanged: 256 KiB and at most 64 array elements.
-export function parseReceiptJson(bytes){return parseBoundedJson(bytes,REPORT_MAX_BYTES,64);}
+// Small bounded JSON grammar: decoded-key duplicates are rejected before JSON.parse.
+function parseBoundedJson(bytes,maxArrayLength) {
+  if(!types.isUint8Array(bytes)||types.isProxy(bytes))invalid('MALFORMED_JSON');
+  const length=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),'byteLength').get.call(bytes);
+  if(length>REPORT_MAX_BYTES)invalid('FILE_TOO_LARGE');
+  let text;try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{invalid('MALFORMED_UTF8');}
+  let i=0;
+  const ws=()=>{while(/[\x20\t\r\n]/.test(text[i]??'!'))i++;};
+  function string(){
+    if(text[i]!== '"')invalid('MALFORMED_JSON');const begin=i++;
+    while(i<text.length){const c=text[i++];if(c==='"'){let v;try{v=JSON.parse(text.slice(begin,i));}catch{invalid('MALFORMED_JSON');}scalar(v);return v;}if(c==='\\')i++;}
+    invalid('MALFORMED_JSON');
+  }
+  function value(depth){
+    if(depth>10)invalid('SCHEMA_MISMATCH');ws();const c=text[i];
+    if(c==='"')return string();
+    if(c==='{'){
+      i++;ws();const out=Object.create(null),seen=new Set();if(text[i]==='}'){i++;return out;}
+      while(i<text.length){const k=string();if(seen.has(k))invalid('DUPLICATE_KEY_CONFLICT');if(['__proto__','constructor','prototype'].includes(k))invalid('SCHEMA_MISMATCH');seen.add(k);ws();if(text[i++]!==':')invalid('MALFORMED_JSON');out[k]=value(depth+1);ws();const t=text[i++];if(t==='}')return out;if(t!==',')invalid('MALFORMED_JSON');ws();}
+      invalid('MALFORMED_JSON');
+    }
+    if(c==='['){i++;ws();const out=[];if(text[i]===']'){i++;return out;}while(i<text.length){if(out.length>=maxArrayLength)invalid('SCHEMA_MISMATCH');out.push(value(depth+1));ws();const t=text[i++];if(t===']')return out;if(t!==',')invalid('MALFORMED_JSON');}invalid('MALFORMED_JSON');}
+    const match=/^(?:null|true|false|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/.exec(text.slice(i));
+    if(!match)invalid('MALFORMED_JSON');i+=match[0].length;return scalar(JSON.parse(match[0]));
+  }
+  const result=value(0);ws();if(i!==text.length)invalid('MALFORMED_JSON');return result;
+}
+
+// Receipt profile is unchanged; only the explicit revision CLI selects 100 rows.
+export function parseReceiptJson(bytes){return parseBoundedJson(bytes,64);}
+export function parseRevisionDecisionJson(bytes){return parseBoundedJson(bytes,100);}
 
 const tokensEmpty = () => null;
 const emptyGeneration = () => ({lifecycle_status:'NOT_RUN',task_outcome_evaluated_marker:null,provider_status:null,requested_model:null,reported_model:null,process_wall_ms:null,provider_duration_sec:null,inference_duration_sec:null,tokens:tokensEmpty()});
