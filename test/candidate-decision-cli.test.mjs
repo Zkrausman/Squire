@@ -83,7 +83,7 @@ test('sink capture failures are inert and false-return output preserves its rece
  h.ports.stdout=out;assert.equal(await run(args,h.ports),0);assert.match(out.text,/^PROJECT_CANDIDATE_DECISION_RECORDED/);
 });
 const cli=new URL('../bin/squire-candidate-decision.mjs',import.meta.url);
-const usage='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs record-revision <revision-package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs verify-revision-decision <revision-package-dir> <decision-dir> <expected-decision-sha256>\n';
+const usage='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs record-revision <revision-package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs verify-revision-decision <revision-package-dir> <decision-dir> <expected-decision-sha256>\n       node bin/squire-candidate-decision.mjs verify-decision <package-dir> <decision-dir> <expected-decision-sha256>\n';
 test('executable closed pipes and early/late observed errors withhold success',async()=>{
  for(const [channel,argv] of [['stdout',['--help']],['stderr',[]]]){
   const closed=await artifactCliChild(cli,argv,{closed:channel});assert.equal(closed.code,2);assert.equal(closed.signal,null);
@@ -164,7 +164,7 @@ test('selected revision decision verification calls only the selected verifier o
 });
 test('selected revision decision verification requires exact explicit paths and digest before reads',async()=>{
  const sparse=Array.from({length:3},(_,i)=>{const a=[...verifyDecisionArgs];delete a[i+1];return a;});
- const invalid=[[],['--help'],verifyDecisionArgs.slice(0,3),[...verifyDecisionArgs,'extra'],['verify-decision',...verifyDecisionArgs.slice(1)],['verify-revision-decision','relative',...verifyDecisionArgs.slice(2)],['verify-revision-decision','/',...verifyDecisionArgs.slice(2)],['verify-revision-decision',verifyDecisionArgs[1],'/private/../decision',verifyDecisionArgs[3]],...['B'.repeat(64),'b'.repeat(63),'z'.repeat(64),''].map(hash=>[...verifyDecisionArgs.slice(0,3),hash]),...sparse];
+ const invalid=[[],['--help'],verifyDecisionArgs.slice(0,3),[...verifyDecisionArgs,'extra'],['verify-original-implicit',...verifyDecisionArgs.slice(1)],['verify-revision-decision','relative',...verifyDecisionArgs.slice(2)],['verify-revision-decision','/',...verifyDecisionArgs.slice(2)],['verify-revision-decision',verifyDecisionArgs[1],'/private/../decision',verifyDecisionArgs[3]],...['B'.repeat(64),'b'.repeat(63),'z'.repeat(64),''].map(hash=>[...verifyDecisionArgs.slice(0,3),hash]),...sparse];
  for(const argv of invalid){const h=harness();let calls=0;h.ports.verifyRevisionDecision=async()=>{calls++;return verifiedDecision();};assert.equal(await run(argv,h.ports),argv[0]==='--help'?0:2);assert.equal(calls,0);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);}
 });
 test('selected revision decision verification rejects malformed API projection without raw errors',async()=>{
@@ -177,4 +177,29 @@ test('selected revision decision verification output failures never retry or cal
  assert.equal(await run(verifyDecisionArgs,h.ports),2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.deepEqual(h.records,[]);assert.deepEqual(h.reads,[]);
  const failed=harness();let errors=0;failed.ports.verifyRevisionDecision=async()=>{throw Error('PRIVATE_VERIFY');};failed.ports.stderr={write(){errors++;throw Error('PRIVATE_SINK');}};assert.equal(await run(verifyDecisionArgs,failed.ports),2);assert.equal(errors,1);
  const unopened=harness();unopened.ports.stdout={};let verifies=0;unopened.ports.verifyRevisionDecision=async()=>{verifies++;return verifiedDecision();};assert.equal(await run(verifyDecisionArgs,unopened.ports),2);assert.equal(verifies,0);
+});
+
+const originalVerifyArgs=['verify-decision','/private/original-package','/private/decision','d'.repeat(64)];
+const originalVerified=()=>({status:'PROJECT_CANDIDATE_DECISION_VERIFIED',review_package_sha256:'e'.repeat(64),decision_sha256:'d'.repeat(64),attested_path_count:0});
+test('original decision verification selects only its verifier and exposes no decision content',async()=>{
+ const h=harness();let calls=0,revisionCalls=0;const value=Object.defineProperty(originalVerified(),'choice',{get(){throw Error('MUST_NOT_READ_CHOICE');}});h.ports.verifyDecision=async(...a)=>{calls++;assert.deepEqual(a,originalVerifyArgs.slice(1));return value;};h.ports.verifyRevisionDecision=()=>{revisionCalls++;throw Error('WRONG_VERIFIER');};
+ assert.equal(await run(originalVerifyArgs,h.ports),0);assert.equal(calls,1);assert.equal(revisionCalls,0);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);assert.deepEqual(h.err,[]);
+ assert.equal(h.out.join(''),`PROJECT_CANDIDATE_DECISION_VERIFIED\nPackage SHA256: ${'e'.repeat(64)}\nDecision SHA256: ${'d'.repeat(64)}\nAttested path count: 0\nSELECTED_RECORD_INTEGRITY_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY\n`);assert.doesNotMatch(h.out.join(''),/private|CHOICE|ACCEPT|REJECT|REVISE/);
+});
+test('original decision verification rejects malformed or sparse selections before all callbacks',async()=>{
+ const sparse=Array.from({length:3},(_,i)=>{const a=[...originalVerifyArgs];delete a[i+1];return a;});
+ for(const argv of [[],['--help'],originalVerifyArgs.slice(0,3),[...originalVerifyArgs,'extra'],['verify-original-implicit',...originalVerifyArgs.slice(1)],['verify-decision','relative',...originalVerifyArgs.slice(2)],['verify-decision','/',...originalVerifyArgs.slice(2)],['verify-decision',originalVerifyArgs[1],'/private/../decision',originalVerifyArgs[3]],...['D'.repeat(64),'d'.repeat(63),'z'.repeat(64),''].map(d=>[...originalVerifyArgs.slice(0,3),d]),...sparse]){
+  const h=harness();let calls=0;h.ports.verifyDecision=()=>{calls++;return originalVerified();};assert.equal(await run(argv,h.ports),argv[0]==='--help'?0:2);assert.equal(calls,0);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);
+ }
+});
+test('original decision verifier result and errors remain bounded and private',async()=>{
+ for(const value of [verifiedDecision(),{...originalVerified(),review_package_sha256:'PRIVATE'},{...originalVerified(),decision_sha256:'a'.repeat(64)},{...originalVerified(),attested_path_count:-1},{...originalVerified(),attested_path_count:51},{...originalVerified(),attested_path_count:0.1},Object.defineProperty({},'status',{get(){throw Error('PRIVATE_GETTER');}})]){
+  const h=harness();let calls=0;h.ports.verifyDecision=async()=>{calls++;return value;};assert.equal(await run(originalVerifyArgs,h.ports),2);assert.equal(calls,1);assert.deepEqual(h.out,[]);assert.deepEqual(h.err,['PROJECT_CANDIDATE_DECISION_REJECTED\n']);
+ }
+ const h=harness();h.ports.verifyDecision=async()=>{throw Error('PRIVATE_ERROR');};assert.equal(await run(originalVerifyArgs,h.ports),2);assert.deepEqual(h.err,['PROJECT_CANDIDATE_DECISION_REJECTED\n']);
+});
+test('original decision verification output failure never retries or invokes a recording callback',async()=>{
+ const h=harness();let calls=0,writes=0,diagnostics=0;h.ports.verifyDecision=async()=>{calls++;return originalVerified();};h.ports.stdout={write(){writes++;throw Error('PRIVATE_WRITE');}};h.ports.stderr={write(){diagnostics++;}};assert.equal(await run(originalVerifyArgs,h.ports),2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);
+ const failed=harness();let errors=0;failed.ports.verifyDecision=async()=>{throw Error('PRIVATE_VERIFY');};failed.ports.stderr={write(){errors++;throw Error('PRIVATE_STDERR');}};assert.equal(await run(originalVerifyArgs,failed.ports),2);assert.equal(errors,1);
+ const absent=harness();absent.ports.stdout={};let verifies=0;absent.ports.verifyDecision=async()=>{verifies++;return originalVerified();};assert.equal(await run(originalVerifyArgs,absent.ports),2);assert.equal(verifies,0);
 });

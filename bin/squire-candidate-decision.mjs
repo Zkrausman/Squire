@@ -5,11 +5,11 @@ import {types} from 'node:util';
 import {closed} from '../src/job-spec.mjs';
 import {parseReceiptJson,parseRevisionDecisionJson} from '../src/offline-run-summary.mjs';
 import {readReceiptBytes} from './squire-report.mjs';
-import {recordProjectCandidateDecision} from '../src/project-candidate-review-package.mjs';
+import {recordProjectCandidateDecision,verifyProjectCandidateDecision} from '../src/project-candidate-review-package.mjs';
 import {recordProjectRevisionDecision,verifyProjectRevisionDecision} from '../src/project-revision-review-package.mjs';
 import {MAX_REVIEW_DECISION_BYTES} from '../src/project-review-decision-limits.mjs';
 
-const USAGE='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs record-revision <revision-package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs verify-revision-decision <revision-package-dir> <decision-dir> <expected-decision-sha256>\n';
+const USAGE='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs record-revision <revision-package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs verify-revision-decision <revision-package-dir> <decision-dir> <expected-decision-sha256>\n       node bin/squire-candidate-decision.mjs verify-decision <package-dir> <decision-dir> <expected-decision-sha256>\n';
 const SHA256=/^[a-f0-9]{64}$/;
 const byteLength=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),'byteLength').get;
 const absolute=value=>typeof value==='string'&&value.length>1&&value.length<=4096&&value.startsWith('/')&&
@@ -19,7 +19,7 @@ const absolute=value=>typeof value==='string'&&value.length>1&&value.length<=409
 export async function runCandidateDecisionCli(argv,ports={}){
   let bytes;
   try{
-    closed(ports,[],['readBytes','record','recordRevision','verifyRevisionDecision','stdout','stderr'],'candidate_decision_cli_ports');
+    closed(ports,[],['readBytes','record','recordRevision','verifyRevisionDecision','verifyDecision','stdout','stderr'],'candidate_decision_cli_ports');
     let outputFailed=false;
     const output=key=>{
       const stream=ports[key]??process[key],method=stream.write;
@@ -29,6 +29,21 @@ export async function runCandidateDecisionCli(argv,ports={}){
     const stdout=output('stdout'),stderr=output('stderr');
     if(Array.isArray(argv)&&argv.length===1&&argv[0]==='--help'){
       stdout(USAGE);return outputFailed?2:0;
+    }
+    if(Array.isArray(argv)&&argv.length===4&&argv[0]==='verify-decision'){
+      const [packageDir,decisionDir,expected]=[argv[1],argv[2],argv[3]];
+      if(!absolute(packageDir)||!absolute(decisionDir)||typeof expected!=='string'||!SHA256.test(expected)){stderr(USAGE);return 2;}
+      try{
+        const verify=ports.verifyDecision??verifyProjectCandidateDecision;
+        if(typeof verify!=='function'||types.isProxy(verify))throw null;
+        const result=await Reflect.apply(verify,ports,[packageDir,decisionDir,expected]);
+        const status=result?.status,packageDigest=result?.review_package_sha256,decisionDigest=result?.decision_sha256,count=result?.attested_path_count;
+        if(status!=='PROJECT_CANDIDATE_DECISION_VERIFIED'||typeof packageDigest!=='string'||!SHA256.test(packageDigest)||
+           typeof decisionDigest!=='string'||!SHA256.test(decisionDigest)||decisionDigest!==expected||
+           !Number.isSafeInteger(count)||count<0||count>50)throw null;
+        stdout(`PROJECT_CANDIDATE_DECISION_VERIFIED\nPackage SHA256: ${packageDigest}\nDecision SHA256: ${decisionDigest}\nAttested path count: ${count}\nSELECTED_RECORD_INTEGRITY_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY\n`);
+        return outputFailed?2:0;
+      }catch{stderr('PROJECT_CANDIDATE_DECISION_REJECTED\n');return 2;}
     }
     if(Array.isArray(argv)&&argv.length===4&&argv[0]==='verify-revision-decision'){
       const [packageDir,decisionDir,expected]=[argv[1],argv[2],argv[3]];
