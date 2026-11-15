@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {runCandidateReviewCli as run} from '../bin/squire-candidate-review.mjs';
 import {artifactCliChild as child} from './helpers/artifact-cli-child.mjs';
-const MAX=65536,usage='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n';
+const MAX=65536,usage='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--build-revision|--verify-revision> <spec.json|package-dir>\n';
 const cli=new URL('../bin/squire-candidate-review.mjs',import.meta.url);
 const encode=v=>new TextEncoder().encode(typeof v==='string'?v:JSON.stringify(v));
 const spec=()=>({schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',result:{base_commit:'1'.repeat(40),base_tree:'2'.repeat(40),candidate_commit:'3'.repeat(40),candidate_tree:'4'.repeat(40),changed_paths:['src/private.mjs']},candidate_git_dir:'/private/candidate.git',candidate_git_identity:{dev:1,ino:2},base_git_dir:'/private/base.git',base_git_identity:{dev:1,ino:3},output_dir:'/private/fresh-package'});
@@ -63,4 +63,39 @@ test('candidate review executable contains real closed pipes and early/late erro
 test('candidate review import is inert',()=>{
  const source=`const b=[process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode];await import(${JSON.stringify(cli.href)});const a=[process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode];if(JSON.stringify(b)!==JSON.stringify(a))throw Error('IMPORT_CHANGED');`;
  const r=spawnSync(process.execPath,['--input-type=module','--eval',source],{encoding:'utf8',timeout:10000,maxBuffer:65536});assert.equal(r.error,undefined);assert.equal(r.status,0);assert.equal(r.signal,null);assert.equal(r.stdout,'');assert.equal(r.stderr,'');
+});
+
+function revisionSpec(){return {schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1',original_result:{base_commit:'1'.repeat(40),candidate_commit:'3'.repeat(40)},revised_result:{base_commit:'1'.repeat(40),candidate_commit:'5'.repeat(40),changed_paths:['src/private.mjs'],revised_blobs:[{path:'src/private.mjs'}]},base_git_dir:'/private/base.git',base_git_identity:{dev:1,ino:1},original_git_dir:'/private/original.git',original_git_identity:{dev:1,ino:2},revised_git_dir:'/private/revised.git',revised_git_identity:{dev:1,ino:3},output_dir:'/private/revision-package',original_package:{dir:'/private/original-package',manifest_sha256:'a'.repeat(64)},prior_decisions:[{dir:'/private/prior-decision',file_sha256:'b'.repeat(64)}],selected_decision_id:'PRIVATE_SELECTED'};}
+function revisionResult(verify=false){return {status:verify?'PROJECT_REVISION_REVIEW_PACKAGE_VERIFIED':'PROJECT_REVISION_REVIEW_PACKAGE_CREATED',manifest_sha256:'c'.repeat(64),base_commit:'1'.repeat(40),original_commit:'3'.repeat(40),revised_commit:'5'.repeat(40),base_to_revised_count:1,original_to_revised_count:1,package_bytes:1234};}
+function revisionHarness(){const input=revisionSpec(),h=harness(input),builds=[],verifies=[];let originalCalls=0;h.ports.build=async()=>{originalCalls++;throw Error('WRONG_ORIGINAL');};h.ports.verify=h.ports.build;h.ports.buildRevision=async s=>{builds.push(s);return revisionResult();};h.ports.verifyRevision=async path=>{verifies.push(path);return revisionResult(true);};return {...h,input,revisionBuilds:builds,revisionVerifies:verifies,originalCalls:()=>originalCalls};}
+test('first revision package routes dispatch once with unchanged explicit prior set and fixed private output',async()=>{
+ for(const mode of ['--build-revision','--verify-revision']){
+  const h=revisionHarness();assert.equal(await run([mode,'/private/input'],h.ports),0);assert.equal(h.originalCalls(),0);assert.deepEqual(h.reads,mode==='--build-revision'?[['/private/input',262144]]:[]);assert.equal(h.revisionBuilds.length,mode==='--build-revision'?1:0);assert.equal(h.revisionVerifies.length,mode==='--verify-revision'?1:0);
+  if(h.revisionBuilds.length)assert.deepEqual(JSON.parse(JSON.stringify(h.revisionBuilds[0])),h.input);else assert.equal(h.revisionVerifies[0],'/private/input');
+  assert.equal(h.out.join(''),`${revisionResult(mode==='--verify-revision').status}\nManifest SHA256: ${'c'.repeat(64)}\nBase commit: ${'1'.repeat(40)}\nOriginal commit: ${'3'.repeat(40)}\nRevised commit: ${'5'.repeat(40)}\nBase-to-revised path count: 1\nOriginal-to-revised path count: 1\nPackage bytes: 1234\nCOPY_INTEGRITY_ONLY; NO_DECISION_OR_EXECUTION_AUTHORITY\n`);assert.deepEqual(h.err,[]);assert.doesNotMatch(h.out.join(''),/private|PRIVATE_SELECTED|prior_decision/);
+ }
+ const h=revisionHarness();h.ports.readBytes=()=>{throw Error('UNUSED_READ');};assert.equal(await run(['--verify-revision','/private/package'],h.ports),0);
+});
+test('first revision malformed grammar/help never read inputs or invoke either API',async()=>{
+ const sparse=['--build-revision','/private/input'];delete sparse[1];for(const argv of [[],['--help'],['--build-revision'],['--verify-revision','relative'],['--build-revision','/'],['--build-revision','/private/../spec'],['--verify-revision','/private/package','extra'],sparse]){
+  const h=revisionHarness();assert.equal(await run(argv,h.ports),argv[0]==='--help'?0:2);assert.deepEqual(h.reads,[]);assert.deepEqual(h.revisionBuilds,[]);assert.deepEqual(h.revisionVerifies,[]);assert.equal(h.originalCalls(),0);
+ }
+});
+test('first revision JSON frame is finite and original 64 KiB profile remains separate',async()=>{
+ const large=revisionSpec();const path='/'+Array(31).fill('漢'.repeat(127)).join('/')+'漢'.repeat(128);assert.equal(path.length,4096);
+ for(const key of ['base_git_dir','original_git_dir','revised_git_dir','output_dir'])large[key]=path;large.original_package.dir=path;large.prior_decisions=Array.from({length:8},(_,i)=>({dir:path.slice(0,-1)+String(i),file_sha256:'a'.repeat(64)}));
+ const raw=JSON.stringify(large);assert.ok(Buffer.byteLength(raw)>65536);assert.ok(Buffer.byteLength(raw)<262144);
+ const h=revisionHarness();h.ports.readBytes=async()=>encode(raw+' '.repeat(262144-Buffer.byteLength(raw)));assert.equal(await run(['--build-revision','/private/spec'],h.ports),0);assert.equal(h.revisionBuilds.length,1);
+ for(const bytes of [new Uint8Array(262145),encode('{"schema":"x","schema":"y"}'),new Uint8Array([255]),encode({...revisionSpec(),signal:null}),encode({...revisionSpec(),extra:'PRIVATE'}),encode({...revisionSpec(),schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1'}),encode({...revisionSpec(),prior_decisions:[]}),encode({...revisionSpec(),original_package:{dir:'relative'}})]){
+  const a=revisionHarness();a.ports.readBytes=async()=>bytes;assert.equal(await run(['--build-revision','/private/spec'],a.ports),2);assert.deepEqual(a.revisionBuilds,[]);assert.deepEqual(a.err,['PROJECT_REVISION_REVIEW_REJECTED\n']);
+ }
+});
+test('first revision invalid result or thrown errors cannot leak or acknowledge another witness',async()=>{
+ for(const value of [result(),{...revisionResult(),original_commit:'a'.repeat(40)},{...revisionResult(),base_to_revised_count:0},{...revisionResult(),original_to_revised_count:2},{...revisionResult(),manifest_sha256:'PRIVATE_HASH'},{...revisionResult(),package_bytes:29*1024*1024+1},Object.defineProperty({},'status',{get(){throw Error('PRIVATE_GETTER');}})]){
+  const h=revisionHarness();let calls=0;h.ports.buildRevision=async()=>{calls++;return value;};assert.equal(await run(['--build-revision','/private/spec'],h.ports),2);assert.equal(calls,1);assert.deepEqual(h.out,[]);assert.deepEqual(h.err,['PROJECT_REVISION_REVIEW_REJECTED\n']);
+ }
+ const h=revisionHarness();h.ports.verifyRevision=async()=>{throw Error('PRIVATE_FAILURE');};assert.equal(await run(['--verify-revision','/private/package'],h.ports),2);assert.deepEqual(h.err,['PROJECT_REVISION_REVIEW_REJECTED\n']);
+});
+test('first revision acknowledgement failure suppresses fallback and repeated operations',async()=>{
+ const h=revisionHarness();let calls=0,writes=0,diagnostics=0;h.ports.buildRevision=async()=>{calls++;return revisionResult();};h.ports.stdout={write(){writes++;throw Error('PRIVATE_WRITE');}};h.ports.stderr={write(){diagnostics++;}};assert.equal(await run(['--build-revision','/private/spec'],h.ports),2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.equal(h.originalCalls(),0);
 });
