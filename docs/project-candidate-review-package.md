@@ -200,3 +200,48 @@ clears its copy after completion and validates the fixed result projection.
 Source checks use fresh synthetic packages and explicit synthetic decisions:
 `node --test test/candidate-decision-cli.test.mjs test/project-candidate-review-package.test.mjs`.
 They do not make a real owner decision or run generated code.
+
+
+## Explicit selected original-decision verification
+
+Verify one caller-selected original decision without recording another choice:
+
+```sh
+node bin/squire-candidate-decision.mjs verify-decision /absolute/review-package /absolute/decision-dir <expected-decision-sha256>
+```
+
+Both paths follow the normalized absolute path rules above. The expected digest
+is required, lowercase and exactly 64 hexadecimal characters. Malformed/default
+invocation returns 2; exact help returns 0. Neither invokes the verifier or reads
+a request. This route accepts no request file, discovers no decisions, selects
+no winner and never infers ACCEPT or missing attestations.
+
+`verifyProjectCandidateDecision(reviewPackageDir, decisionDir, expectedSha256,
+ports)` verifies the existing original package and one private mode-0700 directory
+containing only a regular, single-link mode-0400 `decision.json`. It reuses the
+bounded no-follow reader, 96 KiB ceiling, canonical encoding and writer binding
+checks: exact package digest and base/candidate object IDs, unique sorted path
+attestations, old/new byte hashes, complete ACCEPT coverage and required binary
+acknowledgements. Stored boundaries must match exactly. An omitted writer input
+note is deliberately accepted as its canonical stored `note: null`; explicit
+null remains invalid as a recording request. Missing stored note, unknown fields,
+noncanonical bytes and wrong digests reject. Package and decision identities are
+rechecked; these cooperative checks are not a hostile-filesystem atomic snapshot.
+Offline verification needs no original source stores.
+
+The frozen API result contains only `status`, `review_package_sha256`,
+`decision_sha256` and `attested_path_count`. Exit 0 prints fixed
+`PROJECT_CANDIDATE_DECISION_VERIFIED`, those digests/count and
+`SELECTED_RECORD_INTEGRITY_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY`. Handled rejection
+returns 2 with fixed `PROJECT_CANDIDATE_DECISION_REJECTED` when the channel is
+usable. Choice, paths, reviewer labels, IDs, notes and attestations are omitted.
+The trusted CLI `verifyDecision` override is separate from recording and revision
+verification callbacks. Existing synchronous/asynchronous output-failure handling
+above applies without retry or fallback. Verification creates no output artifact
+and does not recover original acknowledgement, authenticate a reviewer, establish
+substantive acceptance or grant execution, integration, disclosure or retry authority.
+
+Tests use fresh disposable packages and explicit synthetic records only, including
+all three choices, omitted notes, maximum profiles, corruption, private closure,
+wrong bindings, source stores unavailable and failed acknowledgements. They do not
+use real private decisions or execute candidate code.

@@ -311,6 +311,19 @@ function captureDecision(value){
     attestations,note:value.note??null,
     boundaries:['REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_DECISION_ONLY','NO_EXECUTION_OR_MERGE_AUTHORITY']};
 }
+function validateDecision(captured,verified){
+  const manifest=verified.manifest;
+  if(captured.review_package_sha256!==verified.manifest_sha256||
+     ['base_commit','base_tree','candidate_commit','candidate_tree'].some(key=>captured[key]!==manifest[key]))rejected();
+  const byPath=new Map(manifest.paths.map(item=>[item.path,item]));
+  for(const item of captured.attestations){
+    const path=byPath.get(item.path);if(!path||item.old_sha256!==(path.old?.sha256??null)||
+       item.new_sha256!==path.new.sha256||
+       (captured.choice==='ACCEPT'&&path.binary_review_required&&!item.binary_inspected))rejected();
+  }
+  if(captured.choice==='ACCEPT'&&captured.attestations.length!==manifest.paths.length)rejected();
+}
+
 export async function recordProjectCandidateDecision(reviewPackageDir,decision,freshDecisionDir,ports={}){
   try{
     const fs=capturePort(ports),captured=captureDecision(decision);
@@ -318,15 +331,7 @@ export async function recordProjectCandidateDecision(reviewPackageDir,decision,f
        reviewPackageDir===freshDecisionDir||freshDecisionDir.startsWith(reviewPackageDir+'/')||
        reviewPackageDir.startsWith(freshDecisionDir+'/'))invalid();
     const verified=await verifyInternal(fs,reviewPackageDir,undefined),manifest=verified.manifest;
-    if(captured.review_package_sha256!==verified.manifest_sha256||
-       ['base_commit','base_tree','candidate_commit','candidate_tree'].some(key=>captured[key]!==manifest[key]))rejected();
-    const byPath=new Map(manifest.paths.map(item=>[item.path,item]));
-    for(const item of captured.attestations){
-      const path=byPath.get(item.path);if(!path||item.old_sha256!==(path.old?.sha256??null)||
-         item.new_sha256!==path.new.sha256||
-         (captured.choice==='ACCEPT'&&path.binary_review_required&&!item.binary_inspected))rejected();
-    }
-    if(captured.choice==='ACCEPT'&&captured.attestations.length!==manifest.paths.length)rejected();
+    validateDecision(captured,verified);
     const bytes=encode(captured);if(bytes.length>MAX_REVIEW_DECISION_BYTES)invalid();
     await reserve(fs,freshDecisionDir,undefined);
     await writeFile(fs,freshDecisionDir,'decision.json',bytes,undefined);
@@ -339,5 +344,40 @@ export async function recordProjectCandidateDecision(reviewPackageDir,decision,f
       base_commit:captured.base_commit,base_tree:captured.base_tree,
       candidate_commit:captured.candidate_commit,candidate_tree:captured.candidate_tree,
       changed_path_count:manifest.paths.length,attested_path_count:captured.attestations.length});
+  }catch(error){if(error instanceof ReviewPackageError)throw error;rejected();}
+}
+
+/** Verify one explicitly selected stored original decision; no writes or choice selection. */
+export async function verifyProjectCandidateDecision(reviewPackageDir,decisionDir,expectedSha256,ports={}){
+  try{
+    const fs=capturePort(ports);
+    if(!absolute(reviewPackageDir)||!absolute(decisionDir)||typeof expectedSha256!=='string'||!SHA256.test(expectedSha256)||
+       reviewPackageDir===decisionDir||reviewPackageDir.startsWith(decisionDir+'/')||decisionDir.startsWith(reviewPackageDir+'/'))invalid();
+    const verified=await verifyInternal(fs,reviewPackageDir,undefined);
+    await ancestors(fs,decisionDir);const before=await stat(fs,decisionDir);
+    if(!dir(before)||before.uid!==process.getuid()||(before.mode&0o7777)!==0o700||await fs.realpath(decisionDir)!==decisionDir||
+       (await listPackage(fs,decisionDir,undefined)).join('|')!=='decision.json')rejected();
+    const decisionPath=join(decisionDir,'decision.json'),leafBefore=await stat(fs,decisionPath);
+    const bytes=await readFile(fs,decisionPath,MAX_REVIEW_DECISION_BYTES,undefined);
+    if(digest(bytes)!==expectedSha256)rejected();let captured;
+    try{
+      const raw=JSON.parse(decoder.decode(bytes));
+      closed(raw,['schema','decision_id','reviewer_label','review_package_sha256','base_commit','base_tree',
+        'candidate_commit','candidate_tree','choice','attestations','note','boundaries']);
+      const boundaries=['REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_DECISION_ONLY','NO_EXECUTION_OR_MERGE_AUTHORITY'];
+      if(!Array.isArray(raw.boundaries)||raw.boundaries.length!==boundaries.length||raw.boundaries.some((v,i)=>v!==boundaries[i]))rejected();
+      // The writer rejects explicit null input but canonically stores an omitted note as null.
+      const {boundaries:storedBoundaries,note,...request}=raw;
+      captured=captureDecision(note===null?request:{...request,note});
+      if(!encode(captured).equals(bytes))rejected();
+    }catch{rejected();}
+    validateDecision(captured,verified);
+    const again=await verifyInternal(fs,reviewPackageDir,undefined),after=await stat(fs,decisionDir),leafAfter=await stat(fs,decisionPath);
+    if(again.manifest_sha256!==verified.manifest_sha256||!file(leafAfter)||!stable(leafBefore,leafAfter)||leafAfter.uid!==process.getuid()||
+       leafAfter.nlink!==1||(leafAfter.mode&0o7777)!==0o400||!dir(after)||!stable(before,after)||after.uid!==process.getuid()||
+       (after.mode&0o7777)!==0o700||await fs.realpath(decisionDir)!==decisionDir||
+       (await listPackage(fs,decisionDir,undefined)).join('|')!=='decision.json')rejected();
+    return Object.freeze({status:'PROJECT_CANDIDATE_DECISION_VERIFIED',review_package_sha256:verified.manifest_sha256,
+      decision_sha256:expectedSha256,attested_path_count:captured.attestations.length});
   }catch(error){if(error instanceof ReviewPackageError)throw error;rejected();}
 }

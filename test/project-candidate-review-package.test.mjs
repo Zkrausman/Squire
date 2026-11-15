@@ -11,7 +11,7 @@ import {MAX_REVIEW_DECISION_BYTES} from '../src/project-review-decision-limits.m
 import {artifactCliChild} from './helpers/artifact-cli-child.mjs';
 import {
   buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage,
-  recordProjectCandidateDecision
+  recordProjectCandidateDecision,verifyProjectCandidateDecision
 } from '../src/project-candidate-review-package.mjs';
 
 const GIT='/usr/bin/git';
@@ -529,4 +529,64 @@ test('review package CLI failed sync/closed-pipe acknowledgements leave complete
  assert.equal(r.code,2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.equal((await verifyProjectCandidateReviewPackage(f.output)).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');
  const before=await packageSnapshot(f.output),spec={...f.spec,output_dir:join(f.root,'closed-ack')},input=join(f.root,'closed-spec.json');await fs.writeFile(input,JSON.stringify(spec),{mode:0o600});const bytes=await fs.readFile(input);
  const out=await artifactCliChild(reviewCliUrl,['--build',input],{closed:'stdout'});assert.equal(out.code,2);assert.equal(out.signal,null);assert.equal(out.stdout,'');assert.equal(out.stderr,'');assert.equal((await verifyProjectCandidateReviewPackage(spec.output_dir)).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');assert.deepEqual(await fs.readFile(input),bytes);assert.deepEqual(await packageSnapshot(f.output),before);
+}));
+
+const decisionHash=bytes=>createHash('sha256').update(bytes).digest('hex');
+// Canonical wire encoder is fixture-only, to keep semantic mutants canonical rather than fail for whitespace.
+function decisionWire(value){const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;return Buffer.from(JSON.stringify(sort(value)));}
+async function verifyOriginalCli(packageDir,decisionDir,expected,ports={}){let out='',err='';const code=await runCandidateDecisionCli(['verify-decision',packageDir,decisionDir,expected],{stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},...ports});return {code,out,err};}
+test('original decision verifier shares writer bindings, preserves omitted-note semantics and selects no winner',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),before=await packageSnapshot(f.output),rows=[];
+ for(const [choice,note] of [['ACCEPT',undefined],['REVISE',''],['REJECT','SYNTHETIC_PRIVATE_NOTE']]){
+  const d=await decisionRequest(f,built,choice);if(note===undefined)delete d.note;else d.note=note;const dir=join(f.root,'original-verified-'+choice),written=await recordProjectCandidateDecision(f.output,d,dir),stored=JSON.parse(await fs.readFile(join(dir,'decision.json')));
+  assert.equal(stored.note,note??null);assert.deepEqual(stored.boundaries,['REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_DECISION_ONLY','NO_EXECUTION_OR_MERGE_AUTHORITY']);
+  const verified=await verifyProjectCandidateDecision(f.output,dir,written.decision_sha256);assert.equal(verified.status,'PROJECT_CANDIDATE_DECISION_VERIFIED');assert.equal(verified.review_package_sha256,built.manifest_sha256);assert.equal(verified.decision_sha256,written.decision_sha256);assert.equal(verified.attested_path_count,d.attestations.length);assert.ok(Object.isFrozen(verified));assert.deepEqual(Object.keys(verified).sort(),['attested_path_count','decision_sha256','review_package_sha256','status']);rows.push({dir,written,snapshot:await packageSnapshot(dir)});
+ }
+ const base=await decisionRequest(f,built,'REJECT');delete base.note;const omittedDir=join(f.root,'omitted-note'),undefinedDir=join(f.root,'undefined-note');await recordProjectCandidateDecision(f.output,base,omittedDir);await recordProjectCandidateDecision(f.output,{...base,note:undefined},undefinedDir);assert.deepEqual(await fs.readFile(join(omittedDir,'decision.json')),await fs.readFile(join(undefinedDir,'decision.json')));
+ const invalid=join(f.root,'explicit-null-request');await failCode('INVALID_PROJECT_CANDIDATE_REVIEW_SPEC',()=>recordProjectCandidateDecision(f.output,{...base,note:null},invalid));await assert.rejects(fs.lstat(invalid),{code:'ENOENT'});
+ await fs.rename(f.base,join(f.root,'base-unavailable-for-decisions'));await fs.rename(f.candidate,join(f.root,'candidate-unavailable-for-decisions'));
+ for(const row of rows){const out=await verifyOriginalCli(f.output,row.dir,row.written.decision_sha256);assert.equal(out.code,0);assert.equal(out.err,'');assert.doesNotMatch(out.out,/ACCEPT|REJECT|REVISE|SYNTHETIC_PRIVATE_NOTE|synthetic-fixture|squire-review-package/);assert.deepEqual(await packageSnapshot(row.dir),row.snapshot);}
+ const native=await artifactCliChild(decisionCliUrl,['verify-decision',f.output,rows[2].dir,rows[2].written.decision_sha256]);assert.equal(native.code,0);assert.equal(native.signal,null);assert.equal(native.stderr,'');assert.match(native.stdout,/Attested path count: 0/);assert.deepEqual(await packageSnapshot(f.output),before);
+}));
+test('original decision verifier rejects canonical binding/attestation/boundary tampering and malformed bytes',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built),good=join(f.root,'good-verifier-record'),recorded=await recordProjectCandidateDecision(f.output,d,good),raw=JSON.parse(await fs.readFile(join(good,'decision.json'))),before=await packageSnapshot(good),pkg=await packageSnapshot(f.output);
+ await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>verifyProjectCandidateDecision(f.output,good,'0'.repeat(64)));
+ const mutations=[v=>({...v,review_package_sha256:'0'.repeat(64)}),v=>({...v,base_tree:'0'.repeat(40)}),v=>({...v,candidate_commit:'0'.repeat(40)}),v=>({...v,attestations:v.attestations.slice(1)}),v=>({...v,attestations:v.attestations.map(a=>({...a,binary_inspected:false}))}),v=>({...v,attestations:v.attestations.map((a,i)=>i===0?{...a,new_sha256:'0'.repeat(64)}:a)}),v=>({...v,attestations:v.attestations.map((a,i)=>i===2?{...a,old_sha256:'0'.repeat(64)}:a)}),v=>({...v,attestations:Array(51).fill(v.attestations[0])}),v=>({...v,note:'x'.repeat(4097)}),v=>({...v,unknown:'not-stripped'}),v=>({...v,schema:'SQUIRE_PROJECT_REVISION_DECISION_V1'}),v=>({...v,boundaries:[...v.boundaries,'NO_IMPLICIT_WINNER']}),v=>({...v,boundaries:[...v.boundaries].reverse()}),v=>{delete v.note;return v;},v=>{delete v.boundaries;return v;}];
+ const bad=mutations.map(fn=>decisionWire(fn(structuredClone(raw))));bad.push(Buffer.from('{'),Buffer.from([255]),Buffer.concat([decisionWire(raw),Buffer.from('\n')]),Buffer.from(decisionWire(raw).toString().replace('"choice":"ACCEPT"','"choice":"ACCEPT","choice":"ACCEPT"')),Buffer.alloc(MAX_REVIEW_DECISION_BYTES+1,0x78));
+ for(let i=0;i<bad.length;i++){
+  const dir=join(f.root,'tampered-verifier-'+i);await fs.mkdir(dir,{mode:0o700});await fs.writeFile(join(dir,'decision.json'),bad[i],{mode:0o400});const snapshot=await packageSnapshot(dir);
+  await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>verifyProjectCandidateDecision(f.output,dir,decisionHash(bad[i])));const out=await verifyOriginalCli(f.output,dir,decisionHash(bad[i]));assert.equal(out.code,2);assert.equal(out.out,'');assert.equal(out.err,'PROJECT_CANDIDATE_DECISION_REJECTED\n');assert.deepEqual(await packageSnapshot(dir),snapshot);
+ }
+ assert.deepEqual(await packageSnapshot(good),before);assert.deepEqual(await packageSnapshot(f.output),pkg);const f2=await fixture({extras:false});try{await buildProjectCandidateReviewPackage(f2.spec);await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>verifyProjectCandidateDecision(f2.output,good,recorded.decision_sha256));}finally{await fs.rm(f2.root,{recursive:true,force:true});}
+}));
+test('original decision verifier enforces private closure, regular single-link leaves and ownership',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built,'REJECT');
+ for(const kind of ['directory-mode','file-mode','extra-file','extra-directory','symlink','hardlink','directory-leaf']){
+  const dir=join(f.root,'custody-'+kind),recorded=await recordProjectCandidateDecision(f.output,d,dir),leaf=join(dir,'decision.json');
+  if(kind==='directory-mode')await fs.chmod(dir,0o755);if(kind==='file-mode')await fs.chmod(leaf,0o600);if(kind==='extra-file')await fs.writeFile(join(dir,'extra'),'',{mode:0o400});if(kind==='extra-directory')await fs.mkdir(join(dir,'extra'),{mode:0o700});
+  if(kind==='symlink'){const target=join(f.root,'symlink-target');await fs.copyFile(leaf,target);await fs.unlink(leaf);await fs.symlink(target,leaf);}
+  if(kind==='hardlink'){const target=join(f.root,'hardlink-target');await fs.copyFile(leaf,target);await fs.unlink(leaf);await fs.link(target,leaf);}
+  if(kind==='directory-leaf'){await fs.unlink(leaf);await fs.mkdir(leaf,{mode:0o700});}
+  await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>verifyProjectCandidateDecision(f.output,dir,recorded.decision_sha256));
+ }
+ const dir=join(f.root,'wrong-owner-observation'),recorded=await recordProjectCandidateDecision(f.output,d,dir),leaf=join(dir,'decision.json');const port=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(k=>[k,(...a)=>fs[k](...a)]));port.lstat=async path=>{const s=await fs.lstat(path);return path===leaf?{...s,uid:process.getuid()+1,isFile:()=>true,isSymbolicLink:()=>false}:s;};await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>verifyProjectCandidateDecision(f.output,dir,recorded.decision_sha256,{fs:port}));
+ for(const args of [['relative',dir,recorded.decision_sha256],[f.output,dir,'not-a-digest'],[f.output,f.output,recorded.decision_sha256]])await failCode('INVALID_PROJECT_CANDIDATE_REVIEW_SPEC',()=>verifyProjectCandidateDecision(...args));
+}));
+test('original decision verifier is read-only and detects a fresh fixture changing after read-close',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),dir=join(f.root,'readonly-verifier'),recorded=await recordProjectCandidateDecision(f.output,await decisionRequest(f,built,'REVISE'),dir),before=await packageSnapshot(dir),pkg=await packageSnapshot(f.output);const {constants}=await import('node:fs');let writes=0,opens=0;
+ const port={lstat:(...a)=>fs.lstat(...a),realpath:(...a)=>fs.realpath(...a),opendir:(...a)=>fs.opendir(...a),mkdir(){writes++;throw Error('UNEXPECTED_WRITE');},chmod(){writes++;throw Error('UNEXPECTED_WRITE');},open:(path,flags,...a)=>{opens++;assert.equal(flags&(constants.O_WRONLY|constants.O_RDWR|constants.O_CREAT|constants.O_TRUNC|constants.O_APPEND),0);return fs.open(path,flags,...a);}};
+ assert.equal((await verifyProjectCandidateDecision(f.output,dir,recorded.decision_sha256,{fs:port})).status,'PROJECT_CANDIDATE_DECISION_VERIFIED');assert.equal(writes,0);assert.ok(opens>0);assert.deepEqual(await packageSnapshot(dir),before);assert.deepEqual(await packageSnapshot(f.output),pkg);
+ let changed=false;const drifting={...port,open:async(path,...a)=>{const h=await fs.open(path,...a);if(path!==join(dir,'decision.json'))return h;return {stat:(...v)=>h.stat(...v),read:(...v)=>h.read(...v),close:async()=>{await h.close();if(!changed){changed=true;await fs.chmod(path,0o600);await fs.appendFile(path,' ');await fs.chmod(path,0o400);}}};}};
+ await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>verifyProjectCandidateDecision(f.output,dir,recorded.decision_sha256,{fs:drifting}));assert.equal(changed,true);assert.equal(writes,0);
+}));
+test('original decision verifier and CLI accept maximum fifty-path escaped-note records unchanged',async()=>{
+ const f=await fixture({changeCount:50,mutateCandidateRows:rows=>{let i=0;for(const row of rows)if(row.path.startsWith('docs/'))row.path='a'.repeat(63)+'/'+'b'.repeat(63)+'/'+'c'.repeat(63)+'/'+'f'+String(i++).padStart(2,'0')+'d'.repeat(57)+'.txt';}});try{
+  const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built);d.note='\u0001'.repeat(4096);assert.equal(d.attestations.length,50);const dir=join(f.root,'maximum-original-decision'),recorded=await recordProjectCandidateDecision(f.output,d,dir),before=await packageSnapshot(dir);assert.ok((await fs.stat(join(dir,'decision.json'))).size<=MAX_REVIEW_DECISION_BYTES);
+  const verified=await verifyProjectCandidateDecision(f.output,dir,recorded.decision_sha256);assert.equal(verified.attested_path_count,50);const out=await verifyOriginalCli(f.output,dir,recorded.decision_sha256);assert.equal(out.code,0);assert.equal(out.err,'');assert.match(out.out,/Attested path count: 50/);assert.deepEqual(await packageSnapshot(dir),before);
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});
+test('original decision verifier CLI output failures preserve records without reader or writer calls',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),dir=join(f.root,'output-original-decision'),recorded=await recordProjectCandidateDecision(f.output,await decisionRequest(f,built,'REJECT'),dir),before=await packageSnapshot(dir),pkg=await packageSnapshot(f.output);let calls=0,writes=0,diagnostics=0,otherCalls=0;
+ const out=await verifyOriginalCli(f.output,dir,recorded.decision_sha256,{verifyDecision:async(...a)=>{calls++;return verifyProjectCandidateDecision(...a);},stdout:{write(){writes++;throw Error('PRIVATE_STDOUT');}},stderr:{write(){diagnostics++;}},readBytes(){otherCalls++;throw Error('UNUSED_READ');},record(){otherCalls++;throw Error('UNUSED_WRITE');},recordRevision(){otherCalls++;throw Error('UNUSED_WRITE');}});assert.equal(out.code,2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.equal(otherCalls,0);
+ const closed=await artifactCliChild(decisionCliUrl,['verify-decision',f.output,dir,recorded.decision_sha256],{closed:'stdout'});assert.equal(closed.code,2);assert.equal(closed.signal,null);assert.equal(closed.stdout,'');assert.equal(closed.stderr,'');const rejected=await artifactCliChild(decisionCliUrl,['verify-decision',f.output,dir,'0'.repeat(64)],{closed:'stderr'});assert.equal(rejected.code,2);assert.equal(rejected.signal,null);assert.equal(rejected.stdout,'');assert.equal(rejected.stderr,'');assert.deepEqual(await packageSnapshot(dir),before);assert.deepEqual(await packageSnapshot(f.output),pkg);
 }));
