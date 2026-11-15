@@ -110,3 +110,15 @@ test('actual CLI preserves the verifier custody and byte-bound failures',async()
   out=spawnSync(process.execPath,[CLI,'verify',attempt,digest],{encoding:'utf8'});
   assert.equal(out.status,0);assert.equal(out.stdout,'COPY_INTEGRITY_VERIFIED ACKNOWLEDGEMENT_UNKNOWN\n');
 }));
+
+test('physical output failures leave fresh synthetic evidence unchanged',async()=>syntheticBundle(async(attempt,digest)=>{
+  const {artifactCliChild}=await import('./helpers/artifact-cli-child.mjs');
+  const snapshot=async()=>Promise.all((await fs.readdir(attempt)).sort().map(async name=>({name,bytes:await fs.readFile(join(attempt,name)),mode:(await fs.stat(join(attempt,name))).mode})));
+  const before=await snapshot();let writes=0,diagnostics=0;
+  assert.equal(await runPhysicalEvidenceCli(['verify',attempt,digest],{stdout:{write(){writes++;throw Error('PRIVATE_WRITE');}},stderr:{write(){diagnostics++;}}}),1);
+  assert.equal(writes,1);assert.equal(diagnostics,0);assert.deepEqual(await snapshot(),before);
+  const closed=await artifactCliChild(new URL('../bin/squire-physical-evidence.mjs',import.meta.url),['verify',attempt,digest,'--json'],{closed:'stdout'});
+  assert.equal(closed.code,1);assert.equal(closed.signal,null);assert.equal(closed.stdout,'');assert.equal(closed.stderr,'');assert.deepEqual(await snapshot(),before);
+  const healthy=await run(['verify',attempt,digest,'--json']);assert.equal(healthy.code,0);assert.equal(healthy.stderr,'');
+  assert.equal(healthy.stdout,JSON.stringify({schema:'SQUIRE_PHYSICAL_EVIDENCE_CLI_V1',status:'COPY_INTEGRITY_VERIFIED',copy_integrity:'VERIFIED',acknowledgement:'UNKNOWN'})+'\n');assert.deepEqual(await snapshot(),before);
+}));

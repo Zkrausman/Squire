@@ -1309,31 +1309,37 @@ function cliFailureCode(error,forVerify){
 }
 /** Explicit fixed-status local CLI router; import and default invocation are inert. */
 export async function runProjectPortableCandidateSnapshotCli(argv,ports={}){
-  const output=key=>{
-    const stream=ports[key]??process[key];
-    if(!stream||typeof stream.write!=='function')invalid();
-    return text=>{
-      try{stream.write(text);}catch{throw new SnapshotError('PROJECT_PORTABLE_SNAPSHOT_REJECTED');}
-    };
-  };
-  let stdout,stderr;try{stdout=output('stdout');stderr=output('stderr');}catch{return 2;}
-  if(!Array.isArray(argv)||argv.length!==2||!['--build','--verify'].includes(argv[0])||!absolutePath(argv[1])){
-    stderr('Usage: node bin/squire-portable-candidate.mjs --build <spec.json> | --verify <snapshot-dir>\n');return 2;
-  }
-  const verify=argv[0]==='--verify';
   try{
-    let result;
-    if(verify)result=await verifyProjectPortableCandidateSnapshot(argv[1]);
-    else{
-      const request=await readCliSpec(argv[1]);
-      result=await buildProjectPortableCandidateSnapshot(request);
+    let outputFailed=false;
+    const output=key=>{
+      const stream=ports[key]??process[key],method=stream.write;
+      if(typeof method!=='function')invalid();
+      return text=>{if(outputFailed)return;
+        try{return Reflect.apply(method,stream,[text]);}catch{outputFailed=true;}};
+    };
+    const stdout=output('stdout'),stderr=output('stderr');
+    if(!Array.isArray(argv)||argv.length!==2||!['--build','--verify'].includes(argv[0])||!absolutePath(argv[1])){
+      stderr('Usage: node bin/squire-portable-candidate.mjs --build <spec.json> | --verify <snapshot-dir>\n');return 2;
     }
-    stdout(publicLines(result));return 0;
-  }catch(error){stderr(`${cliFailureCode(error,verify)}\n`);return 2;}
+    const verify=argv[0]==='--verify';
+    try{
+      let result;
+      if(verify)result=await verifyProjectPortableCandidateSnapshot(argv[1]);
+      else{
+        const request=await readCliSpec(argv[1]);
+        result=await buildProjectPortableCandidateSnapshot(request);
+      }
+      stdout(publicLines(result));return outputFailed?2:0;
+    }catch(error){stderr(`${cliFailureCode(error,verify)}\n`);return 2;}
+  }catch{return 2;}
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
-  process.exitCode=await runProjectPortableCandidateSnapshotCli(process.argv.slice(2));
+  let outputFailed=false;
+  const outputError=()=>{outputFailed=true;process.exitCode=2;};
+  process.stdout.on('error',outputError);process.stderr.on('error',outputError);
+  const code=await runProjectPortableCandidateSnapshotCli(process.argv.slice(2));
+  process.exitCode=outputFailed?2:code;
 }
 
 // Separate P1b source reader. It binds three pinned stores and two direct endpoint
