@@ -485,3 +485,48 @@ test('decision CLI accepts maximum paths, fifty attestations, escaped note and e
   const over=await recordCli(f,d,'over-input-cap',{text:padded+' '});assert.equal(over.code,2);await assert.rejects(fs.lstat(over.dest),{code:'ENOENT'});
  }finally{await fs.rm(f.root,{recursive:true,force:true});}
 });
+
+const reviewCliUrl=new URL('../bin/squire-candidate-review.mjs',import.meta.url);
+const {runCandidateReviewCli}=await import('../bin/squire-candidate-review.mjs');
+async function packageCli(f,spec,suffix,{text,ports={}}={}){
+ const input=join(f.root,'cli-spec-'+suffix+'.json');await fs.writeFile(input,text??JSON.stringify(spec),{mode:0o600});let out='',err='';
+ const code=await runCandidateReviewCli(['--build',input],{stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},...ports});return {code,out,err,input};
+}
+async function packageSnapshot(dir){const rows=[];async function walk(root,relative=''){for(const name of (await fs.readdir(root)).sort()){const path=join(root,name),rel=relative?relative+'/'+name:name,st=await fs.lstat(path);if(st.isDirectory())await walk(path,rel);else rows.push({path:rel,mode:st.mode,sha256:createHash('sha256').update(await fs.readFile(path)).digest('hex')});}}await walk(dir);return rows;}
+test('review package CLI builds original private package and verifies offline without source stores',()=>withFixture(async f=>{
+ const prior=await buildProjectCandidateReviewPackage(f.spec),decisionDir=join(f.root,'prior-decision');await recordProjectCandidateDecision(f.output,await decisionRequest(f,prior,'REJECT'),decisionDir);
+ const oldPackage=await packageSnapshot(f.output),oldDecision=await packageSnapshot(decisionDir);
+ const spec={...f.spec,output_dir:join(f.root,'cli-package')},input=join(f.root,'executable-spec.json');await fs.writeFile(input,JSON.stringify(spec),{mode:0o600});const before=await fs.readFile(input),refBefore=await fs.readFile(join(f.candidate,'refs','heads','candidate-fixture'));
+ const built=await artifactCliChild(reviewCliUrl,['--build',input]);assert.equal(built.code,0);assert.equal(built.signal,null);assert.equal(built.stderr,'');assert.match(built.stdout,/^PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED/);assert.doesNotMatch(built.stdout,/src\/app|fixture|squire-review-package|prior-decision/);
+ const verified=await verifyProjectCandidateReviewPackage(spec.output_dir);assert.match(built.stdout,new RegExp(verified.manifest_sha256));assert.deepEqual(await fs.readFile(input),before);assert.deepEqual(await fs.readFile(join(f.candidate,'refs','heads','candidate-fixture')),refBefore);assert.deepEqual(await packageSnapshot(f.output),oldPackage);assert.deepEqual(await packageSnapshot(decisionDir),oldDecision);
+ const packageBefore=await packageSnapshot(spec.output_dir);await fs.rename(f.base,join(f.root,'base-unavailable'));await fs.rename(f.candidate,join(f.root,'candidate-unavailable'));
+ const out=await artifactCliChild(reviewCliUrl,['--verify',spec.output_dir]);assert.equal(out.code,0);assert.equal(out.signal,null);assert.equal(out.stderr,'');assert.match(out.stdout,/^PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED/);assert.match(out.stdout,new RegExp(verified.manifest_sha256));assert.deepEqual(await packageSnapshot(spec.output_dir),packageBefore);assert.deepEqual(await packageSnapshot(decisionDir),oldDecision);
+ assert.deepEqual((await fs.readdir(spec.output_dir)).sort(),['changes','diff.txt','review-manifest.json']);
+}));
+test('review package CLI rejects wrong source/object/profile bindings before fresh destination',()=>withFixture(async f=>{
+ const bad=[{...f.spec,candidate_git_identity:{dev:0,ino:0}},{...f.spec,base_git_identity:{dev:0,ino:0}},
+  {...f.spec,result:{...f.result,candidate_tree:'0'.repeat(40)}},{...f.spec,result:{...f.result,base_commit:'0'.repeat(40)}},
+  {...f.spec,result:{...f.result,schema:'SQUIRE_PROJECT_REVISION_CANDIDATE_V1'}},{...f.spec,result:{...f.result,changed_paths:['src/not-the-candidate.mjs']}},
+  {...f.spec,unknown:'PRIVATE'},{...f.spec,candidate_git_dir:'relative'},{...f.spec,signal:null}];
+ for(let i=0;i<bad.length;i++){const spec={...bad[i],output_dir:join(f.root,'bad-package-'+i)},r=await packageCli(f,spec,'bad-'+i);assert.equal(r.code,2);assert.equal(r.out,'');assert.equal(r.err,'PROJECT_CANDIDATE_REVIEW_REJECTED\n');await assert.rejects(fs.lstat(spec.output_dir),{code:'ENOENT'});}
+ const first=await packageCli(f,f.spec,'first');assert.equal(first.code,0);const original=await packageSnapshot(f.output);const repeated=await packageCli(f,f.spec,'existing-dest');assert.equal(repeated.code,2);assert.equal(repeated.err,'PROJECT_CANDIDATE_REVIEW_REJECTED\n');assert.deepEqual(await packageSnapshot(f.output),original);
+ // Verification is read-only and fails closed on a fresh synthetic corruption.
+ const copy=join(f.output,'changes','src','app.mjs.new');await fs.chmod(copy,0o600);await fs.writeFile(copy,'corrupt');await fs.chmod(copy,0o400);let err='';assert.equal(await runCandidateReviewCli(['--verify',f.output],{stdout:{write(){throw Error('UNEXPECTED_SUCCESS');}},stderr:{write:s=>err+=s}}),2);assert.equal(err,'PROJECT_CANDIDATE_REVIEW_REJECTED\n');
+}));
+test('review package CLI accepts fifty paths and exact 64 KiB spec, rejects one byte over',async()=>{
+ const f=await fixture({changeCount:50});try{
+  assert.equal(f.result.changed_paths.length,50);const raw=JSON.stringify(f.spec),padded=raw+' '.repeat(65536-Buffer.byteLength(raw));const r=await packageCli(f,f.spec,'maximum',{text:padded});assert.equal(r.code,0);assert.equal(r.err,'');assert.equal((await verifyProjectCandidateReviewPackage(f.output)).changed_path_count,50);
+  const next={...f.spec,output_dir:join(f.root,'over-limit')},text=JSON.stringify(next);const over=await packageCli(f,next,'overflow',{text:text+' '.repeat(65537-Buffer.byteLength(text))});assert.equal(over.code,2);await assert.rejects(fs.lstat(next.output_dir),{code:'ENOENT'});
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});
+test('review package CLI retains partial output after API I/O failure without retry',()=>withFixture(async f=>{
+ const target=f.output;const names=['lstat','realpath','mkdir','open','chmod','opendir'];const port=Object.fromEntries(names.map(k=>[k,(...a)=>fs[k](...a)]));
+ port.open=async(...a)=>{const h=await fs.open(...a);if(a[0]!==join(target,'review-manifest.json'))return h;return {stat:(...v)=>h.stat(...v),writeFile:(...v)=>h.writeFile(...v),close:async()=>{await h.close();throw Error('PRIVATE_CLOSE');}};};
+ let calls=0;const r=await packageCli(f,f.spec,'io-failure',{ports:{build:async s=>{calls++;return buildProjectCandidateReviewPackage(s,{fs:port});}}});assert.equal(r.code,2);assert.equal(calls,1);assert.equal(r.out,'');assert.equal(r.err,'PROJECT_CANDIDATE_REVIEW_REJECTED\n');assert.equal((await fs.lstat(join(target,'review-manifest.json'))).isFile(),true);
+}));
+test('review package CLI failed sync/closed-pipe acknowledgements leave complete fresh outputs',()=>withFixture(async f=>{
+ let calls=0,writes=0,diagnostics=0;const r=await packageCli(f,f.spec,'sync-ack',{ports:{build:async s=>{calls++;return buildProjectCandidateReviewPackage(s);},stdout:{write(){writes++;throw Error('PRIVATE_WRITE');}},stderr:{write(){diagnostics++;}}}});
+ assert.equal(r.code,2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.equal((await verifyProjectCandidateReviewPackage(f.output)).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');
+ const before=await packageSnapshot(f.output),spec={...f.spec,output_dir:join(f.root,'closed-ack')},input=join(f.root,'closed-spec.json');await fs.writeFile(input,JSON.stringify(spec),{mode:0o600});const bytes=await fs.readFile(input);
+ const out=await artifactCliChild(reviewCliUrl,['--build',input],{closed:'stdout'});assert.equal(out.code,2);assert.equal(out.signal,null);assert.equal(out.stdout,'');assert.equal(out.stderr,'');assert.equal((await verifyProjectCandidateReviewPackage(spec.output_dir)).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');assert.deepEqual(await fs.readFile(input),bytes);assert.deepEqual(await packageSnapshot(f.output),before);
+}));
