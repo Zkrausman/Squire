@@ -5,6 +5,10 @@ import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {deflateSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
+import {runCandidateDecisionCli} from '../bin/squire-candidate-decision.mjs';
+import {MAX_REVIEW_DECISION_BYTES} from '../src/project-review-decision-limits.mjs';
+import {artifactCliChild} from './helpers/artifact-cli-child.mjs';
 import {
   buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage,
   recordProjectCandidateDecision
@@ -381,3 +385,103 @@ test('interrupted ACCEPT decision write leaves earlier REJECT unchanged',()=>wit
   assert.equal((await fs.lstat(secondDir)).isDirectory(),true);
   assert.equal((await fs.lstat(join(secondDir,'decision.json'))).isFile(),true);
 }));
+
+const decisionCliUrl=new URL('../bin/squire-candidate-decision.mjs',import.meta.url);
+const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
+async function decisionRequest(f,built,choice='ACCEPT'){
+ const manifest=JSON.parse(await fs.readFile(join(f.output,'review-manifest.json')));
+ return {schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1',decision_id:`synthetic-${choice.toLowerCase()}`,reviewer_label:'synthetic-fixture',
+  review_package_sha256:built.manifest_sha256,base_commit:f.result.base_commit,base_tree:f.result.base_tree,
+  candidate_commit:f.result.candidate_commit,candidate_tree:f.result.candidate_tree,choice,
+  attestations:choice==='ACCEPT'?manifest.paths.map(p=>({path:p.path,old_sha256:p.old?.sha256??null,new_sha256:p.new.sha256,
+   binary_inspected:p.binary_review_required})):[],note:'SYNTHETIC_PRIVATE_NOTE'};
+}
+async function recordCli(f,request,suffix,{text,ports={}}={}){
+ const input=join(f.root,`request-${suffix}.json`),dest=join(f.root,`decision-${suffix}`);let out='',err='';
+ await fs.writeFile(input,text??JSON.stringify(request),{mode:0o600});
+ const code=await runCandidateDecisionCli(['record',f.output,input,dest],{stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},...ports});
+ return {code,out,err,input,dest};
+}
+test('decision CLI records all explicit synthetic choices without changing package or earlier decisions',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),packageBefore=await fs.readFile(join(f.output,'review-manifest.json'));
+ const earlier=[];
+ for(const choice of ['ACCEPT','REVISE','REJECT']){
+  const d=await decisionRequest(f,built,choice),input=join(f.root,`request-${choice}.json`),dest=join(f.root,`decision-${choice}`);
+  const inputBytes=Buffer.from(JSON.stringify(d));await fs.writeFile(input,inputBytes,{mode:0o600});
+  let result;
+  if(choice==='ACCEPT')result=await artifactCliChild(decisionCliUrl,['record',f.output,input,dest]);
+  else{let stdout='',stderr='';const code=await runCandidateDecisionCli(['record',f.output,input,dest],{stdout:{write:s=>stdout+=s},stderr:{write:s=>stderr+=s}});result={code,stdout,stderr,signal:null};}
+  assert.equal(result.code,0);assert.equal(result.signal,null);assert.equal(result.stderr,'');
+  const bytes=await fs.readFile(join(dest,'decision.json'));assert.equal(JSON.parse(bytes).choice,choice);
+  assert.match(result.stdout,new RegExp(`Decision SHA256: ${sha256(bytes)}`));
+  assert.doesNotMatch(result.stdout,/SYNTHETIC_PRIVATE_NOTE|synthetic-fixture|src\/app|assets\/icon/);
+  assert.equal(result.stdout.includes(f.root),false);assert.deepEqual(await fs.readFile(input),inputBytes);
+  assert.equal((await fs.lstat(dest)).mode&0o777,0o700);assert.equal((await fs.lstat(join(dest,'decision.json'))).mode&0o777,0o400);
+  for(const [p,b] of earlier)assert.deepEqual(await fs.readFile(p),b);earlier.push([join(dest,'decision.json'),bytes]);
+ }
+ assert.deepEqual(await fs.readFile(join(f.output,'review-manifest.json')),packageBefore);
+}));
+test('decision CLI rejects wrong bindings, incomplete/binary attestations and closed-request violations before output',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built);
+ const malformed=[{...d,review_package_sha256:'0'.repeat(64)},{...d,base_commit:'0'.repeat(40)},
+  {...d,candidate_tree:'0'.repeat(40)},{...d,attestations:d.attestations.slice(1)},
+  {...d,attestations:d.attestations.map(a=>({...a,binary_inspected:false}))},
+  {...d,attestations:d.attestations.map((a,i)=>i===0?{...a,new_sha256:'0'.repeat(64)}:a)},
+  {...d,attestations:d.attestations.map((a,i)=>i===2?{...a,old_sha256:'0'.repeat(64)}:a)},
+  {...d,private_unknown:'not-dropped'},{...d,boundaries:[]},{...d,note:null},
+  {...d,schema:'SQUIRE_PROJECT_REVISION_DECISION_V1'},{...d,choice:'AUTO'},
+  {...d,note:'x'.repeat(4097)},{...d,attestations:Array(51).fill(d.attestations[0])}];
+ for(let i=0;i<malformed.length;i++){
+  const r=await recordCli(f,malformed[i],`invalid-${i}`);assert.equal(r.code,2);assert.equal(r.out,'');
+  assert.equal(r.err,'PROJECT_CANDIDATE_DECISION_REJECTED\n');await assert.rejects(fs.lstat(r.dest),{code:'ENOENT'});
+ }
+ const revisionPackage=join(f.root,'revision-package');await fs.mkdir(revisionPackage,{mode:0o700});
+ await fs.writeFile(join(revisionPackage,'revision-review-manifest.json'),'{"schema":"SQUIRE_PROJECT_REVISION_REVIEW_PACKAGE_V1"}',{mode:0o400});
+ const input=join(f.root,'request-revision.json');await fs.writeFile(input,JSON.stringify(d),{mode:0o600});
+ let err='';const dest=join(f.root,'not-an-original-decision');
+ assert.equal(await runCandidateDecisionCli(['record',revisionPackage,input,dest],{stdout:{write(){throw Error('UNEXPECTED_SUCCESS');}},stderr:{write:s=>err+=s}}),2);
+ assert.equal(err,'PROJECT_CANDIDATE_DECISION_REJECTED\n');await assert.rejects(fs.lstat(dest),{code:'ENOENT'});
+}));
+test('decision CLI preserves an existing destination and never treats a stored record as a new request',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built,'REJECT');
+ const first=await recordCli(f,d,'first');assert.equal(first.code,0);const stored=await fs.readFile(join(first.dest,'decision.json'));
+ let err='';assert.equal(await runCandidateDecisionCli(['record',f.output,first.input,first.dest],{stdout:{write(){throw Error('UNEXPECTED_SUCCESS');}},stderr:{write:s=>err+=s}}),2);
+ assert.equal(err,'PROJECT_CANDIDATE_DECISION_REJECTED\n');assert.deepEqual(await fs.readFile(join(first.dest,'decision.json')),stored);
+ const replay=await recordCli(f,{},'stored-as-request',{text:stored});assert.equal(replay.code,2);await assert.rejects(fs.lstat(replay.dest),{code:'ENOENT'});
+}));
+test('decision CLI retains prior records and partial output after API I/O failure',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),first=await recordCli(f,await decisionRequest(f,built,'REJECT'),'prior');
+ assert.equal(first.code,0);const before=await fs.readFile(join(first.dest,'decision.json')),d=await decisionRequest(f,built),target=join(f.root,'decision-close-failure');
+ let calls=0;const port=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(name=>[name,(...a)=>fs[name](...a)]));
+ port.open=async(...a)=>{const h=await fs.open(...a);if(a[0]!==join(target,'decision.json'))return h;
+  return {stat:(...v)=>h.stat(...v),writeFile:(...v)=>h.writeFile(...v),close:async()=>{await h.close();throw Error('PRIVATE_CLOSE_FAILURE');}};};
+ // Only the existing closed six-key filesystem port is supplied to the API.
+ const apiPort=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(k=>[k,port[k]]));
+ const r=await recordCli(f,d,'close-failure',{ports:{record:async(...a)=>{calls++;return recordProjectCandidateDecision(...a,{fs:apiPort});}}});
+ assert.equal(r.code,2);assert.equal(r.err,'PROJECT_CANDIDATE_DECISION_REJECTED\n');assert.equal(calls,1);
+ assert.equal((await fs.lstat(join(target,'decision.json'))).isFile(),true);assert.deepEqual(await fs.readFile(join(first.dest,'decision.json')),before);
+}));
+test('decision CLI failed synchronous or closed-pipe acknowledgement leaves the synthetic record',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built,'REVISE');
+ let writes=0,diagnostics=0,partial='';
+ const r=await recordCli(f,d,'sync-output',{ports:{stdout:{write:s=>{writes++;partial+=s.slice(0,10);throw Error('PRIVATE_OUTPUT');}},stderr:{write(){diagnostics++;}}}});
+ assert.equal(r.code,2);assert.equal(writes,1);assert.equal(diagnostics,0);assert.ok(partial.length>0);
+ assert.equal((await fs.lstat(join(r.dest,'decision.json'))).isFile(),true);
+ const input=join(f.root,'closed-request.json'),dest=join(f.root,'closed-output');await fs.writeFile(input,JSON.stringify(d),{mode:0o600});
+ const closed=await artifactCliChild(decisionCliUrl,['record',f.output,input,dest],{closed:'stdout'});
+ assert.equal(closed.code,2);assert.equal(closed.signal,null);assert.equal(closed.stdout,'');assert.equal(closed.stderr,'');
+ assert.equal((await fs.lstat(join(dest,'decision.json'))).isFile(),true);
+}));
+test('decision CLI accepts maximum paths, fifty attestations, escaped note and exact input cap',async()=>{
+ const f=await fixture({changeCount:50,mutateCandidateRows:rows=>{let i=0;for(const row of rows)if(row.path.startsWith('docs/')){
+  row.path='a'.repeat(63)+'/'+'b'.repeat(63)+'/'+'c'.repeat(63)+'/'+'f'+String(i++).padStart(2,'0')+'d'.repeat(57)+'.txt';assert.equal(row.path.length,256);
+ }}});
+ try{
+  const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built);d.note='\u0001'.repeat(4096);
+  const text=JSON.stringify(d),padded=text+' '.repeat(MAX_REVIEW_DECISION_BYTES-Buffer.byteLength(text));
+  const r=await recordCli(f,d,'maximum',{text:padded});assert.equal(r.code,0);assert.equal(r.err,'');
+  const stored=await fs.readFile(join(r.dest,'decision.json'));assert.ok(stored.length<=MAX_REVIEW_DECISION_BYTES);
+  assert.equal(JSON.parse(stored).attestations.length,50);assert.equal(JSON.parse(stored).note,d.note);
+  const over=await recordCli(f,d,'over-input-cap',{text:padded+' '});assert.equal(over.code,2);await assert.rejects(fs.lstat(over.dest),{code:'ENOENT'});
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});
