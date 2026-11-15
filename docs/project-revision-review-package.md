@@ -211,3 +211,57 @@ The exported CLI's trusted `recordRevision` injection is separate from its
 original `record` injection; executable defaults use the existing APIs. Tests
 use newly constructed synthetic packages and explicit synthetic choices only:
 `node --test test/candidate-decision-cli.test.mjs test/project-revision-review-package.test.mjs`.
+
+## Explicit selected revision decision verification
+
+Verify one explicitly selected first-revision decision without writing an API caller:
+
+```sh
+node bin/squire-candidate-decision.mjs verify-revision-decision /absolute/revision-package /absolute/decision-dir EXPECTED_DECISION_SHA256
+```
+
+`EXPECTED_DECISION_SHA256` is a placeholder for the caller's retained exact
+64-character lowercase hexadecimal digest of the selected `decision.json`.
+The command requires it; it never computes its own expected digest, discovers a
+record, selects the newest record or chooses among conflicting records. Both
+directory arguments follow the normalized absolute non-root path grammar above.
+There is no JSON request, stdin input, original-decision verification mode,
+recording call, source execution or integration in this route.
+
+The route delegates once to the existing
+`verifyProjectRevisionDecision(packageDir, decisionDir, expectedSha256)` API.
+The existing canonical 96 KiB record bound, schema and exact package/object/prior
+and two-view attestation checks remain unchanged. It reads only the selected
+revision package and decision, without Git stores or original prior-decision
+directories. It does not alter packages or records, repair corruption, translate
+another schema or infer that undisclosed decisions do not exist.
+
+Success exits 0 for any valid selected `ACCEPT`, `REVISE` or `REJECT` record; it
+is integrity verification, not a new decision or functional PASS. Stdout contains
+only `PROJECT_REVISION_DECISION_VERIFIED`, revision-package and decision SHA-256s,
+attested-path count (0–100), and
+`SELECTED_RECORD_INTEGRITY_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY`. The wrapper
+validates the returned status, digest formats, equality to the caller's expected
+decision digest, valid choice enumeration and count before output. The stored
+choice is not printed, nor are private paths, IDs, labels, notes, attestations
+or source text. Input/API/result failure returns 2 with fixed
+`PROJECT_REVISION_DECISION_REJECTED` when the channel is usable. Malformed or
+missing arguments return usage/2 with no verifier, reader or recording calls;
+exact `--help` is input-free and lists all explicit decision routes.
+
+The trusted exported-CLI `verifyRevisionDecision` injection is separate from
+`readBytes`, `record` and `recordRevision`; executable defaults use the accepted
+verifier. Existing recording success bytes, request profiles and API calls are
+unchanged. Plain imports remain inert. Existing synchronous sink suppression and
+executable-only persistent stdio error observers latch 2, with no output retry,
+fallback, cleanup or rollback. `write(false)` retains backpressure meaning.
+No flush, consumer-receipt or post-termination-error guarantee is added. Failed
+output does not authorize replay of a mutation; verification never retries one.
+
+Copy/record integrity does not authenticate a reviewer or producer, prove human
+attention, current source state, substantive acceptance, task correctness,
+original acknowledgement or job completion, or grant execution, integration,
+merge or disclosure authority. Later verification does not settle a previously
+lost acknowledgement. Tests use fresh synthetic choices and disposable packages
+only, including wrong digests/bindings, corruption, maximum attestations and
+output failures; they perform no real private decision use or candidate execution.
