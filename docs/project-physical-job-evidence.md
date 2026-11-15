@@ -19,6 +19,19 @@ contents or exception text. Verification cannot establish the producer's
 identity, original acknowledgement, job success, descendant settlement, retry
 authority or native acceptance.
 
+Output failure is not a new integrity or acknowledgement result. Synchronous
+sink capture/getter/write failures are contained without raw exception output;
+a failed success write returns 1 and suppresses further output, including
+fallback diagnostics. Usage remains exit 2 and healthy help remains exit 0.
+The executable alone observes stdout/stderr errors for its lifetime and latches
+exit 1, including early or late asynchronous stream errors. Plain imports add
+no process observers. Successful text/JSON and verifier codes are unchanged;
+`write(false)` retains its backpressure meaning. No output retry, fallback,
+drain/flush or consumer-receipt guarantee is added. Already emitted bytes may
+remain; errors not observed before termination are not certified. A failed
+acknowledgement does not authorize rerunning any operation or settle original
+acknowledgement. This verifier does not modify the selected evidence.
+
 The opt-in `runProjectCodexTaskWithPhysicalEvidence(spec, options, ports,
 evidenceSpec)` route is for one legacy bounded `PROJECT_CODEGEN_V1` attempt.
 When the original runner returns in time, its `result` is returned unchanged

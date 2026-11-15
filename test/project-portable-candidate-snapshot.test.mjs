@@ -759,3 +759,19 @@ test('retains partial output after cancellation and rejects source-ref drift dur
   assert.equal((await fs.stat(driftOutput)).mode&0o777,0o700);
   assert.ok((await fs.readdir(driftOutput)).length>0);
 }));
+
+test('portable CLI synchronous failed acknowledgement retains completed fresh snapshot without fallback',async()=>withRoot(async root=>{
+ const f=await makeFixture(root),dest=join(root,'ack-failed'),spec=join(root,'ack-spec.json');await fs.writeFile(spec,JSON.stringify(await f.request(dest)),{mode:0o400});const original=await fs.readFile(spec);
+ let writes=0,diagnostics=0,partial='';const code=await runProjectPortableCandidateSnapshotCli(['--build',spec],{stdout:{write(s){writes++;partial+=s.slice(0,8);throw Error('PRIVATE_OUTPUT');}},stderr:{write(){diagnostics++;throw Error('PRIVATE_FALLBACK');}}});
+ assert.equal(code,2);assert.equal(writes,1);assert.equal(diagnostics,0);assert.ok(partial.length>0);assert.equal((await verifyProjectPortableCandidateSnapshot(dest)).status,'VERIFIED_FOR_PRIVATE_REVIEW');assert.deepEqual(await fs.readFile(spec),original);
+ let text='';const sink={write(s){assert.equal(this,sink);text+=s;return false;}};
+ const verified=await verifyProjectPortableCandidateSnapshot(dest);assert.equal(await runProjectPortableCandidateSnapshotCli(['--verify',dest],{stdout:sink,stderr:{write(){throw Error('UNEXPECTED');}}}),0);
+ const expected=[verified.status,`Candidate commit: ${verified.candidate_commit}`,`Candidate tree: ${verified.candidate_tree}`,`Base commit: ${verified.base_commit}`,`Base tree: ${verified.base_tree}`,`Input result SHA-256: ${verified.input_result_sha256}`,`Manifest SHA-256: ${verified.manifest_sha256}`,`Changed path count: ${verified.changed_path_count}`,`Object count: ${verified.object_count}`,`Candidate file count: ${verified.candidate_file_count}`,`Base preimage count: ${verified.base_preimage_count}`,`Total bytes: ${verified.total_bytes}`,'\n'].join('\n');assert.equal(text,expected);assert.doesNotMatch(text,/PRIVATE_OUTPUT|ack-spec|src\/app/);
+}));
+test('both portable executable guards retain a completed snapshot after actual closed stdout',async()=>{
+ const {artifactCliChild}=await import('./helpers/artifact-cli-child.mjs');
+ for(const url of [new URL('../bin/squire-portable-candidate.mjs',import.meta.url),new URL('../src/project-portable-candidate-snapshot.mjs',import.meta.url)])await withRoot(async root=>{
+  const f=await makeFixture(root),dest=join(root,'closed-ack'),spec=join(root,'closed-spec.json');await fs.writeFile(spec,JSON.stringify(await f.request(dest)),{mode:0o400});const original=await fs.readFile(spec);
+  const out=await artifactCliChild(url,['--build',spec],{closed:'stdout'});assert.equal(out.code,2);assert.equal(out.signal,null);assert.equal(out.stdout,'');assert.equal(out.stderr,'');assert.equal((await verifyProjectPortableCandidateSnapshot(dest)).status,'VERIFIED_FOR_PRIVATE_REVIEW');assert.deepEqual(await fs.readFile(spec),original);
+ });
+});

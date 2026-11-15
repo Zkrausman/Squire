@@ -126,6 +126,18 @@ until the original invocation is reconciled; verification proves copy
 integrity only and cannot promote that unknown operation into an acknowledged
 one.
 
+The CLI contains synchronous output sink/getter/write errors and returns 2
+without exposing raw exceptions. Once a write fails, it suppresses later output;
+it does not attempt a rejection fallback after a failed success acknowledgement.
+The bin entry point and existing directly executable source guard install
+stdout/stderr error observers only when executed, latching exit 2 for early or
+late observed asynchronous errors. Imports remain inert. Healthy output bytes,
+exit codes and snapshot schemas are unchanged; `write(false)` still means
+backpressure. A complete snapshot can remain after exit 2 or partial output.
+There is no output retry, cleanup, rollback, drain/flush, consumer-receipt or
+post-termination-error guarantee. Later copy-integrity verification does not
+recover the original acknowledgement or authorize repeating the write.
+
 ## Synthetic validation
 
 `test/project-portable-candidate-snapshot.test.mjs` uses disposable Git stores
