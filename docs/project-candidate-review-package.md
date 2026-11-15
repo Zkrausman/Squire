@@ -67,8 +67,10 @@ node bin/squire-candidate-review.mjs --help
 
 `--build` delegates only to `buildProjectCandidateReviewPackage`; `--verify`
 delegates only to `verifyProjectCandidateReviewPackage`. The decision command
-below remains separate. There is no revision-package mode, discovery, automatic
-source selection, decision recording, source execution or Git integration.
+below remains separate. Explicit first-revision package routes are documented
+in [first-revision review](project-revision-review-package.md#explicit-first-revision-package-commands);
+the original routes never translate revision inputs. There is no discovery,
+automatic source selection, decision recording, source execution or Git integration.
 
 Both command arguments must be normalized absolute non-root Unix paths, at most
 4,096 characters, without controls or backslashes. Build reads one stable regular

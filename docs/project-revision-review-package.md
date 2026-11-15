@@ -70,6 +70,84 @@ authenticate a person, or establish native or benchmark acceptance. Focused
 synthetic/disposable-Git tests run with
 `npm run test:project-revision-review-package`.
 
+## Explicit first-revision package commands
+
+Use the same offline review executable with separate first-revision routes:
+
+```sh
+node bin/squire-candidate-review.mjs --build-revision /absolute/revision-spec.json
+node bin/squire-candidate-review.mjs --verify-revision /absolute/revision-package
+node bin/squire-candidate-review.mjs --help
+```
+
+These delegate only to `buildProjectRevisionReviewPackage` and
+`verifyProjectRevisionReviewPackage`. Original `--build` / `--verify` retain
+their successful bytes, 64 KiB spec frame and original-candidate contract;
+help lists both families. No schema is relabeled, prior decision selected,
+revision chain created or substantive choice inferred.
+
+Build requires the existing closed `SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1`
+with its thirteen required fields: `schema`, `original_result`,
+`revised_result`, `base_git_dir`, `base_git_identity`, `original_git_dir`,
+`original_git_identity`, `revised_git_dir`, `revised_git_identity`, `output_dir`,
+`original_package`, `prior_decisions`, and `selected_decision_id`. All source,
+original-package, prior-decision and fresh output paths are explicit normalized
+absolute non-root paths, at most 4,096 characters, without controls or
+backslashes. The optional genuine `AbortSignal` remains programmatic API only
+and must be omitted from JSON; no serialized substitute is accepted.
+
+The stable regular non-symlink request reader caps the **revision** file at
+262,144 raw bytes. The existing strict UTF-8/JSON parser rejects malformed
+input, duplicate decoded keys and arrays over 64 elements. This accommodates
+the accepted 50-path lists, 50 revised-blob witnesses and eight prior references;
+prior decision bodies are read separately by the unchanged API, never inlined
+or translated by the CLI. For a conservative canonical encoding budget,
+13 maximum path strings require at most 159,744 UTF-8 bytes, the two 50-path
+lists 25,600, and 50 closed blob-witness rows 28,800. A further 32 KiB allowance
+for fixed metadata remains below the 256 KiB frame (246,912 bytes total).
+This is a finite serialization budget, not a runtime or measured-gain claim.
+Raw whitespace and escape-heavy encodings still count toward the frame.
+Cooperative stable-read checks do not provide a hostile-filesystem atomic snapshot.
+
+The API retains all source/store identity checks, original/revised lineage,
+selected prior REVISE and declared-set binding, disclosed conflict rejection,
+two direct endpoint views, profile limits and private create-exclusive output.
+The CLI does not generate bindings, filter a conflicting set, choose a winner
+or claim that undisclosed decisions do not exist. Old candidates, packages and
+decisions remain untouched. A restored-base path remains visible in the
+original-to-revised view; this command does not substitute a merge-base view.
+
+Success output contains only fixed
+`PROJECT_REVISION_REVIEW_PACKAGE_CREATED` or
+`PROJECT_REVISION_REVIEW_PACKAGE_VERIFIED`, manifest SHA-256, base/original/revised
+commit IDs, the two view path counts and package byte count, followed by
+`COPY_INTEGRITY_ONLY; NO_DECISION_OR_EXECUTION_AUTHORITY`. It contains no
+private paths, caller labels, prior IDs, decision content, diffs or source.
+The projection validates digest/ID formats and finite counts; build commit IDs
+and view counts must match the supplied result witnesses. It invents no tree
+IDs or acknowledgement. Handled input/API/result failure returns 2 with fixed
+`PROJECT_REVISION_REVIEW_REJECTED` when usable output permits. Success is 0;
+help is 0 and malformed/default invocation is usage/2 with no input/API reads.
+
+Offline verification selects one package and reads no spec, original source
+store or prior decision directory. It verifies retained copy integrity and
+bindings, not current source state, original acknowledgement, producer or
+reviewer authenticity, declared-set completeness, substantive review, task
+correctness, functional PASS, execution, integration or disclosure authority.
+The separate decision command below still needs an explicitly supplied fresh
+choice and complete matching attestations.
+
+Existing synchronous output suppression and executable-only persistent stdio
+error observers apply; imports remain inert and `write(false)` retains
+backpressure meaning. A partial or complete package can remain after failure,
+interruption or lost acknowledgement. No retry, fallback, cleanup, rollback,
+flush or consumer-receipt guarantee is added. Exit 2 or missing output does not
+prove no mutation; later verification cannot recover the original ACK or
+authorize a repeat build. Trusted `buildRevision` / `verifyRevision` injections
+are separate from the original CLI ports and are for deterministic callers/tests;
+executable defaults use the accepted APIs. The wrapper clears only its own
+request-byte copy. No real private candidates or runtime jobs are used by tests.
+
 ## Explicit first-revision decision command
 
 Use the existing offline decision executable with an explicit revision route:
