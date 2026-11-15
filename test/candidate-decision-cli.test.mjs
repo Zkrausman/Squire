@@ -83,7 +83,7 @@ test('sink capture failures are inert and false-return output preserves its rece
  h.ports.stdout=out;assert.equal(await run(args,h.ports),0);assert.match(out.text,/^PROJECT_CANDIDATE_DECISION_RECORDED/);
 });
 const cli=new URL('../bin/squire-candidate-decision.mjs',import.meta.url);
-const usage='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs record-revision <revision-package-dir> <decision-request.json> <fresh-decision-dir>\n';
+const usage='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs record-revision <revision-package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs verify-revision-decision <revision-package-dir> <decision-dir> <expected-decision-sha256>\n';
 test('executable closed pipes and early/late observed errors withhold success',async()=>{
  for(const [channel,argv] of [['stdout',['--help']],['stderr',[]]]){
   const closed=await artifactCliChild(cli,argv,{closed:channel});assert.equal(closed.code,2);assert.equal(closed.signal,null);
@@ -151,4 +151,30 @@ test('revision parser accepts exactly hundred rows while legacy receipt parser r
  assert.equal(parseReceiptJson(encode(Array(64).fill(null))).length,64);assert.throws(()=>parseReceiptJson(encode(Array(65).fill(null))),e=>e==='SCHEMA_MISMATCH');
  for(const [count,expected] of [[100,0],[101,2]]){const h=revisionHarness();h.d.attestations=Array(count).fill(null);h.ports.readBytes=async()=>encode(h.d);assert.equal(await run(revisionArgs,h.ports),expected);assert.equal(h.records.length,expected===0?1:0);}
  const h=revisionHarness();h.ports.readBytes=async()=>encode('{"choice":"ACCEPT","\\u0063hoice":"REJECT"}');assert.equal(await run(revisionArgs,h.ports),2);assert.equal(h.records.length,0);
+});
+
+const verifyDecisionArgs=['verify-revision-decision','/private/revision-package','/private/decision','b'.repeat(64)];
+const verifiedDecision=(choice='REVISE',count=0)=>({status:'PROJECT_REVISION_DECISION_VERIFIED',choice,revision_package_sha256:'c'.repeat(64),decision_sha256:'b'.repeat(64),attested_path_count:count,private_label:'PRIVATE_LABEL'});
+test('selected revision decision verification calls only the selected verifier once and omits stored choice',async()=>{
+ for(const [choice,count] of [['ACCEPT',100],['REVISE',0],['REJECT',0]]){
+  const h=harness();let calls=0;h.ports.verifyRevisionDecision=async(...a)=>{calls++;assert.deepEqual(a,verifyDecisionArgs.slice(1));return verifiedDecision(choice,count);};
+  assert.equal(await run(verifyDecisionArgs,h.ports),0);assert.equal(calls,1);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);assert.deepEqual(h.err,[]);
+  assert.equal(h.out.join(''),`PROJECT_REVISION_DECISION_VERIFIED\nRevision package SHA256: ${'c'.repeat(64)}\nDecision SHA256: ${'b'.repeat(64)}\nAttested path count: ${count}\nSELECTED_RECORD_INTEGRITY_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY\n`);assert.doesNotMatch(h.out.join(''),/PRIVATE_LABEL|ACCEPT|REJECT|REVISE|private/);
+ }
+});
+test('selected revision decision verification requires exact explicit paths and digest before reads',async()=>{
+ const sparse=Array.from({length:3},(_,i)=>{const a=[...verifyDecisionArgs];delete a[i+1];return a;});
+ const invalid=[[],['--help'],verifyDecisionArgs.slice(0,3),[...verifyDecisionArgs,'extra'],['verify-decision',...verifyDecisionArgs.slice(1)],['verify-revision-decision','relative',...verifyDecisionArgs.slice(2)],['verify-revision-decision','/',...verifyDecisionArgs.slice(2)],['verify-revision-decision',verifyDecisionArgs[1],'/private/../decision',verifyDecisionArgs[3]],...['B'.repeat(64),'b'.repeat(63),'z'.repeat(64),''].map(hash=>[...verifyDecisionArgs.slice(0,3),hash]),...sparse];
+ for(const argv of invalid){const h=harness();let calls=0;h.ports.verifyRevisionDecision=async()=>{calls++;return verifiedDecision();};assert.equal(await run(argv,h.ports),argv[0]==='--help'?0:2);assert.equal(calls,0);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);}
+});
+test('selected revision decision verification rejects malformed API projection without raw errors',async()=>{
+ const bad=[{...verifiedDecision(),status:'PROJECT_REVISION_DECISION_RECORDED'},{...verifiedDecision(),revision_package_sha256:'PRIVATE_HASH'},{...verifiedDecision(),decision_sha256:'a'.repeat(64)},{...verifiedDecision(),choice:'AUTO'},{...verifiedDecision(),attested_path_count:-1},{...verifiedDecision(),attested_path_count:101},{...verifiedDecision(),attested_path_count:0.5},Object.defineProperty({},'status',{get(){throw Error('PRIVATE_GETTER');}})];
+ for(const value of bad){const h=harness();let calls=0;h.ports.verifyRevisionDecision=async()=>{calls++;return value;};assert.equal(await run(verifyDecisionArgs,h.ports),2);assert.equal(calls,1);assert.deepEqual(h.out,[]);assert.deepEqual(h.err,['PROJECT_REVISION_DECISION_REJECTED\n']);assert.deepEqual(h.records,[]);}
+ const h=harness();h.ports.verifyRevisionDecision=async()=>{throw Error('PRIVATE_FAILURE');};assert.equal(await run(verifyDecisionArgs,h.ports),2);assert.deepEqual(h.err,['PROJECT_REVISION_DECISION_REJECTED\n']);
+});
+test('selected revision decision verification output failures never retry or call a writer',async()=>{
+ const h=harness();let calls=0,writes=0,diagnostics=0;h.ports.verifyRevisionDecision=async()=>{calls++;return verifiedDecision();};h.ports.stdout={write(){writes++;throw Error('PRIVATE_OUTPUT');}};h.ports.stderr={write(){diagnostics++;}};
+ assert.equal(await run(verifyDecisionArgs,h.ports),2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.deepEqual(h.records,[]);assert.deepEqual(h.reads,[]);
+ const failed=harness();let errors=0;failed.ports.verifyRevisionDecision=async()=>{throw Error('PRIVATE_VERIFY');};failed.ports.stderr={write(){errors++;throw Error('PRIVATE_SINK');}};assert.equal(await run(verifyDecisionArgs,failed.ports),2);assert.equal(errors,1);
+ const unopened=harness();unopened.ports.stdout={};let verifies=0;unopened.ports.verifyRevisionDecision=async()=>{verifies++;return verifiedDecision();};assert.equal(await run(verifyDecisionArgs,unopened.ports),2);assert.equal(verifies,0);
 });

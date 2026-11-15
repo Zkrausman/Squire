@@ -190,7 +190,10 @@ partial outputs and existing nonreuse rules.
 The exported `runCandidateDecisionCli(argv, ports)` has trusted `readBytes` and
 `record` overrides for original-candidate deterministic callers/tests, plus a
 separate `recordRevision` override for the explicit revision route and stdout/stderr sinks;
-the executable uses the fixed reader/API defaults. Overrides are not a new
+the executable uses the fixed reader/API defaults. A separate explicit
+[first-revision decision verification route](project-revision-review-package.md#explicit-selected-revision-decision-verification)
+uses its own trusted `verifyRevisionDecision` callback and creates no record.
+Overrides are not a new
 untrusted execution or admission boundary. The wrapper copies request bytes,
 clears its copy after completion and validates the fixed result projection.
 
