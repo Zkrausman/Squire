@@ -528,12 +528,15 @@ Automatic postmerge
 also passed. Its initial missing-input fixture failure is retained separately;
 the corrected checks do not replace that history.
 
-D2's next integration step still needs an owner-selected destination repository,
-pinned base and target ref, and an explicit content decision. A reviewable
-candidate is not that decision. P3/P4 still depend on qualified process-identity,
-settlement and host evidence; Go-dependent tasks require a verified installed
-toolchain and supported build/run isolation. These dependencies are not ready
-capacity and are not resolved by this appendix.
+D2 was a completed exposed synthetic exercise, not an assigned integration
+awaiting owner bindings. Its historical 19/19 checks and 33 settled calls are
+scoped evaluation evidence, not production-content approval. No real destination
+repository, pinned integration base, target ref or owner content decision was
+selected; any future adoption is an unselected possibility, not an actionable
+blocker. P3/P4 still depend on qualified process-identity, settlement and host
+evidence; Go-dependent tasks require a verified installed toolchain and supported
+build/run isolation. These dependencies are not ready capacity and are not
+resolved by this appendix.
 
 Merged source, attributed tests/review and cited hosted CI remain distinct from
 installation, real private-candidate use, effective runtime authentication or
@@ -543,3 +546,51 @@ operations, custody limits and no-replay holds remain unchanged; no old outcome
 is inferred from later source delivery. Future actual use needs its own
 applicable authorization and operation-scoped evidence. No planning proposal,
 model-selection change, workload, installation or recovery action is activated.
+
+
+## 15 November 2026 — Delivered offline CLI source (PR233–237)
+
+This source-status reconciliation corrects the preceding D2 integration wording
+using retained task and acceptance evidence; it does not change D2's historical
+grade or select a production destination. The following deliveries are merged
+source, not pending implementation work.
+
+[PR 233](https://github.com/Zkrausman/Squire/pull/233) contains synchronous
+output-sink failures in the offline reporter with fixed private-safe handling.
+[PR 234](https://github.com/Zkrausman/Squire/pull/234) adds executable-scoped
+stdout/stderr error handling, including observed asynchronous closed-pipe errors,
+while keeping imports inert and successful output unchanged.
+
+[PR 235](https://github.com/Zkrausman/Squire/pull/235) contains synchronous
+output failures in the package and project-review commands.
+[PR 236](https://github.com/Zkrausman/Squire/pull/236) handles observed
+asynchronous stream errors in those two tools' existing executable entry points.
+Neither change retries output, rolls back or cleans up artifacts. Partial output
+or a complete artifact may remain after a non-success exit; missing
+acknowledgement does not establish no mutation or authorize retry. No flush or
+consumer-receipt guarantee is added.
+
+[PR 237](https://github.com/Zkrausman/Squire/pull/237) adds the record-only
+original-candidate decision command, delegating to the existing closed-schema
+decision API. It requires an explicit caller-supplied decision request and a
+fresh destination, with bounded request reads and fixed privacy-safe output.
+It never infers acceptance or attestations, executes a candidate, or grants
+merge authority; failed acknowledgement may leave a record.
+
+Each PR's retained receipt reports independent exact-source/fixture/privacy
+review, applicable deterministic synthetic tests, successful exact-head hosted
+CI and desktop source acceptance, ordinary merge, and successful automatic
+postmerge checks. Validation belongs to each PR's scope; overlapping suites are
+not additive coverage. For PR237, the separate final suites report 43 decision/API
+tests and 889 main tests; its exact-head
+[CI](https://github.com/Zkrausman/Squire/actions/runs/43659838357) and
+[desktop source acceptance](https://github.com/Zkrausman/Squire/actions/runs/43659838455),
+and automatic postmerge
+[CI](https://github.com/Zkrausman/Squire/actions/runs/43660270374) and
+[desktop source acceptance](https://github.com/Zkrausman/Squire/actions/runs/43660270370)
+passed. These source deliveries establish neither installation nor real private
+package use, authenticated owner acceptance, native qualification or benchmark
+improvement. D6's descendant settlement remains UNKNOWN and its 65 behavioral
+checks remain UNRUN. Existing custody, P3/P4, toolchain, historical unknown/denied
+operation and no-replay boundaries remain unchanged; this entry activates no
+workload or planning proposal.
