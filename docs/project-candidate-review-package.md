@@ -55,6 +55,76 @@ These APIs return fixed status, object IDs, counts and digests without private
 paths or content. A failure withholds success and retains any partial fresh
 output. There is no automatic cleanup, retry, upload or candidate execution.
 
+## Explicit original-candidate package CLI
+
+Build or verify the existing private review package without a custom API caller:
+
+```sh
+node bin/squire-candidate-review.mjs --build /absolute/review-spec.json
+node bin/squire-candidate-review.mjs --verify /absolute/review-package
+node bin/squire-candidate-review.mjs --help
+```
+
+`--build` delegates only to `buildProjectCandidateReviewPackage`; `--verify`
+delegates only to `verifyProjectCandidateReviewPackage`. The decision command
+below remains separate. There is no revision-package mode, discovery, automatic
+source selection, decision recording, source execution or Git integration.
+
+Both command arguments must be normalized absolute non-root Unix paths, at most
+4,096 characters, without controls or backslashes. Build reads one stable regular
+non-symlink JSON file, capped at 65,536 raw bytes. The existing strict UTF-8/JSON
+parser rejects malformed input, duplicate decoded keys and arrays over 64
+items; the original-candidate profile needs at most 50 changed paths. The raw
+frame limit also applies to whitespace and escape-heavy representations. The
+wrapper copies input bytes and clears its own copy after completion. Cooperative
+read-stability checks do not provide a hostile-filesystem atomic snapshot.
+
+Supply the existing closed `SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1`: `schema`,
+`result`, `candidate_git_dir`, `candidate_git_identity`, `base_git_dir`,
+`base_git_identity`, and fresh `output_dir`. The source/output paths must be
+explicit and normalized; exact source identities, result/object/ref bindings,
+protected stores, original profile and create-exclusive private output remain
+validated by the existing API. The optional genuine `AbortSignal` is available
+only to programmatic API callers and must be omitted from the JSON spec. No
+bindings, paths or source receipts are derived or relabeled by this command.
+
+Verification selects exactly the package argument and reads no spec or Git
+stores; it remains useful after the original stores are unavailable. It checks
+copy integrity, not current source state, producer authenticity, substantive
+review, task correctness, original acknowledgement or functional acceptance.
+Neither operation reads decisions or infers a review verdict.
+
+Exit 0 acknowledges the selected API result. Stdout contains its fixed
+`PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED` or
+`PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED` status, manifest SHA-256,
+base/candidate commit and tree IDs, changed-path count and package byte count,
+and `COPY_INTEGRITY_ONLY; NO_DECISION_OR_EXECUTION_AUTHORITY`. It contains no
+private paths, operation labels, filenames, diff/source text or caller IDs.
+Projected digests, object IDs and counts are validated before output; build
+object IDs and path count must match the supplied result witness. This does
+not authenticate that witness. Handled input/API/result failures return 2 with
+fixed `PROJECT_CANDIDATE_REVIEW_REJECTED` when the output channel is usable.
+Default/malformed invocation prints usage and returns 2; exact `--help` prints
+usage and returns 0. Neither reads a spec/package or invokes an operation.
+
+PR240-style synchronous sink capture/write containment suppresses later output
+after a failed write. The executable alone installs persistent stdio error
+observers that latch 2 for early or late observed errors; imports are inert.
+`write(false)` retains backpressure meaning. There is no output retry, fallback,
+cleanup, rollback, flush or consumer-receipt guarantee, and unobserved errors
+before termination cannot be certified. A partial or complete package may
+remain after interruption, API I/O failure or lost acknowledgement. Exit 2 or
+missing output does not establish no mutation or authorize a repeat build;
+file presence or later verification cannot recover original acknowledgement.
+The command does not modify old source stores, packages or decisions.
+
+The exported `runCandidateReviewCli(argv, ports)` has trusted `readBytes`,
+`build`, `verify`, stdout and stderr overrides for deterministic callers/tests;
+the executable uses fixed native defaults. This is not a new untrusted runtime
+or admission boundary. Tests use fresh synthetic/disposable packages only:
+`node --test test/candidate-review-cli.test.mjs test/project-candidate-review-package.test.mjs`.
+They perform no real private-candidate use, owner decision or generated-code execution.
+
 ## Explicit record-only decision CLI
 
 An owner can supply an explicit original-candidate decision without writing an
@@ -67,7 +137,8 @@ node bin/squire-candidate-decision.mjs --help
 
 The three paths must be normalized absolute non-root paths, at most 4,096
 characters each, without controls or backslashes. There is no discovery,
-stdin input, package-building mode or automatic choice. The original `record`
+stdin input, package-building mode or automatic choice in this decision command.
+The [package command above](#explicit-original-candidate-package-cli) is separate. The original `record`
 route does not accept revision packages; the explicit `record-revision` route
 is documented in [first-revision review](project-revision-review-package.md). The
 request file must be a stable regular non-symlink leaf, at most 96 KiB. The
