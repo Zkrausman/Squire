@@ -83,7 +83,7 @@ test('sink capture failures are inert and false-return output preserves its rece
  h.ports.stdout=out;assert.equal(await run(args,h.ports),0);assert.match(out.text,/^PROJECT_CANDIDATE_DECISION_RECORDED/);
 });
 const cli=new URL('../bin/squire-candidate-decision.mjs',import.meta.url);
-const usage='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n';
+const usage='Usage: node bin/squire-candidate-decision.mjs record <package-dir> <decision-request.json> <fresh-decision-dir>\n       node bin/squire-candidate-decision.mjs record-revision <revision-package-dir> <decision-request.json> <fresh-decision-dir>\n';
 test('executable closed pipes and early/late observed errors withhold success',async()=>{
  for(const [channel,argv] of [['stdout',['--help']],['stderr',[]]]){
   const closed=await artifactCliChild(cli,argv,{closed:channel});assert.equal(closed.code,2);assert.equal(closed.signal,null);
@@ -106,4 +106,49 @@ test('sparse argument positions are malformed and cause zero request reads or re
   const sparse=[...args];delete sparse[index];const h=harness();const code=await run(sparse,h.ports);
   assert.equal(h.reads.length,0);assert.equal(h.records.length,0);assert.equal(code,2);
  }
+});
+
+const revisionArgs=['record-revision',...args.slice(1)];
+function revisionHarness(){
+ const d={schema:'SQUIRE_PROJECT_REVISION_DECISION_V1',decision_id:'PRIVATE_ID',reviewer_label:'PRIVATE_LABEL',revision_package_sha256:'c'.repeat(64),original_package_sha256:'d'.repeat(64),prior_revise_decision_sha256:'e'.repeat(64),base_commit:'1'.repeat(40),base_tree:'2'.repeat(40),original_commit:'3'.repeat(40),original_tree:'4'.repeat(40),revised_commit:'5'.repeat(40),revised_tree:'6'.repeat(40),choice:'REVISE',attestations:[],note:'PRIVATE_NOTE'};
+ const h=harness(d);let originalCalls=0;
+ h.ports.record=async()=>{originalCalls++;throw Error('WRONG_ROUTE');};
+ h.ports.recordRevision=async(pkg,decision,dest)=>{h.records.push({pkg,decision,dest});return {status:'PROJECT_REVISION_DECISION_RECORDED',choice:decision.choice,revision_package_sha256:decision.revision_package_sha256,decision_sha256:'b'.repeat(64)};};
+ return {...h,d,originalCalls:()=>originalCalls};
+}
+test('revision CLI dispatch is explicit, once, and projects only matching revision status/digests',async()=>{
+ const h=revisionHarness();assert.equal(await run(revisionArgs,h.ports),0);assert.equal(h.originalCalls(),0);
+ assert.deepEqual(h.reads,[{path:args[2],max:MAX}]);assert.equal(h.records.length,1);assert.equal(h.records[0].pkg,args[1]);assert.equal(h.records[0].dest,args[3]);
+ assert.deepEqual(JSON.parse(JSON.stringify(h.records[0].decision)),h.d);
+ assert.equal(h.out.join(''),`PROJECT_REVISION_DECISION_RECORDED\nRevision package SHA256: ${'c'.repeat(64)}\nDecision SHA256: ${'b'.repeat(64)}\nSOURCE_DECISION_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY\n`);
+ assert.equal(h.err.join(''),'');assert.doesNotMatch(h.out.join(''),/PRIVATE|REVISE|original_commit/);
+});
+test('revision CLI malformed or sparse grammar and help have zero request/API calls',async()=>{
+ const sparse=revisionArgs.map((_,i)=>{const a=[...revisionArgs];delete a[i];return a;});
+ for(const argv of [...sparse,[],['record-revision'],[...revisionArgs,'extra'],['record-revision','relative',...args.slice(2)],['--help']]){
+  const h=revisionHarness();assert.equal(await run(argv,h.ports),argv[0]==='--help'?0:2);assert.equal(h.reads.length,0);assert.equal(h.records.length,0);assert.equal(h.originalCalls(),0);
+ }
+});
+test('revision CLI parse/read and invalid-result boundaries are private and nonretrying',async()=>{
+ for(const bytes of [encode('{"choice":"ACCEPT","choice":"REJECT"}'),new Uint8Array([255]),new Uint8Array(MAX+1)]){
+  const h=revisionHarness();h.ports.readBytes=async()=>bytes;assert.equal(await run(revisionArgs,h.ports),2);assert.equal(h.records.length,0);assert.deepEqual(h.err,['PROJECT_REVISION_DECISION_REJECTED\n']);
+ }
+ for(const result of [{status:'PROJECT_CANDIDATE_DECISION_RECORDED',choice:'REVISE',review_package_sha256:'c'.repeat(64),decision_sha256:'b'.repeat(64)},
+  {status:'PROJECT_REVISION_DECISION_RECORDED',choice:'REVISE',revision_package_sha256:'a'.repeat(64),decision_sha256:'b'.repeat(64)},
+  {status:'PROJECT_REVISION_DECISION_RECORDED',choice:'ACCEPT',revision_package_sha256:'c'.repeat(64),decision_sha256:'b'.repeat(64)},
+  Object.defineProperty({},'status',{get(){throw Error('PRIVATE_GETTER');}})]){
+  const h=revisionHarness();let calls=0;h.ports.recordRevision=async()=>{calls++;return result;};assert.equal(await run(revisionArgs,h.ports),2);assert.equal(calls,1);assert.equal(h.originalCalls(),0);assert.deepEqual(h.out,[]);assert.deepEqual(h.err,['PROJECT_REVISION_DECISION_REJECTED\n']);
+ }
+ const h=revisionHarness();h.ports.recordRevision=async()=>{throw Error('PRIVATE_FAILURE');};assert.equal(await run(revisionArgs,h.ports),2);assert.deepEqual(h.err,['PROJECT_REVISION_DECISION_REJECTED\n']);
+});
+test('revision CLI acknowledgement failure suppresses fallback and operation retry',async()=>{
+ const h=revisionHarness();let writes=0,diagnostics=0;h.ports.stdout={write(){writes++;throw Error('PRIVATE_OUTPUT');}};h.ports.stderr={write(){diagnostics++;}};
+ assert.equal(await run(revisionArgs,h.ports),2);assert.equal(h.records.length,1);assert.equal(h.originalCalls(),0);assert.equal(writes,1);assert.equal(diagnostics,0);
+});
+
+test('revision parser accepts exactly hundred rows while legacy receipt parser remains at sixty-four',async()=>{
+ const {parseReceiptJson}=await import('../src/offline-run-summary.mjs');
+ assert.equal(parseReceiptJson(encode(Array(64).fill(null))).length,64);assert.throws(()=>parseReceiptJson(encode(Array(65).fill(null))),e=>e==='SCHEMA_MISMATCH');
+ for(const [count,expected] of [[100,0],[101,2]]){const h=revisionHarness();h.d.attestations=Array(count).fill(null);h.ports.readBytes=async()=>encode(h.d);assert.equal(await run(revisionArgs,h.ports),expected);assert.equal(h.records.length,expected===0?1:0);}
+ const h=revisionHarness();h.ports.readBytes=async()=>encode('{"choice":"ACCEPT","\\u0063hoice":"REJECT"}');assert.equal(await run(revisionArgs,h.ports),2);assert.equal(h.records.length,0);
 });

@@ -69,3 +69,67 @@ review choice. It does not grant execution, merge or disclosure authority,
 authenticate a person, or establish native or benchmark acceptance. Focused
 synthetic/disposable-Git tests run with
 `npm run test:project-revision-review-package`.
+
+## Explicit first-revision decision command
+
+Use the existing offline decision executable with an explicit revision route:
+
+```sh
+node bin/squire-candidate-decision.mjs record-revision /absolute/revision-package /absolute/decision-request.json /absolute/fresh-decision-dir
+node bin/squire-candidate-decision.mjs --help
+```
+
+The `record` original-candidate route is unchanged; it does not translate or
+accept revision requests. `record-revision` delegates only to
+`recordProjectRevisionDecision`. Supply its existing closed
+`SQUIRE_PROJECT_REVISION_DECISION_V1` request: explicit choice and supplied
+attestations, revision/original package and selected prior REVISE digests,
+base/original/revised commit and tree IDs, decision ID and reviewer label, and
+optional note. No fields, prior linkage, attestations, decisions or winner are
+inferred. `ACCEPT` retains the API's all-path/two-view and binary-inspection
+requirements. The command adds no alternate verifier, revision-chain support
+or change to the P1b schema or first profile.
+
+The three paths follow the [original command's normalized absolute non-root
+path grammar](project-candidate-review-package.md#explicit-record-only-decision-cli).
+The shared stable regular non-symlink reader and strict UTF-8/JSON parser bound
+the request to 96 KiB, rejecting malformed or duplicate-key input. The
+revision route selects a finite 100-element parser profile; the original route
+and offline receipt parser retain their 64-element profile. The API's limits of
+100 sorted two-view attestations, a 4,096-UTF-8-byte optional note and a 96 KiB
+canonical record remain unchanged. The revision API permits an omitted
+or null note as well as a string; the original route's note validation is
+unchanged. A stored record's added `boundaries` field is rejected as a request,
+not stripped. Cooperative file checks do not guarantee a hostile-filesystem
+atomic snapshot.
+
+Exit 0 acknowledges recording the explicitly supplied choice, including
+`REVISE` or `REJECT`; it is not software acceptance. Stdout contains only
+`PROJECT_REVISION_DECISION_RECORDED`, revision-package and decision SHA-256s,
+and `SOURCE_DECISION_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY`. It omits paths,
+caller IDs, labels, choice text, notes, attestations and source bytes. Handled
+input, API or result rejection returns 2 and the fixed
+`PROJECT_REVISION_DECISION_REJECTED` diagnostic when the channel is usable.
+Malformed/default invocation returns 2 with fixed usage; exact `--help`
+returns 0 with usage for both routes. Neither reads a bundle/request nor
+records a decision. Plain import remains inert.
+
+The existing synchronous output-failure guard and executable-only stdio error
+observers apply to this route, with no output retry, fallback, cleanup or
+rollback. Partial output or a complete decision may remain after an I/O or
+acknowledgement failure. Exit 2 and missing acknowledgement do not prove no
+mutation or authorize retry; file presence or later integrity verification
+does not settle original acknowledgement. No drain/flush or consumer-receipt
+guarantee is added. Preserve old packages, decisions and partial outputs.
+
+The API still binds the prior REVISE and both direct views, without choosing
+among later conflicting decisions or proving the declared set complete.
+Recording a choice authenticates neither human identity nor attention, grants
+no execution/merge/disclosure permission, and establishes no task correctness,
+original job completion, native acceptance or benchmark result. This command
+launches no provider, candidate code or Git integration.
+
+The exported CLI's trusted `recordRevision` injection is separate from its
+original `record` injection; executable defaults use the existing APIs. Tests
+use newly constructed synthetic packages and explicit synthetic choices only:
+`node --test test/candidate-decision-cli.test.mjs test/project-revision-review-package.test.mjs`.
