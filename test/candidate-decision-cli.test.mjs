@@ -100,3 +100,10 @@ test('module import is inert',()=>{
  const r=spawnSync(process.execPath,['--input-type=module','--eval',source],{encoding:'utf8',timeout:10000,maxBuffer:65536});
  assert.equal(r.error,undefined);assert.equal(r.status,0);assert.equal(r.signal,null);assert.equal(r.stdout,'');assert.equal(r.stderr,'');
 });
+
+test('sparse argument positions are malformed and cause zero request reads or records',async()=>{
+ for(const index of [1,2,3]){
+  const sparse=[...args];delete sparse[index];const h=harness();const code=await run(sparse,h.ports);
+  assert.equal(h.reads.length,0);assert.equal(h.records.length,0);assert.equal(code,2);
+ }
+});

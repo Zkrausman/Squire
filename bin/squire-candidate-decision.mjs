@@ -30,7 +30,7 @@ export async function runCandidateDecisionCli(argv,ports={}){
     if(Array.isArray(argv)&&argv.length===1&&argv[0]==='--help'){
       stdout(USAGE);return outputFailed?2:0;
     }
-    const paths=Array.isArray(argv)&&argv.length===4&&argv[0]==='record'?argv.slice(1):null;
+    const paths=Array.isArray(argv)&&argv.length===4&&argv[0]==='record'?[argv[1],argv[2],argv[3]]:null;
     if(!paths||!paths.every(absolute)){
       stderr(USAGE);return 2;
     }
