@@ -67,7 +67,9 @@ node bin/squire-candidate-decision.mjs --help
 
 The three paths must be normalized absolute non-root paths, at most 4,096
 characters each, without controls or backslashes. There is no discovery,
-stdin input, package-building mode, revision mode or automatic choice. The
+stdin input, package-building mode or automatic choice. The original `record`
+route does not accept revision packages; the explicit `record-revision` route
+is documented in [first-revision review](project-revision-review-package.md). The
 request file must be a stable regular non-symlink leaf, at most 96 KiB. The
 existing bounded reader and strict UTF-8/JSON parser reject special files,
 concurrent read changes, duplicate keys and malformed input. These cooperative
@@ -113,7 +115,8 @@ pointer. External termination is not a successful acknowledgement. Preserve
 partial outputs and existing nonreuse rules.
 
 The exported `runCandidateDecisionCli(argv, ports)` has trusted `readBytes` and
-`record` overrides for deterministic callers/tests, plus stdout/stderr sinks;
+`record` overrides for original-candidate deterministic callers/tests, plus a
+separate `recordRevision` override for the explicit revision route and stdout/stderr sinks;
 the executable uses the fixed reader/API defaults. Overrides are not a new
 untrusted execution or admission boundary. The wrapper copies request bytes,
 clears its copy after completion and validates the fixed result projection.

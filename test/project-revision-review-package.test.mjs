@@ -216,3 +216,63 @@ test('exact 12 MiB three-side copy profile succeeds',async()=>{const f=await bul
 test('exact 4 MiB retained base side succeeds; over-limit metadata rejects',async()=>{const f=await fixture(0,false,false,true);try{const built=await buildProjectRevisionReviewPackage(f.spec);const m=JSON.parse(await fs.readFile(join(f.spec.output_dir,'revision-review-manifest.json')));assert.equal(m.paths.find(x=>x.path==='src/app.mjs').base.bytes,4*1024*1024);assert.equal((await verifyProjectRevisionReviewPackage(f.spec.output_dir)).manifest_sha256,built.manifest_sha256);}finally{await fs.rm(f.root,{recursive:true,force:true});}});
 test('valid linked revision exceeding one complete 8 MiB display rejects before output',async()=>{const f=await fixture(0,false,false,false,true);try{await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>buildProjectRevisionReviewPackage(f.spec));await assert.rejects(fs.lstat(f.spec.output_dir),{code:'ENOENT'});}finally{await fs.rm(f.root,{recursive:true,force:true});}});
 test('exact 8 MiB complete display succeeds',async()=>{const f=await fixture(0,false,false,false,true,798297,'xxxxx');try{const b=await buildProjectRevisionReviewPackage(f.spec);assert.equal((await fs.stat(join(f.spec.output_dir,'base-to-revised.diff.txt'))).size,8*1024*1024);assert.equal((await verifyProjectRevisionReviewPackage(f.spec.output_dir)).manifest_sha256,b.manifest_sha256);}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+
+// New CLI fixtures use fresh disposable original/revision packages only.
+const revisionCli=new URL('../bin/squire-candidate-decision.mjs',import.meta.url);
+const {runCandidateDecisionCli:runRevisionCli}=await import('../bin/squire-candidate-decision.mjs');
+const {artifactCliChild:revisionCliChild}=await import('./helpers/artifact-cli-child.mjs');
+const {MAX_REVIEW_DECISION_BYTES:MAX_CLI_DECISION}=await import('../src/project-review-decision-limits.mjs');
+async function cliDecision(f,choice='ACCEPT'){
+ const m=JSON.parse(await fs.readFile(join(f.spec.output_dir,'revision-review-manifest.json')));
+ return {schema:'SQUIRE_PROJECT_REVISION_DECISION_V1',decision_id:'explicit-private-decision',reviewer_label:'private-owner',revision_package_sha256:sha(await fs.readFile(join(f.spec.output_dir,'revision-review-manifest.json'))),original_package_sha256:f.p1.manifest_sha256,prior_revise_decision_sha256:f.prior.decision_sha256,base_commit:m.base_commit,base_tree:m.base_tree,original_commit:m.original_commit,original_tree:m.original_tree,revised_commit:m.revised_commit,revised_tree:m.revised_tree,choice,attestations:choice==='ACCEPT'?['base_to_revised','original_to_revised'].flatMap(view=>m[view].map(x=>({view,path:x.path,old_sha256:x.old?.sha256??null,new_sha256:x.new.sha256,binary_inspected:x.binary_review_required}))):[],note:'PRIVATE_NOTE'};
+}
+async function cliRecord(f,d,name,ports={},text=JSON.stringify(d),mode='record-revision',pkg=f.spec.output_dir){
+ const input=join(f.root,name+'.json'),dest=join(f.root,name);await fs.writeFile(input,text,{mode:0o600});let out='',err='';
+ const code=await runRevisionCli([mode,pkg,input,dest],{stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},...ports});return {code,out,err,input,dest};
+}
+async function unchangedWitnesses(f){return Promise.all([join(f.spec.original_package.dir,'review-manifest.json'),join(f.spec.prior_decisions[0].dir,'decision.json'),join(f.spec.output_dir,'revision-review-manifest.json'),join(f.spec.output_dir,'base-to-revised.diff.txt'),join(f.spec.output_dir,'original-to-revised.diff.txt')].map(async p=>({p,sha:sha(await fs.readFile(p)),mode:(await fs.stat(p)).mode})));}
+test('revision decision CLI records explicit three choices with two views and prior binding unchanged',async()=>{const f=await fixture();try{
+ await buildProjectRevisionReviewPackage(f.spec);const before=await unchangedWitnesses(f);
+ for(const choice of ['ACCEPT','REVISE','REJECT']){
+  const d=await cliDecision(f,choice),r=await cliRecord(f,d,'cli-'+choice);assert.equal(r.code,0);assert.equal(r.err,'');
+  const stored=JSON.parse(await fs.readFile(join(r.dest,'decision.json')));assert.equal(stored.choice,choice);assert.deepEqual(stored.attestations,d.attestations);assert.equal(stored.prior_revise_decision_sha256,f.prior.decision_sha256);
+  assert.equal((await verifyProjectRevisionDecision(f.spec.output_dir,r.dest,sha(await fs.readFile(join(r.dest,'decision.json'))))).choice,choice);
+  assert.doesNotMatch(r.out,/PRIVATE_NOTE|private-owner|explicit-private-decision/);
+ }
+ const d=await cliDecision(f);const input=join(f.root,'executable-request.json'),dest=join(f.root,'executable-decision');await fs.writeFile(input,JSON.stringify(d),{mode:0o600});
+ const exe=await revisionCliChild(revisionCli,['record-revision',f.spec.output_dir,input,dest]);assert.equal(exe.code,0);assert.equal(exe.signal,null);assert.equal(exe.stderr,'');assert.match(exe.stdout,/^PROJECT_REVISION_DECISION_RECORDED/);
+ assert.deepEqual(await unchangedWitnesses(f),before);
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('revision decision CLI rejects cross-route requests, missing views, binary and prior/object bindings before destination',async()=>{const f=await fixture();try{
+ await buildProjectRevisionReviewPackage(f.spec);const d=await cliDecision(f);const before=await unchangedWitnesses(f);
+ const bad=[{...d,revision_package_sha256:'0'.repeat(64)},{...d,original_package_sha256:'0'.repeat(64)},{...d,prior_revise_decision_sha256:'0'.repeat(64)},
+  {...d,original_tree:'0'.repeat(40)},{...d,revised_commit:'0'.repeat(40)},{...d,base_tree:'0'.repeat(40)},
+  {...d,attestations:d.attestations.filter(a=>a.view==='base_to_revised')},{...d,attestations:d.attestations.map(a=>({...a,binary_inspected:false}))},
+  {...d,attestations:d.attestations.map((a,i)=>i===0?{...a,new_sha256:'0'.repeat(64)}:a)},
+  {...d,attestations:d.attestations.map((a,i)=>i===1?{...a,old_sha256:'0'.repeat(64)}:a)},
+  {...d,schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1'},{...d,choice:'AUTO'},{...d,unknown:'PRIVATE'},{...d,boundaries:[]},
+  {...d,attestations:Array(101).fill(d.attestations[0])},{...d,note:'x'.repeat(4097)}];
+ for(let i=0;i<bad.length;i++){const r=await cliRecord(f,bad[i],'bad-cli-'+i);assert.equal(r.code,2);assert.equal(r.out,'');assert.equal(r.err,'PROJECT_REVISION_DECISION_REJECTED\n');await assert.rejects(fs.lstat(r.dest),{code:'ENOENT'});}
+ const original=JSON.parse(await fs.readFile(join(f.spec.prior_decisions[0].dir,'decision.json')));delete original.boundaries;delete original.note;
+ for(const [mode,pkg,request] of [['record',f.spec.output_dir,d],['record-revision',f.spec.original_package.dir,original],['record-revision',f.spec.output_dir,original],['record-revision',f.spec.original_package.dir,d]]){
+  const r=await cliRecord(f,request,'cross-'+mode+'-'+(pkg===f.spec.output_dir?'rev':'orig')+'-'+(request===d?'rev':'orig'),{},JSON.stringify(request),mode,pkg);assert.equal(r.code,2);assert.equal(r.out,'');await assert.rejects(fs.lstat(r.dest),{code:'ENOENT'});
+ }
+ assert.deepEqual(await unchangedWitnesses(f),before);
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('revision decision CLI preserves existing records and retains output on I/O or acknowledgement failure',async()=>{const f=await fixture();try{
+ await buildProjectRevisionReviewPackage(f.spec);const before=await unchangedWitnesses(f),d=await cliDecision(f,'REVISE');const first=await cliRecord(f,d,'cli-prior');assert.equal(first.code,0);const saved=await fs.readFile(join(first.dest,'decision.json'));
+ let err='';assert.equal(await runRevisionCli(['record-revision',f.spec.output_dir,first.input,first.dest],{stdout:{write(){throw Error('UNEXPECTED_SUCCESS');}},stderr:{write:s=>err+=s}}),2);assert.equal(err,'PROJECT_REVISION_DECISION_REJECTED\n');assert.deepEqual(await fs.readFile(join(first.dest,'decision.json')),saved);
+ const reused=await cliRecord(f,{},'stored-request',{},saved);assert.equal(reused.code,2);await assert.rejects(fs.lstat(reused.dest),{code:'ENOENT'});
+ let calls=0,writes=0,diagnostics=0;const sync=await cliRecord(f,d,'sync-ack',{recordRevision:async(...a)=>{calls++;return recordProjectRevisionDecision(...a);},stdout:{write(){writes++;throw Error('PRIVATE_OUTPUT');}},stderr:{write(){diagnostics++;}}});
+ assert.equal(sync.code,2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.equal((await fs.lstat(join(sync.dest,'decision.json'))).isFile(),true);
+ const target=join(f.root,'io-failure');const port=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(k=>[k,(...a)=>fs[k](...a)]));
+ port.open=async(...a)=>{const h=await fs.open(...a);if(a[0]!==join(target,'decision.json'))return h;return {stat:(...v)=>h.stat(...v),writeFile:(...v)=>h.writeFile(...v),close:async()=>{await h.close();throw Error('PRIVATE_CLOSE');}};};
+ let ioCalls=0;const io=await cliRecord(f,d,'io-failure',{recordRevision:async(...a)=>{ioCalls++;return recordProjectRevisionDecision(...a,{fs:port});}});assert.equal(io.code,2);assert.equal(ioCalls,1);assert.equal(io.err,'PROJECT_REVISION_DECISION_REJECTED\n');assert.equal((await fs.lstat(join(target,'decision.json'))).isFile(),true);
+ const input=join(f.root,'closed-request.json'),dest=join(f.root,'closed-ack');await fs.writeFile(input,JSON.stringify(d),{mode:0o600});const pipe=await revisionCliChild(revisionCli,['record-revision',f.spec.output_dir,input,dest],{closed:'stdout'});assert.equal(pipe.code,2);assert.equal(pipe.signal,null);assert.equal(pipe.stdout,'');assert.equal(pipe.stderr,'');assert.equal((await fs.lstat(join(dest,'decision.json'))).isFile(),true);
+ assert.deepEqual(await fs.readFile(join(first.dest,'decision.json')),saved);assert.deepEqual(await unchangedWitnesses(f),before);
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('revision decision CLI accepts full hundred attestations and exact request cap, rejects one over',async()=>{const f=await fixture(45,false,false,false,false,900000,'',true);try{
+ await buildProjectRevisionReviewPackage(f.spec);const d=await cliDecision(f);assert.equal(d.attestations.length,100);d.note='\u0001'.repeat(4096);const raw=JSON.stringify(d);assert.ok(Buffer.byteLength(raw)<MAX_CLI_DECISION);const padded=raw+' '.repeat(MAX_CLI_DECISION-Buffer.byteLength(raw));
+ const r=await cliRecord(f,d,'max-cli',{},padded);assert.equal(r.code,0);const stored=JSON.parse(await fs.readFile(join(r.dest,'decision.json')));assert.equal(stored.attestations.length,100);assert.equal(stored.note,d.note);
+ const over=await cliRecord(f,d,'over-cli',{},padded+' ');assert.equal(over.code,2);await assert.rejects(fs.lstat(over.dest),{code:'ENOENT'});
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
