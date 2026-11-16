@@ -163,3 +163,34 @@ The ordinary CI workflow runs this suite alongside the PR210 review-candidate
 tests. These fixtures do not run or grade candidate code and do not authorize
 exporting a real private candidate, uploading a snapshot, merging the change,
 native admission, or any model or benchmark run.
+
+
+## Compare a caller-retained expected manifest digest
+
+```sh
+node bin/squire-portable-candidate.mjs --verify /absolute/snapshot --expect-sha256 EXPECTED_MANIFEST_SHA256
+```
+
+The expected value is the caller's independently retained exact lowercase
+64-hex manifest SHA-256, not a digest computed from the selected snapshot to
+manufacture a match. This opt-in form accepts exactly the shown argument order;
+malformed, missing or extra arguments, a non-normalized path, or use with
+`--build` returns usage/2 before input or verifier access. It invokes the same
+complete selected snapshot verifier once, then compares its verified manifest
+digest before any success output. Mismatch returns 2 with fixed
+`PROJECT_PORTABLE_SNAPSHOT_INVALID` when the output channel is usable.
+
+A match preserves the successful bytes/exit of legacy `--verify SNAPSHOT`;
+that two-argument route and builds remain unchanged. No source stores are
+needed for verification. Both executable entry points use the same router and
+existing synchronous/asynchronous output-failure handling; imports remain
+inert. No snapshot/request/source bytes or modes are changed, and there is no
+retry, cleanup, fallback, flush or consumer-receipt guarantee.
+
+This compares selected copy identity only. It does not authenticate a producer,
+prove human review, task correctness, original acknowledgement or current source
+state, or grant execution, merge, disclosure or retry authority. All existing
+finite profiles and complete object/tree/copy checks remain unchanged. Tests use
+fresh synthetic/disposable snapshots only, including two different valid copies,
+corruption, source stores unavailable and failed outputs; no real private
+snapshot or generated candidate code is used or executed.
