@@ -47,15 +47,15 @@ function snapshotLines(result,spec,expectedReceipt){
 function retainedLines(result,{verification,fromRetained,spec,expected}){
   const status=result?.status,manifest=result?.manifest_sha256,source=result?.source_manifest_sha256,provenance=result?.provenance_sha256;
   const keys=['base_commit','base_tree','original_commit','original_tree','revised_commit','revised_tree'],ids=keys.map(k=>result?.[k]);
-  const a=result?.base_to_revised_count,b=result?.original_to_revised_count,u=result?.union_count;
+  const a=result?.base_to_revised_count,b=result?.original_to_revised_count,u=result?.union_count,objectCount=result?.object_count,retainedBytes=result?.retained_bytes,packageBytes=result?.package_bytes;
   if(status!==(fromRetained?'PROJECT_REVISION_REVIEW_PACKAGE_CREATED_FROM_RETAINED_SOURCE':verification?'PROJECT_RETAINED_REVISION_SOURCE_VERIFIED':'PROJECT_RETAINED_REVISION_SOURCE_CREATED')||
      typeof manifest!=='string'||manifest.length!==64||!SHA256.test(manifest)||ids.some(v=>typeof v!=='string'||v.length!==40||!SHA1.test(v))||[a,b,u].some(n=>!Number.isSafeInteger(n)||n<1||n>50)||u<Math.max(a,b)||u>a+b||
      (verification&&manifest!==expected))throw null;
-  let extra;if(fromRetained){if(typeof source!=='string'||source!==spec.expected_manifest_sha256||typeof provenance!=='string'||provenance.length!==64||!SHA256.test(provenance)||!Number.isSafeInteger(result.package_bytes)||result.package_bytes<1||result.package_bytes>29*1024*1024)throw null;
-    extra=`Source manifest SHA256: ${source}\nProvenance SHA256: ${provenance}\nPackage bytes: ${result.package_bytes}\nPackage relative directory: package\n`;
-  }else{if(!Number.isSafeInteger(result.object_count)||result.object_count<3||result.object_count>8192||!Number.isSafeInteger(result.retained_bytes)||result.retained_bytes<1||result.retained_bytes>64*1024*1024)throw null;
+  let extra;if(fromRetained){if(typeof source!=='string'||source!==spec.expected_manifest_sha256||typeof provenance!=='string'||provenance.length!==64||!SHA256.test(provenance)||!Number.isSafeInteger(packageBytes)||packageBytes<1||packageBytes>29*1024*1024)throw null;
+    extra=`Source manifest SHA256: ${source}\nProvenance SHA256: ${provenance}\nPackage bytes: ${packageBytes}\nPackage relative directory: package\n`;
+  }else{if(!Number.isSafeInteger(objectCount)||objectCount<3||objectCount>8192||!Number.isSafeInteger(retainedBytes)||retainedBytes<1||retainedBytes>64*1024*1024)throw null;
     if(!verification&&(ids[0]!==spec.original_result?.base_commit||ids[1]!==spec.original_result?.base_tree||ids[2]!==spec.original_result?.candidate_commit||ids[3]!==spec.original_result?.candidate_tree||ids[4]!==spec.revised_result?.candidate_commit||ids[5]!==spec.revised_result?.candidate_tree||a!==spec.revised_result?.changed_paths?.length||b!==spec.revised_result?.revised_blobs?.length))throw null;
-    extra=`Object count: ${result.object_count}\nRetained bytes: ${result.retained_bytes}\n`;
+    extra=`Object count: ${objectCount}\nRetained bytes: ${retainedBytes}\n`;
   }
   return `${status}\nManifest SHA256: ${manifest}\n${keys.map((k,i)=>k+': '+ids[i]).join('\n')}\nBase-to-revised path count: ${a}\nOriginal-to-revised path count: ${b}\nUnion path count: ${u}\n${extra}COPY_INTEGRITY_ONLY; NO_AUTHENTICITY_OR_ORIGINAL_ACKNOWLEDGEMENT_RECOVERY\n`;
 }
