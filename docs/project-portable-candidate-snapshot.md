@@ -194,3 +194,22 @@ finite profiles and complete object/tree/copy checks remain unchanged. Tests use
 fresh synthetic/disposable snapshots only, including two different valid copies,
 corruption, source stores unavailable and failed outputs; no real private
 snapshot or generated candidate code is used or executed.
+
+
+## Use retained bytes for original-candidate review
+
+The additive [snapshot-source review builder](project-candidate-review-package.md#build-an-original-review-package-from-a-retained-snapshot)
+can use one explicitly selected, caller-manifest-digest-bound snapshot without
+its original Git stores. It performs complete snapshot verification and creates
+a fresh private handoff containing an unchanged V1 `package/` and bound
+`provenance.json`. It does not import objects into Git, execute candidate bytes,
+create a decision, or change this snapshot format or verifier result.
+
+Only the intersection with the narrower original review profile is supported;
+a valid snapshot with too many changed-copy/display bytes rejects. The snapshot
+contains a captured-result hash, not the missing full result/receipt body or
+current store/ref custody. The receipt preserves those limitations; it does not
+authenticate the producer, restore original ACK or prove original live-input
+validation. No old held or uncertain operation is settled or retried. See the
+linked review contract for exact request, output, source stability and
+partial-output rules.

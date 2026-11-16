@@ -5,7 +5,7 @@ import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {dirname,join,parse,resolve} from 'node:path';
 import {types} from 'node:util';
-import {readProjectCandidateReviewSource} from './project-portable-candidate-snapshot.mjs';
+import {readProjectCandidateReviewSource,readProjectCandidateReviewSnapshotSource} from './project-portable-candidate-snapshot.mjs';
 import {MAX_REVIEW_DECISION_BYTES} from './project-review-decision-limits.mjs';
 
 const PACKAGE_SCHEMA='SQUIRE_PROJECT_CANDIDATE_REVIEW_PACKAGE_V1';
@@ -153,14 +153,30 @@ function makeDiff(files){
 }
 function side(item){return item&&{mode:item.mode,git_sha1:item.git_sha1,bytes:item.bytes,sha256:item.sha256};}
 function makeManifest(source,diff){
+  const identity=source.identity??source.result;
   const paths=source.files.map(item=>({path:item.path,old:side(item.old),new:side(item.new),
     binary_review_required:item.old?asText(item.old.data)===null||asText(item.new.data)===null:asText(item.new.data)===null}));
   return {schema:PACKAGE_SCHEMA,input_result_sha256:source.input_result_sha256,
-    candidate_ref:source.result.candidate_ref,base_commit:source.result.base_commit,
-    base_tree:source.result.base_tree,candidate_commit:source.result.candidate_commit,
-    candidate_tree:source.result.candidate_tree,changed_paths:source.files.map(item=>item.path),
+    candidate_ref:identity.candidate_ref,base_commit:identity.base_commit,
+    base_tree:identity.base_tree,candidate_commit:identity.candidate_commit,
+    candidate_tree:identity.candidate_tree,changed_paths:source.files.map(item=>item.path),
     paths,diff:{bytes:diff.length,sha256:digest(diff)},
     boundaries:['SOURCE_REVIEW_PENDING','TASK_CORRECTNESS_NOT_EVALUATED','ORIGIN_SUPPLIED_NOT_AUTHENTICATED']};
+}
+function preparePackage(source){
+  const diff=makeDiff(source.files),manifest=makeManifest(source,diff),manifestBytes=encode(manifest);
+  const copied=source.files.reduce((sum,item)=>sum+(item.old?.bytes??0)+item.new.bytes,0);
+  if(copied>MAX_COPIES||manifestBytes.length>MAX_MANIFEST||copied+diff.length+manifestBytes.length>MAX_PACKAGE)rejected();
+  return {diff,manifest,manifestBytes};
+}
+async function writePackage(fs,outputDir,source,prepared,signal){
+  await reserve(fs,outputDir,signal);await ensureDir(fs,outputDir,'changes',signal);
+  for(const item of source.files){check(signal);
+    if(item.old)await writeFile(fs,outputDir,`changes/${item.path}.old`,item.old.data,signal);
+    await writeFile(fs,outputDir,`changes/${item.path}.new`,item.new.data,signal);
+  }
+  await writeFile(fs,outputDir,'diff.txt',prepared.diff,signal);
+  await writeFile(fs,outputDir,'review-manifest.json',prepared.manifestBytes,signal);
 }
 async function listPackage(fs,root,signal){
   const found=[];const walk=async relative=>{
@@ -262,16 +278,8 @@ export async function buildProjectCandidateReviewPackage(spec,ports={}){
       'base_git_dir','base_git_identity','output_dir'],['signal']);
     signal=captureSignal(spec.signal);check(signal);
     const source=await readProjectCandidateReviewSource(spec,{fs});
-    const diff=makeDiff(source.files),manifest=makeManifest(source,diff),manifestBytes=encode(manifest);
-    if(manifestBytes.length>MAX_MANIFEST||source.files.reduce((sum,item)=>sum+(item.old?.bytes??0)+item.new.bytes,0)+
-       diff.length+manifestBytes.length>MAX_PACKAGE)rejected();
-    await reserve(fs,spec.output_dir,signal);await ensureDir(fs,spec.output_dir,'changes',signal);
-    for(const item of source.files){check(signal);
-      if(item.old)await writeFile(fs,spec.output_dir,`changes/${item.path}.old`,item.old.data,signal);
-      await writeFile(fs,spec.output_dir,`changes/${item.path}.new`,item.new.data,signal);
-    }
-    await writeFile(fs,spec.output_dir,'diff.txt',diff,signal);
-    await writeFile(fs,spec.output_dir,'review-manifest.json',manifestBytes,signal);
+    const prepared=preparePackage(source),{manifest,manifestBytes}=prepared;
+    await writePackage(fs,spec.output_dir,source,prepared,signal);
     const reread=await readProjectCandidateReviewSource(spec,{fs});
     if(digest(encode(makeManifest(reread,makeDiff(reread.files))))!==digest(manifestBytes))rejected();
     const verified=await verifyInternal(fs,spec.output_dir,signal);check(signal);
@@ -288,6 +296,80 @@ export async function buildProjectCandidateReviewPackage(spec,ports={}){
     rejected();
   }
 }
+const SNAPSHOT_PROVENANCE_BOUNDARIES=Object.freeze([
+  'RETAINED_SNAPSHOT_SOURCE_ONLY','LIVE_GIT_CUSTODY_NOT_ESTABLISHED','ORIGINAL_RESULT_BODY_NOT_VALIDATED',
+  'ORIGINAL_ACKNOWLEDGEMENT_NOT_RECOVERED','ORIGIN_NOT_AUTHENTICATED',
+  'NO_DECISION_EXECUTION_MERGE_DISCLOSURE_OR_RETRY_AUTHORITY'
+]);
+async function handoffClosure(fs,root,signal){
+  let handle;const names=[];
+  try{
+    handle=await fs.opendir(root,{bufferSize:1});
+    while(true){check(signal);const entry=await handle.read();if(entry===null)break;
+      if(typeof entry.name!=='string'||!['package','provenance.json'].includes(entry.name)||names.includes(entry.name)||names.length>=2)rejected();
+      names.push(entry.name);
+    }
+    if(names.sort().join('|')!=='package|provenance.json')rejected();
+  }catch(error){if(error instanceof ReviewPackageError)throw error;rejected();}
+  finally{if(handle)try{await handle.close();}catch{rejected();}}
+}
+function clearSource(source){for(const file of source?.files??[])for(const side of [file.old,file.new])side?.data.fill(0);}
+/** Build an unchanged V1 review package and byte-bound receipt from one retained original-format snapshot. */
+export async function buildProjectCandidateReviewPackageFromSnapshot(spec,ports={}){
+  let signal,source,reread,prepared;
+  try{
+    const fs=capturePort(ports);closed(spec,['schema','snapshot_dir','expected_manifest_sha256','output_dir'],['signal']);
+    const request=Object.freeze({schema:spec.schema,snapshot_dir:spec.snapshot_dir,
+      expected_manifest_sha256:spec.expected_manifest_sha256,output_dir:spec.output_dir,signal:captureSignal(spec.signal)});
+    signal=request.signal;check(signal);
+    if(request.schema!=='SQUIRE_PROJECT_CANDIDATE_REVIEW_FROM_SNAPSHOT_SPEC_V1'||!absolute(request.snapshot_dir)||
+       !absolute(request.output_dir)||request.snapshot_dir===request.output_dir||
+       request.snapshot_dir.startsWith(request.output_dir+'/')||request.output_dir.startsWith(request.snapshot_dir+'/')||
+       typeof request.expected_manifest_sha256!=='string'||request.expected_manifest_sha256.length!==64||!SHA256.test(request.expected_manifest_sha256))invalid();
+    source=await readProjectCandidateReviewSnapshotSource(request,{fs});prepared=preparePackage(source);
+    const expectedPackageSha256=digest(prepared.manifestBytes);
+    const container=await reserve(fs,request.output_dir,signal),packageDir=join(request.output_dir,'package');
+    await writePackage(fs,packageDir,source,prepared,signal);
+    const initialPackage=await verifyInternal(fs,packageDir,signal);
+    if(initialPackage.manifest_sha256!==expectedPackageSha256)rejected();
+    const receipt={schema:'SQUIRE_SNAPSHOT_REVIEW_PROVENANCE_V1',
+      source_snapshot_manifest_sha256:source.source_snapshot_manifest_sha256,
+      review_package_manifest_sha256:initialPackage.manifest_sha256,input_result_sha256:source.input_result_sha256,
+      base_commit:prepared.manifest.base_commit,base_tree:prepared.manifest.base_tree,
+      candidate_commit:prepared.manifest.candidate_commit,candidate_tree:prepared.manifest.candidate_tree,
+      changed_path_count:initialPackage.changed_path_count,package_bytes:initialPackage.package_bytes,
+      boundaries:SNAPSHOT_PROVENANCE_BOUNDARIES};
+    const receiptBytes=encode(receipt);if(receiptBytes.length>16*1024)rejected();
+    await writeFile(fs,request.output_dir,'provenance.json',receiptBytes,signal);
+    reread=await readProjectCandidateReviewSnapshotSource(request,{fs});
+    if(!stable(source.root_identity,reread.root_identity)||source.root_identity.uid!==reread.root_identity.uid||
+       source.root_identity.mode!==reread.root_identity.mode||
+       source.source_snapshot_manifest_sha256!==reread.source_snapshot_manifest_sha256||
+       digest(encode(makeManifest(reread,makeDiff(reread.files))))!==expectedPackageSha256)rejected();
+    const before=await stat(fs,request.output_dir),receiptPath=join(request.output_dir,'provenance.json'),leafBefore=await stat(fs,receiptPath);
+    if(!dir(before)||before.dev!==container.dev||before.ino!==container.ino||before.uid!==process.getuid()||
+       (before.mode&0o7777)!==0o700||await fs.realpath(request.output_dir)!==request.output_dir)rejected();
+    await handoffClosure(fs,request.output_dir,signal);
+    if(!(await readFile(fs,receiptPath,16*1024,signal)).equals(receiptBytes))rejected();
+    const verified=await verifyInternal(fs,packageDir,signal);
+    if(verified.manifest_sha256!==expectedPackageSha256||verified.manifest_sha256!==receipt.review_package_manifest_sha256||verified.package_bytes!==receipt.package_bytes||
+       verified.changed_path_count!==receipt.changed_path_count||
+       !(await readFile(fs,receiptPath,16*1024,signal)).equals(receiptBytes))rejected();
+    await handoffClosure(fs,request.output_dir,signal);const after=await stat(fs,request.output_dir),leafAfter=await stat(fs,receiptPath);check(signal);
+    if(!dir(after)||!stable(before,after)||after.uid!==process.getuid()||(after.mode&0o7777)!==0o700||
+       await fs.realpath(request.output_dir)!==request.output_dir||!stable(leafBefore,leafAfter))rejected();
+    return Object.freeze({status:'PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT',
+      source_snapshot_manifest_sha256:receipt.source_snapshot_manifest_sha256,manifest_sha256:verified.manifest_sha256,
+      provenance_sha256:digest(receiptBytes),input_result_sha256:source.input_result_sha256,
+      base_commit:receipt.base_commit,base_tree:receipt.base_tree,candidate_commit:receipt.candidate_commit,
+      candidate_tree:receipt.candidate_tree,changed_path_count:verified.changed_path_count,package_bytes:verified.package_bytes});
+  }catch(error){
+    if(error instanceof ReviewPackageError)throw error;
+    if(signal?.aborted||error?.code==='PROJECT_PORTABLE_SNAPSHOT_ABORTED')aborted();
+    if(error?.code==='INVALID_PROJECT_PORTABLE_SNAPSHOT_SPEC')invalid();rejected();
+  }finally{clearSource(source);clearSource(reread);prepared?.diff.fill(0);prepared?.manifestBytes.fill(0);}
+}
+
 function captureDecision(value){
   closed(value,['schema','decision_id','reviewer_label','review_package_sha256','base_commit','base_tree',
     'candidate_commit','candidate_tree','choice','attestations'],['note']);

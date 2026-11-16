@@ -271,3 +271,90 @@ is granted. Existing bounds, inert help/imports, synchronous/asynchronous
 output-error containment and partial-output limitations apply unchanged.
 See [first-revision comparison](project-revision-review-package.md#compare-a-caller-retained-expected-revision-package-digest)
 for the separate revision family.
+
+
+## Build an original review package from a retained snapshot
+
+`buildProjectCandidateReviewPackageFromSnapshot(spec, ports)` consumes one
+explicitly selected portable-original snapshot after its original Git stores
+are unavailable. It never reconstructs a store or invokes Git. The closed
+`SQUIRE_PROJECT_CANDIDATE_REVIEW_FROM_SNAPSHOT_SPEC_V1` contains `snapshot_dir`,
+`expected_manifest_sha256` and fresh `output_dir`, plus the `schema` field and
+an optional genuine API-only `signal`. Paths must be normalized absolute,
+non-root and nonoverlapping. The expected hash is the caller's retained exact
+lowercase 64-hex manifest SHA-256, never derived to manufacture a match.
+
+```sh
+node bin/squire-candidate-review.mjs --build-from-snapshot /absolute/snapshot-review-spec.json
+node bin/squire-candidate-review.mjs --verify /absolute/handoff/package --expect-sha256 EXPECTED_PACKAGE_MANIFEST_SHA256
+```
+
+The first command uses the existing strict stable non-symlink JSON reader with
+a 64 KiB raw frame; no serialized signal or extra fields are accepted. It
+creates one fresh private mode-0700 **handoff container**, not a V1 package at
+the container root. Its exact children are:
+
+- `package/`: unchanged `SQUIRE_PROJECT_CANDIDATE_REVIEW_PACKAGE_V1`, consumable
+  by the existing original package and decision APIs/commands;
+- `provenance.json`: canonical UTF-8 JSON, a regular single-link mode-0400 file,
+  at most 16 KiB. The V1 package manifest and directory closure gain no fields
+  or extra receipt file.
+
+The receipt's closed `SQUIRE_SNAPSHOT_REVIEW_PROVENANCE_V1` fields are `schema`,
+`source_snapshot_manifest_sha256`, `review_package_manifest_sha256`,
+`input_result_sha256`, the four `base_commit`/`base_tree`/`candidate_commit`/
+`candidate_tree` IDs, `changed_path_count`, `package_bytes` and `boundaries`.
+It links the selected snapshot and exact review package; it includes no paths,
+job labels or source content. Its six ordered boundary statements are
+`RETAINED_SNAPSHOT_SOURCE_ONLY`, `LIVE_GIT_CUSTODY_NOT_ESTABLISHED`,
+`ORIGINAL_RESULT_BODY_NOT_VALIDATED`, `ORIGINAL_ACKNOWLEDGEMENT_NOT_RECOVERED`,
+`ORIGIN_NOT_AUTHENTICATED`, and
+`NO_DECISION_EXECUTION_MERGE_DISCLOSURE_OR_RETRY_AUTHORITY`.
+
+The builder reuses complete snapshot object/tree/copy verification, reads exact
+changed old/new inspection sides with bounded stable no-follow checks, and
+reuses the existing complete diff/manifest/private writer and package verifier.
+It rechecks the full source and its physical root identity after writing,
+compares the resulting review binding, checks receipt readback and package
+binding, and checks the container's identity, private modes and two-child
+closure before success. These cooperative checks are not an atomic snapshot
+or a hostile-writer/no-interference guarantee.
+
+All portable limits still apply. The smaller review limits also apply: 50
+changed paths, 4 MiB per side, 8 MiB copied sides, 8 MiB diff, 256 KiB manifest
+and 17 MiB package. A valid snapshot can exceed these review limits and reject
+before destination creation. The container adds only the bounded receipt to
+package bytes; no profile is raised or text truncated. Binary review and
+complete explicit ACCEPT attestations remain unchanged. No decision is recorded
+or inferred by this builder. First-revision snapshots/chains are outside this
+original-format route.
+
+Snapshot bytes do not contain the full original result/receipt body or current
+store/ref custody. The inherited result hash is retained, not revalidated from
+an invented body; historical original-vs-revision producer behavior is not
+proved by an opaque hash. Neither the V1 package nor the receipt authenticates
+a producer or human review, recovers original ACK, or grants task PASS,
+execution, integration, merge, disclosure or retry authority. Existing package
+and decision verifiers check `package/` only; they do **not** consume or
+authenticate `provenance.json`. The builder's readback binds the receipt when
+created, and its returned digest lets a caller retain that exact receipt
+identity. No separate public receipt-verification command is introduced.
+
+The frozen API result contains `PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT`,
+source snapshot/package/provenance/inherited-result hashes, four object IDs,
+path count and package bytes. CLI exit 0 acknowledges that result; stdout is
+fixed validated metadata, the fixed relative directory `package`, and
+`RETAINED_SNAPSHOT_SOURCE_ONLY; NO_LIVE_CUSTODY_OR_ORIGINAL_RESULT_VALIDATION`.
+No private paths/content/labels are printed. Handled failure uses fixed
+`PROJECT_CANDIDATE_REVIEW_REJECTED` and exit 2 when output is usable. Trusted
+`buildFromSnapshot` CLI injection is for deterministic callers/tests, not new
+execution authority. Old routes and their successful output remain unchanged;
+help adds the new route. Existing sync/async output-error containment applies.
+
+Failure, cancellation or lost acknowledgement may leave a partial or complete
+container/package/receipt. Preserve it; do not retry, remove, overwrite or infer
+no mutation from exit 2/missing stdout. Later integrity cannot recover original
+ACK. This feature does not reopen any held artifact/job. Tests use newly made
+synthetic/disposable stores, snapshots, packages and decisions only; trusted
+fixture setup is distinct from the new route, which executes no candidate,
+Git or provider workload.
