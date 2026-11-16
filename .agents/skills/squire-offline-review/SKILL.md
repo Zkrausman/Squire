@@ -49,7 +49,12 @@ That root contains a V1 `package/` plus a bound private `provenance.json`; use
 **the package child** with the normal package/decision commands. A valid portable
 snapshot can exceed the smaller review limits. No Git stores or full original
 result are reconstructed. Preserve the receipt and its digest/limitations;
-normal package verification does not authenticate it or recover original ACK.
+normal package verification does not consume it or recover original ACK.
+For a copied handoff, use `node bin/squire-candidate-review.mjs
+--verify-snapshot-handoff HANDOFF_DIR EXPECTED_PROVENANCE_SHA256` with the
+caller-retained receipt digest. This read-only operation checks the receipt and
+V1 package pairing, without reopening the snapshot/stores or authenticating a
+producer. See the [selected-handoff contract](../../../docs/project-candidate-review-package.md#verify-an-explicitly-selected-copied-snapshot-review-handoff).
 This route is original-format only and does not infer an owner choice or release
 a held artifact/job. No source is executed.
 

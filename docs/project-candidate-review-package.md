@@ -338,7 +338,9 @@ execution, integration, merge, disclosure or retry authority. Existing package
 and decision verifiers check `package/` only; they do **not** consume or
 authenticate `provenance.json`. The builder's readback binds the receipt when
 created, and its returned digest lets a caller retain that exact receipt
-identity. No separate public receipt-verification command is introduced.
+identity. After copying, use the explicitly selected handoff verification route below to
+check the retained receipt/package pairing; it still does not authenticate a
+producer or recover original ACK.
 
 The frozen API result contains `PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT`,
 source snapshot/package/provenance/inherited-result hashes, four object IDs,
@@ -358,3 +360,62 @@ ACK. This feature does not reopen any held artifact/job. Tests use newly made
 synthetic/disposable stores, snapshots, packages and decisions only; trusted
 fixture setup is distinct from the new route, which executes no candidate,
 Git or provider workload.
+
+
+## Verify an explicitly selected copied snapshot-review handoff
+
+```sh
+node bin/squire-candidate-review.mjs --verify-snapshot-handoff /absolute/copied-handoff EXPECTED_PROVENANCE_SHA256
+```
+
+`verifyProjectCandidateReviewSnapshotHandoff(handoffDir,
+expectedProvenanceSha256, ports)` and this exact three-argument CLI form are
+read-only. Supply a normalized absolute non-root root and the caller's retained
+primitive lowercase 64-hex SHA-256 of `provenance.json`. Never derive an expected
+value from the selected receipt merely to manufacture a match. Malformed,
+missing or extra arguments reject before any reader/verifier call; no JSON
+request file is read. Imports/default/help remain inert as documented.
+
+The shared private verifier checks the mode-0700 root's exact `package/` and
+`provenance.json` closure, reads the regular single-link mode-0400 receipt with
+a bounded stable no-follow reader, and compares its bytes to the expected hash.
+It validates the existing closed 11-field canonical receipt, all digest/ID/count
+bounds and the six exact ordered limitation statements. It invokes the complete
+V1 package verifier and checks the receipt's package manifest hash, inherited
+input-result hash, four object IDs, changed-path count and byte count. Receipt,
+package-directory and root identities/metadata and closure are rechecked. The
+builder uses this same validation; its prepared-source digest and original
+container identity gates remain. These are cooperative read-stability checks,
+not a hostile-filesystem atomic snapshot guarantee.
+
+Only the selected handoff and required ancestry metadata are read. No source
+snapshot, Git store, request, decision or original result body is needed or
+opened. No build, recording, discovery, latest selection, repair, write,
+cleanup or retry occurs. Existing V1 package/decision verification still checks
+only the package; it is distinct from this selected receipt/package operation.
+The 16 KiB receipt frame, V1 17 MiB profile and all smaller per-side/copy/diff/
+manifest/path limits remain unchanged. Fixed closed metadata cannot fill a valid
+16 KiB receipt; padding and over-limit fixtures reject rather than representing
+an invented maximum valid record.
+
+The frozen API status is `PROJECT_CANDIDATE_REVIEW_SNAPSHOT_HANDOFF_VERIFIED`;
+its remaining fields are the same fixed source/package/provenance/inherited
+result digests, four object IDs, path count and package bytes as the builder.
+Success exits 0 with fixed validated metadata and
+`SELECTED_HANDOFF_INTEGRITY_ONLY; NO_AUTHENTICITY_OR_ACKNOWLEDGEMENT_RECOVERY`.
+The returned provenance digest must match the caller expectation before stdout.
+No paths, labels, decision choice/content, receipt body or source text are
+printed. Handled rejection returns 2 with fixed
+`PROJECT_CANDIDATE_REVIEW_REJECTED` when output is usable. Trusted
+`verifySnapshotHandoff` injection is separate from reader/build/revision ports;
+it creates no new untrusted execution boundary. Existing synchronous sink
+suppression, executable asynchronous error latches, backpressure meaning and
+no output retry/fallback/flush/consumer-receipt guarantee apply unchanged.
+
+This verifies a retained byte-bound pair, not the truth of a producer's source
+claim, current source validity, live custody, missing original result body,
+human review, task correctness or original acknowledgement. Even a caller-pinned
+well-formed receipt only carries a declared snapshot hash; it cannot supply
+source authenticity or execution, integration, merge, disclosure or retry
+authority. Failure/lost output leaves the packet untouched and does not settle
+any earlier unknown operation. Tests use fresh synthetic/copied packets only.
