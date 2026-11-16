@@ -327,9 +327,11 @@ export async function buildProjectCandidateReviewPackageFromSnapshot(spec,ports=
        request.snapshot_dir.startsWith(request.output_dir+'/')||request.output_dir.startsWith(request.snapshot_dir+'/')||
        typeof request.expected_manifest_sha256!=='string'||request.expected_manifest_sha256.length!==64||!SHA256.test(request.expected_manifest_sha256))invalid();
     source=await readProjectCandidateReviewSnapshotSource(request,{fs});prepared=preparePackage(source);
+    const expectedPackageSha256=digest(prepared.manifestBytes);
     const container=await reserve(fs,request.output_dir,signal),packageDir=join(request.output_dir,'package');
     await writePackage(fs,packageDir,source,prepared,signal);
     const initialPackage=await verifyInternal(fs,packageDir,signal);
+    if(initialPackage.manifest_sha256!==expectedPackageSha256)rejected();
     const receipt={schema:'SQUIRE_SNAPSHOT_REVIEW_PROVENANCE_V1',
       source_snapshot_manifest_sha256:source.source_snapshot_manifest_sha256,
       review_package_manifest_sha256:initialPackage.manifest_sha256,input_result_sha256:source.input_result_sha256,
@@ -343,14 +345,14 @@ export async function buildProjectCandidateReviewPackageFromSnapshot(spec,ports=
     if(!stable(source.root_identity,reread.root_identity)||source.root_identity.uid!==reread.root_identity.uid||
        source.root_identity.mode!==reread.root_identity.mode||
        source.source_snapshot_manifest_sha256!==reread.source_snapshot_manifest_sha256||
-       digest(encode(makeManifest(reread,makeDiff(reread.files))))!==digest(prepared.manifestBytes))rejected();
+       digest(encode(makeManifest(reread,makeDiff(reread.files))))!==expectedPackageSha256)rejected();
     const before=await stat(fs,request.output_dir),receiptPath=join(request.output_dir,'provenance.json'),leafBefore=await stat(fs,receiptPath);
     if(!dir(before)||before.dev!==container.dev||before.ino!==container.ino||before.uid!==process.getuid()||
        (before.mode&0o7777)!==0o700||await fs.realpath(request.output_dir)!==request.output_dir)rejected();
     await handoffClosure(fs,request.output_dir,signal);
     if(!(await readFile(fs,receiptPath,16*1024,signal)).equals(receiptBytes))rejected();
     const verified=await verifyInternal(fs,packageDir,signal);
-    if(verified.manifest_sha256!==receipt.review_package_manifest_sha256||verified.package_bytes!==receipt.package_bytes||
+    if(verified.manifest_sha256!==expectedPackageSha256||verified.manifest_sha256!==receipt.review_package_manifest_sha256||verified.package_bytes!==receipt.package_bytes||
        verified.changed_path_count!==receipt.changed_path_count||
        !(await readFile(fs,receiptPath,16*1024,signal)).equals(receiptBytes))rejected();
     await handoffClosure(fs,request.output_dir,signal);const after=await stat(fs,request.output_dir),leafAfter=await stat(fs,receiptPath);check(signal);

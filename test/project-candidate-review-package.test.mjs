@@ -678,3 +678,10 @@ test('snapshot source rejects missing oversized wrong-schema or inconsistent inv
   const before=await packageSnapshot(a.snapshotDir);await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot({...a.spec,expected_manifest_sha256:expected}),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');await assert.rejects(fs.lstat(a.spec.output_dir),{code:'ENOENT'});assert.deepEqual(await packageSnapshot(a.snapshotDir),before);
  });
 });
+test('snapshot source rejects substitution of a different valid V1 output before provenance publication',()=>withFixture(async f=>{
+ const a=await snapshotReviewFixture(f),other=await fixture({newApp:Buffer.from('a different valid synthetic candidate\n')});try{
+  const b=await buildProjectCandidateReviewPackage(other.spec),target=join(a.spec.output_dir,'package');let substituted=false;
+  const fsPort=snapshotReviewFs({lstat:async path=>{if(path===target&&!substituted){let complete=false;try{complete=(await fs.lstat(join(target,'review-manifest.json'))).isFile();}catch{}if(complete){substituted=true;await fs.rename(target,join(f.root,'retained-pre-substitution-package'));await fs.cp(other.output,target,{recursive:true});}}return fs.lstat(path);}});
+  await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot(a.spec,{fs:fsPort}),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');assert.equal(substituted,true);assert.equal((await verifyProjectCandidateReviewPackage(target)).manifest_sha256,b.manifest_sha256);await assert.rejects(fs.lstat(join(a.spec.output_dir,'provenance.json')),{code:'ENOENT'});
+ }finally{await fs.rm(other.root,{recursive:true,force:true});}
+}));
