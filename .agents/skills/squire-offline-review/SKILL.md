@@ -99,3 +99,22 @@ an artifact is absent. Report package integrity, selected-record integrity and
 supplied choice separately. None authenticates a reviewer/producer, proves human
 attention or functional success, settles an old job, or grants execution, merge,
 integration, disclosure or retry authority. No generated code is run here.
+
+## Retained first-revision source
+
+If the owner needs first-revision packaging after Git stores disappear, retain
+review witnesses **while all three stores and explicit original package/prior
+REVISE set are available**, using `squire-candidate-review.mjs
+--retain-revision-source SPEC`. Later use `--verify-retained-revision-source
+DIR EXPECTED_MANIFEST_SHA256` or `--build-revision-from-retained SPEC` with the
+caller-retained source digest. See the [retained first-revision contract](../../../docs/project-revision-review-package.md#retain-first-revision-review-source-before-stores-disappear)
+for exact schemas and finite limits; no JSON signal. The latter creates a fresh
+root with V1 revision `package/` plus bound private `provenance.json`; existing
+package/decision commands use the package child. This artifact carries complete
+three-tree metadata and only needed blob payloads, not runnable source closure.
+An original-only snapshot cannot replace missing revision evidence. Supplied
+candidate record validation does not validate underlying generation receipt or
+stage bodies, authenticate an owner/producer, recover an ACK or grant authority.
+If an existing revision package was retained, verify it directly; do not create
+another wrapper or infer a fresh decision. Retain failed/partial output without
+retry/cleanup. The native scoped-delivery workflow and held jobs are separate.

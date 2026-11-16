@@ -291,3 +291,104 @@ finite profiles, two-view/prior binding checks, inert help/imports and output
 failure/partial-output limits remain unchanged.
 See [original-package comparison](project-candidate-review-package.md#compare-a-caller-retained-expected-package-digest)
 for its separate family.
+
+## Retain first-revision review source before stores disappear
+
+`buildProjectRetainedRevisionReviewSource(spec, ports)` creates an explicitly
+selected private `SQUIRE_RETAINED_REVISION_REVIEW_SOURCE_V1` artifact while all
+three pinned source stores remain available. Its closed
+`SQUIRE_PROJECT_RETAINED_REVISION_SOURCE_SPEC_V1` uses the same thirteen fields
+as the live revision build spec above, with the new schema discriminator and a
+fresh `output_dir`. No owner decision or prior record is selected implicitly.
+The original package must cover exactly the recomputed base-to-original paths;
+a valid partial original package is insufficient for this new retained format.
+Existing live and original APIs keep their behavior.
+
+The artifact contains three selected commit objects, complete tree metadata,
+only the raw blob payloads needed by the two review views, both complete supplied
+candidate-result records, the exact original review package, and one to eight
+caller-declared original decision records. The selected decision must be REVISE;
+any disclosed ACCEPT/REJECT conflicts reject. It binds `revision_of`,
+`revised_blobs`, the shared receipt/stage digests and every side's exact bytes.
+It is **not a complete portable software export**: untouched blob payloads and
+full commit ancestry are absent. An original-only portable snapshot cannot be
+converted into this artifact or used to invent the missing revision witnesses.
+If stores disappeared before these witnesses were retained, this route cannot
+recover them.
+
+The selected root is private mode0700 with regular, single-link mode0400 leaves:
+`retained-revision-manifest.json`, `results/original.json`,
+`results/revised.json`, `objects/<oid-prefix>/<oid-rest>`, `original-package/`
+and `prior-decisions/<explicit-id>/decision.json`. Strict canonical manifests
+bind the closed inventory, hashes, endpoints, both direct views and prior set.
+Keep the returned manifest SHA256 separately. These result records, decisions,
+notes and copies are private; normal command output omits their content/labels.
+
+The finite first profile permits 64 MiB total retained leaf bytes, 32 MiB raw
+object payloads, an 8 MiB manifest, 8,192 objects, 2,048 base files and 2,098
+files in each candidate. Three tree traversals total at most 131,072 records;
+metadata remains at most 4 MiB for base and 4 MiB+25,600 bytes per candidate,
+with at most 12 MiB+51,200 raw tree bytes. Each commit is at most64KiB, each
+retained view side at most4MiB, all logical view copies at most12MiB, union at
+most50 paths. Existing correction witnesses retain their512KiB side/4MiB total
+limits. The original package stays within17MiB; each canonical result within
+256KiB; each of1..8 decisions within96KiB. Whole-root enumeration has a9,216
+entry ceiling. A valid live-source input exceeding this retained profile
+rejects; no existing profile expands. The existing nonempty-view restriction
+also remains, so a completely restored base with an empty base-to-revised view
+is unsupported. Restored-base paths within a nonempty pair of views work.
+
+`verifyProjectRetainedRevisionReviewSource(dir, expectedManifestSha256, ports)`
+requires an explicitly supplied exact lowercase64hex digest before input access.
+It verifies the complete selected retained artifact without reading Git stores
+or launching Git. `buildProjectRevisionReviewPackageFromRetainedSource(spec,
+ports)` takes a closed `SQUIRE_PROJECT_REVISION_REVIEW_RETAINED_SPEC_V1`:
+`schema`, `retained_source_dir`, `expected_manifest_sha256`, `output_dir`, plus
+an optional genuine API `signal`. Do not serialize an AbortSignal in JSON.
+
+The fresh build root contains an unchanged V1 revision package in `package/`
+and a separate canonical `provenance.json` of at most16KiB. The receipt binds
+the retained-source manifest, output package manifest, both supplied result
+hashes, original package, selected/declaration decision hashes, all six endpoint
+IDs, counts, size and limitations. Its SHA256 is returned after readback. Use
+**the package child** for existing package/decision APIs and commands. Existing
+package verification does not consume the separate receipt. Source-derived
+expected output is pinned before writing; valid but different package output
+cannot be acknowledged under that receipt. Source, package and output identity
+rechecks withhold success on observed drift; they are not atomic-storage or
+producer-authentication guarantees.
+
+Explicit commands on the existing offline executable:
+
+```sh
+node bin/squire-candidate-review.mjs --retain-revision-source /absolute/retain-spec.json
+node bin/squire-candidate-review.mjs --verify-retained-revision-source /absolute/retained-source EXPECTED_MANIFEST_SHA256
+node bin/squire-candidate-review.mjs --build-revision-from-retained /absolute/build-spec.json
+```
+
+Acquisition requests have a256KiB frame; retained-build requests a64KiB frame.
+Paths must be explicit normalized absolute non-root paths, with source/output
+roots disjoint. The expected digest is caller-retained, never computed from the
+selected untrusted artifact to manufacture a match. Invalid grammar/help/default
+reads no artifact or request. Imports are inert. Success0 outputs only validated
+fixed status/digests/object IDs/counts/bytes; rejection or output failure2 is not
+proof that output is absent. Existing recording/verification route output and
+exit meanings remain unchanged; help includes these additive routes.
+
+Acquisition or package-build failures after reservation preserve partial or
+complete private output. No retry, cleanup, overwrite or rollback is performed;
+missing acknowledgement never proves nonexecution. Later copy verification does
+not recover the original acknowledgement. There is no flush/consumer-receipt
+promise. Source snapshots/Git stores are unavailable during offline tests by
+design; this is not authority to retry an old uncertain operation.
+
+These operations validate supplied candidate records and copy relationships,
+not the underlying generation receipt or stage bodies. Receipt/stage digests
+are commitments only. Offline copy verification establishes neither live source
+custody/current refs, producer/reviewer authenticity, original job completion,
+substantive human attention, task correctness nor native/benchmark success.
+It grants no execution, merge, integration, disclosure or retry authority.
+No candidate source executes, no Git store is reconstructed and no decision is
+created or inferred by the retention or retained-build operations. If a complete
+revision package was already retained, its existing offline verifier suffices;
+there is no need to retain a second artifact for that case.
