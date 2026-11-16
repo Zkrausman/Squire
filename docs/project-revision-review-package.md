@@ -265,3 +265,29 @@ merge or disclosure authority. Later verification does not settle a previously
 lost acknowledgement. Tests use fresh synthetic choices and disposable packages
 only, including wrong digests/bindings, corruption, maximum attestations and
 output failures; they perform no real private decision use or candidate execution.
+
+
+## Compare a caller-retained expected revision-package digest
+
+```sh
+node bin/squire-candidate-review.mjs --verify-revision /absolute/revision-package --expect-sha256 EXPECTED_MANIFEST_SHA256
+```
+
+Supply the caller's independently retained exact lowercase 64-hex manifest
+digest; do not derive it from the package to manufacture a match. This additive
+option follows the package path exactly and is invalid for builds. Malformed,
+missing or extra input returns usage/2 before any reader or API call. The selected
+complete revision verifier runs once; all existing result metadata and the
+captured digest must validate before any success output. Mismatch or invalid
+metadata returns 2 with fixed `PROJECT_REVISION_REVIEW_REJECTED` when usable.
+
+It reads no spec, source stores or prior-decision directories, and performs no
+build, recording, selection among conflicts or mutation. A match preserves exact
+successful bytes/exit of the unchanged legacy `--verify-revision PACKAGE` form.
+It compares selected copy identity, not producer/reviewer authenticity,
+declared-set completeness, current source state, human acceptance or original
+ACK; no execution, merge, disclosure or retry authority is granted. Existing
+finite profiles, two-view/prior binding checks, inert help/imports and output
+failure/partial-output limits remain unchanged.
+See [original-package comparison](project-candidate-review-package.md#compare-a-caller-retained-expected-package-digest)
+for its separate family.

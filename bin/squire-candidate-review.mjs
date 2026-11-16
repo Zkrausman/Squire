@@ -8,7 +8,7 @@ import {readReceiptBytes} from './squire-report.mjs';
 import {buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage} from '../src/project-candidate-review-package.mjs';
 import {buildProjectRevisionReviewPackage,verifyProjectRevisionReviewPackage} from '../src/project-revision-review-package.mjs';
 
-const USAGE='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--build-revision|--verify-revision> <spec.json|package-dir>\n';
+const USAGE='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--build-revision|--verify-revision> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--verify|--verify-revision> <package-dir> --expect-sha256 <expected-manifest-sha256>\n';
 const REJECTED='PROJECT_CANDIDATE_REVIEW_REJECTED\n';
 const MAX_SPEC_BYTES=65536,MAX_REVISION_SPEC_BYTES=262144;
 const SHA256=/^[a-f0-9]{64}$/,SHA1=/^[a-f0-9]{40}$/;
@@ -16,12 +16,12 @@ const OBJECTS=['base_commit','base_tree','candidate_commit','candidate_tree'];
 const byteLength=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),'byteLength').get;
 const absolute=v=>typeof v==='string'&&v.length>1&&v.length<=4096&&v.startsWith('/')&&resolve(v)===v&&v!==parse(v).root&&!/[\\\u0000-\u001f\u007f]/u.test(v);
 
-function revisionLines(result,spec,verify){
+function revisionLines(result,spec,verify,expected){
   const status=result?.status,manifest=result?.manifest_sha256;
   const commits=[result?.base_commit,result?.original_commit,result?.revised_commit];
   const baseCount=result?.base_to_revised_count,originalCount=result?.original_to_revised_count,size=result?.package_bytes;
   if(status!==(verify?'PROJECT_REVISION_REVIEW_PACKAGE_VERIFIED':'PROJECT_REVISION_REVIEW_PACKAGE_CREATED')||
-     typeof manifest!=='string'||!SHA256.test(manifest)||commits.some(v=>typeof v!=='string'||!SHA1.test(v))||
+     typeof manifest!=='string'||!SHA256.test(manifest)||(expected!==undefined&&manifest!==expected)||commits.some(v=>typeof v!=='string'||!SHA1.test(v))||
      [baseCount,originalCount].some(v=>!Number.isSafeInteger(v)||v<1||v>50)||!Number.isSafeInteger(size)||size<1||size>29*1024*1024||
      !verify&&(commits[0]!==spec.original_result?.base_commit||commits[0]!==spec.revised_result?.base_commit||
        commits[1]!==spec.original_result?.candidate_commit||commits[2]!==spec.revised_result?.candidate_commit||
@@ -42,9 +42,11 @@ export async function runCandidateReviewCli(argv,ports={}){
     };
     const stdout=output('stdout'),stderr=output('stderr');
     if(Array.isArray(argv)&&argv.length===1&&argv[0]==='--help'){stdout(USAGE);return outputFailed?2:0;}
-    const mode=Array.isArray(argv)&&argv.length===2?argv[0]:null;
+    const mode=Array.isArray(argv)&&(argv.length===2||argv.length===4)?argv[0]:null;
     const path=['--build','--verify','--build-revision','--verify-revision'].includes(mode)?argv[1]:null;
-    if(!absolute(path)){stderr(USAGE);return 2;}
+    const expected=Array.isArray(argv)&&argv.length===4?argv[3]:undefined;
+    if(!absolute(path)||(argv.length===4&&(!['--verify','--verify-revision'].includes(mode)||
+       argv[2]!=='--expect-sha256'||typeof expected!=='string'||!SHA256.test(expected)))){stderr(USAGE);return 2;}
     const revision=mode==='--build-revision'||mode==='--verify-revision';
     try{
       const verify=mode==='--verify'||mode==='--verify-revision';
@@ -72,10 +74,10 @@ export async function runCandidateReviewCli(argv,ports={}){
         }
       }
       const result=await Reflect.apply(operation,ports,[verify?path:spec]);
-      if(revision){stdout(revisionLines(result,spec,verify));return outputFailed?2:0;}
+      if(revision){stdout(revisionLines(result,spec,verify,expected));return outputFailed?2:0;}
       const status=result?.status,manifest=result?.manifest_sha256,objects=OBJECTS.map(k=>result?.[k]),count=result?.changed_path_count,size=result?.package_bytes;
       if(status!==(verify?'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED':'PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED')||
-         typeof manifest!=='string'||!SHA256.test(manifest)||objects.some(v=>typeof v!=='string'||!SHA1.test(v))||
+         typeof manifest!=='string'||!SHA256.test(manifest)||(expected!==undefined&&manifest!==expected)||objects.some(v=>typeof v!=='string'||!SHA1.test(v))||
          !Number.isSafeInteger(count)||count<1||count>50||!Number.isSafeInteger(size)||size<1||size>17*1024*1024||
          !verify&&(OBJECTS.some((k,i)=>objects[i]!==spec.result?.[k])||count!==spec.result?.changed_paths?.length))throw null;
       stdout(`${status}\nManifest SHA256: ${manifest}\nBase commit: ${objects[0]}\nBase tree: ${objects[1]}\nCandidate commit: ${objects[2]}\nCandidate tree: ${objects[3]}\nChanged path count: ${count}\nPackage bytes: ${size}\nCOPY_INTEGRITY_ONLY; NO_DECISION_OR_EXECUTION_AUTHORITY\n`);

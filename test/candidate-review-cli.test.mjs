@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {runCandidateReviewCli as run} from '../bin/squire-candidate-review.mjs';
 import {artifactCliChild as child} from './helpers/artifact-cli-child.mjs';
-const MAX=65536,usage='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--build-revision|--verify-revision> <spec.json|package-dir>\n';
+const MAX=65536,usage='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--build-revision|--verify-revision> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--verify|--verify-revision> <package-dir> --expect-sha256 <expected-manifest-sha256>\n';
 const cli=new URL('../bin/squire-candidate-review.mjs',import.meta.url);
 const encode=v=>new TextEncoder().encode(typeof v==='string'?v:JSON.stringify(v));
 const spec=()=>({schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',result:{base_commit:'1'.repeat(40),base_tree:'2'.repeat(40),candidate_commit:'3'.repeat(40),candidate_tree:'4'.repeat(40),changed_paths:['src/private.mjs']},candidate_git_dir:'/private/candidate.git',candidate_git_identity:{dev:1,ino:2},base_git_dir:'/private/base.git',base_git_identity:{dev:1,ino:3},output_dir:'/private/fresh-package'});
@@ -98,4 +98,33 @@ test('first revision invalid result or thrown errors cannot leak or acknowledge 
 });
 test('first revision acknowledgement failure suppresses fallback and repeated operations',async()=>{
  const h=revisionHarness();let calls=0,writes=0,diagnostics=0;h.ports.buildRevision=async()=>{calls++;return revisionResult();};h.ports.stdout={write(){writes++;throw Error('PRIVATE_WRITE');}};h.ports.stderr={write(){diagnostics++;}};assert.equal(await run(['--build-revision','/private/spec'],h.ports),2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.equal(h.originalCalls(),0);
+});
+
+test('expected package digest verification selects one complete verifier and preserves legacy bytes',async()=>{
+ for(const revision of [false,true]){
+  const mode=revision?'--verify-revision':'--verify',digest=(revision?'c':'a').repeat(64),make=()=>revision?revisionHarness():harness();
+  const old=make();assert.equal(await run([mode,'/private/package'],old.ports),0);
+  for(const expected of [digest,'0'.repeat(64)]){const h=make();assert.equal(await run([mode,'/private/package','--expect-sha256',expected],h.ports),expected===digest?0:2);assert.deepEqual(h.reads,[]);assert.deepEqual(h.builds,[]);if(revision){assert.deepEqual(h.revisionBuilds,[]);assert.deepEqual(h.revisionVerifies,['/private/package']);assert.equal(h.originalCalls(),0);}else assert.deepEqual(h.verifies,['/private/package']);assert.deepEqual(h.out,expected===digest?old.out:[]);assert.deepEqual(h.err,expected===digest?[]:[revision?'PROJECT_REVISION_REVIEW_REJECTED\n':'PROJECT_CANDIDATE_REVIEW_REJECTED\n']);}
+ }
+});
+test('expected package digest grammar rejects without any input or operation',async()=>{
+ for(const mode of ['--verify','--verify-revision']){
+  const digest='a'.repeat(64),valid=[mode,'/private/package','--expect-sha256',digest];const sparse=[...valid];delete sparse[3];
+  const bad=[[mode,'/private/package','--expect-sha256'],[...valid,'extra'],[mode,'/private/package',digest,'--expect-sha256'],[mode,'relative','--expect-sha256',digest],[mode,'/private/../package','--expect-sha256',digest],sparse,...['',null,undefined,7,{},new String(digest),'A'.repeat(64),'g'.repeat(64),'a'.repeat(63),'a'.repeat(65)].map(v=>[mode,'/private/package','--expect-sha256',v]),['--build','/private/spec','--expect-sha256',digest],['--build-revision','/private/spec','--expect-sha256',digest],['--help','/private/package','--expect-sha256',digest]];
+  for(const argv of bad){let calls=0,out='',err='';const operation=()=>{calls++;throw Error('PRIVATE_UNWANTED_OPERATION');};assert.equal(await run(argv,{readBytes:operation,build:operation,verify:operation,buildRevision:operation,verifyRevision:operation,stdout:{write:s=>out+=s},stderr:{write:s=>err+=s}}),2);assert.equal(calls,0);assert.equal(out,'');assert.equal(err,usage);}
+ }
+});
+test('expected digest route validates all result metadata and captures digest once',async()=>{
+ for(const revision of [false,true]){
+  const mode=revision?'--verify-revision':'--verify',digest=(revision?'c':'a').repeat(64),key=revision?'verifyRevision':'verify',good=revision?revisionResult(true):result(true);
+  const bad=[{...good,status:'PRIVATE_STATUS'},{...good,manifest_sha256:'PRIVATE_DIGEST'},{...good,package_bytes:0},{...good,base_commit:'PRIVATE_COMMIT'},revision?{...good,original_to_revised_count:51}:{...good,changed_path_count:51},Object.defineProperty({...good},'manifest_sha256',{get(){throw Error('PRIVATE_GETTER');}})];
+  for(const value of bad){const h=revision?revisionHarness():harness();let calls=0;h.ports[key]=async()=>{calls++;return value;};assert.equal(await run([mode,'/private/package','--expect-sha256',digest],h.ports),2);assert.equal(calls,1);assert.deepEqual(h.out,[]);assert.deepEqual(h.err,[revision?'PROJECT_REVISION_REVIEW_REJECTED\n':'PROJECT_CANDIDATE_REVIEW_REJECTED\n']);assert.deepEqual(h.reads,[]);}
+  const h=revision?revisionHarness():harness(),argv=[mode,'/private/package','--expect-sha256',digest];let reads=0;h.ports[key]=async()=>{argv[1]='/private/changed';argv[3]='0'.repeat(64);return Object.defineProperty({...good},'manifest_sha256',{get(){reads++;return reads===1?digest:'0'.repeat(64);}});};assert.equal(await run(argv,h.ports),0);assert.equal(reads,1);assert.ok(h.out.join('').includes('Manifest SHA256: '+digest+'\n'));
+ }
+});
+test('expected digest route output failures never retry verification or disclose raw errors',async()=>{
+ for(const revision of [false,true]){
+  const mode=revision?'--verify-revision':'--verify',digest=(revision?'c':'a').repeat(64),key=revision?'verifyRevision':'verify',good=revision?revisionResult(true):result(true);
+  for(const match of [true,false]){const h=revision?revisionHarness():harness();let calls=0,writes=0;h.ports[key]=async()=>{calls++;return good;};h.ports.stdout={write(){writes++;throw Error('PRIVATE_OUTPUT');}};h.ports.stderr={write(){writes++;throw Error('PRIVATE_ERROR');}};assert.equal(await run([mode,'/private/package','--expect-sha256',match?digest:'0'.repeat(64)],h.ports),2);assert.equal(calls,1);assert.equal(writes,1);assert.deepEqual(h.reads,[]);assert.deepEqual(h.builds,[]);}
+ }
 });
