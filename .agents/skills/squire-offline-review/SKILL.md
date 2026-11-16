@@ -41,6 +41,18 @@ still checks copy integrity and prints the observed manifest digest; it does not
 claim comparison to a caller-retained expectation. The option is not a build or
 decision-recording argument. See the linked family contract for exact grammar.
 
+When only an original portable snapshot remains, use the explicit
+`squire-candidate-review.mjs --build-from-snapshot SPEC` route described in the
+[retained-source contract](../../../docs/project-candidate-review-package.md#build-an-original-review-package-from-a-retained-snapshot).
+Supply the caller-retained snapshot manifest digest and a fresh output root.
+That root contains a V1 `package/` plus a bound private `provenance.json`; use
+**the package child** with the normal package/decision commands. A valid portable
+snapshot can exceed the smaller review limits. No Git stores or full original
+result are reconstructed. Preserve the receipt and its digest/limitations;
+normal package verification does not authenticate it or recover original ACK.
+This route is original-format only and does not infer an owner choice or release
+a held artifact/job. No source is executed.
+
 ## Preserve the supplied bindings and choice
 
 Package builds and decision recording create new private artifacts. Verification

@@ -1070,7 +1070,7 @@ function verifyManifestObjectClosure(manifest,objects,candidateTree,baseTree,can
   if(!compareFiles(manifest.candidate_files,expectedCandidate)||!compareFiles(manifest.base_preimages,expectedPreimages))rejected();
   return Object.freeze({actualChanges});
 }
-async function verifySnapshotInternal(snapshotDir,signal){
+async function inspectSnapshotInternal(snapshotDir,signal){
   if(!absolutePath(snapshotDir))invalid();
   await ancestorChecks(snapshotDir);
   const inventory=await walkOutput(snapshotDir,signal);
@@ -1119,7 +1119,7 @@ async function verifySnapshotInternal(snapshotDir,signal){
   checkAbort(signal);
   if(!stable(inventory.rootStat,rootAfter)||!statIs(rootAfter,'directory')||rootAfter.uid!==process.getuid()||
      (rootAfter.mode&0o7777)!==0o700)rejected();
-  return Object.freeze({
+  const result=Object.freeze({
     status:'VERIFIED_FOR_PRIVATE_REVIEW',manifest_sha256:sha256(canonicalBytes(raw)),
     input_result_sha256:manifest.input_result_sha256,candidate_commit:manifest.candidate_commit,
     candidate_tree:manifest.candidate_tree,base_commit:manifest.base_commit,base_tree:manifest.base_tree,
@@ -1127,6 +1127,10 @@ async function verifySnapshotInternal(snapshotDir,signal){
     candidate_file_count:manifest.candidate_files.length,base_preimage_count:manifest.base_preimages.length,
     total_bytes:manifest.total_bytes
   });
+  return Object.freeze({result,manifest,rootStat:inventory.rootStat});
+}
+async function verifySnapshotInternal(snapshotDir,signal){
+  return (await inspectSnapshotInternal(snapshotDir,signal)).result;
 }
 
 /** Create one private snapshot from the exact original PR210 result and two selected stores. */
@@ -1187,6 +1191,55 @@ export async function verifyProjectPortableCandidateSnapshot(snapshotDir,options
     if(signal&&signalAborted(signal))throw new SnapshotError('PROJECT_PORTABLE_SNAPSHOT_ABORTED');
     throw new SnapshotError('PROJECT_PORTABLE_SNAPSHOT_REJECTED');
   }
+}
+
+// Original-format retained snapshot source only. No Git stores or result body are reconstructed.
+export async function readProjectCandidateReviewSnapshotSource(spec,options={}){
+  let signal,success=false;const capturedBuffers=[];
+  try{
+    closed(options,[],['fs']);const fsPort=captureFsPort(options.fs);
+    closed(spec,['schema','snapshot_dir','expected_manifest_sha256','output_dir'],['signal']);
+    const snapshotDir=spec.snapshot_dir,expected=spec.expected_manifest_sha256,outputDir=spec.output_dir;
+    signal=captureSignal(spec.signal);
+    if(spec.schema!=='SQUIRE_PROJECT_CANDIDATE_REVIEW_FROM_SNAPSHOT_SPEC_V1'||
+       !absolutePath(snapshotDir)||!absolutePath(outputDir)||pathsOverlap(snapshotDir,outputDir)||
+       typeof expected!=='string'||expected.length!==64||!SHA256.test(expected))invalid();
+    return await fsContext.run(fsPort,()=>signalContext.run(signal,async()=>{
+      checkAbort(signal);const inspected=await inspectSnapshotInternal(snapshotDir,signal);
+      if(inspected.result.manifest_sha256!==expected)rejected();
+      const manifest=inspected.manifest,oldByPath=new Map(manifest.base_preimages.map(item=>[item.path,item])),
+        newByPath=new Map(manifest.candidate_files.map(item=>[item.path,item]));
+      let copies=0;
+      for(const path of manifest.changed_paths){
+        const old=oldByPath.get(path),next=newByPath.get(path);
+        if(!next||next.mode!=='100644'||(old&&!['100644','100755'].includes(old.mode)))rejected();
+        copies+=(old?.bytes??0)+next.bytes;if(copies>8*1024*1024)rejected();
+      }
+      const readSide=async(file,folder)=>{
+        checkAbort(signal);const data=await readStableFile(join(snapshotDir,folder,...file.path.split('/')),MAX_BLOB_BYTES,0o400);
+        capturedBuffers.push(data);
+        if(data.length!==file.bytes||sha256(data)!==file.sha256||gitOid('blob',data)!==file.oid)rejected();
+        return Object.freeze({mode:file.mode,git_sha1:file.oid,bytes:file.bytes,sha256:file.sha256,data});
+      };
+      const files=[];
+      for(const path of manifest.changed_paths){
+        const old=oldByPath.get(path),next=newByPath.get(path);
+        files.push(Object.freeze({path,old:old?await readSide(old,'base-preimages'):null,
+          new:await readSide(next,'candidate-files')}));
+      }
+      const after=await lstat(snapshotDir);checkAbort(signal);await realPathSelf(snapshotDir);
+      if(!stable(inspected.rootStat,after)||!statIs(after,'directory')||after.uid!==process.getuid()||
+         (after.mode&0o7777)!==0o700)rejected();
+      const rootIdentity=Object.freeze(Object.fromEntries(['dev','ino','size','mtimeMs','ctimeMs','uid','mode'].map(key=>[key,after[key]])));
+      success=true;return Object.freeze({identity:Object.freeze({candidate_ref:manifest.candidate_ref,
+        base_commit:manifest.base_commit,base_tree:manifest.base_tree,candidate_commit:manifest.candidate_commit,
+        candidate_tree:manifest.candidate_tree}),input_result_sha256:manifest.input_result_sha256,
+        source_snapshot_manifest_sha256:expected,root_identity:rootIdentity,files:Object.freeze(files)});
+    }));
+  }catch(error){
+    if(error instanceof SnapshotError)throw error;
+    if(signal&&signalAborted(signal))aborted();rejected();
+  }finally{if(!success)for(const bytes of capturedBuffers)bytes.fill(0);}
 }
 
 // Shared, read-only PR210 source inspection for the bounded changed-file review

@@ -1,3 +1,4 @@
+import {buildProjectPortableCandidateSnapshot} from '../src/project-portable-candidate-snapshot.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
@@ -10,7 +11,7 @@ import {runCandidateDecisionCli} from '../bin/squire-candidate-decision.mjs';
 import {MAX_REVIEW_DECISION_BYTES} from '../src/project-review-decision-limits.mjs';
 import {artifactCliChild} from './helpers/artifact-cli-child.mjs';
 import {
-  buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage,
+  buildProjectCandidateReviewPackage,buildProjectCandidateReviewPackageFromSnapshot,verifyProjectCandidateReviewPackage,
   recordProjectCandidateDecision,verifyProjectCandidateDecision
 } from '../src/project-candidate-review-package.mjs';
 
@@ -601,3 +602,79 @@ test('expected manifest original package verification binds the caller digest of
  const late=await artifactCliChild(reviewCliUrl,argv,{before:"const w=process.stdout.write.bind(process.stdout);process.stdout.write=(...a)=>{const v=w(...a);setImmediate(()=>process.stdout.emit('error',Error('PRIVATE_LATE_FAILURE')));return v;};"});assert.equal(late.code,2);assert.equal(late.stdout,legacy.stdout);assert.equal(late.stderr,'');assert.deepEqual(await packageSnapshot(f.output),snapshot);
  const diff=join(f.output,'diff.txt');await fs.chmod(diff,0o600);await fs.appendFile(diff,'synthetic corruption');await fs.chmod(diff,0o400);const corruptSnapshot=await packageSnapshot(f.output),corrupt=await artifactCliChild(reviewCliUrl,argv);assert.equal(corrupt.code,2);assert.equal(corrupt.stdout,'');assert.equal(corrupt.stderr,'PROJECT_CANDIDATE_REVIEW_REJECTED\n');assert.deepEqual(await packageSnapshot(f.output),corruptSnapshot);
 }));
+
+
+async function snapshotReviewFixture(f){
+ const snapshotDir=join(f.root,'source-snapshot');
+ const snapshot=await buildProjectPortableCandidateSnapshot({...f.spec,schema:'SQUIRE_PROJECT_REVIEW_CANDIDATE_SNAPSHOT_REQUEST_V1',output_dir:snapshotDir});
+ return {snapshotDir,snapshot,spec:{schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_FROM_SNAPSHOT_SPEC_V1',snapshot_dir:snapshotDir,
+   expected_manifest_sha256:snapshot.manifest_sha256,output_dir:join(f.root,'snapshot-review-handoff')}};
+}
+test('snapshot source builder creates byte-identical V1 package and bound private receipt without Git stores',()=>withFixture(async f=>{
+ const live=await buildProjectCandidateReviewPackage(f.spec),liveBefore=await packageSnapshot(f.output),prepared=await snapshotReviewFixture(f),sourceBefore=await packageSnapshot(prepared.snapshotDir);
+ await fs.rename(f.spec.base_git_dir,join(f.root,'base-unavailable'));await fs.rename(f.spec.candidate_git_dir,join(f.root,'candidate-unavailable'));
+ const built=await buildProjectCandidateReviewPackageFromSnapshot(prepared.spec),pkg=join(prepared.spec.output_dir,'package');
+ assert.equal(built.status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT');assert.ok(Object.isFrozen(built));assert.equal(built.source_snapshot_manifest_sha256,prepared.snapshot.manifest_sha256);assert.equal(built.manifest_sha256,live.manifest_sha256);
+ assert.deepEqual(await packageSnapshot(pkg),liveBefore);assert.deepEqual(await packageSnapshot(prepared.snapshotDir),sourceBefore);
+ const receiptBytes=await fs.readFile(join(prepared.spec.output_dir,'provenance.json')),receipt=JSON.parse(receiptBytes);
+ assert.equal(createHash('sha256').update(receiptBytes).digest('hex'),built.provenance_sha256);assert.equal(receipt.schema,'SQUIRE_SNAPSHOT_REVIEW_PROVENANCE_V1');assert.equal(receipt.review_package_manifest_sha256,built.manifest_sha256);assert.equal(receipt.source_snapshot_manifest_sha256,prepared.snapshot.manifest_sha256);assert.equal(receipt.input_result_sha256,built.input_result_sha256);assert.deepEqual(Object.keys(receipt).sort(),['schema','source_snapshot_manifest_sha256','review_package_manifest_sha256','input_result_sha256','base_commit','base_tree','candidate_commit','candidate_tree','changed_path_count','package_bytes','boundaries'].sort());assert.deepEqual(receipt.boundaries,['RETAINED_SNAPSHOT_SOURCE_ONLY','LIVE_GIT_CUSTODY_NOT_ESTABLISHED','ORIGINAL_RESULT_BODY_NOT_VALIDATED','ORIGINAL_ACKNOWLEDGEMENT_NOT_RECOVERED','ORIGIN_NOT_AUTHENTICATED','NO_DECISION_EXECUTION_MERGE_DISCLOSURE_OR_RETRY_AUTHORITY']);assert.ok(receiptBytes.equals(decisionWire(receipt)));for(const key of ['base_commit','base_tree','candidate_commit','candidate_tree','changed_path_count','package_bytes'])assert.equal(receipt[key],built[key]);assert.deepEqual(await fs.readdir(prepared.spec.output_dir),['package','provenance.json']);assert.equal((await fs.stat(prepared.spec.output_dir)).mode&0o777,0o700);assert.equal((await fs.stat(join(prepared.spec.output_dir,'provenance.json'))).mode&0o777,0o400);assert.ok(receiptBytes.length<=16*1024);assert.doesNotMatch(receiptBytes.toString(),/snapshot-review-handoff|source-snapshot|reviewer_label|receipt_sha256|stage_manifest_sha256/);
+ for(const choice of ['ACCEPT','REVISE','REJECT']){const request=await decisionRequest(f,built,choice),dir=join(f.root,'snapshot-'+choice),d=await recordProjectCandidateDecision(pkg,request,dir);assert.equal((await verifyProjectCandidateDecision(pkg,dir,d.decision_sha256)).status,'PROJECT_CANDIDATE_DECISION_VERIFIED');}
+ assert.equal((await verifyProjectCandidateReviewPackage(pkg)).manifest_sha256,live.manifest_sha256);
+}));
+
+function snapshotReviewFs(overrides={}){return Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(key=>[key,overrides[key]??((...args)=>fs[key](...args))]));}
+test('snapshot source invalid closed requests reject without filesystem access',async()=>{
+ let calls=0;const fsPort=snapshotReviewFs(Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(k=>[k,async()=>{calls++;throw Error('PRIVATE_UNWANTED');}]))),valid={schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_FROM_SNAPSHOT_SPEC_V1',snapshot_dir:'/synthetic/snapshot',expected_manifest_sha256:'a'.repeat(64),output_dir:'/synthetic/handoff'};
+ for(const spec of [{...valid,schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1'},{...valid,result:{}},{...valid,snapshot_dir:'relative'},{...valid,output_dir:'/synthetic/snapshot/nested'},{...valid,output_dir:'/synthetic/snapshot'},{...valid,expected_manifest_sha256:'A'.repeat(64)},{...valid,expected_manifest_sha256:'a'.repeat(64)+'\n'},{...valid,expected_manifest_sha256:null},{...valid,signal:{}},Object.defineProperty({...valid},'snapshot_dir',{get(){throw Error('PRIVATE_GETTER');}})])await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot(spec,{fs:fsPort}),e=>e.code==='INVALID_PROJECT_CANDIDATE_REVIEW_SPEC');
+ assert.equal(calls,0);
+});
+test('snapshot source wrong selection, corruption and existing destination reject without source changes',()=>withFixture(async f=>{
+ const a=await snapshotReviewFixture(f),before=await packageSnapshot(a.snapshotDir),otherDir=join(f.root,'other-snapshot'),other=await buildProjectPortableCandidateSnapshot({...f.spec,schema:'SQUIRE_PROJECT_REVIEW_CANDIDATE_SNAPSHOT_REQUEST_V1',result:{...f.result,receipt_sha256:'c'.repeat(64)},output_dir:otherDir});assert.notEqual(other.manifest_sha256,a.snapshot.manifest_sha256);
+ for(const spec of [{...a.spec,expected_manifest_sha256:'0'.repeat(64)},{...a.spec,snapshot_dir:otherDir}]){await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot(spec),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');await assert.rejects(fs.lstat(spec.output_dir),{code:'ENOENT'});}
+ await fs.mkdir(a.spec.output_dir,{mode:0o700});await fs.writeFile(join(a.spec.output_dir,'existing.txt'),'keep',{mode:0o400});const old=await packageSnapshot(a.spec.output_dir);await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot(a.spec),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');assert.deepEqual(await packageSnapshot(a.spec.output_dir),old);assert.deepEqual(await packageSnapshot(a.snapshotDir),before);
+ const damaged=join(a.snapshotDir,'candidate-files','src','app.mjs');await fs.chmod(damaged,0o600);await fs.appendFile(damaged,'corrupt');await fs.chmod(damaged,0o400);const corruptBefore=await packageSnapshot(a.snapshotDir),dest=join(f.root,'corrupt-rejected');await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot({...a.spec,output_dir:dest}),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');await assert.rejects(fs.lstat(dest),{code:'ENOENT'});assert.deepEqual(await packageSnapshot(a.snapshotDir),corruptBefore);
+}));
+test('snapshot source output faults retain partial or complete handoff and reject incorrect provenance bindings',async()=>{
+ for(const fault of ['write','close','receipt-read','receipt-binding','package-drift','source-drift','root-replacement','extra-entry'])await withFixture(async f=>{
+  const a=await snapshotReviewFixture(f);let injected=false;
+  const fsPort=snapshotReviewFs({open:async(path,flags,...args)=>{if(fault==='receipt-read'&&path===join(a.spec.output_dir,'provenance.json')&&!(flags&3)){injected=true;throw Error('PRIVATE_RECEIPT_READ');}const h=await fs.open(path,flags,...args);if(path===join(a.spec.output_dir,'provenance.json')&&(flags&2||flags&1))return {stat:(...v)=>h.stat(...v),close:async()=>{await h.close();if(fault==='close')throw Error('PRIVATE_CLOSE_FAILURE');},writeFile:async bytes=>{
+   injected=true;if(fault==='write')throw Error('PRIVATE_WRITE_FAILURE');
+   if(fault==='receipt-binding'){const record=JSON.parse(bytes);record.review_package_manifest_sha256='0'.repeat(64);await h.writeFile(Buffer.from(JSON.stringify(record)));}else await h.writeFile(bytes);
+   if(fault==='package-drift'||fault==='source-drift'){const target=fault==='package-drift'?join(a.spec.output_dir,'package','changes','src','app.mjs.new'):join(a.snapshotDir,'candidate-files','src','app.mjs');await fs.chmod(target,0o600);await fs.appendFile(target,'fixture mutation');await fs.chmod(target,0o400);}
+   if(fault==='root-replacement'){const old=join(f.root,'retained-source');await fs.rename(a.snapshotDir,old);await fs.cp(old,a.snapshotDir,{recursive:true});}
+   if(fault==='extra-entry')await fs.writeFile(join(a.spec.output_dir,'unexpected'),'extra',{mode:0o400});
+  }};return h;}});
+  await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot(a.spec,{fs:fsPort}),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');assert.equal(injected,true);assert.equal((await fs.stat(a.spec.output_dir)).mode&0o777,0o700);if(fault==='package-drift')await assert.rejects(verifyProjectCandidateReviewPackage(join(a.spec.output_dir,'package')),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');else assert.equal((await verifyProjectCandidateReviewPackage(join(a.spec.output_dir,'package'))).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');
+ });
+});
+test('snapshot source cancellation closes handles and preserves unknown partial output',()=>withFixture(async f=>{
+ const a=await snapshotReviewFixture(f),abort=new AbortController(),handles=new Set();let fired=false;
+ const fsPort=snapshotReviewFs({open:async(path,flags,...args)=>{const h=await fs.open(path,flags,...args);handles.add(h);if(path===join(a.spec.output_dir,'package','diff.txt')&&!fired){fired=true;abort.abort();}return {stat:(...v)=>h.stat(...v),read:(...v)=>h.read(...v),writeFile:(...v)=>h.writeFile(...v),close:async()=>{try{await h.close();}finally{handles.delete(h);}}};}});
+ await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot({...a.spec,signal:abort.signal},{fs:fsPort}),e=>e.code==='PROJECT_CANDIDATE_REVIEW_ABORTED');assert.equal(fired,true);assert.equal(handles.size,0);assert.ok((await fs.readdir(a.spec.output_dir)).includes('package'));
+ const before=new AbortController();before.abort();const dest=join(f.root,'pre-aborted');await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot({...a.spec,output_dir:dest,signal:before.signal}),e=>e.code==='PROJECT_CANDIDATE_REVIEW_ABORTED');await assert.rejects(fs.lstat(dest),{code:'ENOENT'});
+}));
+test('snapshot source valid portable profiles still obey narrower changed-copy and diff limits',async()=>{
+ for(const kind of ['copies-over','diff-over','binary-edge']){const f=await fixture({oldApp:Buffer.alloc(4*1024*1024,kind==='binary-edge'?0:65),newApp:Buffer.alloc(4*1024*1024,kind==='binary-edge'?255:66),extras:kind==='copies-over'});try{
+  const a=await snapshotReviewFixture(f);if(kind==='binary-edge'){const built=await buildProjectCandidateReviewPackageFromSnapshot(a.spec);assert.equal(built.changed_path_count,1);assert.equal((await verifyProjectCandidateReviewPackage(join(a.spec.output_dir,'package'))).manifest_sha256,built.manifest_sha256);const m=JSON.parse(await fs.readFile(join(a.spec.output_dir,'package','review-manifest.json')));assert.equal(m.paths[0].binary_review_required,true);}else{await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot(a.spec),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');await assert.rejects(fs.lstat(a.spec.output_dir),{code:'ENOENT'});}
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}}
+});
+test('snapshot source maximum fifty-path V1 output and private receipt remain bounded',async()=>{
+ const f=await fixture({deepDistinct:true});try{const live=await buildProjectCandidateReviewPackage(f.spec),a=await snapshotReviewFixture(f),built=await buildProjectCandidateReviewPackageFromSnapshot(a.spec);assert.equal(built.changed_path_count,50);assert.equal(built.manifest_sha256,live.manifest_sha256);assert.deepEqual(await packageSnapshot(join(a.spec.output_dir,'package')),await packageSnapshot(f.output));assert.ok((await fs.stat(join(a.spec.output_dir,'provenance.json'))).size<=16*1024);}finally{await fs.rm(f.root,{recursive:true,force:true});}
+});
+test('snapshot source CLI creates a usable handoff, contains lost acknowledgements and runs no Git in the route',()=>withFixture(async f=>{
+ const a=await snapshotReviewFixture(f),before=await packageSnapshot(a.snapshotDir),input=join(f.root,'snapshot-spec.json');await fs.rename(f.base,join(f.root,'no-base'));await fs.rename(f.candidate,join(f.root,'no-candidate'));
+ await fs.writeFile(input,JSON.stringify(a.spec),{mode:0o600});const inputBefore=await fs.readFile(input),built=await artifactCliChild(reviewCliUrl,['--build-from-snapshot',input]);assert.equal(built.code,0);assert.equal(built.signal,null);assert.equal(built.stderr,'');assert.match(built.stdout,/^PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT/);assert.doesNotMatch(built.stdout,/squire-review-package|snapshot-review-handoff|source-snapshot|reviewer_label/);assert.deepEqual(await fs.readFile(input),inputBefore);assert.equal((await verifyProjectCandidateReviewPackage(join(a.spec.output_dir,'package'))).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');
+ const again=await artifactCliChild(reviewCliUrl,['--build-from-snapshot',input]);assert.equal(again.code,2);assert.equal(again.stdout,'');assert.equal(again.stderr,'PROJECT_CANDIDATE_REVIEW_REJECTED\n');
+ for(const closed of [false,true]){const spec={...a.spec,output_dir:join(f.root,closed?'lost-ack':'no-git')},path=join(f.root,closed?'lost-spec.json':'no-git-spec.json');await fs.writeFile(path,JSON.stringify(spec),{mode:0o600});const beforeCode="import c from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';c.spawn=()=>{throw Error('UNEXPECTED_GIT_OR_PROVIDER');};syncBuiltinESMExports();";const out=await artifactCliChild(reviewCliUrl,['--build-from-snapshot',path],closed?{closed:'stdout'}:{before:beforeCode});assert.equal(out.code,closed?2:0);assert.equal(out.signal,null);assert.equal(out.stderr,'');if(closed)assert.equal(out.stdout,'');assert.equal((await verifyProjectCandidateReviewPackage(join(spec.output_dir,'package'))).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');assert.equal(JSON.parse(await fs.readFile(join(spec.output_dir,'provenance.json'))).source_snapshot_manifest_sha256,a.snapshot.manifest_sha256);}
+ const lateSpec={...a.spec,output_dir:join(f.root,'late-ack')},latePath=join(f.root,'late-spec.json');await fs.writeFile(latePath,JSON.stringify(lateSpec),{mode:0o600});const late=await artifactCliChild(reviewCliUrl,['--build-from-snapshot',latePath],{before:"const w=process.stdout.write.bind(process.stdout);process.stdout.write=(...v)=>{const r=w(...v);setImmediate(()=>process.stdout.emit('error',Error('PRIVATE_LATE')));return r;};"});assert.equal(late.code,2);assert.equal(late.signal,null);assert.equal(late.stderr,'');assert.match(late.stdout,/^PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT/);assert.equal((await verifyProjectCandidateReviewPackage(join(lateSpec.output_dir,'package'))).status,'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED');
+ assert.deepEqual(await packageSnapshot(a.snapshotDir),before);
+}));
+test('snapshot source rejects missing oversized wrong-schema or inconsistent inventory before output',async()=>{
+ for(const fault of ['missing-object','oversize-manifest','revision-schema','object-bytes','private-mode'])await withFixture(async f=>{
+  const a=await snapshotReviewFixture(f),manifestPath=join(a.snapshotDir,'manifest.json'),manifest=JSON.parse(await fs.readFile(manifestPath));let expected=a.spec.expected_manifest_sha256;
+  if(fault==='missing-object'||fault==='object-bytes'){const id=manifest.objects[0].git_sha1,target=join(a.snapshotDir,'objects',id.slice(0,2),id.slice(2));if(fault==='missing-object')await fs.unlink(target);else{await fs.chmod(target,0o600);await fs.appendFile(target,'inconsistent bytes');await fs.chmod(target,0o400);}}
+  if(fault==='oversize-manifest'||fault==='revision-schema'){const bytes=fault==='oversize-manifest'?Buffer.alloc(8*1024*1024+1,32):decisionWire({...manifest,schema:'SQUIRE_PROJECT_REVISION_REVIEW_PACKAGE_V1'});await fs.chmod(manifestPath,0o600);await fs.writeFile(manifestPath,bytes);await fs.chmod(manifestPath,0o400);expected=createHash('sha256').update(bytes).digest('hex');} // Pin deliberately invalid synthetic bytes; never manufacture expectations for real inputs.
+  if(fault==='private-mode')await fs.chmod(join(a.snapshotDir,'candidate-files','src','app.mjs'),0o600);
+  const before=await packageSnapshot(a.snapshotDir);await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot({...a.spec,expected_manifest_sha256:expected}),e=>e.code==='PROJECT_CANDIDATE_REVIEW_REJECTED');await assert.rejects(fs.lstat(a.spec.output_dir),{code:'ENOENT'});assert.deepEqual(await packageSnapshot(a.snapshotDir),before);
+ });
+});
