@@ -92,3 +92,13 @@ test('valid substituted package cannot receive the source-pinned provenance',asy
  p.open=async(...args)=>{if(!replaced&&args[0]===join(a.root,'handoff/package/revision-review-manifest.json')&&(args[1]&3)===0){replaced=true;const target=join(a.root,'handoff/package');await fs.rm(target,{recursive:true});await fs.cp(b.spec.output_dir,target,{recursive:true});}return open(...args);};
  await reject(()=>build(buildSpec(a,retained),{fs:p}));assert.ok(replaced);assert.equal((await verifyProjectRevisionReviewPackage(join(a.root,'handoff/package'))).manifest_sha256,other.manifest_sha256);await assert.rejects(fs.lstat(join(a.root,'handoff/provenance.json')),{code:'ENOENT'});
 }finally{await fs.rm(a.root,{recursive:true,force:true});await fs.rm(b.root,{recursive:true,force:true});}});
+
+test('manifest prior decision ID must equal its path and actual copied record ID',async()=>{const f=await fixture();try{
+ const r=await retain(req(f)),root=join(f.root,'retained');await fs.rename(join(root,'prior-decisions/prior'),join(root,'prior-decisions/renamed'));
+ const expected=await repin(root,m=>{m.prior_decisions[0].decision_id='renamed';});await reject(()=>verify(root,expected));
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
+test('output root replacement during final inventory cannot inherit original container acknowledgement',async()=>{const f=await fixture();try{
+ const r=await retain(req(f)),p=port(),openDir=p.opendir,output=join(f.root,'handoff');let replaced=false;
+ p.opendir=async(path,...args)=>{if(path===output&&!replaced){replaced=true;await fs.rename(output,output+'.original');await fs.cp(output+'.original',output,{recursive:true});}return openDir(path,...args);};
+ await reject(()=>build(buildSpec(f,r),{fs:p}));assert.ok(replaced);assert.ok((await fs.lstat(output+'.original')).isDirectory());assert.ok((await fs.lstat(output)).isDirectory());
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
