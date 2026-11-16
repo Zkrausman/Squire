@@ -1,5 +1,6 @@
 // Private review witnesses, not a complete source export or an execution route.
 import {join,dirname} from 'node:path';
+import {types} from 'node:util';
 import {collectRetainedRevisionReviewSource,validateRetainedRevisionWitnesses} from './project-portable-candidate-snapshot.mjs';
 import {ReviewPackageError,invalid,rejected,aborted,digest,encode,closed,denseArray,absolute,captureSignal,check,capturePort,file,dir,stable,stat,ancestors,reserve,writeFile,readFile,priorLinks,captureBuildSpec,verifyInternal,manifestFor,makeDiff,rowsFor,side,SHA1,SHA256,TOKEN,decoder} from './internal/revision-review-core.mjs';
 
@@ -13,7 +14,12 @@ const oid=v=>typeof v==='string'&&v.length===40&&SHA1.test(v);
 const eq=(a,b)=>encode(a).equals(encode(b));
 const overlap=(a,b)=>a===b||a.startsWith(b+'/')||b.startsWith(a+'/');
 class RetainedError extends Error{constructor(code){super(code);this.name='RetainedRevisionSourceError';this.code=code;delete this.stack;}}
-function sourceError(e,signal){if(signal?.aborted)throw new RetainedError('PROJECT_RETAINED_REVISION_SOURCE_ABORTED');if(e instanceof RetainedError)throw e;
+const ABORTED=Object.getOwnPropertyDescriptor(AbortSignal.prototype,'aborted').get;
+function signalAborted(signal){try{return signal!==undefined&&Reflect.apply(ABORTED,signal,[]);}catch{return false;}}
+function strictSignal(value){if(value===undefined)return undefined;if(!value||typeof value!=='object'||types.isProxy(value))invalid();
+  let current=value;while(current!==AbortSignal.prototype){if(current===null||types.isProxy(current)||Object.getOwnPropertyDescriptor(current,'aborted'))invalid();current=Object.getPrototypeOf(current);}
+  try{Reflect.apply(ABORTED,value,[]);}catch{invalid();}return value;}
+function sourceError(e,signal){if(signalAborted(signal))throw new RetainedError('PROJECT_RETAINED_REVISION_SOURCE_ABORTED');if(e instanceof RetainedError)throw e;
   throw new RetainedError(e instanceof ReviewPackageError&&e.code==='INVALID_PROJECT_REVISION_REVIEW_SPEC'?'INVALID_PROJECT_RETAINED_REVISION_SOURCE_SPEC':'PROJECT_RETAINED_REVISION_SOURCE_REJECTED');}
 function canonical(bytes){let value;try{value=JSON.parse(decoder.decode(bytes));if(!eqBytes(value,bytes))rejected();}catch{rejected();}return value;}
 const eqBytes=(value,bytes)=>encode(value).equals(bytes);
@@ -81,7 +87,7 @@ async function verifySourceInternal(fs,root,expected,signal){if(!absolute(root)|
 
 export async function buildProjectRetainedRevisionReviewSource(spec,ports={}){let signal;try{
   closed(spec,['schema','original_result','revised_result','base_git_dir','base_git_identity','original_git_dir','original_git_identity','revised_git_dir','revised_git_identity','output_dir','original_package','prior_decisions','selected_decision_id'],['signal']);
-  if(spec.schema!=='SQUIRE_PROJECT_RETAINED_REVISION_SOURCE_SPEC_V1')invalid();const live={...spec,schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1'};signal=captureBuildSpec(live);const fs=capturePort(ports);check(signal);
+  if(spec.schema!=='SQUIRE_PROJECT_RETAINED_REVISION_SOURCE_SPEC_V1')invalid();const live={...spec,schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1'};signal=strictSignal(captureBuildSpec(live));const fs=capturePort(ports);check(signal);
   const collect=async()=>{const raw=await collectRetainedRevisionReviewSource({schema:live.schema,original_result:live.original_result,revised_result:live.revised_result,base_git_dir:live.base_git_dir,base_git_identity:live.base_git_identity,original_git_dir:live.original_git_dir,original_git_identity:live.original_git_identity,revised_git_dir:live.revised_git_dir,revised_git_identity:live.revised_git_identity,output_dir:live.output_dir,signal},{fs});
     const source=validateRetainedRevisionWitnesses(raw.original_result,raw.revised_result,raw.rawObjects),links=await priorLinks(fs,live,source,signal),copies=await copyInputs(fs,live,signal);
     requireOriginalCoverage(canonical(copies.get('original-package/review-manifest.json')),source);
@@ -103,7 +109,7 @@ export async function verifyProjectRetainedRevisionReviewSource(sourceDir,expect
 
 export async function buildProjectRevisionReviewPackageFromRetainedSource(spec,ports={}){let signal;try{
   closed(spec,['schema','retained_source_dir','expected_manifest_sha256','output_dir'],['signal']);if(spec.schema!=='SQUIRE_PROJECT_REVISION_REVIEW_RETAINED_SPEC_V1'||!absolute(spec.retained_source_dir)||!absolute(spec.output_dir)||!hash(spec.expected_manifest_sha256)||overlap(spec.retained_source_dir,spec.output_dir))invalid();
-  signal=captureSignal(spec.signal);const fs=capturePort(ports);check(signal);const v=await verifySourceInternal(fs,spec.retained_source_dir,spec.expected_manifest_sha256,signal),source=v.source;
+  signal=strictSignal(spec.signal);const fs=capturePort(ports);check(signal);const v=await verifySourceInternal(fs,spec.retained_source_dir,spec.expected_manifest_sha256,signal),source=v.source;
   const displays={base:makeDiff(rowsFor(source.files,source.base_to_revised,'base'),'base'),original:makeDiff(rowsFor(source.files,source.original_to_revised,'original'),'original')};
   const manifest=manifestFor(source,v.links,displays),manifestBytes=encode(manifest),expected=digest(manifestBytes),copyBytes=source.files.reduce((n,r)=>n+['base','original','revised'].reduce((sum,k)=>sum+(r[k]?.bytes??0),0),0),packageBytes=copyBytes+displays.base.length+displays.original.length+manifestBytes.length;
   if(manifestBytes.length>512*1024||packageBytes>29*1024*1024)rejected();
@@ -117,4 +123,4 @@ export async function buildProjectRevisionReviewPackageFromRetainedSource(spec,p
   const out=await verifyInternal(fs,pkg,signal);if(out.manifest_sha256!==expected||out.package_bytes!==packageBytes||!(await readFile(fs,join(spec.output_dir,'provenance.json'),16384,signal)).equals(receiptBytes))rejected();
   const packageAfter=await rootStat(fs,pkg),end=await rootStat(fs,spec.output_dir);if(packageAfter.dev!==packageIdentity.dev||packageAfter.ino!==packageIdentity.ino||end.dev!==container.dev||end.ino!==container.ino)rejected();check(signal);
   return Object.freeze({status:'PROJECT_REVISION_REVIEW_PACKAGE_CREATED_FROM_RETAINED_SOURCE',source_manifest_sha256:v.manifest_sha256,manifest_sha256:expected,provenance_sha256:digest(receiptBytes),base_commit:manifest.base_commit,base_tree:manifest.base_tree,original_commit:manifest.original_commit,original_tree:manifest.original_tree,revised_commit:manifest.revised_commit,revised_tree:manifest.revised_tree,base_to_revised_count:receipt.base_to_revised_count,original_to_revised_count:receipt.original_to_revised_count,union_count:receipt.union_count,package_bytes:packageBytes});
-}catch(e){if(e instanceof ReviewPackageError)throw e;if(signal?.aborted)aborted();rejected();}}
+}catch(e){if(e instanceof ReviewPackageError)throw e;if(signalAborted(signal))aborted();rejected();}}

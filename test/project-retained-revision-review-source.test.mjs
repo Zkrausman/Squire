@@ -102,3 +102,9 @@ test('output root replacement during final inventory cannot inherit original con
  p.opendir=async(path,...args)=>{if(path===output&&!replaced){replaced=true;await fs.rename(output,output+'.original');await fs.cp(output+'.original',output,{recursive:true});}return openDir(path,...args);};
  await reject(()=>build(buildSpec(f,r),{fs:p}));assert.ok(replaced);assert.ok((await fs.lstat(output+'.original')).isDirectory());assert.ok((await fs.lstat(output)).isDirectory());
 }finally{await fs.rm(f.root,{recursive:true,force:true});}});
+
+test('untrusted signal accessors and fake signal brands cannot leak raw exceptions',async()=>{const f=await fixture();try{
+ const genuine=new AbortController().signal;Object.defineProperty(genuine,'aborted',{get(){throw Error('PRIVATE_ABORT_GETTER');}});
+ for(const signal of [genuine,Object.create(AbortSignal.prototype)]){await reject(()=>retain({...req(f),signal}));await reject(()=>build({schema:'SQUIRE_PROJECT_REVISION_REVIEW_RETAINED_SPEC_V1',retained_source_dir:join(f.root,'unread'),expected_manifest_sha256:'a'.repeat(64),output_dir:join(f.root,'unwritten'),signal}));}
+ await assert.rejects(fs.lstat(join(f.root,'retained')),{code:'ENOENT'});await assert.rejects(fs.lstat(join(f.root,'unwritten')),{code:'ENOENT'});
+}finally{await fs.rm(f.root,{recursive:true,force:true});}});
