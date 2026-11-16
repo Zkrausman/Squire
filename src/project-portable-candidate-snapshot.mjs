@@ -1319,7 +1319,7 @@ export async function runProjectPortableCandidateSnapshotCli(argv,ports={}){
     };
     const stdout=output('stdout'),stderr=output('stderr');
     if(!Array.isArray(argv)||![2,4].includes(argv.length)||!['--build','--verify'].includes(argv[0])||!absolutePath(argv[1])||
-       (argv.length===4&&(argv[0]!=='--verify'||argv[2]!=='--expect-sha256'||typeof argv[3]!=='string'||!SHA256.test(argv[3])))){
+       (argv.length===4&&(argv[0]!=='--verify'||argv[2]!=='--expect-sha256'||typeof argv[3]!=='string'||argv[3].length!==64||!SHA256.test(argv[3])))){
       stderr('Usage: node bin/squire-portable-candidate.mjs --build <spec.json> | --verify <snapshot-dir>\n       node bin/squire-portable-candidate.mjs --verify <snapshot-dir> --expect-sha256 <expected-manifest-sha256>\n');return 2;
     }
     const verify=argv[0]==='--verify',path=argv[1],expected=argv.length===4?argv[3]:undefined;
