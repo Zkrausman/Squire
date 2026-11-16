@@ -108,3 +108,18 @@ test('untrusted signal accessors and fake signal brands cannot leak raw exceptio
  for(const signal of [genuine,Object.create(AbortSignal.prototype)]){await reject(()=>retain({...req(f),signal}));await reject(()=>build({schema:'SQUIRE_PROJECT_REVISION_REVIEW_RETAINED_SPEC_V1',retained_source_dir:join(f.root,'unread'),expected_manifest_sha256:'a'.repeat(64),output_dir:join(f.root,'unwritten'),signal}));}
  await assert.rejects(fs.lstat(join(f.root,'retained')),{code:'ENOENT'});await assert.rejects(fs.lstat(join(f.root,'unwritten')),{code:'ENOENT'});
 }finally{await fs.rm(f.root,{recursive:true,force:true});}});
+
+test('aggregate tree traversal stops before later endpoint witnesses exceed its remaining budget',async()=>{
+ const {validateRetainedRevisionWitnesses}=await import('../src/project-portable-candidate-snapshot.mjs');
+ function synthetic(n){const objects=new Map(),add=(kind,payload)=>{const id=createHash('sha1').update(Buffer.from(`${kind} ${payload.length}\0`)).update(payload).digest('hex');objects.set(id,{kind,payload});return id;};
+  const tree=rows=>add('tree',Buffer.concat(rows.map(([mode,name,id])=>Buffer.concat([Buffer.from(`${mode} ${name}\0`),Buffer.from(id,'hex')]))));
+  let deep=tree([['100644','keep.txt','7'.repeat(40)]]);for(let i=0;i<21;i++)deep=tree([['40000','a',deep]]);
+  const data=['b','o','r'].map(s=>Buffer.from(s)),blobs=data.map(b=>add('blob',b)),appTrees=blobs.map(id=>tree([['100644','app.mjs',id]])),roots=appTrees.map(id=>tree([...Array.from({length:n},(_,i)=>['40000','d'+String(i).padStart(4,'0'),deep]),['40000','src',id]]));
+  const commits=[add('commit',Buffer.from(`tree ${roots[0]}\n\nbase`))];commits.push(...roots.slice(1).map(t=>add('commit',Buffer.from(`tree ${t}\nparent ${commits[0]}\n\ncandidate`))));
+  const original={schema:'SQUIRE_PROJECT_REVIEW_CANDIDATE_V1',status:'SOURCE_CANDIDATE_CREATED',operation_id:'original',candidate_ref:'refs/heads/candidate-original',base_commit:commits[0],base_tree:roots[0],candidate_commit:commits[1],candidate_tree:roots[1],receipt_sha256:'a'.repeat(64),stage_manifest_sha256:'b'.repeat(64),changed_paths:['src/app.mjs'],task_correctness:'NOT_EVALUATED',human_review:'PENDING',native_acceptance:'NOT_ESTABLISHED',benchmark_acceptance:'NOT_ESTABLISHED',origin_authenticity:'SUPPLIED_NOT_AUTHENTICATED',base_alternate_dependency:'READ_ONLY_BASE_OBJECT_ALTERNATE'};
+  const revised={...original,schema:'SQUIRE_PROJECT_REVISION_CANDIDATE_V1',status:'SOURCE_REVISION_CANDIDATE_CREATED',operation_id:'revised',candidate_ref:'refs/heads/candidate-revised',candidate_commit:commits[2],candidate_tree:roots[2],correction_origin:'OPERATOR_SUPPLIED',revision_of:{commit:commits[1],tree:roots[1]},revised_blobs:[{path:'src/app.mjs',previous_blob:blobs[1],previous_bytes:1,previous_sha256:sha(data[1]),blob:blobs[2],bytes:1,sha256:sha(data[2])}]};
+  return {original,revised,objects,last:appTrees[2]};}
+ const good=synthetic(1800);assert.equal(validateRetainedRevisionWitnesses(good.original,good.revised,good.objects).files.length,1);
+ const over=synthetic(2047);let touched=false;const view={get(id){if(id===over.last)touched=true;return over.objects.get(id);},get size(){return over.objects.size;},keys:()=>over.objects.keys()};
+ assert.throws(()=>validateRetainedRevisionWitnesses(over.original,over.revised,view));assert.equal(touched,false,'over-budget traversal must stop before the later revised src subtree');
+});

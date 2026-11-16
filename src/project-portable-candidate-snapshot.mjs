@@ -531,7 +531,7 @@ function parseCommit(bytes,oid){
   }
   if(tree===null)rejected();return Object.freeze({tree,parents:Object.freeze(parents)});
 }
-function parseLsTree(bytes,maxFiles,maxMetadata){
+function parseLsTree(bytes,maxFiles,maxMetadata,maxRecords=MAX_TREE_RECORDS){
   if(bytes.length>maxMetadata)rejected();
   const files=[],trees=[];let offset=0,recordCount=0,metadataBytes=0;
   while(offset<bytes.length){
@@ -547,7 +547,7 @@ function parseLsTree(bytes,maxFiles,maxMetadata){
     else rejected();
     metadataBytes+=utf8.encode(path).length+mode.length+type.length+oid.length+4;
     if(!Number.isSafeInteger(metadataBytes)||metadataBytes>maxMetadata)rejected();
-    if(++recordCount>MAX_TREE_RECORDS||files.length>maxFiles)rejected();
+    if(++recordCount>maxRecords||files.length>maxFiles)rejected();
     offset=end+1;
   }
   files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
@@ -555,8 +555,8 @@ function parseLsTree(bytes,maxFiles,maxMetadata){
   checkAllTreePaths(files,trees);
   return Object.freeze({files:Object.freeze(files),trees:Object.freeze(trees),metadataBytes});
 }
-function parseGitTreeListing(bytes,maxFiles,maxMetadata){
-  return parseLsTree(bytes,maxFiles,maxMetadata);
+function parseGitTreeListing(bytes,maxFiles,maxMetadata,maxRecords=MAX_TREE_RECORDS){
+  return parseLsTree(bytes,maxFiles,maxMetadata,maxRecords);
 }
 
 function parseBatch(bytes,oids,expectedKinds,expectedSizes,maxPayloadBytes){
@@ -616,7 +616,7 @@ async function fetchBatch(gitDir,oids,expectedKinds,expectedSizes,maxPayloadByte
   }finally{input.fill(0);}
 }
 
-function collectRawTree(rootOid,objects,maxFiles,maxMetadata,allowMissingBlobs=false){
+function collectRawTree(rootOid,objects,maxFiles,maxMetadata,allowMissingBlobs=false,maxRecords=MAX_TREE_RECORDS){
   const files=[],trees=[],active=new Set();let metadataBytes=0,records=0;
   const visit=(oid,prefix,isRoot=false)=>{
     if(active.has(oid))rejected();
@@ -641,7 +641,7 @@ function collectRawTree(rootOid,objects,maxFiles,maxMetadata,allowMissingBlobs=f
       if(childObject?childObject.kind!==(isTree?'tree':'blob'):isTree||!allowMissingBlobs)rejected();
       metadataBytes+=utf8.encode(path).length+(isTree?'040000tree':'100644blob').length+childOid.length+4;
       if(!Number.isSafeInteger(metadataBytes)||metadataBytes>maxMetadata)rejected();
-      if(++records>MAX_TREE_RECORDS)rejected();childCount++;
+      if(++records>maxRecords)rejected();childCount++;
       if(isTree){trees.push(Object.freeze({path,oid:childOid}));visit(childOid,path,false);}
       else{
         files.push(Object.freeze({path,mode,oid:childOid}));
@@ -1468,7 +1468,7 @@ async function readRevisionSource(spec,options={},retained=false){
         [rev,revision.candidate_tree,MAX_CANDIDATE_FILES,MAX_CANDIDATE_METADATA_BYTES]];
       const listings=[];let retainedTreeRecords=0;
       for(const [repo,tree,maxFiles,maxMeta] of specs){
-        const listing=parseGitTreeListing(await gitBytes(repo.path,['ls-tree','-rtz','--full-tree',tree],maxMeta),maxFiles,maxMeta);
+        const listing=parseGitTreeListing(await gitBytes(repo.path,['ls-tree','-rtz','--full-tree',tree],maxMeta),maxFiles,maxMeta,retained?MAX_TREE_RECORDS-retainedTreeRecords:MAX_TREE_RECORDS);
         const kinds=new Map();for(const row of listing.trees)addExpectedKind(kinds,row.oid,'tree');addExpectedKind(kinds,tree,'tree');
         const raw=new Map();let treeBytes=0,treeOids=[...kinds.keys()].sort();
         for(let start=0;start<treeOids.length;start+=4096){
@@ -1482,7 +1482,7 @@ async function readRevisionSource(spec,options={},retained=false){
         }
         const objects=new Map(raw);
         for(const row of listing.files)if(!objects.has(row.oid))objects.set(row.oid,{kind:'blob',payload:Buffer.alloc(0)});
-        const checked=collectRawTree(tree,objects,maxFiles,maxMeta);
+        const checked=collectRawTree(tree,objects,maxFiles,maxMeta,false,retained?MAX_TREE_RECORDS-retainedTreeRecords:MAX_TREE_RECORDS);
         if(!sameListing(listing,checked))rejected();
         retainedTreeRecords+=checked.records;if(retained&&retainedTreeRecords>131072)rejected();
         const blobs=[...new Set(checked.files.map(row=>row.oid))].sort();
@@ -1548,8 +1548,9 @@ export function validateRetainedRevisionWitnesses(originalValue,revisedValue,obj
   const required=new Set();const commit=(oid,tree,parent)=>{const o=objects.get(oid);if(!o||o.kind!=='commit')rejected();
     const c=parseCommit(o.payload,oid);if(c.tree!==tree||(parent!==null&&(c.parents.length!==1||c.parents[0]!==parent)))rejected();required.add(oid);};
   commit(original.base_commit,original.base_tree,null);commit(original.candidate_commit,original.candidate_tree,original.base_commit);commit(revision.candidate_commit,revision.candidate_tree,original.base_commit);
+  let remainingRecords=MAX_TREE_RECORDS;
   const listings=[[original.base_tree,MAX_BASE_FILES,MAX_BASE_METADATA_BYTES],[original.candidate_tree,MAX_CANDIDATE_FILES,MAX_CANDIDATE_METADATA_BYTES],[revision.candidate_tree,MAX_CANDIDATE_FILES,MAX_CANDIDATE_METADATA_BYTES]]
-    .map(([oid,count,meta])=>{const listing=collectRawTree(oid,objects,count,meta,true);required.add(oid);for(const row of listing.trees)required.add(row.oid);return listing;});
+    .map(([oid,count,meta])=>{const listing=collectRawTree(oid,objects,count,meta,true,remainingRecords);remainingRecords-=listing.records;required.add(oid);for(const row of listing.trees)required.add(row.oid);return listing;});
   if(listings.reduce((n,l)=>n+l.records,0)>131072)rejected();
   const [baseTree,originalTree,revisedTree]=listings;
   const baseToOriginal=computeChanges(baseTree.files,originalTree.files),baseToRevised=computeChanges(baseTree.files,revisedTree.files),originalToRevised=computeChanges(originalTree.files,revisedTree.files);
