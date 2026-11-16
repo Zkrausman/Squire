@@ -245,3 +245,29 @@ Tests use fresh disposable packages and explicit synthetic records only, includi
 all three choices, omitted notes, maximum profiles, corruption, private closure,
 wrong bindings, source stores unavailable and failed acknowledgements. They do not
 use real private decisions or execute candidate code.
+
+
+## Compare a caller-retained expected package digest
+
+```sh
+node bin/squire-candidate-review.mjs --verify /absolute/review-package --expect-sha256 EXPECTED_MANIFEST_SHA256
+```
+
+Supply the caller's independently retained exact lowercase 64-hex manifest
+digest; do not derive it from the selected package to manufacture a match.
+The option follows the package path exactly and is valid only for verification.
+Malformed, missing or extra arguments return usage/2 before any input/API call.
+The command invokes the same complete package verifier once, validates the full
+existing result projection and compares the captured manifest digest before any
+success output. Mismatch or invalid metadata returns 2 with fixed
+`PROJECT_CANDIDATE_REVIEW_REJECTED` when the channel is usable. No spec is read,
+no build runs and no package is changed or retried.
+
+A match preserves the exact healthy bytes/exit of the existing two-argument
+verification, which remains unchanged. This compares selected copy identity,
+not producer authenticity, current source state, substantive acceptance or
+original acknowledgement; no execution, merge, disclosure or retry authority
+is granted. Existing bounds, inert help/imports, synchronous/asynchronous
+output-error containment and partial-output limitations apply unchanged.
+See [first-revision comparison](project-revision-review-package.md#compare-a-caller-retained-expected-revision-package-digest)
+for the separate revision family.

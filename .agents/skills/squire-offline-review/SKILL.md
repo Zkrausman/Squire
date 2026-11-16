@@ -32,6 +32,15 @@ the caller's retained exact lowercase 64-hex decision digest, never a digest
 computed from an untrusted record to manufacture the expected value. Exact
 `--help` on either executable reads no input and invokes no operation.
 
+If the caller retained an expected **package manifest** digest, append
+`--expect-sha256 EXPECTED_MANIFEST_SHA256` after `PACKAGE` in either package
+verification command. Supply that exact lowercase 64-hex value; do not derive
+it from the package to manufacture a match. This opt-in read-only comparison
+rejects a mismatch before success output. Legacy verification without the option
+still checks copy integrity and prints the observed manifest digest; it does not
+claim comparison to a caller-retained expectation. The option is not a build or
+decision-recording argument. See the linked family contract for exact grammar.
+
 ## Preserve the supplied bindings and choice
 
 Package builds and decision recording create new private artifacts. Verification
