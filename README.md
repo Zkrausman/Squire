@@ -46,6 +46,15 @@ packages one original PR210 candidate's two selected trees and required blobs
 for private local inspection, with an offline verifier. It does not package
 history, execute candidate bytes, authenticate the producer, or publish source.
 
+The [original-candidate review workflow](docs/project-candidate-review-package.md)
+and [first-revision review workflow](docs/project-revision-review-package.md)
+provide explicit offline package build/verification and supplied decision
+recording/verification commands. Start with the
+[offline-review agent skill](.agents/skills/squire-offline-review/SKILL.md) to
+choose the candidate family and operation. Verification establishes retained
+integrity, not reviewer authenticity, functional acceptance, original
+acknowledgement or execution/integration authority; artifacts remain private.
+
 The current limited path uses the Codex adapter and bounded coding entrypoint. The earlier [limited foreground MVP](docs/LIMITED-MVP.md) records the historical AGY implementation and its acceptance checkpoint; its native AGY entrypoint is now disabled. Neither path establishes the older manager design's full descendant or recovery guarantees.
 
 The previous Squire implementation is retired from the current working tree. Its Git history remains intact, and the source custodian verified a private snapshot and restoration of both canonical history and the divergent dirty checkout before this replacement. The private historical `squire-benchmarks` repository is unchanged.
