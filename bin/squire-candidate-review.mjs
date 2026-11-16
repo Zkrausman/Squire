@@ -5,10 +5,10 @@ import {types} from 'node:util';
 import {closed} from '../src/job-spec.mjs';
 import {parseReceiptJson} from '../src/offline-run-summary.mjs';
 import {readReceiptBytes} from './squire-report.mjs';
-import {buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage,buildProjectCandidateReviewPackageFromSnapshot} from '../src/project-candidate-review-package.mjs';
+import {buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage,buildProjectCandidateReviewPackageFromSnapshot,verifyProjectCandidateReviewSnapshotHandoff} from '../src/project-candidate-review-package.mjs';
 import {buildProjectRevisionReviewPackage,verifyProjectRevisionReviewPackage} from '../src/project-revision-review-package.mjs';
 
-const USAGE='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--build-revision|--verify-revision> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--verify|--verify-revision> <package-dir> --expect-sha256 <expected-manifest-sha256>\n       node bin/squire-candidate-review.mjs --build-from-snapshot <spec.json>\n';
+const USAGE='Usage: node bin/squire-candidate-review.mjs <--build|--verify> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--build-revision|--verify-revision> <spec.json|package-dir>\n       node bin/squire-candidate-review.mjs <--verify|--verify-revision> <package-dir> --expect-sha256 <expected-manifest-sha256>\n       node bin/squire-candidate-review.mjs --build-from-snapshot <spec.json>\n       node bin/squire-candidate-review.mjs --verify-snapshot-handoff <handoff-dir> <expected-provenance-sha256>\n';
 const REJECTED='PROJECT_CANDIDATE_REVIEW_REJECTED\n';
 const MAX_SPEC_BYTES=65536,MAX_REVISION_SPEC_BYTES=262144;
 const SHA256=/^[a-f0-9]{64}$/,SHA1=/^[a-f0-9]{40}$/;
@@ -29,22 +29,23 @@ function revisionLines(result,spec,verify,expected){
   return `${status}\nManifest SHA256: ${manifest}\nBase commit: ${commits[0]}\nOriginal commit: ${commits[1]}\nRevised commit: ${commits[2]}\nBase-to-revised path count: ${baseCount}\nOriginal-to-revised path count: ${originalCount}\nPackage bytes: ${size}\nCOPY_INTEGRITY_ONLY; NO_DECISION_OR_EXECUTION_AUTHORITY\n`;
 }
 
-function snapshotLines(result,spec){
+function snapshotLines(result,spec,expectedReceipt){
+  const verification=expectedReceipt!==undefined;
   const status=result?.status,source=result?.source_snapshot_manifest_sha256,manifest=result?.manifest_sha256,
     provenance=result?.provenance_sha256,input=result?.input_result_sha256,objects=OBJECTS.map(k=>result?.[k]),
     count=result?.changed_path_count,size=result?.package_bytes;
-  if(status!=='PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT'||
+  if(status!==(verification?'PROJECT_CANDIDATE_REVIEW_SNAPSHOT_HANDOFF_VERIFIED':'PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT')||
      [source,manifest,provenance,input].some(v=>typeof v!=='string'||v.length!==64||!SHA256.test(v))||
-     source!==spec.expected_manifest_sha256||objects.some(v=>typeof v!=='string'||!SHA1.test(v))||
+     (verification?provenance!==expectedReceipt:source!==spec.expected_manifest_sha256)||objects.some(v=>typeof v!=='string'||!SHA1.test(v))||
      !Number.isSafeInteger(count)||count<1||count>50||!Number.isSafeInteger(size)||size<1||size>17*1024*1024)throw null;
-  return `${status}\nSource snapshot SHA256: ${source}\nManifest SHA256: ${manifest}\nProvenance SHA256: ${provenance}\nInput result SHA256: ${input}\nBase commit: ${objects[0]}\nBase tree: ${objects[1]}\nCandidate commit: ${objects[2]}\nCandidate tree: ${objects[3]}\nChanged path count: ${count}\nPackage bytes: ${size}\nPackage relative directory: package\nRETAINED_SNAPSHOT_SOURCE_ONLY; NO_LIVE_CUSTODY_OR_ORIGINAL_RESULT_VALIDATION\n`;
+  return `${status}\nSource snapshot SHA256: ${source}\nManifest SHA256: ${manifest}\nProvenance SHA256: ${provenance}\nInput result SHA256: ${input}\nBase commit: ${objects[0]}\nBase tree: ${objects[1]}\nCandidate commit: ${objects[2]}\nCandidate tree: ${objects[3]}\nChanged path count: ${count}\nPackage bytes: ${size}\nPackage relative directory: package\n${verification?'SELECTED_HANDOFF_INTEGRITY_ONLY; NO_AUTHENTICITY_OR_ACKNOWLEDGEMENT_RECOVERY':'RETAINED_SNAPSHOT_SOURCE_ONLY; NO_LIVE_CUSTODY_OR_ORIGINAL_RESULT_VALIDATION'}\n`;
 }
 
 /** Trusted injected operations are for deterministic callers/tests; the executable uses fixed APIs. */
 export async function runCandidateReviewCli(argv,ports={}){
   let bytes;
   try{
-    closed(ports,[],['readBytes','build','verify','buildRevision','verifyRevision','buildFromSnapshot','stdout','stderr'],'candidate_review_cli_ports');
+    closed(ports,[],['readBytes','build','verify','buildRevision','verifyRevision','buildFromSnapshot','verifySnapshotHandoff','stdout','stderr'],'candidate_review_cli_ports');
     let outputFailed=false;
     const output=key=>{
       const stream=ports[key]??process[key],method=stream.write;
@@ -53,6 +54,16 @@ export async function runCandidateReviewCli(argv,ports={}){
     };
     const stdout=output('stdout'),stderr=output('stderr');
     if(Array.isArray(argv)&&argv.length===1&&argv[0]==='--help'){stdout(USAGE);return outputFailed?2:0;}
+    if(Array.isArray(argv)&&argv.length===3&&argv[0]==='--verify-snapshot-handoff'){
+      const root=argv[1],expected=argv[2];
+      if(!absolute(root)||typeof expected!=='string'||expected.length!==64||!SHA256.test(expected)){stderr(USAGE);return 2;}
+      try{
+        const operation=ports.verifySnapshotHandoff??verifyProjectCandidateReviewSnapshotHandoff;
+        if(typeof operation!=='function'||types.isProxy(operation))throw null;
+        const result=await Reflect.apply(operation,ports,[root,expected]);
+        stdout(snapshotLines(result,undefined,expected));return outputFailed?2:0;
+      }catch{stderr(REJECTED);return 2;}
+    }
     const mode=Array.isArray(argv)&&(argv.length===2||argv.length===4)?argv[0]:null;
     const path=['--build','--verify','--build-revision','--verify-revision','--build-from-snapshot'].includes(mode)?argv[1]:null;
     const expected=Array.isArray(argv)&&argv.length===4?argv[3]:undefined;

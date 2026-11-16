@@ -313,6 +313,59 @@ async function handoffClosure(fs,root,signal){
   }catch(error){if(error instanceof ReviewPackageError)throw error;rejected();}
   finally{if(handle)try{await handle.close();}catch{rejected();}}
 }
+function parseSnapshotProvenance(bytes){
+  try{
+    const receipt=JSON.parse(decoder.decode(bytes));
+    closed(receipt,['schema','source_snapshot_manifest_sha256','review_package_manifest_sha256','input_result_sha256',
+      'base_commit','base_tree','candidate_commit','candidate_tree','changed_path_count','package_bytes','boundaries']);
+    if(receipt.schema!=='SQUIRE_SNAPSHOT_REVIEW_PROVENANCE_V1'||
+       ['source_snapshot_manifest_sha256','review_package_manifest_sha256','input_result_sha256'].some(key=>
+         typeof receipt[key]!=='string'||receipt[key].length!==64||!SHA256.test(receipt[key]))||
+       ['base_commit','base_tree','candidate_commit','candidate_tree'].some(key=>
+         typeof receipt[key]!=='string'||receipt[key].length!==40||!SHA1.test(receipt[key]))||
+       !Number.isSafeInteger(receipt.changed_path_count)||receipt.changed_path_count<1||receipt.changed_path_count>50||
+       !Number.isSafeInteger(receipt.package_bytes)||receipt.package_bytes<1||receipt.package_bytes>MAX_PACKAGE||
+       !Array.isArray(receipt.boundaries)||receipt.boundaries.length!==SNAPSHOT_PROVENANCE_BOUNDARIES.length||
+       receipt.boundaries.some((value,index)=>value!==SNAPSHOT_PROVENANCE_BOUNDARIES[index])||!encode(receipt).equals(bytes))rejected();
+    return Object.freeze({...receipt,boundaries:SNAPSHOT_PROVENANCE_BOUNDARIES});
+  }catch{rejected();}
+}
+async function verifySnapshotHandoffInternal(fs,root,expected,signal){
+  await ancestors(fs,root);const before=await stat(fs,root);
+  if(!dir(before)||before.uid!==process.getuid()||(before.mode&0o7777)!==0o700||await fs.realpath(root)!==root)rejected();
+  await handoffClosure(fs,root,signal);const receiptPath=join(root,'provenance.json'),leafBefore=await stat(fs,receiptPath);
+  const bytes=await readFile(fs,receiptPath,16*1024,signal);if(digest(bytes)!==expected)rejected();
+  const receipt=parseSnapshotProvenance(bytes),packageDir=join(root,'package'),packageBefore=await stat(fs,packageDir);
+  const verified=await verifyInternal(fs,packageDir,signal);
+  if(verified.manifest_sha256!==receipt.review_package_manifest_sha256||
+     verified.manifest.input_result_sha256!==receipt.input_result_sha256||
+     ['base_commit','base_tree','candidate_commit','candidate_tree'].some(key=>verified.manifest[key]!==receipt[key])||
+     verified.changed_path_count!==receipt.changed_path_count||verified.package_bytes!==receipt.package_bytes||
+     !(await readFile(fs,receiptPath,16*1024,signal)).equals(bytes))rejected();
+  await handoffClosure(fs,root,signal);const after=await stat(fs,root),leafAfter=await stat(fs,receiptPath),packageAfter=await stat(fs,packageDir);check(signal);
+  if(!dir(after)||!stable(before,after)||after.uid!==process.getuid()||(after.mode&0o7777)!==0o700||
+     await fs.realpath(root)!==root||!stable(leafBefore,leafAfter)||!file(leafAfter)||leafAfter.uid!==process.getuid()||
+     leafAfter.nlink!==1||(leafAfter.mode&0o7777)!==0o400||!dir(packageAfter)||!stable(packageBefore,packageAfter)||
+     packageAfter.uid!==process.getuid()||(packageAfter.mode&0o7777)!==0o700||await fs.realpath(packageDir)!==packageDir)rejected();
+  return {receipt,verified,rootStat:after,provenance_sha256:expected};
+}
+function snapshotHandoffResult(status,inspection){
+  const r=inspection.receipt;
+  return Object.freeze({status,source_snapshot_manifest_sha256:r.source_snapshot_manifest_sha256,
+    manifest_sha256:inspection.verified.manifest_sha256,provenance_sha256:inspection.provenance_sha256,
+    input_result_sha256:r.input_result_sha256,base_commit:r.base_commit,base_tree:r.base_tree,
+    candidate_commit:r.candidate_commit,candidate_tree:r.candidate_tree,
+    changed_path_count:inspection.verified.changed_path_count,package_bytes:inspection.verified.package_bytes});
+}
+/** Verify one caller-selected copied handoff. No snapshot/store/build/decision or source authenticity claim. */
+export async function verifyProjectCandidateReviewSnapshotHandoff(handoffDir,expectedProvenanceSha256,ports={}){
+  try{
+    if(!absolute(handoffDir)||typeof expectedProvenanceSha256!=='string'||expectedProvenanceSha256.length!==64||
+       !SHA256.test(expectedProvenanceSha256))invalid();
+    const inspected=await verifySnapshotHandoffInternal(capturePort(ports),handoffDir,expectedProvenanceSha256,undefined);
+    return snapshotHandoffResult('PROJECT_CANDIDATE_REVIEW_SNAPSHOT_HANDOFF_VERIFIED',inspected);
+  }catch(error){if(error instanceof ReviewPackageError)throw error;rejected();}
+}
 function clearSource(source){for(const file of source?.files??[])for(const side of [file.old,file.new])side?.data.fill(0);}
 /** Build an unchanged V1 review package and byte-bound receipt from one retained original-format snapshot. */
 export async function buildProjectCandidateReviewPackageFromSnapshot(spec,ports={}){
@@ -346,23 +399,10 @@ export async function buildProjectCandidateReviewPackageFromSnapshot(spec,ports=
        source.root_identity.mode!==reread.root_identity.mode||
        source.source_snapshot_manifest_sha256!==reread.source_snapshot_manifest_sha256||
        digest(encode(makeManifest(reread,makeDiff(reread.files))))!==expectedPackageSha256)rejected();
-    const before=await stat(fs,request.output_dir),receiptPath=join(request.output_dir,'provenance.json'),leafBefore=await stat(fs,receiptPath);
-    if(!dir(before)||before.dev!==container.dev||before.ino!==container.ino||before.uid!==process.getuid()||
-       (before.mode&0o7777)!==0o700||await fs.realpath(request.output_dir)!==request.output_dir)rejected();
-    await handoffClosure(fs,request.output_dir,signal);
-    if(!(await readFile(fs,receiptPath,16*1024,signal)).equals(receiptBytes))rejected();
-    const verified=await verifyInternal(fs,packageDir,signal);
-    if(verified.manifest_sha256!==expectedPackageSha256||verified.manifest_sha256!==receipt.review_package_manifest_sha256||verified.package_bytes!==receipt.package_bytes||
-       verified.changed_path_count!==receipt.changed_path_count||
-       !(await readFile(fs,receiptPath,16*1024,signal)).equals(receiptBytes))rejected();
-    await handoffClosure(fs,request.output_dir,signal);const after=await stat(fs,request.output_dir),leafAfter=await stat(fs,receiptPath);check(signal);
-    if(!dir(after)||!stable(before,after)||after.uid!==process.getuid()||(after.mode&0o7777)!==0o700||
-       await fs.realpath(request.output_dir)!==request.output_dir||!stable(leafBefore,leafAfter))rejected();
-    return Object.freeze({status:'PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT',
-      source_snapshot_manifest_sha256:receipt.source_snapshot_manifest_sha256,manifest_sha256:verified.manifest_sha256,
-      provenance_sha256:digest(receiptBytes),input_result_sha256:source.input_result_sha256,
-      base_commit:receipt.base_commit,base_tree:receipt.base_tree,candidate_commit:receipt.candidate_commit,
-      candidate_tree:receipt.candidate_tree,changed_path_count:verified.changed_path_count,package_bytes:verified.package_bytes});
+    const inspected=await verifySnapshotHandoffInternal(fs,request.output_dir,digest(receiptBytes),signal);
+    if(inspected.rootStat.dev!==container.dev||inspected.rootStat.ino!==container.ino||
+       inspected.verified.manifest_sha256!==expectedPackageSha256)rejected();
+    return snapshotHandoffResult('PROJECT_CANDIDATE_REVIEW_PACKAGE_CREATED_FROM_SNAPSHOT',inspected);
   }catch(error){
     if(error instanceof ReviewPackageError)throw error;
     if(signal?.aborted||error?.code==='PROJECT_PORTABLE_SNAPSHOT_ABORTED')aborted();
