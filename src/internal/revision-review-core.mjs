@@ -172,7 +172,9 @@ function manifestFor(source,links,displays){const views={};for(const [key,oldKey
       original_to_revised:{bytes:displays.original.length,sha256:digest(displays.original)}},
     limits:{max_side:MAX_SIDE,max_copies:MAX_COPIES,max_display:MAX_DIFF,max_manifest:MAX_MANIFEST,max_package:MAX_PACKAGE,max_paths:50},
     boundaries:[...PACKAGE_BOUNDARIES]};}
-function matchesKeys(value,keys){return plain(value)&&Object.keys(value).sort().join('|')===keys.sort().join('|');}
+function matchesKeys(value,keys){
+  return plain(value)&&Reflect.ownKeys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+}
 function validateSide(value){return value===null||(matchesKeys(value,['mode','git_sha1','bytes','sha256'])&&
   ['100644','100755'].includes(value.mode)&&SHA1.test(value.git_sha1)&&SHA256.test(value.sha256)&&
   Number.isSafeInteger(value.bytes)&&value.bytes>=0&&value.bytes<=MAX_SIDE);}

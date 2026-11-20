@@ -32,6 +32,9 @@ function sorted(value){
 const encode=value=>Buffer.from(JSON.stringify(sorted(value)),'utf8');
 function plain(value){return value!==null&&typeof value==='object'&&!types.isProxy(value)&&
   !Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value));}
+function matchesKeys(value,keys){
+  return plain(value)&&Reflect.ownKeys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+}
 function closed(value,keys,optional=[]){
   if(!plain(value)||Reflect.ownKeys(value).some(key=>typeof key!=='string'||![...keys,...optional].includes(key))||
      keys.some(key=>!Object.hasOwn(value,key)))invalid();
@@ -198,9 +201,8 @@ async function verifyInternal(fs,root,signal){
      await fs.realpath(root)!==root)rejected();
   const manifestBytes=await readFile(fs,join(root,'review-manifest.json'),MAX_MANIFEST,signal);
   let manifest;try{manifest=JSON.parse(decoder.decode(manifestBytes));}catch{rejected();}
-  if(!plain(manifest)||Object.keys(manifest).sort().join('|')!==
-     ['schema','input_result_sha256','candidate_ref','base_commit','base_tree','candidate_commit',
-       'candidate_tree','changed_paths','paths','diff','boundaries'].sort().join('|')||
+  if(!matchesKeys(manifest,['schema','input_result_sha256','candidate_ref','base_commit','base_tree','candidate_commit',
+       'candidate_tree','changed_paths','paths','diff','boundaries'])||
      manifest.schema!==PACKAGE_SCHEMA||!SHA256.test(manifest.input_result_sha256)||
      !SHA1.test(manifest.base_commit)||!SHA1.test(manifest.base_tree)||
      !SHA1.test(manifest.candidate_commit)||!SHA1.test(manifest.candidate_tree)||
@@ -214,7 +216,7 @@ async function verifyInternal(fs,root,signal){
   const folded=new Map();
   for(let i=0;i<manifest.paths.length;i++){
     const entry=manifest.paths[i];
-    if(!plain(entry)||Object.keys(entry).sort().join('|')!=='binary_review_required|new|old|path'||
+    if(!matchesKeys(entry,['binary_review_required','new','old','path'])||
        typeof entry.path!=='string'||entry.path!==manifest.changed_paths[i]||
        (i>0&&manifest.changed_paths[i-1]>=entry.path)||
        entry.path.length>256||!/^[A-Za-z0-9._/-]+$/.test(entry.path)||
@@ -232,7 +234,7 @@ async function verifyInternal(fs,root,signal){
     folded.set(lowered,true);
     const data={path:entry.path,old:null,new:null};
     for(const [name,side] of [['old',entry.old],['new',entry.new]])if(side){
-      if(Object.keys(side).sort().join('|')!=='bytes|git_sha1|mode|sha256')rejected();
+      if(!matchesKeys(side,['bytes','git_sha1','mode','sha256']))rejected();
       if(!SHA1.test(side.git_sha1)||!SHA256.test(side.sha256)||!Number.isSafeInteger(side.bytes)||
          side.bytes<0||side.bytes>MAX_SIDE)rejected();
       const relative=`changes/${entry.path}.${name}`;expected.push(relative);
@@ -248,7 +250,7 @@ async function verifyInternal(fs,root,signal){
   }
   if(copyTotal>MAX_COPIES)rejected();
   const diff=await readFile(fs,join(root,'diff.txt'),MAX_DIFF,signal);
-  if(!plain(manifest.diff)||Object.keys(manifest.diff).sort().join('|')!=='bytes|sha256'||
+  if(!matchesKeys(manifest.diff,['bytes','sha256'])||
      manifest.diff.bytes!==diff.length||digest(diff)!==manifest.diff.sha256||
      !makeDiff(copies).equals(diff))rejected();
   const directories=new Set(['changes/']);for(const relative of expected.filter(path=>path.startsWith('changes/'))){
