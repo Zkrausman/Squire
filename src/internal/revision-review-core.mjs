@@ -11,6 +11,16 @@ import {MAX_REVIEW_DECISION_BYTES} from '../project-review-decision-limits.mjs';
 
 const PACKAGE_SCHEMA='SQUIRE_PROJECT_REVISION_REVIEW_PACKAGE_V1';
 const DECISION_SCHEMA='SQUIRE_PROJECT_REVISION_DECISION_V1';
+const PACKAGE_BOUNDARIES=Object.freeze([
+  'COPY_INTEGRITY_ONLY','SUPPLIED_INVENTORY_ONLY','REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_REVIEW_PENDING','TASK_CORRECTNESS_NOT_EVALUATED'
+]);
+const PRIOR_DECISION_BOUNDARIES=Object.freeze([
+  'REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_DECISION_ONLY','NO_EXECUTION_OR_MERGE_AUTHORITY'
+]);
+
+function matchesBoundaries(value,expected){
+  return Array.isArray(value)&&value.length===expected.length&&expected.every((entry,index)=>value[index]===entry);
+}
 const SHA1=/^[a-f0-9]{40}$/;const SHA256=/^[a-f0-9]{64}$/;
 const TOKEN=/^[A-Za-z0-9_-]{1,64}$/;
 const MAX_SIDE=4*1024*1024,MAX_COPIES=12*1024*1024,MAX_DIFF=8*1024*1024;
@@ -161,7 +171,7 @@ function manifestFor(source,links,displays){const views={};for(const [key,oldKey
     displays:{base_to_revised:{bytes:displays.base.length,sha256:digest(displays.base)},
       original_to_revised:{bytes:displays.original.length,sha256:digest(displays.original)}},
     limits:{max_side:MAX_SIDE,max_copies:MAX_COPIES,max_display:MAX_DIFF,max_manifest:MAX_MANIFEST,max_package:MAX_PACKAGE,max_paths:50},
-    boundaries:['COPY_INTEGRITY_ONLY','SUPPLIED_INVENTORY_ONLY','REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_REVIEW_PENDING','TASK_CORRECTNESS_NOT_EVALUATED']};}
+    boundaries:[...PACKAGE_BOUNDARIES]};}
 function matchesKeys(value,keys){return plain(value)&&Object.keys(value).sort().join('|')===keys.sort().join('|');}
 function validateSide(value){return value===null||(matchesKeys(value,['mode','git_sha1','bytes','sha256'])&&
   ['100644','100755'].includes(value.mode)&&SHA1.test(value.git_sha1)&&SHA256.test(value.sha256)&&
@@ -183,7 +193,7 @@ async function verifyInternal(fs,root,signal){if(!absolute(root))invalid();await
     ['original_result_sha256','revised_result_sha256','original_package_sha256','prior_revise_decision_sha256','declared_decisions_sha256'].some(k=>!SHA256.test(m[k]))||
     ['base_commit','base_tree','original_commit','original_tree','revised_commit','revised_tree'].some(k=>!SHA1.test(m[k]))||
     !Array.isArray(m.paths)||m.paths.length<1||m.paths.length>50||
-    !Array.isArray(m.boundaries)||m.boundaries.join('|')!=='COPY_INTEGRITY_ONLY|SUPPLIED_INVENTORY_ONLY|REVIEWER_LABEL_NOT_AUTHENTICATED|SOURCE_REVIEW_PENDING|TASK_CORRECTNESS_NOT_EVALUATED'||
+    !matchesBoundaries(m.boundaries,PACKAGE_BOUNDARIES)||
     !matchesKeys(m.limits,['max_side','max_copies','max_display','max_manifest','max_package','max_paths'])||
     Object.entries({max_side:MAX_SIDE,max_copies:MAX_COPIES,max_display:MAX_DIFF,max_manifest:MAX_MANIFEST,max_package:MAX_PACKAGE,max_paths:50}).some(([k,v])=>m.limits[k]!==v))rejected();
   const files=[],expected=['revision-review-manifest.json','base-to-revised.diff.txt','original-to-revised.diff.txt'];let copies=0,prior='',folded=new Set();
@@ -230,7 +240,7 @@ async function priorLinks(fs,spec,source,signal){
       d.candidate_commit!==pm.candidate_commit||d.candidate_tree!==pm.candidate_tree||!['ACCEPT','REVISE','REJECT'].includes(d.choice)||
       !Array.isArray(d.attestations)||d.attestations.length>50||typeof d.note!=='string'&&d.note!==null||
       (d.note!==null&&Buffer.byteLength(d.note)>4096)||
-      !Array.isArray(d.boundaries)||d.boundaries.join('|')!=='REVIEWER_LABEL_NOT_AUTHENTICATED|SOURCE_DECISION_ONLY|NO_EXECUTION_OR_MERGE_AUTHORITY')rejected();
+      !matchesBoundaries(d.boundaries,PRIOR_DECISION_BOUNDARIES))rejected();
     ids.add(d.decision_id);let last='';for(const a of d.attestations){if(!matchesKeys(a,['path','old_sha256','new_sha256','binary_inspected'])||!validPath(a.path)||a.path<=last||
       (a.old_sha256!==null&&!SHA256.test(a.old_sha256))||!SHA256.test(a.new_sha256)||typeof a.binary_inspected!=='boolean')rejected();
       const row=pm.paths.find(v=>v.path===a.path);if(!row||a.old_sha256!==(row.old?.sha256??null)||a.new_sha256!==row.new.sha256||
