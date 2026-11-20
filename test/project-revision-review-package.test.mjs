@@ -144,13 +144,19 @@ async function replacePrivate(path,bytes){await fs.chmod(path,0o600);await fs.wr
 test('malformed prior decision rejects even when its declared digest matches',async()=>{for(const edit of [
   d=>{d.review_package_sha256='f'.repeat(64);},
   d=>{d.attestations=[{path:'src/app.mjs',old_sha256:null,new_sha256:'f'.repeat(64),binary_inspected:false}];},
-  d=>{d.choice='ACCEPT';}
+  d=>{d.choice='ACCEPT';},
+  d=>{d.boundaries[0]=42;},
+  d=>{d.boundaries.pop();},
+  d=>{d.boundaries.reverse();}
 ]){const f=await fixture();try{const path=join(f.spec.prior_decisions[0].dir,'decision.json');const d=JSON.parse(await fs.readFile(path));edit(d);const bytes=Buffer.from(JSON.stringify(canonical(d)));await replacePrivate(path,bytes);f.spec.prior_decisions[0].file_sha256=sha(bytes);await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>buildProjectRevisionReviewPackage(f.spec));await assert.rejects(fs.lstat(f.spec.output_dir),{code:'ENOENT'});}finally{await fs.rm(f.root,{recursive:true,force:true});}}});
 test('offline verifier rejects malformed over-profile metadata and display bytes',async()=>{for(const edit of [
   m=>{m.paths.push(...Array.from({length:51},(_,i)=>({...m.paths[0],path:`overflow-${i}.txt`})));},
   m=>{m.paths[0].revised.bytes=4*1024*1024+1;},
   m=>{m.displays.base_to_revised.bytes=8*1024*1024+1;},
-  m=>{m.limits.max_copies=12*1024*1024+1;}
+  m=>{m.limits.max_copies=12*1024*1024+1;},
+  m=>{m.boundaries[0]=42;},
+  m=>{m.boundaries.pop();},
+  m=>{m.boundaries.reverse();}
 ]){const f=await fixture();try{await buildProjectRevisionReviewPackage(f.spec);const path=join(f.spec.output_dir,'revision-review-manifest.json');const m=JSON.parse(await fs.readFile(path));edit(m);await replacePrivate(path,Buffer.from(JSON.stringify(canonical(m))));await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>verifyProjectRevisionReviewPackage(f.spec.output_dir));}finally{await fs.rm(f.root,{recursive:true,force:true});}}});
 test('oversized manifest and complete display reject offline',async()=>{for(const leaf of ['revision-review-manifest.json','base-to-revised.diff.txt','original-to-revised.diff.txt']){const f=await fixture();try{await buildProjectRevisionReviewPackage(f.spec);const max=leaf.includes('manifest')?512*1024:8*1024*1024;await replacePrivate(join(f.spec.output_dir,leaf),Buffer.alloc(max+1,0x61));await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>verifyProjectRevisionReviewPackage(f.spec.output_dir));}finally{await fs.rm(f.root,{recursive:true,force:true});}}});
 test('readback uncertainty retains partial output and public status projects no private content',async()=>{const f=await fixture();try{
