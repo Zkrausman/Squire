@@ -594,3 +594,27 @@ improvement. D6's descendant settlement remains UNKNOWN and its 65 behavioral
 checks remain UNRUN. Existing custody, P3/P4, toolchain, historical unknown/denied
 operation and no-replay boundaries remain unchanged; this entry activates no
 workload or planning proposal.
+
+## Delivered offline review handoffs (PR248–251)
+
+This appendix records source delivered through [main `b4ac7ccb`](https://github.com/Zkrausman/Squire/commit/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374). Select the route for the artifact already in authorized custody. Retain expected digests separately at the authorized handoff; do not derive the expectation from the copy being checked.
+
+| If you have… | Use this route | Keep these inputs and receipts distinct |
+|---|---|---|
+| A selected portable original-candidate snapshot | [PR248](https://github.com/Zkrausman/Squire/pull/248): `node bin/squire-portable-candidate.mjs --verify SNAPSHOT --expect-sha256 DIGEST` | The caller-retained **snapshot manifest digest**. A match verifies selected-copy integrity. |
+| That snapshot and a need for a human-review package, even if the original Git stores are gone | [PR249](https://github.com/Zkrausman/Squire/pull/249): `node bin/squire-candidate-review.mjs --build-from-snapshot SPEC` | The spec names the snapshot, its retained manifest digest and a fresh output root. Keep the unchanged V1 `package/` and the separate `provenance.json` together; retain the returned provenance digest separately. The ordinary package/decision routes still take the package child. |
+| A copy of the original snapshot-review handoff | [PR250](https://github.com/Zkrausman/Squire/pull/250): `node bin/squire-candidate-review.mjs --verify-snapshot-handoff ROOT DIGEST` | Supply the separately retained **provenance digest**, not the snapshot or package-manifest digest. This read-only check verifies the copied receipt and its pairing with the V1 package, not the current source snapshot. |
+| A first revision with the base, original and revised stores still available, or its previously retained review-source copy | [PR251](https://github.com/Zkrausman/Squire/pull/251): `node bin/squire-candidate-review.mjs --retain-revision-source SPEC`, `node bin/squire-candidate-review.mjs --verify-retained-revision-source ROOT DIGEST`, then `node bin/squire-candidate-review.mjs --build-revision-from-retained SPEC` as applicable | Retention binds the three endpoints, required side bytes, supplied result records, original package and the complete caller-declared prior-decision set, including the explicitly selected prior REVISE. Verify/build from the retained source using the caller-retained **retained-source manifest digest**, with a fresh, disjoint output root for builds. The offline build produces the same V1 two-view package plus separate provenance. It is not a runnable export. |
+
+See the pinned [portable snapshot](https://github.com/Zkrausman/Squire/blob/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374/docs/project-portable-candidate-snapshot.md), [original package and copied handoff](https://github.com/Zkrausman/Squire/blob/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374/docs/project-candidate-review-package.md), and [first-revision package](https://github.com/Zkrausman/Squire/blob/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374/docs/project-revision-review-package.md) contracts for exact spec fields, limits and paths.
+
+All four PRs merged. Their receipts report independent review and synthetic validation, with successful final PR-head hosted checks, attempt 1:
+
+| PR | CI | Desktop source acceptance |
+|---|---|---|
+| 248 | [43788841779](https://github.com/Zkrausman/Squire/actions/runs/43788841779) | [43788841750](https://github.com/Zkrausman/Squire/actions/runs/43788841750) |
+| 249 | [43828337390](https://github.com/Zkrausman/Squire/actions/runs/43828337390) | [43828337311](https://github.com/Zkrausman/Squire/actions/runs/43828337311) |
+| 250 | [43833027626](https://github.com/Zkrausman/Squire/actions/runs/43833027626) | [43833027368](https://github.com/Zkrausman/Squire/actions/runs/43833027368) |
+| 251 | [43911510966](https://github.com/Zkrausman/Squire/actions/runs/43911510966) | [43911510950](https://github.com/Zkrausman/Squire/actions/runs/43911510950) |
+
+PR249's earlier timed-out CI is separate from the successful final-head result. The inspected delivery receipts identify no verified real private consumer or human acceptance. Successful verification does not establish authenticity, present live custody, task correctness, original acknowledgement or authority to execute, merge, disclose or retry. Missing acknowledgement does not prove that no output was created. This index changes no qualification, benchmark or no-replay hold.
