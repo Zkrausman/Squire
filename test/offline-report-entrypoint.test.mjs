@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {serializeOfflineReportCapabilities} from '../bin/squire-report.mjs';
+import {runOfflineReportCli,serializeOfflineReportCapabilities} from '../bin/squire-report.mjs';
 
 const cli=fileURLToPath(new URL('../bin/squire-report.mjs',import.meta.url));
 const preload=source=>'data:text/javascript,'+encodeURIComponent(source);
@@ -52,6 +52,39 @@ test('executable successful capabilities and usage retain exact bytes and exits'
  const usage=await child([]);assert.equal(usage.code,2);assert.equal(usage.signal,null);assert.equal(usage.stdout,'');
  assert.equal(usage.stderr,'Usage: node bin/squire-report.mjs <receipt-path>\n');
 });
+const discoveryUsage='Usage: node bin/squire-report.mjs <receipt-path>\n'+
+ '       node bin/squire-report.mjs --capabilities --json\n';
+
+test('exact --help writes usage to stdout without accessing receipts',async()=>{
+ const accesses=[],writes=[];
+ const ports={
+  stat:path=>{accesses.push(['stat',path]);throw new Error('Unexpected stat');},
+  readFile:path=>{accesses.push(['readFile',path]);throw new Error('Unexpected read');},
+  stdout:{write:bytes=>writes.push(['stdout',bytes])},
+  stderr:{write:bytes=>writes.push(['stderr',bytes])},
+ };
+ assert.equal(await runOfflineReportCli(['--help'],ports),0);
+ assert.deepEqual(accesses,[]);
+ assert.deepEqual(writes,[['stdout',discoveryUsage]]);
+
+ writes.length=0;
+ ports.stdout.write=bytes=>{writes.push(['stdout',bytes]);throw new Error('Output failed');};
+ assert.equal(await runOfflineReportCli(['--help'],ports),2);
+ assert.deepEqual(accesses,[]);
+ assert.deepEqual(writes,[['stdout',discoveryUsage]]);
+});
+
+test('explicit relative --help path still reaches the receipt reader',async()=>{
+ const accesses=[];
+ await runOfflineReportCli(['./--help'],{
+  stat:path=>{accesses.push(['stat',path]);return {isFile:()=>true,size:2};},
+  readFile:path=>{accesses.push(['readFile',path]);return Buffer.from('{}');},
+  stdout:{write:()=>{}},
+  stderr:{write:()=>{}},
+ });
+ assert.deepEqual(accesses,[['stat','./--help'],['readFile','./--help']]);
+});
+
 test('plain import does not install stdio handlers or change process output/exit state',async()=>{
  const source=`const before=[process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode];
  await import(${JSON.stringify(new URL('../bin/squire-report.mjs',import.meta.url).href)});
