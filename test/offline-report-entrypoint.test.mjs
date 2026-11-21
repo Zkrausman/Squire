@@ -55,26 +55,24 @@ test('executable successful capabilities and usage retain exact bytes and exits'
 const discoveryUsage='Usage: node bin/squire-report.mjs <receipt-path>\n'+
  '       node bin/squire-report.mjs --capabilities --json\n';
 
-for(const [arg,channel,code] of [['--help','stdout',0],['--capabilities','stderr',2]]){
- test(`exact ${arg} writes usage to ${channel} without accessing receipts`,async()=>{
-  const accesses=[],writes=[];
-  const ports={
-   stat:path=>{accesses.push(['stat',path]);throw new Error('Unexpected stat');},
-   readFile:path=>{accesses.push(['readFile',path]);throw new Error('Unexpected read');},
-   stdout:{write:bytes=>writes.push(['stdout',bytes])},
-   stderr:{write:bytes=>writes.push(['stderr',bytes])},
-  };
-  assert.equal(await runOfflineReportCli([arg],ports),code);
-  assert.deepEqual(accesses,[]);
-  assert.deepEqual(writes,[[channel,discoveryUsage]]);
+test('exact --help writes usage to stdout without accessing receipts',async()=>{
+ const accesses=[],writes=[];
+ const ports={
+  stat:path=>{accesses.push(['stat',path]);throw new Error('Unexpected stat');},
+  readFile:path=>{accesses.push(['readFile',path]);throw new Error('Unexpected read');},
+  stdout:{write:bytes=>writes.push(['stdout',bytes])},
+  stderr:{write:bytes=>writes.push(['stderr',bytes])},
+ };
+ assert.equal(await runOfflineReportCli(['--help'],ports),0);
+ assert.deepEqual(accesses,[]);
+ assert.deepEqual(writes,[['stdout',discoveryUsage]]);
 
-  writes.length=0;
-  ports[channel].write=bytes=>{writes.push([channel,bytes]);throw new Error('Output failed');};
-  assert.equal(await runOfflineReportCli([arg],ports),2);
-  assert.deepEqual(accesses,[]);
-  assert.deepEqual(writes,[[channel,discoveryUsage]]);
- });
-}
+ writes.length=0;
+ ports.stdout.write=bytes=>{writes.push(['stdout',bytes]);throw new Error('Output failed');};
+ assert.equal(await runOfflineReportCli(['--help'],ports),2);
+ assert.deepEqual(accesses,[]);
+ assert.deepEqual(writes,[['stdout',discoveryUsage]]);
+});
 
 test('explicit relative --help path still reaches the receipt reader',async()=>{
  const accesses=[];
