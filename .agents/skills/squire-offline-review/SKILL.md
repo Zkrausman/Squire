@@ -41,9 +41,13 @@ still checks copy integrity and prints the observed manifest digest; it does not
 claim comparison to a caller-retained expectation. The option is not a build or
 decision-recording argument. See the linked family contract for exact grammar.
 
-When only an original portable snapshot remains, use the explicit
-`squire-candidate-review.mjs --build-from-snapshot SPEC` route described in the
-[retained-source contract](../../../docs/project-candidate-review-package.md#build-an-original-review-package-from-a-retained-snapshot).
+When only an original portable snapshot remains, build its review package with:
+
+```sh
+node bin/squire-candidate-review.mjs --build-from-snapshot /absolute/snapshot-review-spec.json
+```
+
+See the [retained-source contract](../../../docs/project-candidate-review-package.md#build-an-original-review-package-from-a-retained-snapshot).
 Supply the caller-retained snapshot manifest digest and a fresh output root.
 That root contains a V1 `package/` plus a bound private `provenance.json`; use
 **the package child** with the normal package/decision commands. A valid portable
@@ -104,11 +108,22 @@ integration, disclosure or retry authority. No generated code is run here.
 
 If the owner needs first-revision packaging after Git stores disappear, retain
 review witnesses **while all three stores and explicit original package/prior
-REVISE set are available**, using `squire-candidate-review.mjs
---retain-revision-source SPEC`. Later use `--verify-retained-revision-source
-DIR EXPECTED_MANIFEST_SHA256` or `--build-revision-from-retained SPEC` with the
-caller-retained source digest. See the [retained first-revision contract](../../../docs/project-revision-review-package.md#retain-first-revision-review-source-before-stores-disappear)
-for exact schemas and finite limits; no JSON signal. The latter creates a fresh
+REVISE set are available**:
+
+```sh
+node bin/squire-candidate-review.mjs --retain-revision-source /absolute/retain-spec.json
+```
+
+Later, verify the retained source or build the revision review package using the
+caller-retained source manifest digest:
+
+```sh
+node bin/squire-candidate-review.mjs --verify-retained-revision-source /absolute/retained-source EXPECTED_MANIFEST_SHA256
+node bin/squire-candidate-review.mjs --build-revision-from-retained /absolute/build-spec.json
+```
+
+See the [retained first-revision contract](../../../docs/project-revision-review-package.md#retain-first-revision-review-source-before-stores-disappear)
+for exact schemas and finite limits; no JSON signal. The build creates a fresh
 root with V1 revision `package/` plus bound private `provenance.json`; existing
 package/decision commands use the package child. This artifact carries complete
 three-tree metadata and only needed blob payloads, not runnable source closure.
