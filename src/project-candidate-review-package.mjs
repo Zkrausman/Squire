@@ -209,8 +209,10 @@ async function verifyInternal(fs,root,signal){
      !/^refs\/heads\/candidate-[A-Za-z0-9_-]{1,64}$/.test(manifest.candidate_ref)||
      !Array.isArray(manifest.changed_paths)||!Array.isArray(manifest.paths)||
      manifest.paths.length<1||manifest.paths.length>50||manifest.paths.length!==manifest.changed_paths.length||
-     !Array.isArray(manifest.boundaries)||manifest.boundaries.join('|')!==
-     'SOURCE_REVIEW_PENDING|TASK_CORRECTNESS_NOT_EVALUATED|ORIGIN_SUPPLIED_NOT_AUTHENTICATED'||
+     !Array.isArray(manifest.boundaries)||manifest.boundaries.length!==3||
+     manifest.boundaries[0]!=='SOURCE_REVIEW_PENDING'||
+     manifest.boundaries[1]!=='TASK_CORRECTNESS_NOT_EVALUATED'||
+     manifest.boundaries[2]!=='ORIGIN_SUPPLIED_NOT_AUTHENTICATED'||
      !Buffer.from(encode(manifest)).equals(manifestBytes))rejected();
   const expected=['review-manifest.json','diff.txt'];let copyTotal=0;const copies=[];
   const folded=new Map();
