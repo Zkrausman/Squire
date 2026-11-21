@@ -219,8 +219,21 @@ export async function runOfflineReportCli(argv,ports={}) {
   try{return await runOfflineReportCliInternal(argv,ports);}
   catch{return 2;}
 }
+const REPORT_DISCOVERY_USAGE='Usage: node bin/squire-report.mjs <receipt-path>\n'+
+  '       node bin/squire-report.mjs --capabilities --json\n';
+
 async function runOfflineReportCliInternal(argv,ports) {
   const stdout=ports.stdout??process.stdout,stderr=ports.stderr??process.stderr;
+  if(Array.isArray(argv)&&argv.length===1){
+    if(argv[0]==='--help'){
+      stdout.write(REPORT_DISCOVERY_USAGE);
+      return 0;
+    }
+    if(argv[0]==='--capabilities'){
+      stderr.write(REPORT_DISCOVERY_USAGE);
+      return 2;
+    }
+  }
   if(Array.isArray(argv)&&argv.length===2&&argv[0]==='--capabilities'&&argv[1]==='--json'){
     return writeOfflineReportCapabilities(stdout,stderr);
   }
