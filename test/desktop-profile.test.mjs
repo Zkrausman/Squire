@@ -128,6 +128,93 @@ test('desktop preparation accepts the exact config byte cap and rejects one byte
   assert.equal(retentions,0);
 });
 
+function desktopDestinationFixture(existing){
+  const fixture=fakePreparation(),events=[];
+  const {map,ports,root}=fixture;
+  for(const name of DESKTOP_CODEGEN_SOURCE_FILES)map.set(join(PROJECT_SOURCE_ROOT,name),enc('Public synthetic pin '+name));
+  if(existing)map.set(root,existing);
+  ports.fs.lstat=async path=>{
+    assert.equal(path,root);
+    events.push('lstat');
+    if(!map.has(path))throw Object.assign(Error('Synthetic missing destination'),{code:'ENOENT'});
+    return {};
+  };
+  ports.retention=()=>({prepare:async()=>{
+    events.push('retention');
+    return {capability_status:'READY'};
+  }});
+  const mkdir=ports.fs.mkdir;
+  ports.fs.mkdir=async(path,options)=>{
+    assert.equal(path,root);
+    assert.deepEqual(options,{mode:0o700});
+    events.push('mkdir');
+    if(map.has(path))throw Object.assign(Error('PRIVATE_SYNTHETIC_EXISTS'),{code:'EEXIST'});
+    await mkdir(path,options);
+  };
+  return {...fixture,events};
+}
+
+test('fresh desktop preparation preserves output bytes and acknowledgement',async()=>{
+  const a=desktopDestinationFixture(),commit='e'.repeat(40),bytes={};
+  const ack=await prepareDesktopCodegenTask(a.root,commit,request,a.inputs,a.ports);
+  for(const name of ['prompt.utf8','config.json','operation-manifest.json'])bytes[name]=a.map.get(join(a.root,name));
+  assert.deepEqual(bytes['prompt.utf8'],buildProjectCodegenPrompt(request));
+  const config=validateDesktopCodegenConfig(parseReceiptJson(bytes['config.json']));
+  const manifest=parseReceiptJson(bytes['operation-manifest.json']);
+  assert.deepEqual(bytes['config.json'],canonicalBytes(config));
+  assert.deepEqual(bytes['operation-manifest.json'],canonicalBytes(manifest));
+  assert.equal(ack.status,'PREPARED_NOT_EXECUTABLE');
+  assert.equal(ack.runtime_admitted,false);
+  assert.equal(ack.prompt_bytes,bytes['prompt.utf8'].length);
+  assert.equal(ack.prompt_sha256,hash(bytes['prompt.utf8']));
+  assert.equal(ack.config_sha256,hash(bytes['config.json']));
+  assert.equal(ack.manifest_sha256,hash(bytes['operation-manifest.json']));
+  assert.equal(manifest.config_sha256,ack.config_sha256);
+  assert.deepEqual(a.events,['lstat','retention','mkdir']);
+});
+
+test('occupied desktop preparation destination refuses before retention or writes',async()=>{
+  const existing=enc('Public synthetic existing content'),a=desktopDestinationFixture(existing);
+  const before=new Map(a.map);
+  let rejection;
+  await assert.rejects(prepareDesktopCodegenTask(a.root,'e'.repeat(40),request,a.inputs,a.ports),error=>{
+    rejection=error;
+    return true;
+  });
+  assert.deepEqual(a.events.filter(event=>event==='retention'),[]);
+  assert.deepEqual(a.events,['lstat']);
+  assert.deepEqual(a.writes,[]);
+  assert.deepEqual(a.map,before);
+  assert.equal(rejection.message,'PROJECT_PREPARATION_DESTINATION_UNAVAILABLE');
+});
+
+test('unverifiable desktop preparation destination refuses before retention or writes',async()=>{
+  const a=desktopDestinationFixture();
+  a.ports.fs.lstat=path=>{
+    assert.equal(path,a.root);
+    a.events.push('lstat');
+    throw Object.assign(Error('PRIVATE_SYNTHETIC_LOOKUP'),{code:'EACCES'});
+  };
+  await assert.rejects(prepareDesktopCodegenTask(a.root,'e'.repeat(40),request,a.inputs,a.ports),{
+    message:'PROJECT_PREPARATION_DESTINATION_UNAVAILABLE'
+  });
+  assert.deepEqual(a.events,['lstat']);
+  assert.deepEqual(a.writes,[]);
+});
+
+test('desktop preparation keeps exclusive reservation when the destination appears late',async()=>{
+  const a=desktopDestinationFixture(),existing=enc('Public synthetic late content');
+  const retention=a.ports.retention;
+  a.ports.retention=()=>({prepare:async()=>{
+    a.map.set(a.root,existing);
+    return retention().prepare();
+  }});
+  await assert.rejects(prepareDesktopCodegenTask(a.root,'e'.repeat(40),request,a.inputs,a.ports),{code:'EEXIST'});
+  assert.deepEqual(a.events,['lstat','retention','mkdir']);
+  assert.deepEqual(a.writes,[]);
+  assert.deepEqual(a.map.get(a.root),existing);
+});
+
 test('desktop preparation rejects missing or conflicting fake runtime observation before writes',async()=>{
  for(const mode of ['native','missing','mismatch']){const a=fakePreparation();if(mode==='native')a.ports.mode='NATIVE';if(mode==='missing')delete a.ports.observeDesktopRuntimeIdentity;if(mode==='mismatch')a.ports.observeDesktopRuntimeIdentity=()=>({...syntheticIdentity(),executable:{...syntheticIdentity().executable,sha256:'e'.repeat(64)}});await assert.rejects(prepareProjectCodexTask(a.root,'b'.repeat(40),request,a.inputs,a.ports));assert.deepEqual(a.writes,[]);}
 });

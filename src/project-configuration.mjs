@@ -233,6 +233,12 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   if(desktopCodegen&&configBytes.length>DESKTOP_CODEGEN_CONFIG_MAX_BYTES)throw Error('PROJECT_CONFIG_TOO_LARGE');
   const configSha256=hash(configBytes);
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
+  // Leave simulation adapters without lstat on their existing exclusive mkdir path.
+  if(desktopCodegen&&typeof fsPort.lstat==='function'){
+    let absent=false;
+    try{await fsPort.lstat(root);}catch(error){absent=error?.code==='ENOENT';}
+    if(!absent)throw Error('PROJECT_PREPARATION_DESTINATION_UNAVAILABLE');
+  }
   const gate=await (ports.retention??createNativeRejectedRetention)(inputs.job_id).prepare();if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
   const target=join(config.scope,'output','run-'+config.job_id,'candidate-envelope.json');
   const manifest={schema:'SQUIRE2_PROJECT_PREPARED_MANIFEST_V1',runtime_admitted:false,source_commit,source_pins,job_id:config.job_id,scope:config.scope,task_id:req.task_id,request_sha256:hash(canonicalBytes(req)),config_sha256:configSha256,prompt:config.prompt,node:NODE_RUNTIME,codex:config.codex,generation:{argv:profile.argv,stdin:config.prompt,wall_ms:120000},candidate_envelope:{path:target,source:'EXACT_FINAL_MESSAGE_UTF8'},staging:{stage_subpath:'stage',runtime_admitted:false},task_correctness:'NOT_EVALUATED',limits:{max_direct_child_spawns:1,outer_observation_ms:140000,descendant_guarantee:'NONE',workspace_reuse:'NOT_AUTHORIZED'},admission_required:true};
