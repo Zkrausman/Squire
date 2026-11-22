@@ -1,8 +1,11 @@
-import {buildProjectPortableCandidateSnapshot} from '../src/project-portable-candidate-snapshot.mjs';
+import {buildProjectPortableCandidateSnapshot,readProjectCandidateReviewSource} from '../src/project-portable-candidate-snapshot.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
-import {execFileSync} from 'node:child_process';
+import childProcess,{execFileSync} from 'node:child_process';
+import {EventEmitter} from 'node:events';
+import {syncBuiltinESMExports} from 'node:module';
+import {PassThrough} from 'node:stream';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {deflateSync} from 'node:zlib';
@@ -623,6 +626,105 @@ test('snapshot source builder creates byte-identical V1 package and bound privat
 }));
 
 function snapshotReviewFs(overrides={}){return Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(key=>[key,overrides[key]??((...args)=>fs[key](...args))]));}
+
+// Exercise the same source readers with deterministic Git responses, without
+// spawning Git or adding a source/verification override to either builder.
+async function withMappedSideFixture(t,{folder,old},run){
+ const root=await fs.mkdtemp(join(tmpdir(),'squire-review-mapped-'));
+ try{
+  const objects=new Map(),listings=new Map();
+  const object=(kind,payload)=>{
+   const oid=createHash('sha1').update(`${kind} ${payload.length}\0`).update(payload).digest('hex');
+   objects.set(oid,{kind,payload});return oid;
+  };
+  const oneTree=(entries,relative='')=>{
+   const rows=[],listing=[];
+   for(const [name,value] of Object.entries(entries)){
+    const path=relative+name,isFile=typeof value==='string';
+    const child=isFile?object('blob',Buffer.from(value)):oneTree(value,path+'/');
+    const oid=isFile?child:child.oid,mode=isFile?'100644':'40000';
+    rows.push({key:isFile?name:name+'/',bytes:Buffer.concat([Buffer.from(`${mode} ${name}\0`),Buffer.from(oid,'hex')])});
+    listing.push(Buffer.from(`${mode.padStart(6,'0')} ${isFile?'blob':'tree'} ${oid}\t${path}\0`));
+    if(!isFile)listing.push(child.listing);
+   }
+   rows.sort((a,b)=>Buffer.compare(Buffer.from(a.key),Buffer.from(b.key)));
+   const oid=object('tree',Buffer.concat(rows.map(row=>row.bytes)));
+   return {oid,listing:Buffer.concat(listing)};
+  };
+  const base=oneTree(old?{notes:'previous\n'}:{}),next=oneTree({notes:'current\n',[folder]:{'page.txt':'page\n'}});
+  for(const view of [base,next])listings.set(view.oid,view.listing);
+  const baseCommit=object('commit',Buffer.from(`tree ${base.oid}\n\nbase\n`));
+  const candidateCommit=object('commit',Buffer.from(`tree ${next.oid}\nparent ${baseCommit}\n\ncandidate\n`));
+  const ref='refs/heads/candidate-fixture',baseDir=join(root,'base.git'),candidateDir=join(root,'candidate.git');
+  for(const dir of [baseDir,candidateDir])await fs.mkdir(join(dir,'objects','info'),{recursive:true,mode:0o700});
+  await fs.writeFile(join(candidateDir,'objects','info','alternates'),join(baseDir,'objects')+'\n',{mode:0o600});
+  const identity=async dir=>{const {dev,ino}=await fs.lstat(dir);return {dev,ino};};
+  const result={schema:'SQUIRE_PROJECT_REVIEW_CANDIDATE_V1',status:'SOURCE_CANDIDATE_CREATED',operation_id:'fixture',
+   candidate_ref:ref,base_commit:baseCommit,base_tree:base.oid,candidate_commit:candidateCommit,candidate_tree:next.oid,
+   receipt_sha256:'a'.repeat(64),stage_manifest_sha256:'b'.repeat(64),changed_paths:['notes',folder+'/page.txt'],
+   task_correctness:'NOT_EVALUATED',human_review:'PENDING',native_acceptance:'NOT_ESTABLISHED',benchmark_acceptance:'NOT_ESTABLISHED',
+   origin_authenticity:'SUPPLIED_NOT_AUTHENTICATED',base_alternate_dependency:'READ_ONLY_BASE_OBJECT_ALTERNATE'};
+  const spec={schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',result,base_git_dir:baseDir,
+   base_git_identity:await identity(baseDir),candidate_git_dir:candidateDir,candidate_git_identity:await identity(candidateDir),
+   output_dir:join(root,'direct')};
+  t.mock.method(childProcess,'spawn',(executable,args,options)=>{
+   assert.equal(executable,GIT);assert.ok([baseDir,candidateDir].includes(options.cwd));
+   const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
+   child.kill=()=>true;
+   const input=[];child.stdin.on('data',bytes=>input.push(Buffer.from(bytes)));
+   child.stdin.once('finish',()=>{
+    const commandIndex=args.findIndex((arg,i)=>i%2===0&&arg!=='-c');
+    const [command,option,oid]=args.slice(commandIndex);
+    let output=Buffer.alloc(0),exit=0;
+    if(command==='rev-parse')output=Buffer.from(({'--is-bare-repository':'true','--show-object-format':'sha1','--verify':candidateCommit})[option]+'\n');
+    else if(command==='symbolic-ref')exit=1;
+    else if(command==='ls-tree')output=listings.get(args.at(-1));
+    else if(command==='cat-file'&&['--batch','--batch-check'].includes(option)){
+     output=Buffer.concat(Buffer.concat(input).toString('ascii').trimEnd().split('\n').flatMap(key=>{
+      const {kind,payload}=objects.get(key),header=Buffer.from(`${key} ${kind} ${payload.length}\n`);
+      return option==='--batch'?[header,payload,Buffer.from('\n')]:[header];
+     }));
+    }else if(command==='cat-file'&&objects.get(oid)?.kind===option)output=objects.get(oid).payload;
+    else if(command!=='for-each-ref')exit=1;
+    let pending=2;const end=()=>{if(--pending===0)child.emit('close',exit,null);};
+    child.stdout.once('end',end);child.stderr.once('end',end);
+    child.stdout.end(output);child.stderr.end();
+   });
+   return child;
+  });
+  syncBuiltinESMExports();
+  await run({root,spec},await snapshotReviewFixture({root,spec}));
+ }finally{t.mock.restoreAll();syncBuiltinESMExports();await fs.rm(root,{recursive:true,force:true});}
+}
+
+test('mapped side conflicts reject both original package builders before reservation',async t=>{
+ for(const row of [{folder:'notes.new',old:false},{folder:'notes.old',old:true}]){
+  await withMappedSideFixture(t,row,async(f,snapshot)=>{
+   const mkdirs=[],ports={fs:snapshotReviewFs({mkdir:async path=>{mkdirs.push(path);throw Error('UNEXPECTED_RESERVATION');}})};
+   const source=await readProjectCandidateReviewSource(f.spec,ports);
+   assert.deepEqual(source.files.map(({path,old})=>[path,Boolean(old)]),
+    [['notes',row.old],[row.folder+'/page.txt',false]]);
+   await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>buildProjectCandidateReviewPackage(f.spec,ports));
+   await failCode('PROJECT_CANDIDATE_REVIEW_REJECTED',()=>buildProjectCandidateReviewPackageFromSnapshot(snapshot.spec,ports));
+   assert.deepEqual(mkdirs,[]);
+   for(const dir of [f.spec.output_dir,snapshot.spec.output_dir])await assert.rejects(fs.lstat(dir),{code:'ENOENT'});
+  });
+ }
+});
+test('an absent old side leaves the nearby original package layout unchanged',async t=>{
+ await withMappedSideFixture(t,{folder:'notes.old',old:false},async(f,snapshot)=>{
+  const direct=await buildProjectCandidateReviewPackage(f.spec,{fs:snapshotReviewFs()});
+  const retained=await buildProjectCandidateReviewPackageFromSnapshot(snapshot.spec,{fs:snapshotReviewFs()});
+  const packageDir=join(snapshot.spec.output_dir,'package');
+  assert.equal(retained.manifest_sha256,direct.manifest_sha256);
+  assert.deepEqual(await packageSnapshot(packageDir),await packageSnapshot(f.spec.output_dir));
+  for(const root of [packageDir,f.spec.output_dir]){
+   assert.equal(await fs.readFile(join(root,'changes','notes.new'),'utf8'),'current\n');
+   assert.equal(await fs.readFile(join(root,'changes','notes.old','page.txt.new'),'utf8'),'page\n');
+   assert.equal((await fs.lstat(join(root,'changes','notes.old'))).isDirectory(),true);
+  }
+ });
+});
 test('snapshot source invalid closed requests reject without filesystem access',async()=>{
  let calls=0;const fsPort=snapshotReviewFs(Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(k=>[k,async()=>{calls++;throw Error('PRIVATE_UNWANTED');}]))),valid={schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_FROM_SNAPSHOT_SPEC_V1',snapshot_dir:'/synthetic/snapshot',expected_manifest_sha256:'a'.repeat(64),output_dir:'/synthetic/handoff'};
  for(const spec of [{...valid,schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1'},{...valid,result:{}},{...valid,snapshot_dir:'relative'},{...valid,output_dir:'/synthetic/snapshot/nested'},{...valid,output_dir:'/synthetic/snapshot'},{...valid,expected_manifest_sha256:'A'.repeat(64)},{...valid,expected_manifest_sha256:'a'.repeat(64)+'\n'},{...valid,expected_manifest_sha256:null},{...valid,signal:{}},Object.defineProperty({...valid},'snapshot_dir',{get(){throw Error('PRIVATE_GETTER');}})])await assert.rejects(buildProjectCandidateReviewPackageFromSnapshot(spec,{fs:fsPort}),e=>e.code==='INVALID_PROJECT_CANDIDATE_REVIEW_SPEC');
