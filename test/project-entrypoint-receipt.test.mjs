@@ -42,24 +42,29 @@ async function owned(run){
   await fs.chmod(directory,0o700);
   try{await run(directory);}finally{await fs.rm(directory,{recursive:true,force:true});}
 }
-async function fixture(directory){
+async function fixture(directory,{
+  jobId=job,taskId='synthetic',taskPrompt='Public synthetic instructions.',
+  scope='/PRIVATE_SENTINEL/scope',root='/PRIVATE_SENTINEL/prepared'
+}={}){
   const files=new Map(),sourceBytes=new Map();
   for(const name of [...PROJECT_SOURCE_FILES,...PROJECT_RECEIPT_SOURCE_FILES]){
     const path=join(PROJECT_SOURCE_ROOT,name),bytes=enc('PUBLIC SYNTHETIC PIN '+name);
     files.set(path,bytes);sourceBytes.set(path,bytes);
   }
   const authorization={operator_receipt:'/PRIVATE_SENTINEL/operator',supported_tuples:[{model:'gpt-6.1-sol',effort:'medium'}]};
-  const inputs={job_id:job,scope:'/PRIVATE_SENTINEL/scope',codex:{path:'/PRIVATE_SENTINEL/codex',version:'0.160.0',bytes:1,sha256:digest},requested_model:'gpt-6.1-sol',effort:'medium',authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}};
+  const inputs={job_id:jobId,scope,codex:{path:'/PRIVATE_SENTINEL/codex',version:'0.160.0',bytes:1,sha256:digest},requested_model:'gpt-6.1-sol',effort:'medium',authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}};
   const io={readFile:async path=>files.get(path),mkdir:async()=>{},writeFile:async(path,bytes)=>files.set(path,new Uint8Array(bytes))};
-  await prepareProjectCodexTask('/PRIVATE_SENTINEL/prepared','b'.repeat(40),{schema:'SQUIRE2_PROJECT_REQUEST_V1',task_id:'synthetic',task_prompt:'Public synthetic instructions.',runtime_target:'node24-esm',stage_target:'multifile-candidate'},inputs,{fs:io,verifyFile:async()=>{},retention:()=>({prepare:async()=>({capability_status:'READY'})})});
-  const configBytes=enc(new TextDecoder().decode(files.get('/PRIVATE_SENTINEL/prepared/config.json'))+'\n');
+  const request={schema:'SQUIRE2_PROJECT_REQUEST_V1',task_id:taskId,task_prompt:taskPrompt,runtime_target:'node24-esm',stage_target:'multifile-candidate'};
+  const ack=await prepareProjectCodexTask(root,'b'.repeat(40),request,inputs,{fs:io,verifyFile:async()=>{},retention:()=>({prepare:async()=>({capability_status:'READY'})})});
+  const preparedConfig=files.get(join(root,'config.json'));
+  const configBytes=enc(new TextDecoder().decode(preparedConfig)+'\n');
   const config=validateProjectCodexConfig(parseReceiptJson(configBytes));
-  const admission={provider_id:'native_codex',operator_receipt:authorization.operator_receipt,config_sha256:hash(configBytes),job_id:job,scope:config.scope,project_admitted:true,preflight:{evidence_receipt:'/PRIVATE_SENTINEL/preflight'}};
+  const admission={provider_id:'native_codex',operator_receipt:authorization.operator_receipt,config_sha256:hash(configBytes),job_id:jobId,scope:config.scope,project_admitted:true,preflight:{evidence_receipt:'/PRIVATE_SENTINEL/preflight'}};
   const source_pins=Object.fromEntries(PROJECT_RECEIPT_SOURCE_FILES.map(name=>{
     const path=join(PROJECT_SOURCE_ROOT,name),bytes=sourceBytes.get(path);
     return [path,{bytes:bytes.length,sha256:hash(bytes)}];
   }));
-  const descriptor={schema:PROJECT_RECEIPT_DESTINATION_SCHEMA,config_sha256:hash(configBytes),job_id:job,scope:config.scope,destination:{directory,filename:'receipt.json'},source_pins};
+  const descriptor={schema:PROJECT_RECEIPT_DESTINATION_SCHEMA,config_sha256:hash(configBytes),job_id:jobId,scope:config.scope,destination:{directory,filename:'receipt.json'},source_pins};
   let descriptorBytes=enc(descriptor),admissionBytes=enc(admission),out='',err='',runs=0,opens=0,late=0;
   const verified=[],readCalls=[],calls=[],live=result();
   live.generation.late_observations=()=>{late++;throw Error('PRIVATE_LATE_SENTINEL');};
@@ -73,6 +78,7 @@ async function fixture(directory){
   };
   return {
     configBytes,config,admission,descriptor,sourceBytes,ports,live,verified,readCalls,calls,
+    prepared:{ack,config:preparedConfig,prompt:files.get(join(root,'prompt.utf8')),manifest:files.get(join(root,'operation-manifest.json'))},
     args:()=>['--run-admitted-save-receipt','config','admission','destination',hash(descriptorBytes)],
     descriptorBytes:()=>descriptorBytes,
     setDescriptor(value){descriptorBytes=enc(value);},
@@ -151,6 +157,34 @@ test('receipt pins are separate and preparation keeps its legacy closed config',
   assert.equal(f.config.requested_model,'gpt-6.1-sol');assert.equal(f.config.effort,'medium');
   for(let index=0;index<2;index++)assert.equal(validateProjectReceiptDestination(f.descriptor,f.configBytes,f.admission).job_id,job);
 }));
+test('two prepared tasks retain distinct manifest and receipt destination attribution',async()=>{
+  const tasks=[
+    {taskId:'inventory',taskPrompt:'Draft an inventory checklist.',jobId:job,scope:'/synthetic/inventory',root:'/synthetic/prepared-inventory'},
+    {taskId:'shipment',taskPrompt:'Draft a shipment summary.',jobId:'01234567-89ab-4def-8123-456789abcdef',scope:'/synthetic/shipment',root:'/synthetic/prepared-shipment'}
+  ];
+  const handoffs=[];
+  for(const task of tasks){
+    const directory='/synthetic/receipts-'+task.taskId;
+    const f=await fixture(directory,task),{ack,config,prompt,manifest}=f.prepared;
+    const saved=parseReceiptJson(manifest);
+    assert.equal(saved.task_id,task.taskId);
+    assert.equal(saved.job_id,task.jobId);
+    assert.equal(saved.scope,task.scope);
+    assert.equal(saved.config_sha256,hash(config));
+    assert.deepEqual([ack.prompt_sha256,ack.config_sha256,ack.manifest_sha256],[hash(prompt),hash(config),hash(manifest)]);
+    assert.equal(ack.status,'PREPARED_NOT_EXECUTABLE');
+    assert.equal(ack.runtime_admitted,false);
+    const selected=validateProjectReceiptDestination(clone(f.descriptor),f.configBytes,f.admission);
+    assert.deepEqual([selected.job_id,selected.scope,selected.destination.directory],[task.jobId,task.scope,directory]);
+    handoffs.push(f);
+  }
+  const [first,second]=handoffs;
+  for(const field of ['prompt_sha256','config_sha256','manifest_sha256'])
+    assert.notEqual(first.prepared.ack[field],second.prepared.ack[field]);
+  for(const [selected,other] of [[first,second],[second,first]])
+    assert.throws(()=>validateProjectReceiptDestination(clone(other.descriptor),selected.configBytes,selected.admission),
+      {field:'project_receipt_binding'});
+});
 test('exact bytes, pins, parent and live result reach the fixed writer once',async()=>owned(async directory=>{
   const f=await fixture(directory),originalRun=f.ports.runProject;
   f.ports.runProject=async(...args)=>{
