@@ -8,7 +8,7 @@ import {types} from 'node:util';
 import {readReceiptBytes} from '../bin/squire-report.mjs';
 import {parseReceiptJson,snapshotReceiptData} from '../src/offline-run-summary.mjs';
 import {validateCodexPreflight,verifyExactFile,hash} from '../src/bounded-codegen-plan.mjs';
-import {PROJECT_SOURCE_ROOT,validateProjectCodexConfig,requireProjectCodexAdmission,validateProjectReceiptDestination,validateDesktopCodegenConfig,requireDesktopCodegenAdmission,validateDesktopCodingLargeObservationConfig,validateDesktopCodingLargeObservationAdmission,requireDesktopCodingLargeObservationAdmission,DESKTOP_CODEGEN_INTENT} from '../src/project-configuration.mjs';
+import {PROJECT_SOURCE_ROOT,validateProjectCodexConfig,requireProjectCodexAdmission,validateProjectReceiptDestination,validateDesktopCodegenConfig,requireDesktopCodegenAdmission,validateDesktopCodingLargeObservationConfig,validateDesktopCodingLargeObservationAdmission,requireDesktopCodingLargeObservationAdmission,DESKTOP_CODEGEN_CONFIG_MAX_BYTES,DESKTOP_CODEGEN_INTENT} from '../src/project-configuration.mjs';
 import {closed,object,artifactPath} from '../src/job-spec.mjs';
 import {writeNativeProjectResultReceipt} from '../src/project-result-receipt.mjs';
 import {runProjectCodexTask,admitDesktopCodegenProjectTask,runDesktopCodingLargeObservationProjectTask,admitDesktopCodingLargeObservationProjectTask} from '../src/project-runner.mjs';
@@ -1421,10 +1421,10 @@ function receiptMethod(target,key){
 function receiptFunction(value){
   if(typeof value!=='function'||types.isProxy(value))throw 0;
 }
-function receiptByteLength(bytes){
+function receiptByteLength(bytes,maxBytes=65536){
   if(!types.isUint8Array(bytes)||types.isProxy(bytes))throw 0;
   const length=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),'byteLength').get.call(bytes);
-  if(length>65536)throw 0;
+  if(length>maxBytes)throw 0;
   return length;
 }
 function receiptArgs(value){
@@ -1482,9 +1482,9 @@ export async function runProjectEntrypointCli(argv,ports){
            'EXPLICIT_DESKTOP_CODING_LARGE_OBSERVATION_ADMISSION_REQUIRED'||
          args.slice(1).some(value=>value.length===0))throw 0;
       receiptFunction(ports.readBytes);
-      const configBytes=await ports.readBytes(args[1],65536);
+      const configBytes=await ports.readBytes(args[1],DESKTOP_CODEGEN_CONFIG_MAX_BYTES);
       const admissionBytes=await ports.readBytes(args[2],65536);
-      receiptByteLength(configBytes);receiptByteLength(admissionBytes);
+      receiptByteLength(configBytes,DESKTOP_CODEGEN_CONFIG_MAX_BYTES);receiptByteLength(admissionBytes);
       const config=validateDesktopCodingLargeObservationConfig(
         parseReceiptJson(configBytes)
       );
@@ -1530,9 +1530,9 @@ export async function runProjectEntrypointCli(argv,ports){
       if(desktopCodegenEntrypointMode(args)!=='EXPLICIT_DESKTOP_CODEGEN_ADMISSION_REQUIRED'||
          args.slice(1).some(value=>value.length===0))throw 0;
       receiptFunction(ports.readBytes);
-      const configBytes=await ports.readBytes(args[1],65536);
+      const configBytes=await ports.readBytes(args[1],DESKTOP_CODEGEN_CONFIG_MAX_BYTES);
       const admissionBytes=await ports.readBytes(args[2],65536);
-      receiptByteLength(configBytes);receiptByteLength(admissionBytes);
+      receiptByteLength(configBytes,DESKTOP_CODEGEN_CONFIG_MAX_BYTES);receiptByteLength(admissionBytes);
       const result=await runProjectDesktopCodegenWithPorts(
         configBytes,parseReceiptJson(admissionBytes),undefined,ports.desktopCodegenPorts);
       if(result.status!=='CANDIDATE_STAGED'||result.task_correctness!=='NOT_EVALUATED'||

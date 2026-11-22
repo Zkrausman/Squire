@@ -9,7 +9,8 @@ import {randomUUID} from 'node:crypto';
 import {DESKTOP_TARGET,DESKTOP_BASE,DESKTOP_CODEGEN_PREFIX,DESKTOP_PREFIX_IDENTITY,validateDesktopRuntimeIdentity} from '../src/desktop-profile.mjs';
 import {PROJECT_CODEGEN_PREFIX,PROJECT_PREFIX_IDENTITY,validateProjectRequest,buildProjectCodegenPrompt,validateProjectPayloadJson} from '../src/project-task.mjs';
 import {admitProjectCodexTask,runProjectCodexTask} from '../src/project-runner.mjs';
-import {prepareProjectCodexTask,validateProjectCodexConfig,requireProjectCodexAdmission,PROJECT_SOURCE_FILES,PROJECT_SOURCE_ROOT} from '../src/project-configuration.mjs';
+import {prepareDesktopCodegenTask,prepareProjectCodexTask,validateDesktopCodegenConfig,validateProjectCodexConfig,requireProjectCodexAdmission,DESKTOP_CODEGEN_SOURCE_FILES,PROJECT_SOURCE_FILES,PROJECT_SOURCE_ROOT} from '../src/project-configuration.mjs';
+import {parseReceiptJson} from '../src/offline-run-summary.mjs';
 import {NODE_RUNTIME,GENERATION_SHUTDOWN,hash,canonicalBytes} from '../src/bounded-codegen-plan.mjs';
 import {BLACKJACK_BASE,BLACKJACK_BRIEF_SHA256,validateBlackjackSpec} from '../src/blackjack-contract.mjs';
 import {prepareBlackjackController} from '../src/blackjack-controller.mjs';
@@ -81,6 +82,52 @@ test('desktop preparation freezes separate prospective identity, target and exac
  const admission={provider_id:'native_codex',operator_receipt:authorization.operator_receipt,config_sha256:r.config_sha256,job_id:c.job_id,scope:c.scope,project_admitted:true,preflight:{evidence_receipt:'/synthetic/preflight'}};assert.throws(()=>requireProjectCodexAdmission(admission,c,a.map.get(join(a.root,'config.json'))),e=>e.field==='desktop_native_disabled');
  for(const change of [{runtime_target:'node24-esm'},{runtime_target:null},{prefix_identity:PROJECT_PREFIX_IDENTITY},{desktop_runtime_identity:{...syntheticIdentity(),status:'QUALIFIED'}},{codex:{...c.codex,path:c.desktop_runtime_identity.executable.path}}])assert.throws(()=>validateProjectCodexConfig({...c,...change}));
 });
+test('desktop preparation accepts the exact config byte cap and rejects one byte over before effects',async()=>{
+  const scope='/synthetic/config-cap-scope',root='/synthetic/config-cap-output',commit='e'.repeat(40),cap=65536;
+  const data={...fakePreparation().inputs,scope,job_id:'ba586107-7240-4d89-88d3-d71005bce32f'};
+  const setup=()=>{
+    const fixture=fakePreparation();
+    for(const name of DESKTOP_CODEGEN_SOURCE_FILES)fixture.map.set(join(PROJECT_SOURCE_ROOT,name),enc('Public synthetic pin '+name));
+    return fixture;
+  };
+  data.desktop_runtime_identity.libraries=Array.from({length:16},(_,index)=>({
+    name:`library-${index}`,path:`/prospective/lib-${index}.so`,bytes:3,sha256:'c'.repeat(64)
+  }));
+  data.desktop_runtime_identity.typelibs.push(...Array.from({length:7},(_,index)=>({
+    namespace:`Synthetic${index}`,version:'1.0',typelib:`/prospective/type-${index}.typelib`,bytes:2,sha256:'b'.repeat(64)
+  })));
+  const configPath=join(root,'config.json'),control=setup();
+  await prepareDesktopCodegenTask(root,commit,request,data,control.ports);
+  const remaining=cap-control.map.get(configPath).length;
+  const pins=[
+    ...data.desktop_runtime_identity.libraries.map(pin=>[pin,'path']),
+    ...data.desktop_runtime_identity.typelibs.map(pin=>[pin,'typelib'])
+  ];
+  assert.ok(remaining>0);
+  for(const [index,[pin,key]] of pins.entries()){
+    const count=Math.floor(remaining/pins.length)+(index<remaining%pins.length?1:0);
+    pin[key]+='a'.repeat(count%128)+('/'+'a'.repeat(127)).repeat(Math.floor(count/128));
+  }
+  const exact=setup();
+  const ack=await prepareDesktopCodegenTask(root,commit,request,data,exact.ports);
+  const bytes=exact.map.get(configPath),manifest=parseReceiptJson(exact.map.get(join(root,'operation-manifest.json')));
+  assert.equal(bytes.length,cap);
+  assert.deepEqual(bytes,canonicalBytes(validateDesktopCodegenConfig(parseReceiptJson(bytes))));
+  assert.equal(ack.config_sha256,hash(bytes));
+  assert.equal(manifest.config_sha256,hash(bytes));
+
+  data.desktop_runtime_identity.libraries[0].path+='a';
+  assert.ok(canonicalBytes(data).length<=cap);
+  const oversized=setup();
+  let retentions=0,verifications=0;
+  oversized.ports.verifyFile=async()=>{verifications++;};
+  oversized.ports.retention=()=>{retentions++;return {prepare:async()=>({capability_status:'READY'})};};
+  await assert.rejects(prepareDesktopCodegenTask(root,commit,request,data,oversized.ports),{message:'PROJECT_CONFIG_TOO_LARGE'});
+  assert.equal(verifications,0);
+  assert.deepEqual(oversized.writes,[]);
+  assert.equal(retentions,0);
+});
+
 test('desktop preparation rejects missing or conflicting fake runtime observation before writes',async()=>{
  for(const mode of ['native','missing','mismatch']){const a=fakePreparation();if(mode==='native')a.ports.mode='NATIVE';if(mode==='missing')delete a.ports.observeDesktopRuntimeIdentity;if(mode==='mismatch')a.ports.observeDesktopRuntimeIdentity=()=>({...syntheticIdentity(),executable:{...syntheticIdentity().executable,sha256:'e'.repeat(64)}});await assert.rejects(prepareProjectCodexTask(a.root,'b'.repeat(40),request,a.inputs,a.ports));assert.deepEqual(a.writes,[]);}
 });
