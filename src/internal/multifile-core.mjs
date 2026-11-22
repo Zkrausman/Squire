@@ -1,7 +1,7 @@
 // Explicit local byte-copy ports only. No execution, discovery, publication or recovery.
 import {types} from 'node:util';
 import {constants} from 'node:fs';
-import {resolve,join,dirname,parse} from 'node:path';
+import {resolve,join,dirname,parse,sep} from 'node:path';
 import {createHash} from 'node:crypto';
 import {closed} from '../job-spec.mjs';
 import {
@@ -177,13 +177,19 @@ async function assembleExport(plan,stage,root,p){
  await write(join(root,'export-manifest.json'),plan.manifest_bytes,p);await inspect(root,p,'export');
  const after=await inspect(stage,p,'stage');if(after.plan.manifest_sha256!==first.plan.manifest_sha256)stop('STAGE_BINDING_MISMATCH');check(p);return receipt(plan,'export');
 }
-export async function writeExport(plan,stage_dir,output_dir,ports){return ioBoundary(async()=>{const p=portsOf(ports),copy=capture(plan,'export'),stage=selected(stage_dir),root=selected(output_dir);await reserve(root,p);return assembleExport(copy,stage,root,p);});}
+function reserveExport(root,stage,p){
+ check(p);
+ if(root===stage)stop('DESTINATION_ALREADY_EXISTS');
+ if(root.startsWith(stage+sep))stop('INVALID_EXPORT_SPEC');
+ return reserve(root,p);
+}
+export async function writeExport(plan,stage_dir,output_dir,ports){return ioBoundary(async()=>{const p=portsOf(ports),copy=capture(plan,'export'),stage=selected(stage_dir),root=selected(output_dir);await reserveExport(root,stage,p);return assembleExport(copy,stage,root,p);});}
 export async function buildExport(spec,ports){return ioBoundary(async()=>{
  closed(spec,['export_operation_id','caller_label','stage_dir','export_dir','stage_manifest_sha256'],['evidence_files'],'build_export');
  if(!token(spec.export_operation_id)||!token(spec.caller_label)||!sha(spec.stage_manifest_sha256))stop('INVALID_EXPORT_SPEC');
  const p=portsOf(ports),stage=selected(spec.stage_dir),root=selected(spec.export_dir),id=spec.export_operation_id,label=spec.caller_label,expected=spec.stage_manifest_sha256;
  const owned=planExport({export_operation_id:id,caller_label:label,stage_binding:{stage_operation_id:'capture-only',stage_manifest_sha256:expected},staged_files:[],evidence_files:spec.evidence_files??[]}).files.map(f=>({path:f.path,classification:f.classification,content:f.content}));
- await reserve(root,p);const s=await inspect(stage,p,'stage');if(s.plan.manifest_sha256!==expected)stop('STAGE_BINDING_MISMATCH');
+ await reserveExport(root,stage,p);const s=await inspect(stage,p,'stage');if(s.plan.manifest_sha256!==expected)stop('STAGE_BINDING_MISMATCH');
  const plan=planExport({export_operation_id:id,caller_label:label,stage_binding:{stage_operation_id:s.plan.stage_operation_id,stage_manifest_sha256:expected},staged_files:s.plan.files.map(metadata),evidence_files:owned});return assembleExport(plan,stage,root,p);
 });}
 export async function verifyExport(export_dir,ports){try{const p=portsOf(ports),s=await inspect(selected(export_dir),p,'export');check(p);return receipt(s.plan,'export',true);}catch{return corrupt('export');}}

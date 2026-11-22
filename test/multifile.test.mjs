@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
-import {join} from 'node:path';
+import {constants} from 'node:fs';
+import {basename,dirname,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {planStaging,writeStage,verifyStage,safeMultifileErrorCode} from '../src/multifile-staging.mjs';
 import {planExport,writeExport,buildExport,verifyExport} from '../src/multifile-export.mjs';
@@ -65,6 +66,91 @@ test('foreign stage binding, subset omission and changed content are never expor
   if(i===0)continue;await assert.rejects(()=>writeExport(ep,'/owned/stage','/owned/out'+i,f.ports),e=>e.code==='STAGE_BINDING_MISMATCH');}
  await fs.chmod(f.map('/owned/stage/b'),0o600);await fs.writeFile(f.map('/owned/stage/b'),'changed');await fs.chmod(f.map('/owned/stage/b'),0o400);await assert.rejects(()=>writeExport(eplan(p),'/owned/stage','/owned/changed',f.ports));assert.equal((await verifyStage('/owned/stage',f.ports)).status,'CORRUPT_OR_INCOMPLETE');
 }));
+function memoryExportFilesystem(){
+ const uid=1000,nodes=new Map(),reservations=[];
+ let inode=0;
+ const put=(path,mode,bytes=null)=>{
+  const node={mode,bytes,ino:++inode};
+  nodes.set(path,node);
+  return node;
+ };
+ put('/',0o755);put('/owned',0o700);
+ function lookup(path){
+  const node=nodes.get(path);
+  if(!node)throw Object.assign(Error(),{code:'ENOENT'});
+  return node;
+ }
+ function stat(node){
+  const file=node.bytes!==null;
+  return {uid,mode:node.mode,dev:1,ino:node.ino,nlink:1,size:node.bytes?.length??0,
+   mtimeMs:1,ctimeMs:1,isFile:()=>file,isDirectory:()=>!file,isSymbolicLink:()=>false};
+ }
+ const fs={
+  async lstat(path){return stat(lookup(path));},
+  async mkdir(path,{mode}){
+   reservations.push(path);
+   lookup(dirname(path));
+   if(nodes.has(path))throw Object.assign(Error(),{code:'EEXIST'});
+   put(path,mode);
+  },
+  async readdir(path){return [...nodes.keys()].filter(key=>key!==path&&dirname(key)===path).map(key=>basename(key));},
+  async chmod(path,mode){lookup(path).mode=mode;},
+  async open(path,flags,mode){
+   const create=(flags&constants.O_CREAT)!==0;
+   if(create){
+    lookup(dirname(path));
+    assert.equal(flags&constants.O_EXCL,constants.O_EXCL);
+    assert.equal(nodes.has(path),false);
+   }
+   const node=create?put(path,mode,new Uint8Array()):lookup(path);
+   return {
+    async stat(){return stat(node);},
+    async writeFile(bytes){assert.equal(create,true);node.bytes=bytes.slice();},
+    async read(buffer,offset,length,position){
+     const chunk=node.bytes.subarray(position,position+length);
+     buffer.set(chunk,offset);
+     return {bytesRead:chunk.length};
+    },
+    async close(){}
+   };
+  }
+ };
+ return {nodes,reservations,ports:{fs,uid}};
+}
+test('standard review export refuses nested output and preserves a one-file stage',async()=>{
+ const stageDir='/owned/stage',sibling='/owned/stage-review',nested=join(stageDir,'review');
+ for(const route of ['build','write']){
+  const f=memoryExportFilesystem(),p=stage([file('app.mjs')]),ep=eplan(p);
+  await writeStage(p,stageDir,f.ports);
+  const attempt=output=>route==='build'?buildExport({
+   export_operation_id:ep.export_operation_id,caller_label:ep.caller_label,
+   stage_dir:stageDir,export_dir:output,stage_manifest_sha256:p.manifest_sha256
+  },f.ports):writeExport(ep,stageDir,output,f.ports);
+
+  const before=await verifyStage(stageDir,f.ports);
+  assert.equal(before.status,'VERIFIED');
+  const exportAck=await attempt(sibling);
+  assert.equal(exportAck.manifest_sha256,ep.manifest_sha256);
+  assert.equal((await verifyExport(sibling,f.ports)).status,'VERIFIED');
+  assert.deepEqual(f.nodes.get(join(sibling,'project/app.mjs')).bytes,content);
+  assert.deepEqual(await verifyStage(stageDir,f.ports),before);
+
+  const snapshot=structuredClone(f.nodes),reservationCount=f.reservations.length;
+  let rejection;
+  await assert.rejects(attempt(nested),error=>{rejection=error;return true;});
+  assert.equal(f.nodes.has(nested),false,route+' created a directory inside the source stage');
+  assert.deepEqual(f.nodes,snapshot);
+  assert.equal(f.reservations.length,reservationCount);
+  assert.deepEqual(await verifyStage(stageDir,f.ports),before);
+  assert.equal(rejection.code,'INVALID_EXPORT_SPEC');
+  assert.equal(rejection.message,'INVALID_EXPORT_SPEC');
+  await assert.rejects(attempt(stageDir),{code:'DESTINATION_ALREADY_EXISTS'});
+  assert.equal(f.reservations.length,reservationCount);
+  await assert.rejects(attempt(sibling),{code:'DESTINATION_ALREADY_EXISTS'});
+  assert.deepEqual(f.reservations.slice(reservationCount),[sibling]);
+  assert.deepEqual(f.nodes,snapshot);
+ }
+});
 test('buildExport binds exact manifest and rechecks the complete source stage',async()=>fixture(async f=>{
  const p=stage();await writeStage(p,'/owned/stage',f.ports);const spec={export_operation_id:'e',caller_label:'c',stage_dir:'/owned/stage',export_dir:'/owned/export',stage_manifest_sha256:p.manifest_sha256};assert.equal((await buildExport(spec,f.ports)).completion_status,'COMPLETE');
  await assert.rejects(()=>buildExport({...spec,export_dir:'/owned/foreign',stage_manifest_sha256:'0'.repeat(64)},f.ports),e=>e.code==='STAGE_BINDING_MISMATCH');
