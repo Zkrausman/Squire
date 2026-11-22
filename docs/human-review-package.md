@@ -23,6 +23,10 @@ typed-array contents are owned copies and are checked again before writing.
 `buildReviewPackage(spec, ports)` use explicit filesystem ports. The latter
 reads only the selected receipt (up to 256 KiB) and declared source (100–65,536
 bytes), checks the source path binding and physically hashes its bytes.
+The builder reserves the destination before reading inputs. A filesystem
+failure while acquiring the selected receipt, including a failed close, reports
+`PACKAGE_IO_ERROR`. Receipt format and bounded-reader validation failures report
+`INVALID_RECEIPT`. These failures leave the reserved directory empty.
 
 The fresh mode-0700 directory contains exactly four regular files at mode 0400:
 
