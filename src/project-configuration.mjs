@@ -23,6 +23,7 @@ export const PROJECT_SOURCE_FILES=Object.freeze(["src/project-task.mjs", "src/pr
 export const PROJECT_RECEIPT_DESTINATION_SCHEMA='SQUIRE3_PROJECT_RECEIPT_DESTINATION_V1';
 export const PROJECT_RECEIPT_SOURCE_FILES=Object.freeze(['src/project-result-receipt.mjs','src/project-summary.mjs']);
 export const DESKTOP_CODEGEN_SCHEMA='SQUIRE2_DESKTOP_CODEGEN_OPERATION_V1';
+export const DESKTOP_CODEGEN_CONFIG_MAX_BYTES=65536;
 export const DESKTOP_CODEGEN_INTENT='CODEGEN_ONLY_NO_DESKTOP_EXECUTION';
 // The entrypoint already imports these modules. Include them in future source
 // preparations rather than treating the receipt branch as an inactive import.
@@ -228,10 +229,13 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
     generation_wall_ms:null,outer_observation_ms:null
   });
   (largeObservation?validateDesktopCodingLargeObservationConfig:desktopCodegen?validateDesktopCodegenConfig:validateProjectCodexConfig)(config);
+  const configBytes=canonicalBytes(config);
+  if(desktopCodegen&&configBytes.length>DESKTOP_CODEGEN_CONFIG_MAX_BYTES)throw Error('PROJECT_CONFIG_TOO_LARGE');
+  const configSha256=hash(configBytes);
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
   const gate=await (ports.retention??createNativeRejectedRetention)(inputs.job_id).prepare();if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
   const target=join(config.scope,'output','run-'+config.job_id,'candidate-envelope.json');
-  const manifest={schema:'SQUIRE2_PROJECT_PREPARED_MANIFEST_V1',runtime_admitted:false,source_commit,source_pins,job_id:config.job_id,scope:config.scope,task_id:req.task_id,request_sha256:hash(canonicalBytes(req)),config_sha256:hash(canonicalBytes(config)),prompt:config.prompt,node:NODE_RUNTIME,codex:config.codex,generation:{argv:profile.argv,stdin:config.prompt,wall_ms:120000},candidate_envelope:{path:target,source:'EXACT_FINAL_MESSAGE_UTF8'},staging:{stage_subpath:'stage',runtime_admitted:false},task_correctness:'NOT_EVALUATED',limits:{max_direct_child_spawns:1,outer_observation_ms:140000,descendant_guarantee:'NONE',workspace_reuse:'NOT_AUTHORIZED'},admission_required:true};
+  const manifest={schema:'SQUIRE2_PROJECT_PREPARED_MANIFEST_V1',runtime_admitted:false,source_commit,source_pins,job_id:config.job_id,scope:config.scope,task_id:req.task_id,request_sha256:hash(canonicalBytes(req)),config_sha256:configSha256,prompt:config.prompt,node:NODE_RUNTIME,codex:config.codex,generation:{argv:profile.argv,stdin:config.prompt,wall_ms:120000},candidate_envelope:{path:target,source:'EXACT_FINAL_MESSAGE_UTF8'},staging:{stage_subpath:'stage',runtime_admitted:false},task_correctness:'NOT_EVALUATED',limits:{max_direct_child_spawns:1,outer_observation_ms:140000,descendant_guarantee:'NONE',workspace_reuse:'NOT_AUTHORIZED'},admission_required:true};
   if(desktop)Object.assign(manifest,{runtime_target:DESKTOP_TARGET,prefix_identity:DESKTOP_PREFIX_IDENTITY,desktop_runtime_identity:desktop});
   if(desktopCodegen)Object.assign(manifest,{
     schema:'SQUIRE2_DESKTOP_CODEGEN_PREPARED_MANIFEST_V1',
@@ -259,6 +263,11 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
     output_limits:LARGE_OUTPUT_LIMITS
   });
   await fsPort.mkdir(root,{mode:0o700});
-  for(const[name,b]of[['prompt.utf8',prompt],['config.json',canonicalBytes(config)],['operation-manifest.json',canonicalBytes(manifest)]]){await fsPort.writeFile(join(root,name),b,{flag:'wx',mode:0o600});if(hash(await fsPort.readFile(join(root,name)))!==hash(b))throw Error('PREPARATION_READBACK');}
-  return Object.freeze({status:'PREPARED_NOT_EXECUTABLE',schema:config.schema,runtime_admitted:false,prompt_bytes:prompt.length,prompt_sha256:hash(prompt),config_sha256:hash(canonicalBytes(config)),manifest_sha256:hash(canonicalBytes(manifest)),task_correctness:'NOT_EVALUATED',...(desktopCodegen?{operation_intent:DESKTOP_CODEGEN_INTENT,native_app_status:'NOT_QUALIFIED'}:{})});
+  for(const [name,bytes] of [['prompt.utf8',prompt],['config.json',configBytes],['operation-manifest.json',canonicalBytes(manifest)]]){
+    const path=join(root,name);
+    await fsPort.writeFile(path,bytes,{flag:'wx',mode:0o600});
+    const expected=name==='config.json'?configSha256:hash(bytes);
+    if(hash(await fsPort.readFile(path))!==expected)throw Error('PREPARATION_READBACK');
+  }
+  return Object.freeze({status:'PREPARED_NOT_EXECUTABLE',schema:config.schema,runtime_admitted:false,prompt_bytes:prompt.length,prompt_sha256:hash(prompt),config_sha256:configSha256,manifest_sha256:hash(canonicalBytes(manifest)),task_correctness:'NOT_EVALUATED',...(desktopCodegen?{operation_intent:DESKTOP_CODEGEN_INTENT,native_app_status:'NOT_QUALIFIED'}:{})});
 }
