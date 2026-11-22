@@ -557,21 +557,46 @@ function validLargeReceiptCounterLexemes(text){
     );
   }catch{return false;}
 }
+function copyReportReceiptBytes(bytes){
+  if(types.isProxy(bytes)||!types.isUint8Array(bytes))throw 'MALFORMED_JSON';
+  const length=Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(Uint8Array.prototype),'byteLength'
+  ).get.call(bytes);
+  if(length>REPORT_MAX_BYTES)throw 'FILE_TOO_LARGE';
+  const copy=new Uint8Array(length);
+  try{Uint8Array.prototype.set.call(copy,bytes);}
+  catch{throw 'MALFORMED_JSON';}
+  return copy;
+}
+function requireLargeReceiptCounterLexemes(bytes){
+  const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+  if(!validLargeReceiptCounterLexemes(text))reject();
+}
+
 export function projectNativeProjectLargeObservationReceiptBytesSummary(bytes){
   let copy=null;
   try{
-    if(types.isProxy(bytes)||!types.isUint8Array(bytes))reject();
-    const length=Object.getOwnPropertyDescriptor(
-      Object.getPrototypeOf(Uint8Array.prototype),'byteLength'
-    ).get.call(bytes);
-    if(length>REPORT_MAX_BYTES)reject();
-    copy=new Uint8Array(length);
-    Uint8Array.prototype.set.call(copy,bytes);
-    const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(copy);
-    if(!validLargeReceiptCounterLexemes(text))reject();
+    copy=copyReportReceiptBytes(bytes);
+    requireLargeReceiptCounterLexemes(copy);
     return projectNativeProjectLargeObservationRunSummary(parseReceiptJson(copy));
   }catch{return invalidSummary(true,false,true);}
   finally{copy?.fill(0);}
+}
+
+// Route selection and counter validation share a private copy. Parse errors
+// propagate for generic CLI reporting, while lexical errors stay route-specific.
+export function readProjectReceiptForOfflineReport(bytes){
+  const copy=copyReportReceiptBytes(bytes);
+  try{
+    const raw=parseReceiptJson(copy);
+    if(raw?.schema!==PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA)return {raw};
+    let largeObservationSummary;
+    try{
+      requireLargeReceiptCounterLexemes(copy);
+      largeObservationSummary=projectNativeProjectLargeObservationRunSummary(raw);
+    }catch{largeObservationSummary=invalidSummary(true,false,true);}
+    return {raw,largeObservationSummary};
+  }finally{copy.fill(0);}
 }
 
 function validateProjectedRuntime(value,lifecycle){

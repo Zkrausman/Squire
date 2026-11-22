@@ -2,13 +2,12 @@
 import * as fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {pathToFileURL} from 'node:url';
-import {REPORT_MAX_BYTES,OFFLINE_REPORT_REJECTION_CODES,parseReceiptJson,projectRunSummary,formatSummaryTerminal,invalidRunSummary} from '../src/offline-run-summary.mjs';
+import {REPORT_MAX_BYTES,OFFLINE_REPORT_REJECTION_CODES,projectRunSummary,formatSummaryTerminal,invalidRunSummary} from '../src/offline-run-summary.mjs';
 import {projectSingleJsRunSummary,formatSingleJsSummaryTerminal} from '../src/single-js-summary.mjs';
 import {
   projectProjectRunSummary,formatProjectSummaryTerminal,
   projectNativeProjectRunSummary,formatNativeProjectSummaryTerminal,
-  projectNativeProjectLargeObservationRunSummary,
-  projectNativeProjectLargeObservationReceiptBytesSummary,
+  readProjectReceiptForOfflineReport,
   formatNativeProjectLargeObservationSummaryTerminal
 } from '../src/project-summary.mjs';
 import {buildCourierHandoffReport} from '../src/courier-handoff-report.mjs';
@@ -81,7 +80,7 @@ const REPORT_ROUTES=Object.freeze([
     input_schemas:[PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA],
     result_kind:'summary',
     terminal_output_kind:'native_project_large_observation_text',
-    project:(_raw,bytes)=>projectNativeProjectLargeObservationReceiptBytesSummary(bytes),
+    project:(_raw,largeObservationSummary)=>largeObservationSummary,
     write:typedWriter(formatNativeProjectLargeObservationSummaryTerminal),
     valid_exit_codes:[1],invalid_exit_code:2,invalid_stderr_code:SCHEMA_MISMATCH_CODE,
     exit_meanings:{1:'Typed large-observation summary emitted; this is not a task PASS.',2:'Receipt rejected with the route diagnostic.'}
@@ -241,9 +240,9 @@ async function runOfflineReportCliInternal(argv,ports) {
       if(!st.isFile()||st.isSymbolicLink?.())throw 'SPECIAL_FILE_REJECTED';if(st.size>REPORT_MAX_BYTES)throw 'FILE_TOO_LARGE';
       bytes=await ports.readFile(argv[0],{maxBytes:REPORT_MAX_BYTES});
     }else bytes=await readReceiptBytes(argv[0]);
-    const raw=parseReceiptJson(bytes);
+    const {raw,largeObservationSummary}=readProjectReceiptForOfflineReport(bytes);
     route=REPORT_ROUTES.find(candidate=>candidate.matches(raw))??REPORT_ROUTES.at(-1);
-    const projected=route.project(raw,bytes);
+    const projected=route.project(raw,largeObservationSummary);
     if(route.result_kind==='handoff')handoffReport=projected;else summary=projected;
   }catch(error){
     let code='READ_FAILED';

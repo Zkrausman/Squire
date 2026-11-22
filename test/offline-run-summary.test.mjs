@@ -102,6 +102,9 @@ test('capability selectors dispatch every listed route and preserve route reject
  assert.equal(projectNativeProjectLargeObservationRunSummary(validReceipt).readiness,'CANDIDATE_STAGED');
  const validRoute=await invokeReport(['/PRIVATE_LARGE/valid.json'],validReceipt);
  assert.equal(validRoute.code,1);assert.equal(validRoute.err,'');assert.match(validRoute.out,/native offline project large observation result: CANDIDATE_STAGED/i);
+ assert.equal(validRoute.out,formatNativeProjectLargeObservationSummaryTerminal(
+  projectNativeProjectLargeObservationReceiptBytesSummary(encode(validText))
+ ));
  const lexicalText=validText.replace('"output":22','"output":1.00000000000000001'),lexicalBytes=encode(lexicalText),lexicalObject=JSON.parse(lexicalText);
  assert.equal(lexicalObject.result.generation.record.provider_metadata.usage_tokens.output,1);
  assert.equal(projectNativeProjectLargeObservationRunSummary(lexicalObject).readiness,'CANDIDATE_STAGED');
@@ -110,6 +113,24 @@ test('capability selectors dispatch every listed route and preserve route reject
  const expected=formatNativeProjectLargeObservationSummaryTerminal(byteSummary);
  let out='',err='';const code=await runOfflineReportCli(['/SYNTHETIC/large.json'],{stat:async()=>({isFile:()=>true,size:lexicalBytes.length}),readFile:async()=>lexicalBytes,stdout:{write:s=>out+=s},stderr:{write:s=>err+=s}});
  assert.equal(code,2);assert.equal(out,expected);assert.equal(err,'SCHEMA_MISMATCH\n');assert.match(out,/native offline project large observation result: INVALID_RECEIPT/i);
+});
+
+test('large receipt parser errors still use the generic report before route selection',async()=>{
+ const prefix=`{"schema":${JSON.stringify(PROJECT_LARGE_OBSERVATION_RECEIPT_SCHEMA)}`;
+ const malformedUtf8=Buffer.concat([Buffer.from(`${prefix},"result":"`),Buffer.from([0xff]),Buffer.from('"}')]);
+ const detached=new Uint8Array(1);
+ detached.buffer.transfer();
+ for(const [bytes,reason] of [
+  [encode(`${prefix},"result":`),'MALFORMED_JSON'],
+  [encode(`${prefix},"result":null,"result":null}`),'DUPLICATE_KEY_CONFLICT'],
+  [malformedUtf8,'MALFORMED_UTF8'],
+  [detached,'MALFORMED_JSON'],
+ ]){
+  const result=await invokeReport(['/PUBLIC_SYNTHETIC/large.json'],null,{readFile:async()=>bytes});
+  assert.equal(result.code,2);
+  assert.equal(result.err,`${reason}\n`);
+  assert.match(result.out,/^Squire offline receipt summary: INVALID_RECEIPT/);
+ }
 });
 
 test('unknown routes, extra fields, missing files, and oversize reads remain closed and private',async()=>{
