@@ -233,8 +233,9 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   if(desktopCodegen&&configBytes.length>DESKTOP_CODEGEN_CONFIG_MAX_BYTES)throw Error('PROJECT_CONFIG_TOO_LARGE');
   const configSha256=hash(configBytes);
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
-  // Leave simulation adapters without lstat on their existing exclusive mkdir path.
-  if(desktopCodegen&&typeof fsPort.lstat==='function'){
+  // Injected adapters without lstat keep their existing exclusive mkdir path.
+  const checkDestination=desktopCodegen||(req.runtime_target==='node24-esm'&&ports.mode!=='SOURCE_SIMULATION');
+  if(checkDestination&&typeof fsPort.lstat==='function'){
     let absent=false;
     try{await fsPort.lstat(root);}catch(error){absent=error?.code==='ENOENT';}
     if(!absent)throw Error('PROJECT_PREPARATION_DESTINATION_UNAVAILABLE');

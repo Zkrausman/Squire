@@ -215,6 +215,83 @@ test('desktop preparation keeps exclusive reservation when the destination appea
   assert.deepEqual(a.map.get(a.root),existing);
 });
 
+const nodePreparationRequest={...request,runtime_target:'node24-esm'};
+function nodeDestinationFixture(existing){
+  const a=desktopDestinationFixture(existing);
+  delete a.inputs.desktop_runtime_identity;
+  delete a.ports.mode;
+  a.ports.verifyFile=async()=>{a.events.push('verify');};
+  return a;
+}
+const prepareNodeDestination=a=>prepareProjectCodexTask(
+  a.root,'e'.repeat(40),nodePreparationRequest,a.inputs,a.ports
+);
+const nodePinChecks=Array(PROJECT_SOURCE_FILES.length+2).fill('verify');
+
+test('ordinary Node preparation preserves bytes and acknowledgement with a fresh destination',async()=>{
+  const a=nodeDestinationFixture(),ack=await prepareNodeDestination(a);
+  const outputs=['prompt.utf8','config.json','operation-manifest.json'].map(name=>join(a.root,name));
+  const before=outputs.map(path=>a.map.get(path));
+  assert.deepEqual([ack.prompt_sha256,ack.config_sha256,ack.manifest_sha256],before.map(hash));
+  assert.equal(ack.status,'PREPARED_NOT_EXECUTABLE');
+  assert.equal(ack.runtime_admitted,false);
+  assert.deepEqual(a.events,[...nodePinChecks,'lstat','retention','mkdir']);
+
+  for(const path of outputs)a.map.delete(path);
+  a.events.length=0;
+  delete a.ports.fs.lstat;
+  assert.deepEqual(await prepareNodeDestination(a),ack);
+  assert.deepEqual(outputs.map(path=>a.map.get(path)),before);
+  assert.deepEqual(a.events,[...nodePinChecks,'retention','mkdir']);
+});
+
+test('ordinary Node preparation refuses an occupied destination before retention or writes',async()=>{
+  const a=nodeDestinationFixture(enc('Public synthetic existing Node content'));
+  const before=new Map(a.map);
+  let rejection;
+  await assert.rejects(prepareNodeDestination(a),error=>{rejection=error;return true;});
+  assert.deepEqual(a.events.filter(event=>event==='retention'),[]);
+  assert.deepEqual(a.events,[...nodePinChecks,'lstat']);
+  assert.deepEqual(a.writes,[]);
+  assert.deepEqual(a.map,before);
+  assert.equal(rejection.message,'PROJECT_PREPARATION_DESTINATION_UNAVAILABLE');
+});
+
+test('ordinary Node preparation refuses an unverifiable destination before retention or writes',async()=>{
+  const a=nodeDestinationFixture();
+  a.ports.fs.lstat=path=>{
+    assert.equal(path,a.root);
+    a.events.push('lstat');
+    throw Object.assign(Error('PRIVATE_SYNTHETIC_LOOKUP'),{code:'EACCES'});
+  };
+  await assert.rejects(prepareNodeDestination(a),{message:'PROJECT_PREPARATION_DESTINATION_UNAVAILABLE'});
+  assert.deepEqual(a.events,[...nodePinChecks,'lstat']);
+  assert.deepEqual(a.writes,[]);
+});
+
+test('ordinary Node preparation preserves late exclusive reservation failure',async()=>{
+  const a=nodeDestinationFixture(),existing=enc('Public synthetic late Node content');
+  const retention=a.ports.retention;
+  a.ports.retention=()=>({prepare:async()=>{
+    a.map.set(a.root,existing);
+    return retention().prepare();
+  }});
+  await assert.rejects(prepareNodeDestination(a),{code:'EEXIST'});
+  assert.deepEqual(a.events,[...nodePinChecks,'lstat','retention','mkdir']);
+  assert.deepEqual(a.writes,[]);
+  assert.deepEqual(a.map.get(a.root),existing);
+});
+
+test('Node source simulation retains exclusive reservation without a destination precheck',async()=>{
+  const a=nodeDestinationFixture(enc('Public synthetic simulation content'));
+  a.ports.mode='SOURCE_SIMULATION';
+  const before=new Map(a.map);
+  await assert.rejects(prepareNodeDestination(a),{code:'EEXIST'});
+  assert.deepEqual(a.events,[...nodePinChecks,'retention','mkdir']);
+  assert.deepEqual(a.writes,[]);
+  assert.deepEqual(a.map,before);
+});
+
 test('desktop preparation rejects missing or conflicting fake runtime observation before writes',async()=>{
  for(const mode of ['native','missing','mismatch']){const a=fakePreparation();if(mode==='native')a.ports.mode='NATIVE';if(mode==='missing')delete a.ports.observeDesktopRuntimeIdentity;if(mode==='mismatch')a.ports.observeDesktopRuntimeIdentity=()=>({...syntheticIdentity(),executable:{...syntheticIdentity().executable,sha256:'e'.repeat(64)}});await assert.rejects(prepareProjectCodexTask(a.root,'b'.repeat(40),request,a.inputs,a.ports));assert.deepEqual(a.writes,[]);}
 });
