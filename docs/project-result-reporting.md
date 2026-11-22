@@ -304,6 +304,13 @@ Setup or binding failure prints only `PROJECT_RECEIPT_REQUEST_INVALID` plus LF
 and exits 2 before dispatch or receipt creation. Runner exceptions print only
 `PROJECT_ADMISSION_OR_OPERATION_FAILED` plus LF and exit 2. Writer failures print
 only `PROJECT_RECEIPT_WRITE_FAILED` plus LF and exit 2, without a result fallback.
+If stdout throws synchronously after the writer has saved and verified the
+receipt, the command exits 2 and makes one best-effort stderr write of
+`PROJECT_RECEIPT_ACKNOWLEDGEMENT_FAILED` plus LF. A synchronous failure of that
+stderr write is contained. The saved receipt is retained, and any stdout prefix
+already written may remain. There is no retry, fallback output or cleanup.
+A stdout return value of `false` signals backpressure and still yields exit 1.
+Neither exit 1 nor the acknowledgement establishes stdout flush or delivery.
 Only the exact `--run-admitted-save-receipt` flag selects receipt mode.
 Incorrect arity for that exact flag returns the request failure code and exits 2;
 prefix lookalikes retain existing dry-run behavior. The original three-argument

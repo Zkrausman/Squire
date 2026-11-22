@@ -1578,10 +1578,14 @@ export async function runProjectEntrypointCli(argv,ports){
   let result;
   try{result=await ports.runProject(configBytes,admission);}
   catch{err('PROJECT_ADMISSION_OR_OPERATION_FAILED\n');return 2;}
-  try{
-    const acknowledgement=await writeNativeProjectResultReceipt(result,descriptor.destination,ports.writerPorts);
-    out(`${JSON.stringify(acknowledgement)}\n`);return 1;
-  }catch{err('PROJECT_RECEIPT_WRITE_FAILED\n');return 2;}
+  let acknowledgement;
+  try{acknowledgement=await writeNativeProjectResultReceipt(result,descriptor.destination,ports.writerPorts);}
+  catch{err('PROJECT_RECEIPT_WRITE_FAILED\n');return 2;}
+  try{out(`${JSON.stringify(acknowledgement)}\n`);return 1;}
+  catch{
+    try{err('PROJECT_RECEIPT_ACKNOWLEDGEMENT_FAILED\n');}catch{}
+    return 2;
+  }
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   const args=process.argv.slice(2);
