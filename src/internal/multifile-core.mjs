@@ -700,7 +700,7 @@ export async function writeLargeProjectExport(plan,stage_dir,output_dir,ports){
  return ioBoundary(async()=>{
   const p=portsOf(ports),copy=captureLargeExport(plan);
   const stage=selected(stage_dir),root=selected(output_dir);
-  await reserve(root,p);
+  await reserveExport(root,stage,p);
   return assembleLargeExport(copy,stage,root,p);
  });
 }
@@ -729,7 +729,7 @@ export async function buildLargeProjectExport(spec,ports){
   const evidenceFiles=owned.files.filter(f=>!f.is_staged).map(f=>({
    path:f.path,classification:f.classification,content:f.content
   }));
-  await reserve(root,p);
+  await reserveExport(root,stage,p);
   const source=await inspectLarge(stage,p,'stage');
   if(source.plan.manifest_sha256!==expected)stop('STAGE_BINDING_MISMATCH');
   const plan=planLargeProjectExport({

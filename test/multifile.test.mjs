@@ -4,8 +4,15 @@ import * as fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {basename,dirname,join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {planStaging,writeStage,verifyStage,safeMultifileErrorCode} from '../src/multifile-staging.mjs';
-import {planExport,writeExport,buildExport,verifyExport} from '../src/multifile-export.mjs';
+import {PROJECT_OUTPUT_LARGE_PROFILE} from '../src/project-coding-profile.mjs';
+import {
+ planStaging,writeStage,verifyStage,safeMultifileErrorCode,
+ planLargeProjectStaging,writeLargeProjectStage,verifyLargeProjectStage
+} from '../src/multifile-staging.mjs';
+import {
+ planExport,writeExport,buildExport,verifyExport,
+ planLargeProjectExport,writeLargeProjectExport,buildLargeProjectExport,verifyLargeProjectExport
+} from '../src/multifile-export.mjs';
 const enc=new TextEncoder(),hash=b=>createHash('sha256').update(b).digest('hex');
 const content=enc.encode('// PUBLIC SYNTHETIC BYTES ONLY\n'),file=(path='src/app.mjs',classification='SOURCE',b=content)=>({path,classification,content:b});
 const stage=(files=[file()])=>planStaging({stage_operation_id:'stage-1',caller_label:'synthetic',files});
@@ -149,6 +156,42 @@ test('standard review export refuses nested output and preserves a one-file stag
   await assert.rejects(attempt(sibling),{code:'DESTINATION_ALREADY_EXISTS'});
   assert.deepEqual(f.reservations.slice(reservationCount),[sibling]);
   assert.deepEqual(f.nodes,snapshot);
+ }
+});
+test('large review export refuses child and exact destinations without changing the stage',async()=>{
+ const stageDir='/owned/stage',sibling='/owned/stage-review',child=join(stageDir,'review');
+ const output_profile=PROJECT_OUTPUT_LARGE_PROFILE;
+ const p=planLargeProjectStaging({
+  stage_operation_id:'stage-1',caller_label:'synthetic',output_profile,files:[file('app.mjs')]
+ });
+ const spec={export_operation_id:'export-1',caller_label:'synthetic',output_profile};
+ const ep=planLargeProjectExport({...spec,staged_files:p.manifest.files,stage_binding:{
+  stage_operation_id:p.stage_operation_id,stage_manifest_sha256:p.manifest_sha256
+ }});
+ for(const route of ['build','write']){
+  const f=memoryExportFilesystem();
+  await writeLargeProjectStage(p,stageDir,f.ports);
+  const attempt=output=>route==='build'?buildLargeProjectExport({
+   ...spec,stage_dir:stageDir,export_dir:output,stage_manifest_sha256:p.manifest_sha256
+  },f.ports):writeLargeProjectExport(ep,stageDir,output,f.ports);
+  const before=await verifyLargeProjectStage(stageDir,f.ports);
+  assert.equal(before.status,'VERIFIED');
+  const source=structuredClone([...f.nodes].filter(([path])=>path===stageDir||path.startsWith(stageDir+'/')));
+
+  const ack=await attempt(sibling);
+  assert.equal(ack.manifest_sha256,ep.manifest_sha256);
+  assert.equal((await verifyLargeProjectExport(sibling,f.ports)).status,'VERIFIED');
+  assert.deepEqual(f.nodes.get(join(sibling,'project/app.mjs')).bytes,content);
+  assert.deepEqual([...f.nodes].filter(([path])=>path===stageDir||path.startsWith(stageDir+'/')),source);
+  assert.deepEqual(await verifyLargeProjectStage(stageDir,f.ports),before);
+
+  const snapshot=structuredClone(f.nodes),reservationCount=f.reservations.length;
+  for(const [destination,code] of [[child,'INVALID_EXPORT_SPEC'],[stageDir,'DESTINATION_ALREADY_EXISTS']]){
+   await assert.rejects(attempt(destination),{code,message:code});
+   assert.equal(f.reservations.length,reservationCount);
+   assert.deepEqual(f.nodes,snapshot);
+   assert.deepEqual(await verifyLargeProjectStage(stageDir,f.ports),before);
+  }
  }
 });
 test('buildExport binds exact manifest and rechecks the complete source stage',async()=>fixture(async f=>{
