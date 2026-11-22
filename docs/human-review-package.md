@@ -47,9 +47,13 @@ Manifest presence alone cannot establish original completion: a later close,
 readback, chmod, cancellation or final source-check failure can occur after its
 bytes exist. `verifyReviewPackage(dir, ports)` checks the current exact inventory,
 modes, bounded bytes, digests and safe summary/README/manifest consistency. It
-returns `VERIFIED` or `CORRUPT_OR_INCOMPLETE`, always leaving original operation
-acknowledgement UNKNOWN. It proves neither provenance authenticity nor crash
-durability. Verification cannot repair an earlier failed operation.
+returns `VERIFIED` or `CORRUPT_OR_INCOMPLETE`. When a cancellation check
+observes an explicitly supplied AbortSignal, it returns `VERIFICATION_ABORTED`
+with exit code 2 and no integrity verdict. An unrelated I/O failure retains its
+existing classification even if the signal was also aborted. All statuses leave
+original operation acknowledgement UNKNOWN. Verification proves neither
+provenance authenticity nor crash durability and cannot repair an earlier failed
+operation.
 
 The CLI's default native filesystem adapter enumerates this exact inventory
 incrementally with `opendir` using a one-entry internal buffer, retaining at
@@ -58,6 +62,10 @@ fifth; it closes the directory handle on success, failure, and cancellation.
 The injected filesystem port keeps its existing `readdir` callback contract.
 Its caller controls that callback, so this allocation bound does not apply to
 arbitrary injected implementations.
+When called with an AbortSignal, `runPackageCli` reports a verification abort
+as `PACKAGE_ABORTED` on stderr with exit 2 and no stdout report. The executable
+does not translate process signals into package cancellation. Cancellation
+does not modify the package or establish repair or retry authority.
 
 CLI exit 0 means a valid package whose recorded Q218 task conformance is PASS;
 exit 1 means a valid package with failed/incomplete conformance or generic
