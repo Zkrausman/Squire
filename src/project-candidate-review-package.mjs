@@ -167,16 +167,27 @@ function makeManifest(source,diff){
     boundaries:['SOURCE_REVIEW_PENDING','TASK_CORRECTNESS_NOT_EVALUATED','ORIGIN_SUPPLIED_NOT_AUTHENTICATED']};
 }
 function preparePackage(source){
+  const sides=[];
+  for(const item of source.files){
+    if(item.old)sides.push({path:`changes/${item.path}.old`,data:item.old.data});
+    sides.push({path:`changes/${item.path}.new`,data:item.new.data});
+  }
+  const leaves=new Set(sides.map(side=>side.path));
+  if(leaves.size!==sides.length)rejected();
+  for(const leaf of leaves){
+    for(let slash=leaf.indexOf('/');slash!==-1;slash=leaf.indexOf('/',slash+1)){
+      if(leaves.has(leaf.slice(0,slash)))rejected();
+    }
+  }
   const diff=makeDiff(source.files),manifest=makeManifest(source,diff),manifestBytes=encode(manifest);
   const copied=source.files.reduce((sum,item)=>sum+(item.old?.bytes??0)+item.new.bytes,0);
   if(copied>MAX_COPIES||manifestBytes.length>MAX_MANIFEST||copied+diff.length+manifestBytes.length>MAX_PACKAGE)rejected();
-  return {diff,manifest,manifestBytes};
+  return {diff,manifest,manifestBytes,sides};
 }
-async function writePackage(fs,outputDir,source,prepared,signal){
+async function writePackage(fs,outputDir,prepared,signal){
   await reserve(fs,outputDir,signal);await ensureDir(fs,outputDir,'changes',signal);
-  for(const item of source.files){check(signal);
-    if(item.old)await writeFile(fs,outputDir,`changes/${item.path}.old`,item.old.data,signal);
-    await writeFile(fs,outputDir,`changes/${item.path}.new`,item.new.data,signal);
+  for(const side of prepared.sides){check(signal);
+    await writeFile(fs,outputDir,side.path,side.data,signal);
   }
   await writeFile(fs,outputDir,'diff.txt',prepared.diff,signal);
   await writeFile(fs,outputDir,'review-manifest.json',prepared.manifestBytes,signal);
@@ -283,7 +294,7 @@ export async function buildProjectCandidateReviewPackage(spec,ports={}){
     signal=captureSignal(spec.signal);check(signal);
     const source=await readProjectCandidateReviewSource(spec,{fs});
     const prepared=preparePackage(source),{manifest,manifestBytes}=prepared;
-    await writePackage(fs,spec.output_dir,source,prepared,signal);
+    await writePackage(fs,spec.output_dir,prepared,signal);
     const reread=await readProjectCandidateReviewSource(spec,{fs});
     if(digest(encode(makeManifest(reread,makeDiff(reread.files))))!==digest(manifestBytes))rejected();
     const verified=await verifyInternal(fs,spec.output_dir,signal);check(signal);
@@ -386,7 +397,7 @@ export async function buildProjectCandidateReviewPackageFromSnapshot(spec,ports=
     source=await readProjectCandidateReviewSnapshotSource(request,{fs});prepared=preparePackage(source);
     const expectedPackageSha256=digest(prepared.manifestBytes);
     const container=await reserve(fs,request.output_dir,signal),packageDir=join(request.output_dir,'package');
-    await writePackage(fs,packageDir,source,prepared,signal);
+    await writePackage(fs,packageDir,prepared,signal);
     const initialPackage=await verifyInternal(fs,packageDir,signal);
     if(initialPackage.manifest_sha256!==expectedPackageSha256)rejected();
     const receipt={schema:'SQUIRE_SNAPSHOT_REVIEW_PROVENANCE_V1',
