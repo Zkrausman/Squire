@@ -50,6 +50,14 @@ test('single-JS request freezes exact prefix and prompt limits without evaluatin
  assert.equal(buildSingleJsCodegenPrompt(request('a'.repeat(31981))).length,32768);assert.notEqual(buildSingleJsCodegenPrompt(r),buildSingleJsCodegenPrompt(r));
  for(const bad of [request('a'.repeat(99)),request('a'.repeat(31982)),request('a'.repeat(100)+'\0'),request('a'.repeat(100)+'\uD800'),{...request(),output_target:'../other.mjs'},{...request(),task_id:'/unsafe'},{...request(),extra:true}])assert.throws(()=>parseSingleJsRequest(enc(JSON.stringify(bad))));
  for(const b of [new Uint8Array([255]),new Uint8Array(65537),enc('\uFEFF{}'),enc('{"schema":"x","sch\\u0065ma":"y"}'),enc('{"__proto__":"x"}'),enc('{"task_prompt":[]}')])assert.throws(()=>parseSingleJsRequest(b));
+ const padded=' \t'+'a'.repeat(96)+' \n',paddedRequest=request(padded);
+ assert.equal(enc(padded).length,100);
+ const parsed=parseSingleJsRequest(enc(JSON.stringify(paddedRequest)));
+ assert.deepEqual(parsed,paddedRequest);
+ assert.deepEqual(buildSingleJsCodegenPrompt(parsed),enc(SINGLE_JS_PREFIX+padded));
+ const blank=request(' '.repeat(100)),blankJson=enc(JSON.stringify(blank));
+ assert.throws(()=>parseSingleJsRequest(blankJson),{field:'single_js_prompt'});
+ assert.throws(()=>buildSingleJsCodegenPrompt(blank),{field:'single_js_prompt'});
 });
 test('two unrelated prompts prepare without Q218 task/fixture access, dispatch or model defaults',async()=>{
  const a=await prepared(),b=await prepared('Different public JavaScript request. '.repeat(5));
