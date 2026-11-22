@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises';
 import {join,basename} from 'node:path';
 import {artifactCliChild} from './helpers/artifact-cli-child.mjs';
 import {hash} from '../src/bounded-codegen-plan.mjs';
-import {planReviewPackage,buildReviewPackage,writeReviewPackage,verifyReviewPackage,safePackageErrorCode} from '../src/human-review-package.mjs';
+import {planReviewPackage,buildReviewPackage,writeReviewPackage,verifyReviewPackage,safePackageErrorCode,ReviewPackageError} from '../src/human-review-package.mjs';
 import {runPackageCli,nativePackageInventory} from '../bin/squire-package.mjs';
 
 const source=new TextEncoder().encode('// PUBLIC_SYNTHETIC_CODE_BODY_NEVER_REPORT\n'+('export const publicExample = 1;\n').repeat(5));
@@ -117,12 +117,83 @@ test('failed conformance can be packaged honestly, with private control strings 
 test('aborted packaging does not create a destination or claim completion',async()=>fixture(async f=>{
  const controller=new AbortController();controller.abort();await assert.rejects(buildReviewPackage(f.spec,{...f.ports,signal:controller.signal}),e=>e.code==='PACKAGE_ABORTED');await assert.rejects(fs.lstat(f.spec.output_dir));
 }));
-test('abort during final source or verification close cannot acknowledge COMPLETE or VERIFIED',async()=>fixture(async f=>{
+test('abort during final source close cannot acknowledge COMPLETE',async()=>fixture(async f=>{
  const controller=new AbortController();let opens=0;
  const wrapped={...fs,async open(path,...a){const h=await fs.open(path,...a),last=path===f.path&&++opens===2;return {stat:()=>h.stat(),read:(...args)=>h.read(...args),writeFile:b=>h.writeFile(b),async close(){await h.close();if(last)controller.abort();}};}};
  await assert.rejects(buildReviewPackage(f.spec,{...f.ports,fs:wrapped,signal:controller.signal}),e=>e.code==='PACKAGE_ABORTED');
- const verificationController=new AbortController();const verificationFS={...fs,async open(path,...a){const h=await fs.open(path,...a);return {stat:()=>h.stat(),read:(...args)=>h.read(...args),close:async()=>{await h.close();if(basename(path)==='README.txt')verificationController.abort();}};}};
- assert.equal((await verifyReviewPackage(f.spec.output_dir,{...f.ports,fs:verificationFS,signal:verificationController.signal})).status,'CORRUPT_OR_INCOMPLETE');
+}));
+test('mid-verification abort reports no verdict and leaves a valid package intact',async t=>fixture(async f=>{
+ const built=await buildReviewPackage(f.spec,f.ports),root=f.spec.output_dir;
+ const readFiles=()=>Promise.all(names.map(name=>fs.readFile(join(root,name))));
+ const before=await readFiles();
+ const abortedPorts=()=>{
+  const controller=new AbortController(),opened=[],closed=[];
+  const io={lstat:fs.lstat,readdir:fs.readdir,async open(path,flags){
+   assert.equal(flags,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
+   const h=await fs.open(path,flags),name=basename(path);opened.push(name);
+   return {stat:()=>h.stat(),read:(...args)=>h.read(...args),async close(){
+    await h.close();closed.push(name);
+    if(name==='artifact.mjs')controller.abort();
+   }};
+  }};
+  return {ports:{fs:io,uid:f.ports.uid,signal:controller.signal},opened,closed};
+ };
+ await t.test('API returns only the aborted status after closing the read handle',async()=>{
+  const {ports,opened,closed}=abortedPorts();
+  assert.deepEqual(await verifyReviewPackage(root,ports),{
+   schema_version:'squire3.package_verification.v1',status:'VERIFICATION_ABORTED',exit_code:2,
+   original_operation_acknowledgement:'UNKNOWN'
+  });
+  assert.deepEqual(opened,['package-manifest.json','artifact.mjs']);
+  assert.deepEqual(closed,opened);
+ });
+ await t.test('injected CLI emits just the path-free abort diagnostic',async()=>{
+  const {ports,opened,closed}=abortedPorts(),out=[],err=[];
+  assert.equal(await runPackageCli(['--verify',root],{
+   ...ports,stdout:{write:value=>out.push(value)},stderr:{write:value=>err.push(value)}
+  }),2);
+  assert.deepEqual(out,[]);assert.deepEqual(err,['PACKAGE_ABORTED\n']);
+  assert.deepEqual(opened,['package-manifest.json','artifact.mjs']);
+  assert.deepEqual(closed,opened);
+ });
+ await t.test('separate explicit verification checks the unchanged package',async()=>{
+  assert.deepEqual((await fs.readdir(root)).sort(),[...names].sort());
+  assert.deepEqual(await readFiles(),before);
+  const verified=await verifyReviewPackage(root,f.ports);
+  assert.equal(verified.status,'VERIFIED');
+  assert.equal(verified.manifest_sha256,built.manifest_sha256);
+  assert.equal(verified.original_operation_acknowledgement,'UNKNOWN');
+ });
+}));
+test('a failed read remains corruption even with a concurrent abort or package error code',async()=>fixture(async f=>{
+ await buildReviewPackage(f.spec,f.ports);
+ for(const error of [Error('PRIVATE_READ_FAILURE'),new ReviewPackageError('PACKAGE_ABORTED')]){
+  const controller=new AbortController();let closed=0;
+  const io={lstat:fs.lstat,readdir:fs.readdir,async open(path,flags){
+   const h=await fs.open(path,flags);
+   return {stat:()=>h.stat(),async read(){controller.abort();throw error;},
+    async close(){await h.close();closed++;}};
+  }};
+  const result=await verifyReviewPackage(f.spec.output_dir,{...f.ports,fs:io,signal:controller.signal});
+  assert.equal(result.status,'CORRUPT_OR_INCOMPLETE');
+  assert.equal(result.exit_code,2);assert.equal(closed,1);
+ }
+}));
+test('verifier rejects an inventory abort from a different signal',async()=>fixture(async f=>{
+ await buildReviewPackage(f.spec,f.ports);
+ const other=new AbortController();other.abort();
+ const live=new AbortController();
+ for(const signal of [undefined,live.signal]){
+  let inventories=0;
+  const io={...fs,readdir:path=>{
+   inventories++;
+   return nativePackageInventory(fs,path,other.signal);
+  }};
+  const result=await verifyReviewPackage(f.spec.output_dir,{...f.ports,fs:io,signal});
+  assert.equal(result.status,'CORRUPT_OR_INCOMPLETE');
+  assert.equal(result.exit_code,2);assert.equal(inventories,1);
+ }
+ assert.equal(live.signal.aborted,false);
 }));
 test('plan bytes are exact, including BOM; altered plan buffers fail before destination creation',async()=>fixture(async f=>{
  const p=planReviewPackage(f.r,source);p.files['artifact.mjs'].content[0]^=1;await assert.rejects(writeReviewPackage(p,f.spec.output_dir,f.ports),e=>e.code==='INVALID_RECEIPT');await assert.rejects(fs.lstat(f.spec.output_dir));

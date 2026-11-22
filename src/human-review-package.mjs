@@ -78,14 +78,23 @@ function capturePlan(plan){
     if(p.readiness_or_outcome!==plan.readiness_or_outcome||p.task_correctness!==plan.task_correctness||p.exit_code!==plan.exit_code||names.some(n=>p.files[n].sha256!==captured[n].sha256))stop('INVALID_RECEIPT');return p;
   }catch(e){const code=errorCode(e);if(errors.has(code))stop(code);stop('INVALID_RECEIPT');}
 }
-function checkAbort(ports){if(ports.signal?.aborted)stop('PACKAGE_ABORTED');}
+// Bind positive cancellation observations to their exact signal so filesystem
+// errors and aborts from other calls cannot stand in for this signal's abort.
+const observedPackageAborts=new WeakMap();
+export function checkReviewPackageAbort(signal){
+  if(!signal?.aborted)return;
+  const error=new ReviewPackageError('PACKAGE_ABORTED');
+  observedPackageAborts.set(error,signal);
+  throw error;
+}
+function checkAbort(ports){checkReviewPackageAbort(ports.signal);}
 async function checked(ports,operation){checkAbort(ports);const value=await operation();checkAbort(ports);return value;}
 async function components(path,ports,includeLeaf=true){
   const root=parsePath(path).root,parts=path.slice(root.length).split('/');let current=root;
   for(let i=0;i<parts.length-(includeLeaf?0:1);i++){current=join(current,parts[i]);const st=await checked(ports,()=>ports.fs.lstat(current));if(st.isSymbolicLink()||i<parts.length-1&&!st.isDirectory())stop('SPECIAL_FILE_REJECTED');}
 }
-async function readBounded(path,max,ports,{source=false,mode=null}={}){
-  await components(path,ports);let handle;
+async function readBounded(path,max,ports,{source=false,mode=null,verifying=false}={}){
+  await components(path,ports);let handle,result;
   try{
     const before=await checked(ports,()=>ports.fs.lstat(path));
     if(!before.isFile()||before.isSymbolicLink())stop('SPECIAL_FILE_REJECTED');
@@ -98,8 +107,11 @@ async function readBounded(path,max,ports,{source=false,mode=null}={}){
     const bytes=new Uint8Array(max+1);let count=0;
     while(count<bytes.length){const r=await checked(ports,()=>handle.read(bytes,count,Math.min(4096,bytes.length-count),count));if(!Number.isSafeInteger(r.bytesRead)||r.bytesRead<0||r.bytesRead>Math.min(4096,bytes.length-count))stop('PACKAGE_IO_ERROR');if(r.bytesRead===0)break;count+=r.bytesRead;if(count>max)stop(source?'SOURCE_INTEGRITY_MISMATCH':'PACKAGE_IO_ERROR');}
     const after=await checked(ports,()=>handle.stat());if(count!==after.size||before.size!==after.size||opened.mtimeMs!==after.mtimeMs||opened.ctimeMs!==after.ctimeMs)stop(source?'SOURCE_INTEGRITY_MISMATCH':'PACKAGE_IO_ERROR');
-    return bytes.slice(0,count);
-  }finally{await handle?.close();checkAbort(ports);}
+    result=bytes.slice(0,count);
+  }finally{await handle?.close();if(!verifying)checkAbort(ports);}
+  // During verification, a cancellation at close must not mask a failed read.
+  if(verifying)checkAbort(ports);
+  return result;
 }
 async function reserve(output,ports){
   const parent=dirname(output);await components(parent,ports);const st=await checked(ports,()=>ports.fs.lstat(parent));
@@ -143,20 +155,26 @@ export async function buildReviewPackage(spec,ports){
   }catch(e){const code=errorCode(e);if(errors.has(code))stop(code);stop('PACKAGE_IO_ERROR');}
 }
 export async function verifyReviewPackage(package_dir,ports){
+  let signal;
   try{
-    ports=ioPorts(ports);const root=selectedPath(package_dir);await components(root,ports);const st=await checked(ports,()=>ports.fs.lstat(root));
+    ports=ioPorts(ports);signal=ports.signal;
+    const root=selectedPath(package_dir);await components(root,ports);const st=await checked(ports,()=>ports.fs.lstat(root));
     if(!st.isDirectory()||st.isSymbolicLink()||(st.mode&0o777)!==0o700)stop('SPECIAL_FILE_REJECTED');
     const entries=await checked(ports,()=>ports.fs.readdir(root));if(entries.length!==4||entries.some(n=>!names.includes(n)))stop('PACKAGE_IO_ERROR');
-    const manifestBytes=await readBounded(join(root,names[3]),caps[names[3]],ports,{mode:0o400}),m=parseReceiptJson(manifestBytes);
+    const read=name=>readBounded(join(root,name),caps[name],ports,{mode:0o400,verifying:true});
+    const manifestBytes=await read(names[3]),m=parseReceiptJson(manifestBytes);
     closed(m,['schema_version','completion_status','task_profile','readiness_or_outcome','task_correctness','files'],[],'package_manifest');
     if(m.schema_version!=='squire3.package_manifest.v1'||m.completion_status!=='COMPLETE'||!profiles.includes(m.task_profile)||!Array.isArray(m.files)||m.files.length!==3)stop('PACKAGE_IO_ERROR');
     const bytes={};for(let i=0;i<3;i++){
       const record=m.files[i],name=names[i];closed(record,['path','bytes','sha256'],[],'manifest_file');
       if(record.path!==name||!Number.isSafeInteger(record.bytes)||record.bytes<0||record.bytes>caps[name]||typeof record.sha256!=='string'||!/^[a-f0-9]{64}$/.test(record.sha256))stop('PACKAGE_IO_ERROR');
-      bytes[name]=await readBounded(join(root,name),caps[name],ports,{mode:0o400});if(bytes[name].length!==record.bytes||hash(bytes[name])!==record.sha256)stop('PACKAGE_IO_ERROR');
+      bytes[name]=await read(name);if(bytes[name].length!==record.bytes||hash(bytes[name])!==record.sha256)stop('PACKAGE_IO_ERROR');
     }
     const summary=parseReceiptJson(bytes['summary.json']),p=makePlan(summary,m.task_profile,m.files[0],bytes['artifact.mjs']);
     if(m.readiness_or_outcome!==p.readiness_or_outcome||m.task_correctness!==p.task_correctness||names.slice(0,3).some(n=>hash(bytes[n])!==p.files[n].sha256)||hash(manifestBytes)!==p.files[names[3]].sha256)stop('PACKAGE_IO_ERROR');
     checkAbort(ports);return Object.freeze({schema_version:'squire3.package_verification.v1',status:'VERIFIED',manifest_sha256:hash(manifestBytes),task_profile:p.task_profile,readiness_or_outcome:p.readiness_or_outcome,task_correctness:p.task_correctness,exit_code:p.exit_code,original_operation_acknowledgement:'UNKNOWN',provenance_authenticity:'NOT_ESTABLISHED',crash_durability:'NOT_ESTABLISHED'});
-  }catch{return Object.freeze({schema_version:'squire3.package_verification.v1',status:'CORRUPT_OR_INCOMPLETE',exit_code:2,original_operation_acknowledgement:'UNKNOWN'});}
+  }catch(error){
+    const status=signal&&observedPackageAborts.get(error)===signal?'VERIFICATION_ABORTED':'CORRUPT_OR_INCOMPLETE';
+    return Object.freeze({schema_version:'squire3.package_verification.v1',status,exit_code:2,original_operation_acknowledgement:'UNKNOWN'});
+  }
 }
