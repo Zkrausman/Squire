@@ -153,6 +153,20 @@ const side=item=>item&&{mode:item.mode,git_sha1:item.git_sha1,bytes:item.bytes,s
 function validPath(path){return typeof path==='string'&&path.length<=256&&/^[A-Za-z0-9._/-]+$/.test(path)&&path.split('/').length<=7&&
   path.split('/').every(part=>part&&part!=='.'&&part!=='..'&&part.length<=64&&part.toLowerCase()!=='.git'&&
     !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part));}
+export function planRevisionPackageSides(files){
+  const sides=[];
+  for(const row of files)for(const key of ['base','original','revised']){
+    if(row[key])sides.push({path:`changes/${row.path}.${key}`,data:row[key].data});
+  }
+  const leaves=new Set(sides.map(side=>side.path));
+  if(leaves.size!==sides.length)rejected();
+  for(const leaf of leaves){
+    for(let slash=leaf.indexOf('/');slash!==-1;slash=leaf.indexOf('/',slash+1)){
+      if(leaves.has(leaf.slice(0,slash)))rejected();
+    }
+  }
+  return sides;
+}
 function rowsFor(files,paths,oldKey){const set=new Set(paths);return files.filter(row=>set.has(row.path)).map(row=>({path:row.path,old:row[oldKey],new:row.revised,
   binary_review_required:(row[oldKey]&&asText(row[oldKey].data)===null)||asText(row.revised.data)===null}));}
 function manifestFor(source,links,displays){const views={};for(const [key,oldKey,paths] of [

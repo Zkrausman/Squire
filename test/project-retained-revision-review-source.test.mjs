@@ -1,12 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
+import childProcess from 'node:child_process';
+import {EventEmitter} from 'node:events';
+import {syncBuiltinESMExports} from 'node:module';
+import {tmpdir} from 'node:os';
+import {PassThrough} from 'node:stream';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {fixture} from './helpers/revision-review-fixture.mjs';
+import {readProjectRevisionReviewSource} from '../src/project-portable-candidate-snapshot.mjs';
 import {buildProjectRetainedRevisionReviewSource as retain,verifyProjectRetainedRevisionReviewSource as verify,buildProjectRevisionReviewPackageFromRetainedSource as build} from '../src/project-retained-revision-review-source.mjs';
 import {buildProjectRevisionReviewPackage,verifyProjectRevisionReviewPackage,recordProjectRevisionDecision,verifyProjectRevisionDecision} from '../src/project-revision-review-package.mjs';
-import {recordProjectCandidateDecision} from '../src/project-candidate-review-package.mjs';
+import {buildProjectCandidateReviewPackage,recordProjectCandidateDecision} from '../src/project-candidate-review-package.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const sorted=v=>Array.isArray(v)?v.map(sorted):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sorted(v[k])])):v;
 const encode=v=>Buffer.from(JSON.stringify(sorted(v)));
@@ -18,6 +24,132 @@ async function leaves(root,prefix=''){const out={};for(const n of await fs.readd
 async function replace(path,bytes){await fs.chmod(path,0o600);await fs.writeFile(path,bytes);await fs.chmod(path,0o400);}
 async function repin(root,mutate){const path=join(root,'retained-revision-manifest.json');const m=JSON.parse(await fs.readFile(path));await mutate(m);let other=0;for(const [name] of Object.entries(await leaves(root)))if(name!=='retained-revision-manifest.json')other+=(await fs.stat(join(root,name))).size;
  for(let i=0;i<16;i++){const bytes=encode(m),total=other+bytes.length;if(total===m.retained_bytes){await replace(path,bytes);return sha(bytes);}m.retained_bytes=total;}throw Error('fixture accounting');}
+
+// Drive the ordinary source readers with synthetic Git replies in memory.
+async function withRevisionMappedSideFixture(t,folder,run){
+ const root=await fs.mkdtemp(join(tmpdir(),'squire-revision-mapped-'));
+ try{
+  const objects=new Map(),listings=new Map();
+  const object=(kind,payload)=>{
+   const oid=createHash('sha1').update(`${kind} ${payload.length}\0`).update(payload).digest('hex');
+   objects.set(oid,{kind,payload});return oid;
+  };
+  const oneTree=(entries,relative='')=>{
+   const rows=[],listing=[];
+   for(const [name,value] of Object.entries(entries)){
+    const path=relative+name,isFile=typeof value==='string';
+    const child=isFile?object('blob',Buffer.from(value)):oneTree(value,path+'/');
+    const oid=isFile?child:child.oid,mode=isFile?'100644':'40000';
+    rows.push({key:isFile?name:name+'/',bytes:Buffer.concat([Buffer.from(`${mode} ${name}\0`),Buffer.from(oid,'hex')])});
+    listing.push(Buffer.from(`${mode.padStart(6,'0')} ${isFile?'blob':'tree'} ${oid}\t${path}\0`));
+    if(!isFile)listing.push(child.listing);
+   }
+   rows.sort((a,b)=>Buffer.compare(Buffer.from(a.key),Buffer.from(b.key)));
+   const oid=object('tree',Buffer.concat(rows.map(row=>row.bytes)));
+   return {oid,listing:Buffer.concat(listing)};
+  };
+  const base=oneTree({[folder]:{'page.txt':'previous\n'}});
+  const original=oneTree({notes:'unchanged addition\n',[folder]:{'page.txt':'previous\n'}});
+  const revised=oneTree({notes:'unchanged addition\n',[folder]:{'page.txt':'revised\n'}});
+  for(const view of [base,original,revised])listings.set(view.oid,view.listing);
+  const baseCommit=object('commit',Buffer.from(`tree ${base.oid}\n\nbase\n`));
+  const originalCommit=object('commit',Buffer.from(`tree ${original.oid}\nparent ${baseCommit}\n\noriginal\n`));
+  const revisedCommit=object('commit',Buffer.from(`tree ${revised.oid}\nparent ${baseCommit}\n\nrevised\n`));
+  const originalRef='refs/heads/candidate-original',revisedRef='refs/heads/candidate-revised';
+  const commits=new Map([[originalRef,originalCommit],[revisedRef,revisedCommit]]);
+  const [baseDir,originalDir,revisedDir]=['base.git','original.git','revised.git'].map(name=>join(root,name));
+  for(const dir of [baseDir,originalDir,revisedDir])await fs.mkdir(join(dir,'objects','info'),{recursive:true,mode:0o700});
+  for(const dir of [originalDir,revisedDir])await fs.writeFile(join(dir,'objects','info','alternates'),join(baseDir,'objects')+'\n',{mode:0o600});
+  const identity=async dir=>{const {dev,ino}=await fs.lstat(dir);return {dev,ino};};
+  const original_result={schema:'SQUIRE_PROJECT_REVIEW_CANDIDATE_V1',status:'SOURCE_CANDIDATE_CREATED',operation_id:'original',
+   candidate_ref:originalRef,base_commit:baseCommit,base_tree:base.oid,candidate_commit:originalCommit,candidate_tree:original.oid,
+   receipt_sha256:'a'.repeat(64),stage_manifest_sha256:'b'.repeat(64),changed_paths:['notes'],
+   task_correctness:'NOT_EVALUATED',human_review:'PENDING',native_acceptance:'NOT_ESTABLISHED',benchmark_acceptance:'NOT_ESTABLISHED',
+   origin_authenticity:'SUPPLIED_NOT_AUTHENTICATED',base_alternate_dependency:'READ_ONLY_BASE_OBJECT_ALTERNATE'};
+  const previous=Buffer.from('previous\n'),next=Buffer.from('revised\n'),page=folder+'/page.txt';
+  const revised_result={...original_result,schema:'SQUIRE_PROJECT_REVISION_CANDIDATE_V1',status:'SOURCE_REVISION_CANDIDATE_CREATED',
+   operation_id:'revised',candidate_ref:revisedRef,candidate_commit:revisedCommit,candidate_tree:revised.oid,changed_paths:['notes',page],
+   correction_origin:'OPERATOR_SUPPLIED',revision_of:{commit:originalCommit,tree:original.oid},
+   revised_blobs:[{path:page,previous_blob:object('blob',previous),previous_bytes:previous.length,previous_sha256:sha(previous),
+    blob:object('blob',next),bytes:next.length,sha256:sha(next)}]};
+  t.mock.method(childProcess,'spawn',(executable,args,options)=>{
+   assert.equal(executable,'/usr/bin/git');assert.ok([baseDir,originalDir,revisedDir].includes(options.cwd));
+   const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
+   child.kill=()=>true;
+   const input=[];child.stdin.on('data',bytes=>input.push(Buffer.from(bytes)));
+   child.stdin.once('finish',()=>{
+    const commandIndex=args.findIndex((arg,i)=>i%2===0&&arg!=='-c');
+    const [command,option,oid]=args.slice(commandIndex);
+    let output=Buffer.alloc(0),exit=0;
+    if(command==='rev-parse')output=Buffer.from(({'--is-bare-repository':'true','--show-object-format':'sha1','--verify':commits.get(args.at(-1))})[option]+'\n');
+    else if(command==='symbolic-ref')exit=1;
+    else if(command==='ls-tree')output=listings.get(args.at(-1));
+    else if(command==='cat-file'&&['--batch','--batch-check'].includes(option)){
+     output=Buffer.concat(Buffer.concat(input).toString('ascii').trimEnd().split('\n').flatMap(key=>{
+      const {kind,payload}=objects.get(key),header=Buffer.from(`${key} ${kind} ${payload.length}\n`);
+      return option==='--batch'?[header,payload,Buffer.from('\n')]:[header];
+     }));
+    }else if(command==='cat-file'&&objects.get(oid)?.kind===option)output=objects.get(oid).payload;
+    else if(command!=='for-each-ref')exit=1;
+    let pending=2;const end=()=>{if(--pending===0)child.emit('close',exit,null);};
+    child.stdout.once('end',end);child.stderr.once('end',end);
+    child.stdout.end(output);child.stderr.end();
+   });
+   return child;
+  });
+  syncBuiltinESMExports();
+  const originalDirIdentity=await identity(originalDir),baseDirIdentity=await identity(baseDir);
+  const prior=join(root,'prior'),pkg=join(root,'original-package'),fsPort={fs:port()};
+  const originalPackage=await buildProjectCandidateReviewPackage({
+   schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',result:original_result,base_git_dir:baseDir,
+   base_git_identity:baseDirIdentity,candidate_git_dir:originalDir,candidate_git_identity:originalDirIdentity,output_dir:pkg
+  },fsPort);
+  const choice=await recordProjectCandidateDecision(pkg,{schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1',decision_id:'prior',
+   reviewer_label:'fixture',review_package_sha256:originalPackage.manifest_sha256,base_commit:baseCommit,base_tree:base.oid,
+   candidate_commit:originalCommit,candidate_tree:original.oid,choice:'REVISE',attestations:[]},prior,fsPort);
+  const spec={schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1',original_result,revised_result,base_git_dir:baseDir,
+   base_git_identity:baseDirIdentity,original_git_dir:originalDir,original_git_identity:originalDirIdentity,
+   revised_git_dir:revisedDir,revised_git_identity:await identity(revisedDir),output_dir:join(root,'direct'),
+   original_package:{dir:pkg,manifest_sha256:originalPackage.manifest_sha256},
+   prior_decisions:[{dir:prior,file_sha256:choice.decision_sha256}],selected_decision_id:'prior'};
+  await run({root,spec});
+ }finally{t.mock.restoreAll();syncBuiltinESMExports();await fs.rm(root,{recursive:true,force:true});}
+}
+
+test('revision mapped side conflict rejects both package routes before reservation',async t=>{
+ await withRevisionMappedSideFixture(t,'notes.revised',async f=>{
+  const source=await retain(req(f),{fs:port()}),retained=buildSpec(f,source);
+  const received=await verify(retained.retained_source_dir,source.manifest_sha256,{fs:port()});
+  assert.equal(received.manifest_sha256,source.manifest_sha256);
+  const destinations=[];
+  const fsPort=port();fsPort.mkdir=async path=>{destinations.push(path);throw Error('UNEXPECTED_RESERVATION');};
+  const {original_package,prior_decisions,selected_decision_id,...sourceSpec}=f.spec;
+  const live=await readProjectRevisionReviewSource(sourceSpec,{fs:fsPort});
+  assert.deepEqual(live.base_to_revised,['notes','notes.revised/page.txt']);
+  assert.deepEqual(live.original_to_revised,['notes.revised/page.txt']);
+  for(const [construct,spec] of [[buildProjectRevisionReviewPackage,f.spec],[build,retained]]){
+   await assert.rejects(()=>construct(spec,{fs:fsPort}),{code:'PROJECT_REVISION_REVIEW_REJECTED'});
+   await assert.rejects(fs.lstat(spec.output_dir),{code:'ENOENT'});
+  }
+  assert.deepEqual(destinations,[]);
+ });
+});
+test('nearby revision side layout preserves live and retained package bytes and modes',async t=>{
+ await withRevisionMappedSideFixture(t,'notes.base',async f=>{
+  const source=await retain(req(f),{fs:port()}),retained=buildSpec(f,source);
+  const live=await buildProjectRevisionReviewPackage(f.spec,{fs:port()}),copied=await build(retained,{fs:port()});
+  const packageDir=join(retained.output_dir,'package');
+  assert.equal(copied.manifest_sha256,live.manifest_sha256);
+  assert.deepEqual(await leaves(packageDir),await leaves(f.spec.output_dir));
+  for(const root of [packageDir,f.spec.output_dir]){
+   assert.equal(await fs.readFile(join(root,'changes/notes.revised'),'utf8'),'unchanged addition\n');
+   assert.equal(await fs.readFile(join(root,'changes/notes.base/page.txt.base'),'utf8'),'previous\n');
+   assert.equal(await fs.readFile(join(root,'changes/notes.base/page.txt.original'),'utf8'),'previous\n');
+   assert.equal(await fs.readFile(join(root,'changes/notes.base/page.txt.revised'),'utf8'),'revised\n');
+   assert.equal((await fs.lstat(join(root,'changes/notes.base'))).mode&0o7777,0o700);
+  }
+ });
+});
 
 test('retained source survives absent stores and yields exact V1 package with fresh bound decision',async()=>{const f=await fixture();try{
  const live=await buildProjectRevisionReviewPackage(f.spec),r=await retain(req(f)),saved=await leaves(join(f.root,'retained'));

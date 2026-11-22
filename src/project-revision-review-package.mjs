@@ -2,7 +2,7 @@
 import {join} from 'node:path';
 import {types} from 'node:util';
 import {readProjectRevisionReviewSource} from './project-portable-candidate-snapshot.mjs';
-import {ReviewPackageError,invalid,rejected,aborted,digest,encode,plain,closed,denseArray,absolute,captureSignal,check,capturePort,file,dir,stable,stat,ancestors,missing,reserve,ensureDir,writeFile,readFile,asText,makeDiff,side,validPath,rowsFor,manifestFor,matchesKeys,validateSide,listPackage,verifyInternal,priorLinks,captureBuildSpec,SHA1,SHA256,TOKEN,PACKAGE_SCHEMA,DECISION_SCHEMA,MAX_SIDE,MAX_COPIES,MAX_DIFF,MAX_MANIFEST,MAX_PACKAGE,MAX_REVIEW_DECISION_BYTES,decoder} from './internal/revision-review-core.mjs';
+import {planRevisionPackageSides,ReviewPackageError,invalid,rejected,aborted,digest,encode,plain,closed,denseArray,absolute,captureSignal,check,capturePort,file,dir,stable,stat,ancestors,missing,reserve,ensureDir,writeFile,readFile,asText,makeDiff,side,validPath,rowsFor,manifestFor,matchesKeys,validateSide,listPackage,verifyInternal,priorLinks,captureBuildSpec,SHA1,SHA256,TOKEN,PACKAGE_SCHEMA,DECISION_SCHEMA,MAX_SIDE,MAX_COPIES,MAX_DIFF,MAX_MANIFEST,MAX_PACKAGE,MAX_REVIEW_DECISION_BYTES,decoder} from './internal/revision-review-core.mjs';
 export {verifyProjectRevisionReviewPackage} from './internal/revision-review-core.mjs';
 export async function buildProjectRevisionReviewPackage(spec,ports={}){let signal;
   try{const fs=capturePort(ports);signal=captureBuildSpec(spec);check(signal);
@@ -13,13 +13,14 @@ export async function buildProjectRevisionReviewPackage(spec,ports={}){let signa
       output_dir:spec.output_dir,signal};
     const source=await readProjectRevisionReviewSource(sourceSpec,{fs});
     const links=await priorLinks(fs,spec,source,signal);
+    const sides=planRevisionPackageSides(source.files);
     const displays={base:makeDiff(rowsFor(source.files,source.base_to_revised,'base'),'base'),
       original:makeDiff(rowsFor(source.files,source.original_to_revised,'original'),'original')};
     const manifest=manifestFor(source,links,displays),bytes=encode(manifest);
     if(bytes.length>MAX_MANIFEST||source.files.reduce((sum,row)=>sum+['base','original','revised'].reduce((n,k)=>n+(row[k]?.bytes??0),0),0)+
       displays.base.length+displays.original.length+bytes.length>MAX_PACKAGE)rejected();
     await reserve(fs,spec.output_dir,signal);await ensureDir(fs,spec.output_dir,'changes',signal);
-    for(const row of source.files)for(const key of ['base','original','revised'])if(row[key])await writeFile(fs,spec.output_dir,`changes/${row.path}.${key}`,row[key].data,signal);
+    for(const side of sides)await writeFile(fs,spec.output_dir,side.path,side.data,signal);
     await writeFile(fs,spec.output_dir,'base-to-revised.diff.txt',displays.base,signal);
     await writeFile(fs,spec.output_dir,'original-to-revised.diff.txt',displays.original,signal);
     await writeFile(fs,spec.output_dir,'revision-review-manifest.json',bytes,signal);
