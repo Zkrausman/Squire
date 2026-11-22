@@ -271,8 +271,12 @@ config, preparation and admission formats retain their existing fields.
 Filename `.` or `..`, traversal, NULs and unnormalized directories reject.
 The parent must preexist, be caller-owned with a safe-integer uid, have exactly
 0700 permissions without special bits, and be a directory rather than a symlink.
-Preflight does not create or reserve the destination or reject an existing leaf;
-the writer's later exclusive creation may fail after the operation has returned.
+After validating the parent, preflight checks the exact destination leaf with
+one read-only `lstat`. Only a missing-path result (`ENOENT`) allows dispatch.
+An occupied leaf or any other lookup failure produces
+`PROJECT_RECEIPT_REQUEST_INVALID` before the producer or writer is called.
+The check does not create or reserve the destination. If the leaf appears later,
+the writer's exclusive creation still fails without overwriting it.
 
 The pure `validateProjectReceiptDestination` check validates the legacy config,
 requires a true matching legacy admission, and binds config hash, job and scope.

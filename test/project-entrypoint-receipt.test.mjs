@@ -314,9 +314,33 @@ test('saved staged, adverse and cleanup ACK histories roundtrip as synthetic cla
     }
   });
 });
-test('existing leaf remains unchanged after one producer with no overwrite or fallback',async()=>owned(async directory=>{
+test('existing leaf remains unchanged without starting the producer or writer',async()=>owned(async directory=>{
   const f=await fixture(directory),path=join(directory,'receipt.json'),sentinel=enc('PRIVATE_EXISTING_SENTINEL');
   await fs.writeFile(path,sentinel,{mode:0o600,flag:'wx'});
+  assert.equal(await f.run(),2);
+  invalidBeforeRun(f);
+  assert.deepEqual(await fs.readFile(path),Buffer.from(sentinel));
+  assert.deepEqual(await fs.readdir(directory),['receipt.json']);
+}));
+test('unverifiable leaf is a fixed request error before producer or writer',async()=>owned(async directory=>{
+  const f=await fixture(directory),path=join(directory,'receipt.json'),lookups=[];
+  f.ports.writerPorts.fs.lstat=async target=>{
+    lookups.push(target);
+    if(target===path)throw Object.assign(Error('PRIVATE_LSTAT_SENTINEL'),{code:'EACCES'});
+    return fs.lstat(target);
+  };
+  assert.equal(await f.run(),2);
+  invalidBeforeRun(f);
+  assert.deepEqual(lookups,[directory,path]);
+  assert.deepEqual(await fs.readdir(directory),[]);
+}));
+test('leaf created after preflight is preserved by the exclusive writer',async()=>owned(async directory=>{
+  const f=await fixture(directory),path=join(directory,'receipt.json'),sentinel=enc('PRIVATE_LATE_LEAF_SENTINEL');
+  const run=f.ports.runProject;
+  f.ports.runProject=async(...args)=>{
+    await fs.writeFile(path,sentinel,{mode:0o600,flag:'wx'});
+    return run(...args);
+  };
   assert.equal(await f.run(),2);
   assert.deepEqual(await fs.readFile(path),Buffer.from(sentinel));
   assert.deepEqual(f.observations(),{out:'',err:'PROJECT_RECEIPT_WRITE_FAILED\n',runs:1,opens:1,late:0});

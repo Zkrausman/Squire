@@ -1569,6 +1569,11 @@ export async function runProjectEntrypointCli(argv,ports){
     descriptor=validateProjectReceiptDestination(parseReceiptJson(descriptorBytes),configBytes,admission);
     for(const [path,pin]of Object.entries(descriptor.source_pins))await ports.verifyFile({path,...pin},ports.reads);
     await receiptParent(descriptor.destination,ports.writerPorts);
+    const {directory,filename}=descriptor.destination;
+    let absent=false;
+    try{await ports.writerPorts.fs.lstat(join(directory,filename));}
+    catch(error){absent=error?.code==='ENOENT';}
+    if(!absent)throw 0;
   }catch{err('PROJECT_RECEIPT_REQUEST_INVALID\n');return 2;}
   let result;
   try{result=await ports.runProject(configBytes,admission);}
