@@ -91,6 +91,43 @@ test('selected path symlinks, traversal, unexpected source mode and invalid rece
   await assert.rejects(buildReviewPackage(f.spec,f.ports),e=>['SPECIAL_FILE_REJECTED','INVALID_RECEIPT'].includes(e.code));
  });
 });
+test('selected receipt acquisition and validation failures keep distinct diagnostics',async()=>{
+ for(const kind of ['lookup','open','read','close','malformed','oversize'])await fixture(async f=>{
+  const receiptPath=f.spec.receipt_path;
+  if(kind==='malformed')await fs.writeFile(receiptPath,'{');
+  if(kind==='oversize')await fs.writeFile(receiptPath,Buffer.alloc(262145,32));
+  let failures=0,closes=0;
+  const opened=[];
+  const fail=()=>{failures++;throw Error('PRIVATE_RECEIPT_IO_SENTINEL');};
+  const io={...fs,async lstat(path){
+   if(path===receiptPath&&kind==='lookup')fail();
+   return fs.lstat(path);
+  },async open(path,...args){
+   opened.push(path);
+   assert.equal(path,receiptPath);
+   if(kind==='open')fail();
+   const handle=await fs.open(path,...args);
+   return {stat:()=>handle.stat(),read:(...readArgs)=>{
+    if(kind==='read')fail();
+    return handle.read(...readArgs);
+   },async close(){
+    await handle.close();closes++;
+    if(kind==='close')fail();
+   }};
+  }};
+  const stdout=[],stderr=[];
+  assert.equal(await runPackageCli(['--build',receiptPath,f.path,f.spec.output_dir],{
+   ...f.ports,fs:io,stdout:{write:s=>stdout.push(s)},stderr:{write:s=>stderr.push(s)}
+  }),2);
+  assert.deepEqual(stdout,[]);
+  const validationFailure=kind==='malformed'||kind==='oversize';
+  assert.deepEqual(stderr,[validationFailure?'INVALID_RECEIPT\n':'PACKAGE_IO_ERROR\n']);
+  assert.equal(failures,validationFailure?0:1);
+  assert.deepEqual(opened,['lookup','oversize'].includes(kind)?[]:[receiptPath]);
+  assert.equal(closes,['read','close','malformed'].includes(kind)?1:0);
+  assert.deepEqual(await fs.readdir(f.spec.output_dir),[]);
+ });
+});
 test('write/close/readback/chmod failures preserve honest partial output and stop without rollback',async()=>{
  for(const name of names)for(const kind of ['write','close','read','chmod'])await fixture(async f=>{
   let triggered=0;const wrapped={...fs,async open(path,flags,...rest){const h=await fs.open(path,flags,...rest);return {stat:()=>h.stat(),read:async(...a)=>{if(basename(path)===name&&kind==='read'&&flags!=='wx'){triggered++;throw Error('PRIVATE_READ_ERROR');}return h.read(...a);},writeFile:async b=>{if(basename(path)===name&&kind==='write'){triggered++;throw Error('PRIVATE_WRITE_ERROR');}return h.writeFile(b);},close:async()=>{await h.close();if(basename(path)===name&&kind==='close'&&flags==='wx'){triggered++;throw Error('PRIVATE_CLOSE_ERROR');}}};},async chmod(path,mode){if(basename(path)===name&&kind==='chmod'){triggered++;throw Error('PRIVATE_CHMOD_ERROR');}return fs.chmod(path,mode);}};

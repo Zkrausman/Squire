@@ -12,7 +12,8 @@ const caps=Object.freeze({'artifact.mjs':65536,'summary.json':262144,'README.txt
 const profiles=['GENERIC_SINGLE_JS','HISTORICAL_Q218'];
 const errors=new Set(['DESTINATION_ALREADY_EXISTS','SOURCE_NOT_FOUND','SOURCE_INTEGRITY_MISMATCH','INVALID_RECEIPT','SPECIAL_FILE_REJECTED','PACKAGE_IO_ERROR','PACKAGE_ABORTED']);
 export class ReviewPackageError extends Error{constructor(code){super(errors.has(code)?code:'PACKAGE_IO_ERROR');this.code=errors.has(code)?code:'PACKAGE_IO_ERROR';}}
-const stop=code=>{throw new ReviewPackageError(code);};
+const packageRejections=new WeakSet();
+const stop=code=>{const error=new ReviewPackageError(code);packageRejections.add(error);throw error;};
 export const safePackageErrorCode=error=>{const code=errorCode(error);return errors.has(code)?code:'PACKAGE_IO_ERROR';};
 function errorCode(error){try{if(types.isProxy(error))return null;return Object.getOwnPropertyDescriptor(error,'code')?.value;}catch{return null;}}
 function ownBytes(v,max){
@@ -145,7 +146,14 @@ export async function buildReviewPackage(spec,ports){
     ports=ioPorts(ports);closed(spec,['receipt_path','source_path','output_dir'],['options'],'package_spec');
     const receipt=selectedPath(spec.receipt_path),source=selectedPath(spec.source_path),output=selectedPath(spec.output_dir),opts=options(spec.options);
     await reserve(output,ports); // EEXIST stops before input reads or any content mutation.
-    let raw;try{raw=parseReceiptJson(await readBounded(receipt,262144,ports));}catch(e){if(errorCode(e)==='PACKAGE_ABORTED')stop('PACKAGE_ABORTED');stop('INVALID_RECEIPT');}
+    let receiptBytes;
+    try{receiptBytes=await readBounded(receipt,262144,ports);}
+    catch(e){
+      if(errorCode(e)==='PACKAGE_ABORTED')stop('PACKAGE_ABORTED');
+      stop(packageRejections.has(e)?'INVALID_RECEIPT':'PACKAGE_IO_ERROR');
+    }
+    let raw;
+    try{raw=parseReceiptJson(receiptBytes);}catch{stop('INVALID_RECEIPT');}
     const projection=projected(raw,opts);if(projection.source_path!==source)stop('SOURCE_INTEGRITY_MISMATCH');
     let bytes;try{bytes=await readBounded(source,65536,ports,{source:true});}catch(e){if(errors.has(errorCode(e)))stop(errorCode(e));if(errorCode(e)==='ENOENT')stop('SOURCE_NOT_FOUND');throw e;}
     const plan=planReviewPackage(raw,bytes,opts),result=await assemble(plan,output,ports);
