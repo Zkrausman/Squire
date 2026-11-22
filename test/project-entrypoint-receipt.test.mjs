@@ -44,7 +44,7 @@ async function owned(run){
 }
 async function fixture(directory,{
   jobId=job,taskId='synthetic',taskPrompt='Public synthetic instructions.',
-  scope='/PRIVATE_SENTINEL/scope',root='/PRIVATE_SENTINEL/prepared'
+  scope='/PRIVATE_SENTINEL/scope',root='/PRIVATE_SENTINEL/prepared',exactPreparedConfig=false
 }={}){
   const files=new Map(),sourceBytes=new Map();
   for(const name of [...PROJECT_SOURCE_FILES,...PROJECT_RECEIPT_SOURCE_FILES]){
@@ -57,7 +57,7 @@ async function fixture(directory,{
   const request={schema:'SQUIRE2_PROJECT_REQUEST_V1',task_id:taskId,task_prompt:taskPrompt,runtime_target:'node24-esm',stage_target:'multifile-candidate'};
   const ack=await prepareProjectCodexTask(root,'b'.repeat(40),request,inputs,{fs:io,verifyFile:async()=>{},retention:()=>({prepare:async()=>({capability_status:'READY'})})});
   const preparedConfig=files.get(join(root,'config.json'));
-  const configBytes=enc(new TextDecoder().decode(preparedConfig)+'\n');
+  const configBytes=exactPreparedConfig?preparedConfig:enc(new TextDecoder().decode(preparedConfig)+'\n');
   const config=validateProjectCodexConfig(parseReceiptJson(configBytes));
   const admission={provider_id:'native_codex',operator_receipt:authorization.operator_receipt,config_sha256:hash(configBytes),job_id:jobId,scope:config.scope,project_admitted:true,preflight:{evidence_receipt:'/PRIVATE_SENTINEL/preflight'}};
   const source_pins=Object.fromEntries(PROJECT_RECEIPT_SOURCE_FILES.map(name=>{
@@ -185,6 +185,21 @@ test('two prepared tasks retain distinct manifest and receipt destination attrib
     assert.throws(()=>validateProjectReceiptDestination(clone(other.descriptor),selected.configBytes,selected.admission),
       {field:'project_receipt_binding'});
 });
+test('original prepared config bytes reach the injected receipt runner unchanged',async()=>owned(async directory=>{
+  const scope='/synthetic/exact-prepared-scope';
+  const f=await fixture(directory,{scope,exactPreparedConfig:true});
+  const preparedBytes=f.prepared.config.slice(),preparedDigest=f.prepared.ack.config_sha256;
+
+  assert.equal(await f.run(),1);
+  assert.equal(f.observations().err,'');
+  assert.equal(f.calls.length,1);
+  const [[runnerBytes,admission]]=f.calls;
+  assert.deepEqual(runnerBytes,preparedBytes);
+  assert.equal(hash(runnerBytes),preparedDigest);
+  const config=validateProjectCodexConfig(parseReceiptJson(runnerBytes));
+  assert.deepEqual([config.job_id,config.scope],[job,scope]);
+  assert.deepEqual([admission.job_id,admission.scope,admission.config_sha256],[job,scope,preparedDigest]);
+}));
 test('exact bytes, pins, parent and live result reach the fixed writer once',async()=>owned(async directory=>{
   const f=await fixture(directory),originalRun=f.ports.runProject;
   f.ports.runProject=async(...args)=>{
