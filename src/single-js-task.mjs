@@ -10,7 +10,7 @@ export function validateSingleJsRequest(value){
   closed(value,requestKeys,[],'single_js_request');
   if(value.schema!=='SQUIRE2_SINGLE_JS_REQUEST_V1'||typeof value.task_id!=='string'||!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value.task_id)||value.runtime_target!=='node24-esm'||value.output_target!=='src/task.mjs'||typeof value.task_prompt!=='string')fail('single_js_request');
   const bytes=new TextEncoder().encode(value.task_prompt);
-  if(bytes.length<100||bytes.length>31981||new TextDecoder().decode(bytes)!==value.task_prompt||!validateCodexPrompt(bytes).valid)fail('single_js_prompt');
+  if(bytes.length<100||bytes.length>31981||new TextDecoder().decode(bytes)!==value.task_prompt||!value.task_prompt.trim()||!validateCodexPrompt(bytes).valid)fail('single_js_prompt');
   return Object.freeze(Object.fromEntries(requestKeys.map(k=>[k,value[k]])));
 }
 export function parseSingleJsRequest(bytes){
