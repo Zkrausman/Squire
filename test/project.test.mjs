@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {join} from 'node:path';
 import {EventEmitter} from 'node:events';
-import {PROJECT_CODEGEN_PREFIX,PROJECT_PREFIX_IDENTITY,parseProjectRequest,validateProjectRequest,buildProjectCodegenPrompt,validateProjectPayloadJson} from '../src/project-task.mjs';
+import {DESKTOP_TARGET,DESKTOP_CODEGEN_PREFIX,PROJECT_CODEGEN_PREFIX,PROJECT_PREFIX_IDENTITY,parseProjectRequest,validateProjectRequest,buildProjectCodegenPrompt,validateProjectPayloadJson} from '../src/project-task.mjs';
 import {createCodexProjectStreamCollector} from '../src/project-stream-collector.mjs';
 import {runProjectCodexTask} from '../src/project-runner.mjs';
 import {projectDryRun,projectEntrypointMode,runProjectOneCaseNative} from '../acceptance/project-entrypoint.mjs';
@@ -27,6 +27,23 @@ test('project exact reviewed prefix, one-byte minimum and inclusive prompt budge
  for(const v of [{...request,unexpected:'x'},{...request,runtime_target:'shell'},{...request,stage_target:'repo'}])assert.throws(()=>validateProjectRequest(v));
  assert.throws(()=>parseProjectRequest(enc(JSON.stringify(request).replace('"schema":','"schema":"duplicate","schema":'))),e=>e.field==='DUPLICATE_KEY_CONFLICT');
  assert.throws(()=>parseProjectRequest(new Uint8Array([255])));assert.throws(()=>parseProjectRequest(new Proxy(enc('{}'),{})));
+});
+test('project request rejects whitespace-only prompts while preserving padded text',()=>{
+ for(const [runtime_target,prefix] of [['node24-esm',PROJECT_CODEGEN_PREFIX],[DESKTOP_TARGET,DESKTOP_CODEGEN_PREFIX]]){
+  const input={...request,runtime_target};
+  for(const task_prompt of ['',' ',' \t\r\n ','\u00a0\u2003']){
+   const blank={...input,task_prompt},error={field:'project_prompt'};
+   assert.throws(()=>validateProjectRequest(blank),error);
+   assert.throws(()=>parseProjectRequest(enc(JSON.stringify(blank))),error);
+   assert.throws(()=>buildProjectCodegenPrompt(blank),error);
+  }
+  for(const task_prompt of ['x',' \tWrite it.\r\n ']){
+   const valid={...input,task_prompt};
+   assert.equal(validateProjectRequest(valid).task_prompt,task_prompt);
+   assert.equal(parseProjectRequest(enc(JSON.stringify(valid))).task_prompt,task_prompt);
+   assert.deepEqual(buildProjectCodegenPrompt(valid),enc(prefix+task_prompt));
+  }
+ }
 });
 test('project mixed payload decodes independent exact bytes, small SOURCE and opaque base64 assets',()=>{
  const raw=envelope([file(),file('assets/a.bin','LOCAL_ASSET','base64','AP8K'),file('README.md','DOC','utf-8','')]);const p=validateProjectPayloadJson(enc(raw));assert.equal(p.files.length,3);assert.ok(p.files[0].bytes<100);assert.deepEqual(p.files[1].content,new Uint8Array([0,255,10]));assert.equal(p.files[2].bytes,0);assert.equal(p.files[1].sha256,hash(new Uint8Array([0,255,10])));
