@@ -353,6 +353,42 @@ test('runner exception is fixed and never opens the sink',async()=>owned(async d
   assert.equal(f.observations().out,'');assert.equal(f.observations().err,'PROJECT_ADMISSION_OR_OPERATION_FAILED\n');
   assert.deepEqual(await fs.readdir(directory),[]);
 }));
+for(const stderrThrows of [false,true])test('stdout acknowledgement throw leaves the exact receipt with '+(stderrThrows?'throwing':'working')+' stderr',async()=>owned(async directory=>{
+  const f=await fixture(directory),path=join(directory,'receipt.json');
+  const expected=enc(JSON.stringify(createNativeProjectResultReceipt(f.live))+'\n');
+  const stdoutAttempts=[],stderrAttempts=[];
+  let stdoutPrefix='';
+  f.ports.stdout.write=value=>{
+    stdoutAttempts.push(value);
+    stdoutPrefix+=value.slice(0,12);
+    throw Error('PRIVATE_STDOUT_SENTINEL');
+  };
+  f.ports.stderr.write=value=>{
+    stderrAttempts.push(value);
+    if(stderrThrows)throw Error('PRIVATE_STDERR_SENTINEL');
+  };
+  assert.equal(await f.run(),2);
+  assert.deepEqual(f.observations(),{out:'',err:'',runs:1,opens:1,late:0});
+  assert.equal(stdoutAttempts.length,1);
+  assert.equal(stdoutPrefix,stdoutAttempts[0].slice(0,12));
+  assert.deepEqual(stderrAttempts,['PROJECT_RECEIPT_ACKNOWLEDGEMENT_FAILED\n']);
+  const saved=await fs.readFile(path),ack=JSON.parse(stdoutAttempts[0]);
+  assert.deepEqual(saved,Buffer.from(expected));
+  assert.equal(ack.sha256,hash(saved));
+  assert.equal(ack.byte_count,saved.length);
+  assert.doesNotMatch(stdoutAttempts[0]+stderrAttempts[0],/PRIVATE_|Error:/);
+  assert.deepEqual(await fs.readdir(directory),['receipt.json']);
+}));
+test('stdout acknowledgement backpressure preserves the successful exit',async()=>owned(async directory=>{
+  const f=await fixture(directory),write=f.ports.stdout.write;
+  let attempts=0;
+  f.ports.stdout.write=value=>{attempts++;write(value);return false;};
+  assert.equal(await f.run(),1);
+  assert.equal(attempts,1);
+  const observed=f.observations(),ack=JSON.parse(observed.out);
+  assert.equal(observed.err,'');
+  assert.equal(ack.sha256,hash(await fs.readFile(join(directory,'receipt.json'))));
+}));
 for(const kind of ['write','readback','close'])test('sink '+kind+' error is fixed with no retry or deletion',async()=>owned(async directory=>{
   const f=await fixture(directory),open=f.ports.writerPorts.fs.open;
   f.ports.writerPorts.fs.open=async(...args)=>handlePorts(await open(...args),kind);
