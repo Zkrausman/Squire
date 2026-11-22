@@ -35,7 +35,7 @@ export function parseProjectJson(input,max=1048576){
 export function validateProjectRequest(value){
  closed(value,keys,[],'project_request');if(value.schema!=='SQUIRE2_PROJECT_REQUEST_V1'||typeof value.task_id!=='string'||!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value.task_id)||!['node24-esm',DESKTOP_TARGET].includes(value.runtime_target)||value.stage_target!=='multifile-candidate'||invalidText(value.task_prompt))fail('project_request');
  const max=32768-(value.runtime_target===DESKTOP_TARGET?DESKTOP_PREFIX_IDENTITY.bytes:PROJECT_PREFIX_IDENTITY.bytes);
- if(value.task_prompt.length>max)fail('project_prompt');const b=encoder.encode(value.task_prompt);if(b.length<1||b.length>max||!validateCodexPrompt(b).valid)fail('project_prompt');return Object.freeze(Object.fromEntries(keys.map(k=>[k,value[k]])));
+ if(value.task_prompt.length>max||!value.task_prompt.trim())fail('project_prompt');const b=encoder.encode(value.task_prompt);if(b.length<1||b.length>max||!validateCodexPrompt(b).valid)fail('project_prompt');return Object.freeze(Object.fromEntries(keys.map(k=>[k,value[k]])));
 }
 export const parseProjectRequest=bytes=>validateProjectRequest(parseProjectJson(bytes,65536));
 export function buildProjectCodegenPrompt(request){const r=validateProjectRequest(request),b=encoder.encode((r.runtime_target===DESKTOP_TARGET?DESKTOP_CODEGEN_PREFIX:PROJECT_CODEGEN_PREFIX)+r.task_prompt);if(!validateCodexPrompt(b).valid)fail('project_prompt');return b;}
