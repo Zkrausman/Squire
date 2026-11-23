@@ -42,9 +42,15 @@ provider/error content are excluded from output. It reports recorded claims;
 it cannot authenticate a receipt or reverify its artifact or operator admission.
 Changing files concurrently remains outside an atomic snapshot guarantee.
 
-Exit codes are 0 for complete reported task PASS, 1 for FAIL or INCOMPLETE, and
-2 for invalid input, a read error, or a synchronous output failure. Diagnostics use fixed codes without native
-exception text. Empty/missing/extra arguments print fixed usage and return 2.
+| Exit | Meaning |
+|---|---|
+| 0 | Successful discovery with exact `--help` or `--capabilities --json`, or a complete reported legacy Q218 campaign `PASS`. |
+| 1 | Valid typed receipt projection, including `NOT_RUN` for a Single-JS dry run, or a legacy result of `FAIL` or `INCOMPLETE`. |
+| 2 | Invalid arguments or receipt, a read error, or an observed output failure. |
+
+Discovery reads no receipt. Exit 1 on a typed receipt reports its recorded
+outcome, which may be unevaluated. Invalid argument shapes print fixed usage.
+Rejection diagnostics use fixed codes and omit exception text.
 
 `projectRunSummary(receipt)` is the synchronous pure API. It accepts parsed JSON
 data, rejects accessor/Proxy/cyclic inputs, and returns a deeply frozen

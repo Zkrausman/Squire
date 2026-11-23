@@ -52,6 +52,15 @@ test('executable successful capabilities and usage retain exact bytes and exits'
  const usage=await child([]);assert.equal(usage.code,2);assert.equal(usage.signal,null);assert.equal(usage.stdout,'');
  assert.equal(usage.stderr,'Usage: node bin/squire-report.mjs <receipt-path>\n');
 });
+test('executable rejects the public schema-only project example with fixed output',async()=>{
+ const receipt=fileURLToPath(new URL('../examples/offline-report/project-schema-only.json',import.meta.url));
+ const {code,signal,stdout,stderr}=await child([receipt]);
+ assert.deepEqual({code,signal,stdout,stderr},{
+  code:2,signal:null,
+  stdout:'Squire offline project result: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n',
+  stderr:'SCHEMA_MISMATCH\n'
+ });
+});
 const discoveryUsage='Usage: node bin/squire-report.mjs <receipt-path>\n'+
  '       node bin/squire-report.mjs --capabilities --json\n';
 
