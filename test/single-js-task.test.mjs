@@ -130,6 +130,48 @@ test('single-JS runner rejects missing permissions before fake dispatch or runti
 test('generation rejection, syntax failure and pre-abort stop without retry or functional evaluation',async()=>{
  for(const [settings,status,kinds]of [[{source:''},'GENERATION_REJECTED',['generation']],[{syntaxExit:1},'SYNTAX_REJECTED',['generation','syntax']],[{abort:true},'INCOMPLETE',[]]]){const f=runtime(settings),r=await f.run();assert.equal(r.status,status);assert.deepEqual(f.calls.map(c=>c.kind),kinds);assert.equal(r.task_correctness,'NOT_EVALUATED');assert.equal(r.workspace_disposition,'QUARANTINED');assert.equal(projectSingleJsRunSummary(JSON.parse(JSON.stringify(r))).readiness,status);}
 });
+test('Single-JS reporting accepts producer outcomes and rejects inconsistent reasons and dispositions',async()=>{
+ const failed=runtime();
+ const syntax=failed.ports.syntax;
+ failed.ports.syntax=async(path,ports)=>{
+  const observation=await syntax(path,ports);
+  failed.mem.files.delete(path);
+  return observation;
+ };
+ const cases=[
+  [await runtime().run(),'CANDIDATE_READY',null,'DEDICATED_NOT_REUSED'],
+  [await runtime({source:''}).run(),'GENERATION_REJECTED','GENERATION_REJECTED','QUARANTINED'],
+  [await runtime({syntaxExit:1}).run(),'SYNTAX_REJECTED','SYNTAX_PROCESS_REJECTED','QUARANTINED'],
+  [await runtime({abort:true}).run(),'INCOMPLETE','CANCELED','QUARANTINED'],
+  [await failed.run(),'FAILED','OPERATION_FAILED_OR_UNCERTAIN','QUARANTINED']
+ ];
+ for(const abort of [true,false]){
+  const f=runtime({pending:true}),pending=f.run();
+  await flush();
+  if(abort)f.controller.abort();else await f.advance(120000);
+  await f.advance(abort?3000:123000);
+  await f.advance(abort?5000:125000);
+  const r=await pending;
+  assert.equal(r.generation.record.lifecycle_status,abort?'LIMITED_USER_ABORT':'LIMITED_TIMEOUT');
+  cases.push([r,'INCOMPLETE','GENERATION_REJECTED','QUARANTINED']);
+ }
+ const unexpected=[];
+ for(const [r,status,reason,disposition] of cases){
+  const receipt=JSON.parse(JSON.stringify(r));
+  assert.deepEqual([receipt.status,receipt.reason,receipt.workspace_disposition],[status,reason,disposition]);
+  const summary=projectSingleJsRunSummary(receipt);
+  assert.equal(summary.readiness,status);
+  assert.equal(summary.task_correctness,'NOT_EVALUATED');
+  if(status==='FAILED'||status==='SYNTAX_REJECTED')assert.equal(summary.syntax.wrapper_status,'UNKNOWN');
+  const wrongReason=status==='INCOMPLETE'?'SYNTAX_PROCESS_REJECTED':'CANCELED';
+  const wrongDisposition=disposition==='QUARANTINED'?'DEDICATED_NOT_REUSED':'QUARANTINED';
+  for(const [field,value] of [['reason',wrongReason],['workspace_disposition',wrongDisposition]]){
+   if(projectSingleJsRunSummary({...receipt,[field]:value}).readiness!=='INVALID_RECEIPT')
+    unexpected.push([status,reason,field]);
+  }
+ }
+ assert.deepEqual(unexpected,[]);
+});
 test('generic reporting has separate discriminator, no17fixture fabrication and no functional PASS exit',async()=>{
  const f=runtime(),r=JSON.parse(JSON.stringify(await f.run()));let out='',err='';const bytes=enc(JSON.stringify(r));
  const code=await runOfflineReportCli(['/synthetic/result'],{readFile:async()=>bytes,stat:async()=>({isFile:()=>true,size:bytes.length}),stdout:{write:s=>out+=s},stderr:{write:s=>err+=s}});assert.equal(code,1);assert.equal(err,'');assert.match(out,/Task correctness: NOT_EVALUATED/);assert.equal(out.includes('17 PASS'),false);
