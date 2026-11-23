@@ -21,8 +21,8 @@ function memoryFS(){
  const fs={async mkdir(p){if(dirs.has(p))throw Object.assign(Error(),{code:'EEXIST'});dirs.add(p);},async lstat(p){if(files.has(p))return {...file(files.get(p)),mode:modes.get(p)??0o400};if(dirs.has(p))return {isFile:()=>false,isDirectory:()=>true,isSymbolicLink:()=>false,mode:0o700};throw Object.assign(Error(),{code:'ENOENT'});},async readFile(p){if(!files.has(p))throw Error('SYNTHETIC_MISSING');return new Uint8Array(files.get(p));},async writeFile(p,b,opts){if(opts?.flag==='wx'&&files.has(p))throw Object.assign(Error(),{code:'EEXIST'});files.set(p,new Uint8Array(b));modes.set(p,opts?.mode??0o600);},async open(p,flag){assert.equal(flag,'wx');if(files.has(p))throw Object.assign(Error(),{code:'EEXIST'});return {writeFile:async b=>{files.set(p,new Uint8Array(b));modes.set(p,0o600);},close:async()=>{}};},async link(a,b){if(files.has(b))throw Object.assign(Error(),{code:'EEXIST'});files.set(b,new Uint8Array(files.get(a)));modes.set(b,modes.get(a));},async unlink(p){files.delete(p);},async chmod(p,m){modes.set(p,m);}};
  return {fs,files,dirs};
 }
-async function prepared(prompt){
- const mem=memoryFS();for(const name of SINGLE_JS_SOURCE_FILES)mem.files.set(join(SINGLE_JS_SOURCE_ROOT,name),await readFile(join(SINGLE_JS_SOURCE_ROOT,name)));
+async function prepared(prompt,readSource=readFile){
+ const mem=memoryFS();for(const name of SINGLE_JS_SOURCE_FILES)mem.files.set(join(SINGLE_JS_SOURCE_ROOT,name),await readSource(join(SINGLE_JS_SOURCE_ROOT,name)));
  const inputs={job_id:job(),scope:'/synthetic/task-scope',codex:{path:'/synthetic/codex',bytes:1,sha256:'b'.repeat(64),version:'0.160.0'},requested_model:model,effort,authorization:auth,permissions:{sandbox:'read-only',approval_mode:'on-request',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}};
  const verified=[];const ports={fs:mem.fs,verifyFile:async id=>{verified.push(id.path);return id;},retention:()=>({prepare:async()=>({capability_status:'READY'})})};
  const output=await prepareSingleJsCodexTask('/synthetic/prepared','a'.repeat(40),request(prompt),inputs,ports);
@@ -64,6 +64,43 @@ test('two unrelated prompts prepare without Q218 task/fixture access, dispatch o
  assert.notEqual(a.output.prompt_sha256,b.output.prompt_sha256);assert.equal(a.output.runtime_admitted,false);assert.equal(a.output.task_correctness,'NOT_EVALUATED');assert.equal(a.config.schema,'SQUIRE2_SINGLE_JS_OPERATION_V1');assert.equal(Object.hasOwn(a.config,'fixtures'),false);assert.equal(a.config.permissions.approval_mode,'on-request');assert.equal(a.config.max_direct_child_spawns,2);assert.ok(a.verified.includes(NODE_RUNTIME.path));
  assert.equal(JSON.stringify(a.config).includes('SQUIRE-MVP-BENCHMARK'),false);await assert.rejects(prepareSingleJsCodexTask('/synthetic/prepared','a'.repeat(40),request(),a.inputs,a.ports));
  const altered={...a.inputs,requested_model:'not-admitted'};await assert.rejects(prepareSingleJsCodexTask('/synthetic/other','a'.repeat(40),request(),altered,a.ports));
+});
+test('single-JS preparation refuses a repeated destination before retention and preserves fresh output',async()=>{
+ const root='/synthetic/prepared',commit='a'.repeat(40);
+ const f=await prepared(undefined,async path=>enc('Synthetic source '+path));
+ const before=structuredClone(f.files);
+ let retentions=0,reservations=0;
+ const retention=()=>({prepare:async()=>{retentions++;return {capability_status:'READY'};}});
+ const repeated={...f.ports,retention,fs:{...f.fs,async mkdir(...args){reservations++;return f.fs.mkdir(...args);}}};
+ let rejection;
+ await assert.rejects(prepareSingleJsCodexTask(root,commit,request(),f.inputs,repeated),error=>{
+  rejection=error;return true;
+ });
+ assert.deepEqual(f.files,before);
+ assert.equal(retentions,0);
+ assert.equal(reservations,0);
+ assert.equal(rejection.message,'SINGLE_JS_PREPARATION_DESTINATION_UNAVAILABLE');
+
+ const legacy=memoryFS(),{lstat,...legacyFs}=legacy.fs;
+ for(const name of SINGLE_JS_SOURCE_FILES){
+  const path=join(SINGLE_JS_SOURCE_ROOT,name);legacy.files.set(path,before.get(path));
+ }
+ const ack=await prepareSingleJsCodexTask(root,commit,request(),f.inputs,{...f.ports,fs:legacyFs,retention});
+ assert.equal(retentions,1);
+ assert.deepEqual(ack,f.output);
+ assert.deepEqual(legacy.files,before);
+
+ const late=memoryFS();
+ for(const name of SINGLE_JS_SOURCE_FILES){
+  const path=join(SINGLE_JS_SOURCE_ROOT,name);late.files.set(path,before.get(path));
+ }
+ const latePorts={...f.ports,fs:late.fs,retention:()=>({prepare:async()=>{
+  retentions++;late.dirs.add(root);return {capability_status:'READY'};
+ }})};
+ await assert.rejects(prepareSingleJsCodexTask(root,commit,request(),f.inputs,latePorts),{code:'EEXIST'});
+ assert.equal(retentions,2);
+ assert.equal(late.dirs.has(root),true);
+ assert.equal([...late.files.keys()].some(path=>path.startsWith(root+'/')),false);
 });
 test('generic config/admission/preflight bind exact frozen tuple, identities and explicit scope',async()=>{
  const f=await prepared(),c=f.config,bytes=f.bytes;
