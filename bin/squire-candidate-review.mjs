@@ -138,7 +138,9 @@ export async function runCandidateReviewCli(argv,ports={}){
           if(spec.schema!=='SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1'||!['candidate_git_dir','base_git_dir','output_dir'].every(k=>absolute(spec[k])))throw null;
         }
       }
-      const result=await Reflect.apply(operation,ports,[verify?path:spec]);
+      const args=mode==='--verify'&&expected!==undefined&&operation===verifyProjectCandidateReviewPackage
+        ?[path,undefined,expected]:[verify?path:spec];
+      const result=await Reflect.apply(operation,ports,args);
       if(snapshot){stdout(snapshotLines(result,spec));return outputFailed?2:0;}
       if(revision){stdout(revisionLines(result,spec,verify,expected));return outputFailed?2:0;}
       const status=result?.status,manifest=result?.manifest_sha256,objects=OBJECTS.map(k=>result?.[k]),count=result?.changed_path_count,size=result?.package_bytes;
