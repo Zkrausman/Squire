@@ -210,6 +210,8 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   }
   else if(Object.hasOwn(inputs,'desktop_runtime_identity'))fail('project_target');
   if(!absolute(root)||typeof source_commit!=='string'||!/^[a-f0-9]{40}$/.test(source_commit))fail('project_preparation');
+  const ordinaryNode=req.runtime_target==='node24-esm'&&ports.mode!=='SOURCE_SIMULATION';
+  if(ordinaryNode&&root===inputs.scope)throw Error('PROJECT_PREPARATION_DESTINATION_UNAVAILABLE');
   const fsPort=ports.fs??fs,verify=ports.verifyFile??verifyExactFile,reads={lstat:fsPort.lstat,readChunks:ports.readChunks??(p=>createReadStream(p))};
   const prompt=buildProjectCodegenPrompt(req),source_pins={};pin(inputs.codex,true);
   const profile=prepareChatgptOnlyCodexArgv({requested_model:inputs.requested_model,effort:inputs.effort,observed_cli_version:inputs.codex.version,prompt_bytes:prompt,authorization:inputs.authorization,permissions});
@@ -234,7 +236,7 @@ async function prepareProjectTask(root,source_commit,request,inputs,ports,deskto
   const configSha256=hash(configBytes);
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
   // Injected adapters without lstat keep their existing exclusive mkdir path.
-  const checkDestination=desktopCodegen||(req.runtime_target==='node24-esm'&&ports.mode!=='SOURCE_SIMULATION');
+  const checkDestination=desktopCodegen||ordinaryNode;
   if(checkDestination&&typeof fsPort.lstat==='function'){
     let absent=false;
     try{await fsPort.lstat(root);}catch(error){absent=error?.code==='ENOENT';}
