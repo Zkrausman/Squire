@@ -9,6 +9,7 @@ import {runSingleJsCodexTask,executeSingleJsSyntax} from '../src/single-js-runne
 import {projectSingleJsRunSummary,formatSingleJsSummaryTerminal} from '../src/single-js-summary.mjs';
 import {hash,canonicalBytes,GENERATION_SHUTDOWN,validateCodexPreflight,NODE_RUNTIME} from '../src/bounded-codegen-plan.mjs';
 import {singleJsDryRun,singleJsEntrypointMode,runSingleJsOneCaseNative} from '../acceptance/single-js-entrypoint.mjs';
+import {runSingleJsPreparationExecutable} from '../acceptance/prepare-single-js-task.mjs';
 import {runOfflineReportCli} from '../bin/squire-report.mjs';
 const enc=s=>new TextEncoder().encode(s),flush=async()=>{for(let i=0;i<100;i++)await Promise.resolve();};
 const request=(prompt='Generate a small public JavaScript utility. '.repeat(4))=>({schema:'SQUIRE2_SINGLE_JS_REQUEST_V1',task_id:'public-synthetic',task_prompt:prompt,runtime_target:'node24-esm',output_target:'src/task.mjs'});
@@ -101,6 +102,63 @@ test('single-JS preparation refuses a repeated destination before retention and 
  assert.equal(retentions,2);
  assert.equal(late.dirs.has(root),true);
  assert.equal([...late.files.keys()].some(path=>path.startsWith(root+'/')),false);
+});
+test('Single-JS preparation executable writes exact JSON and waits through backpressure',async()=>{
+ const args=['--prepare-codex','out','commit','request','inputs'];
+ const result={status:'PREPARED_NOT_EXECUTABLE',runtime_admitted:false};
+ const writes=[];
+ let calls=0,complete,entered,settled=false;
+ const started=new Promise(resolve=>{entered=resolve;});
+ const pending=runSingleJsPreparationExecutable(args,{
+  async prepare(actual){calls++;assert.deepEqual(actual,args);return result;},
+  stdout:{write(text,callback){writes.push(text);complete=callback;entered();return false;}},
+  stderr:{write(){assert.fail('unexpected diagnostic');}}
+ }).then(code=>{settled=true;return code;});
+ await started;
+ assert.equal(calls,1);
+ assert.deepEqual(writes,[JSON.stringify(result)+'\n']);
+ assert.equal(settled,false);
+ complete();
+ assert.equal(await pending,0);
+});
+test('Single-JS preparation executable returns failure on a throwing or delayed stdout error',async()=>{
+ for(const throwing of [true,false]){
+  const result={status:'PREPARED_NOT_EXECUTABLE'},writes=[],diagnostics=[];
+  let calls=0;
+  const code=await runSingleJsPreparationExecutable([],{
+   async prepare(){calls++;return result;},
+   stdout:{write(text,callback){
+    writes.push(text);
+    const error=Error('SYNTHETIC_STDOUT_FAILURE');
+    if(throwing)throw error;
+    queueMicrotask(()=>callback(error));
+    return true;
+   }},
+   stderr:{write(text,callback){diagnostics.push(text);callback();}}
+  });
+  assert.equal(code,2);
+  assert.equal(calls,1);
+  assert.deepEqual(writes,[JSON.stringify(result)+'\n']);
+  assert.deepEqual(diagnostics,[]);
+ }
+});
+test('Single-JS preparation executable keeps the preparation diagnostic on stderr',async()=>{
+ for(const stderrError of [undefined,Error('SYNTHETIC_STDERR_FAILURE')]){
+  const writes=[],diagnostics=[];
+  const code=await runSingleJsPreparationExecutable([],{
+   async prepare(){throw Error('SYNTHETIC_PREPARATION_FAILURE');},
+   stdout:{write(text,callback){writes.push(text);callback();}},
+   stderr:{write(text,callback){diagnostics.push(text);callback(stderrError);}}
+  });
+  assert.equal(code,2);
+  assert.deepEqual(writes,[]);
+  assert.deepEqual(diagnostics,['SINGLE_JS_PREPARATION_FAILED\n']);
+ }
+});
+test('Single-JS preparation executable import leaves process output observers alone',async()=>{
+ const before=[process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode];
+ await import('../acceptance/prepare-single-js-task.mjs?inert-output-check');
+ assert.deepEqual([process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode],before);
 });
 test('generic config/admission/preflight bind exact frozen tuple, identities and explicit scope',async()=>{
  const f=await prepared(),c=f.config,bytes=f.bytes;
