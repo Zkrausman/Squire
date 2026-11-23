@@ -43,6 +43,62 @@ function largeObservationReceipt(){
 async function cli(value,overrides={}){let out='',err='';const bytes=encode(value),ports={readFile:async()=>bytes,stat:async()=>({isFile:()=>true,isSymbolicLink:()=>false,size:bytes.length}),stdout:{write:s=>{out+=s;}},stderr:{write:s=>{err+=s;}},...overrides};const code=await runOfflineReportCli(['/PUBLIC_SYNTHETIC/receipt.json'],ports);return {code,out,err};}
 async function invokeReport(argv,value,overrides={}){let out='',err='',readPath=null,stats=0,reads=0;const bytes=encode(value),ports={stat:async path=>{stats++;readPath=path;return {isFile:()=>true,isSymbolicLink:()=>false,size:bytes.length};},readFile:async path=>{reads++;readPath=path;return bytes;},stdout:{write:s=>{out+=s;}},stderr:{write:s=>{err+=s;}},...overrides};const code=await runOfflineReportCli(argv,ports);return {code,out,err,readPath,stats,reads};}
 
+test('public offline report examples preserve exact outputs, exits and receipt reads',async()=>{
+ const dryOutput=[
+  'Squire single-JavaScript receipt: NOT_RUN',
+  'Task correctness: NOT_EVALUATED (no functional oracle or fixture PASS).',
+  'Recorded claims only; no artifact, authorization or execution re-verification.',
+  'Generation: UNKNOWN',
+  'Requested model: UNKNOWN; reported model: UNKNOWN',
+  'Process wall ms: UNKNOWN; provider duration seconds: UNKNOWN; inference seconds: UNKNOWN',
+  'Tokens: input=UNKNOWN, output=UNKNOWN, cache_read=UNKNOWN, thinking=UNKNOWN, total=UNKNOWN, codex_reasoning=UNKNOWN',
+  'Syntax: UNKNOWN',
+  'Artifact: UNKNOWN; bytes: UNKNOWN',
+  'Diagnostic: UNKNOWN_REJECTION',
+  'Limits: direct child only; descendant guarantee NONE; no hostile containment, crash recovery or workspace reuse proof.',
+ ].join('\n')+'\n';
+ const canceledOutput=[
+  'Squire offline project result: INCOMPLETE',
+  'Task correctness: NOT_EVALUATED',
+  'Task outcome evaluated: false',
+  'Reason: CANCELED',
+  'Generation: UNKNOWN',
+  'Requested model: UNKNOWN; reported model: UNKNOWN',
+  'Process exit code: UNKNOWN; wall ms: UNKNOWN; observed termination: UNKNOWN',
+  'Provider status: UNKNOWN; provider duration seconds: UNKNOWN; inference duration seconds: UNKNOWN',
+  'Tokens: input=UNKNOWN, output=UNKNOWN, cache_read=UNKNOWN, thinking=UNKNOWN, total=UNKNOWN, codex_reasoning_output=UNKNOWN',
+  'Envelope custody: persisted=UNKNOWN; bytes=UNKNOWN; SHA-256=UNKNOWN',
+  'Staging ACK history: NONE; operation=NONE; files=UNKNOWN; decoded bytes=UNKNOWN; manifest SHA-256=UNKNOWN',
+  'Operator receipt present: false; runtime admitted marker: false; operator admitted marker: false',
+  'Direct child invocations: generation=0; observation target ms=140000; event loop=RESPONSIVE_PARENT_EVENT_LOOP',
+  'Workspace: QUARANTINED; descendant guarantee: NONE',
+  'Diagnostic: NONE',
+  'Recorded claims only; no task outcome, artifact, authorization, or execution re-verification.',
+ ].join('\n')+'\n';
+ const invalidOutput='Squire offline project result: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
+ for(const [name,code,out,err] of [
+  ['single-js-dry-run.json',1,dryOutput,''],
+  ['project-canceled.json',1,canceledOutput,''],
+  ['project-schema-only.json',2,invalidOutput,'SCHEMA_MISMATCH\n'],
+ ]){
+  const path=`examples/offline-report/${name}`;
+  const raw=await fs.readFile(new URL(`../${path}`,import.meta.url),'utf8');
+  assert.deepEqual(await invokeReport([path],raw),{code,out,err,readPath:path,stats:1,reads:1},name);
+ }
+ assert.deepEqual(await invokeReport(['--capabilities','--json'],{}),{
+  code:0,out:serializeOfflineReportCapabilities(),err:'',readPath:null,stats:0,reads:0
+ });
+ const canceled=JSON.parse(await fs.readFile(new URL('../examples/offline-report/project-canceled.json',import.meta.url),'utf8'));
+ const marker='/SYNTHETIC_REDACTION_MARKER';
+ const redacted=await invokeReport([marker],{...canceled,operator_receipt:marker});
+ assert.deepEqual(redacted,{
+  code:1,out:canceledOutput.replace('Operator receipt present: false','Operator receipt present: true'),
+  err:'',readPath:marker,stats:1,reads:1
+ });
+ const invalid=await invokeReport([marker],{schema:canceled.schema,unexpected:marker});
+ assert.deepEqual(invalid,{code:2,out:invalidOutput,err:'SCHEMA_MISMATCH\n',readPath:marker,stats:1,reads:1});
+});
+
 const expectedRouteIds=['native_project_large_observation','native_project_coding_observation','native_project','project','single_js','courier_handoff','legacy_campaign'];
 const expectedInputSchemas=[
  'SQUIRE3_NATIVE_PROJECT_LARGE_OBSERVATION_RESULT_RECEIPT_V1',
