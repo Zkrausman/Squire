@@ -2,8 +2,13 @@
 import {closed} from './job-spec.mjs';
 import {snapshotReceiptData,projectSingleJsEvidence,validateProjectedEvidence} from './offline-run-summary.mjs';
 import {diagnosticReport} from './internal/limited-diagnostics.mjs';
-const statuses=['CANDIDATE_READY','GENERATION_REJECTED','SYNTAX_REJECTED','INCOMPLETE','FAILED'];
-const reasons=[null,'GENERATION_REJECTED','SYNTAX_PROCESS_REJECTED','CANCELED','OPERATION_FAILED_OR_UNCERTAIN'];
+const reasonsByStatus=new Map([
+  ['CANDIDATE_READY',[null]],
+  ['GENERATION_REJECTED',['GENERATION_REJECTED']],
+  ['SYNTAX_REJECTED',['SYNTAX_PROCESS_REJECTED']],
+  ['INCOMPLETE',['CANCELED','GENERATION_REJECTED']],
+  ['FAILED',['OPERATION_FAILED_OR_UNCERTAIN']]
+]);
 const freeze=v=>{if(v&&typeof v==='object'){for(const x of Object.values(v))freeze(x);Object.freeze(v);}return v;};
 export function projectSingleJsRunSummary(value){
   try{
@@ -15,12 +20,13 @@ export function projectSingleJsRunSummary(value){
     }
     const native=Object.hasOwn(r,'operator_admitted');
     closed(r,['schema','status','reason','generation','syntax','source','task_correctness','task_outcome_evaluated','runtime_admitted','workspace_disposition','descendant_guarantee',...(native?['operator_admitted','operator_receipt','direct_child_invocations','outer_observation_target_ms','event_loop_condition']:[])],[],'single_js_result');
-    if(r.schema!=='SQUIRE2_SINGLE_JS_RESULT_V1'||!statuses.includes(r.status)||!reasons.includes(r.reason)||r.task_correctness!=='NOT_EVALUATED'||r.task_outcome_evaluated!==false||r.runtime_admitted!==false||r.descendant_guarantee!=='NONE'||!['DEDICATED_NOT_REUSED','QUARANTINED'].includes(r.workspace_disposition))throw 0;
+    if(r.schema!=='SQUIRE2_SINGLE_JS_RESULT_V1'||!reasonsByStatus.get(r.status)?.includes(r.reason)||r.task_correctness!=='NOT_EVALUATED'||r.task_outcome_evaluated!==false||r.runtime_admitted!==false||r.descendant_guarantee!=='NONE')throw 0;
+    const candidateReady=r.status==='CANDIDATE_READY';
+    if(r.workspace_disposition!==(candidateReady?'DEDICATED_NOT_REUSED':'QUARANTINED'))throw 0;
     if(native){closed(r.direct_child_invocations,['generation','syntax'],[],'single_js_counts');if(typeof r.operator_admitted!=='boolean'||typeof r.operator_receipt!=='string'||r.outer_observation_target_ms!==140000||r.event_loop_condition!=='RESPONSIVE_PARENT_EVENT_LOOP'||Object.values(r.direct_child_invocations).some(v=>!Number.isSafeInteger(v)||v<0||v>1))throw 0;}
     const e=projectSingleJsEvidence({generation:r.generation,syntax:r.syntax,source:r.source});
     if(r.generation===null&&(r.syntax!==null||r.source!==null)||r.syntax!==null&&(e.generation.lifecycle_status!=='LIMITED_SUCCESS'||r.source===null))throw 0;
-    if(r.status==='CANDIDATE_READY'&&(r.reason!==null||e.generation.lifecycle_status!=='LIMITED_SUCCESS'||e.syntax.wrapper_status!=='ACCEPTED'||e.syntax.syntax_valid!==true||!e.artifact.witness_present||r.workspace_disposition!=='DEDICATED_NOT_REUSED'))throw 0;
-    if(r.status!=='CANDIDATE_READY'&&r.reason===null)throw 0;
+    if(candidateReady&&(e.generation.lifecycle_status!=='LIMITED_SUCCESS'||e.syntax.wrapper_status!=='ACCEPTED'||e.syntax.syntax_valid!==true||!e.artifact.witness_present))throw 0;
     if(native&&(r.direct_child_invocations.generation<(r.generation===null?0:1)||r.direct_child_invocations.syntax<(r.syntax===null?0:1)))throw 0;
     return freeze({schema_version:'squire2.single_js_summary.v1',readiness:r.status,task_correctness:'NOT_EVALUATED',...e,admission_claimed:native?r.operator_admitted:false,has_operator_receipt:native&&r.operator_receipt.length>0,runtime_admitted_marker:false,descendant_guarantee:'NONE'});
   }catch{return freeze({schema_version:'squire2.single_js_summary.v1',readiness:'INVALID_RECEIPT',task_correctness:'NOT_EVALUATED',diagnostic:{stage:'RECEIPT_VALIDATION',reason:'SCHEMA_MISMATCH'}});}
@@ -34,7 +40,7 @@ export function formatSingleJsSummaryTerminal(summary){
   validateProjectedEvidence({generation:summary.generation,syntax:summary.syntax,artifact:summary.artifact,diagnostic:summary.diagnostic??{stage:null,reason:null}});
   if(typeof summary.admission_claimed!=='boolean'||typeof summary.has_operator_receipt!=='boolean')throw 0;
   if(summary.readiness==='CANDIDATE_READY'&&(summary.generation?.lifecycle_status!=='LIMITED_SUCCESS'||summary.generation.task_outcome_evaluated_marker!==false||summary.generation.provider_status!=='turn.completed'||summary.syntax?.wrapper_status!=='ACCEPTED'||summary.syntax.syntax_valid!==true||summary.syntax.observed_exit_code!==0||summary.artifact?.witness_present!==true||typeof summary.artifact.sha256!=='string'||summary.artifact.byte_count===null))throw 0;
-  if(![...statuses,'NOT_RUN'].includes(summary.readiness))throw 0;
+  if(summary.readiness!=='NOT_RUN'&&!reasonsByStatus.has(summary.readiness))throw 0;
   const readiness=['CANDIDATE_READY','GENERATION_REJECTED','SYNTAX_REJECTED','INCOMPLETE','FAILED','NOT_RUN','INVALID_RECEIPT'].includes(summary?.readiness)?summary.readiness:'INVALID_RECEIPT';
   const model=v=>v==='gpt-6-luna'?'gpt-6-luna':'UNKNOWN',num=v=>Number.isSafeInteger(v)&&v>=0?String(v):'UNKNOWN';
   const g=summary?.generation,s=summary?.syntax,a=summary?.artifact;
