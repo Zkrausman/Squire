@@ -9,7 +9,7 @@ import {createCodexProjectStreamCollector} from '../src/project-stream-collector
 import {runProjectCodexTask} from '../src/project-runner.mjs';
 import {projectDryRun,projectEntrypointMode,runProjectOneCaseNative} from '../acceptance/project-entrypoint.mjs';
 import {prepareProjectCodexTask,validateProjectCodexConfig,requireProjectCodexAdmission,PROJECT_SOURCE_FILES,PROJECT_SOURCE_ROOT} from '../src/project-configuration.mjs';
-import {runProjectPreparationCli} from '../acceptance/prepare-project-task.mjs';
+import {runProjectPreparationCli,runProjectPreparationExecutable} from '../acceptance/prepare-project-task.mjs';
 import {GENERATION_SHUTDOWN,canonicalBytes,hash} from '../src/bounded-codegen-plan.mjs';
 import {takeRejectedCapture} from '../src/internal/rejected-capture.mjs';
 import {verifyStage} from '../src/multifile-staging.mjs';
@@ -153,6 +153,68 @@ test('staging abort while an owned IO is pending returns no ACK and retains byte
 test('project entrypoint/default imports are inert and missing admission rejects before native IO',async()=>{
  assert.equal(projectEntrypointMode([]),'DRY_RUN_NATIVE_DISABLED');assert.equal(projectEntrypointMode(['--run-admitted','one']),'DRY_RUN_NATIVE_DISABLED');assert.equal(projectEntrypointMode(['--run-admitted','one','two']),'EXPLICIT_ADMISSION_REQUIRED');assert.deepEqual(projectDryRun(),{schema:'SQUIRE2_PROJECT_DRY_RUN_V1',status:'DRY_RUN_NATIVE_DISABLED',direct_child_invocations:0,task_correctness:'NOT_EVALUATED',runtime_admitted:false});await assert.rejects(()=>runProjectOneCaseNative(enc('{}'),null),/UNADMITTED_NATIVE_OPERATION/);await assert.rejects(()=>runProjectPreparationCli([]),/EXACT_PREPARATION_ARGS_REQUIRED/);
 });
+test('project preparation executable writes one JSON result and waits for backpressure completion',async()=>{
+ const args=['--prepare-codex','out','commit','request','inputs'];
+ const result={status:'PREPARED_NOT_EXECUTABLE',runtime_admitted:false},writes=[];
+ let preparations=0,settled=false,complete,entered;
+ const started=new Promise(resolve=>{entered=resolve;});
+ const pending=runProjectPreparationExecutable(args,{
+  async prepare(actual){preparations++;assert.deepEqual(actual,args);return result;},
+  stdout:{write(text,callback){writes.push(text);complete=callback;entered();return false;}},
+  stderr:{write(){assert.fail('unexpected stderr');}}
+ }).then(code=>{settled=true;return code;});
+ await started;
+ assert.deepEqual(writes,[JSON.stringify(result)+'\n']);
+ assert.equal(preparations,1);
+ assert.equal(settled,false);
+ complete();
+ assert.equal(await pending,0);
+});
+
+test('project preparation executable reports synchronous or delayed result write failure without retry',async()=>{
+ for(const failure of ['throw','callback']){
+  const result={status:'PREPARED_NOT_EXECUTABLE'},writes=[];
+  let preparations=0,diagnostics=0;
+  const code=await runProjectPreparationExecutable([],{
+   async prepare(){preparations++;return result;},
+   stdout:{write(text,callback){
+    writes.push(text);
+    const error=Error('PRIVATE_SYNTHETIC_WRITE_ERROR');
+    if(failure==='throw')throw error;
+    queueMicrotask(()=>callback(error));
+    return true;
+   }},
+   stderr:{write(){diagnostics++;}}
+  });
+  assert.equal(code,2);
+  assert.equal(preparations,1);
+  assert.equal(diagnostics,0);
+  assert.deepEqual(writes,[JSON.stringify(result)+'\n']);
+ }
+});
+
+test('project preparation executable preserves the fixed preparation diagnostic',async()=>{
+ let out=0;
+ const diagnostics=[];
+ const code=await runProjectPreparationExecutable([],{
+  async prepare(){throw Error('PRIVATE_SYNTHETIC_PREPARATION_ERROR');},
+  stdout:{write(){out++;}},
+  stderr:{write(text,callback){
+   diagnostics.push(text);
+   callback(Error('PRIVATE_SYNTHETIC_DIAGNOSTIC_ERROR'));
+  }}
+ });
+ assert.equal(code,2);
+ assert.equal(out,0);
+ assert.deepEqual(diagnostics,['PROJECT_PREPARATION_FAILED\n']);
+});
+
+test('project preparation executable import leaves process output observers alone',async()=>{
+ const before=[process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode];
+ await import('../acceptance/prepare-project-task.mjs?inert-output-check');
+ assert.deepEqual([process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode],before);
+});
+
 test('project preparation binds request/prompt/source/config with inert flags and single-use admission',async()=>owned(async runtimeRoot=>{
  const files=new Map(),writes=[],identities=[],job=id(),scope='/synthetic/project-'+job,root='/synthetic/prepared-'+job;
  for(const n of PROJECT_SOURCE_FILES)files.set(join(PROJECT_SOURCE_ROOT,n),enc('PUBLIC SYNTHETIC PIN '+n));const io={readFile:async p=>{if(!files.has(p))throw Error('missing synthetic');return files.get(p);},mkdir:async p=>{writes.push(p);},writeFile:async(p,b,opts)=>{assert.equal(opts.flag,'wx');assert.equal(opts.mode,0o600);if(files.has(p))throw Error('exists');files.set(p,new Uint8Array(b));}};
