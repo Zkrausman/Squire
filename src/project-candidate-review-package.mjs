@@ -206,11 +206,13 @@ async function listPackage(fs,root,signal){
     finally{if(handle)try{await handle.close();}catch{rejected();}}
   };await walk('');return found.sort();
 }
-async function verifyInternal(fs,root,signal){
+async function verifyInternal(fs,root,signal,expectedManifestSha256){
   if(!absolute(root))invalid();await ancestors(fs,root);
   const rootStat=await stat(fs,root);if(!dir(rootStat)||rootStat.uid!==process.getuid()||(rootStat.mode&0o7777)!==0o700||
      await fs.realpath(root)!==root)rejected();
   const manifestBytes=await readFile(fs,join(root,'review-manifest.json'),MAX_MANIFEST,signal);
+  const checkedDigest=expectedManifestSha256===undefined?undefined:digest(manifestBytes);
+  if(checkedDigest!==expectedManifestSha256)rejected();
   let manifest;try{manifest=JSON.parse(decoder.decode(manifestBytes));}catch{rejected();}
   if(!matchesKeys(manifest,['schema','input_result_sha256','candidate_ref','base_commit','base_tree','candidate_commit',
        'candidate_tree','changed_paths','paths','diff','boundaries'])||
@@ -272,12 +274,14 @@ async function verifyInternal(fs,root,signal){
   const observed=await listPackage(fs,root,signal);
   if(observed.join('|')!==[...expected,...directories].sort().join('|'))rejected();
   if(copyTotal+diff.length+manifestBytes.length>MAX_PACKAGE)rejected();
-  return Object.freeze({manifest,manifest_sha256:digest(manifestBytes),changed_path_count:manifest.paths.length,
+  return Object.freeze({manifest,manifest_sha256:checkedDigest??digest(manifestBytes),changed_path_count:manifest.paths.length,
     package_bytes:copyTotal+diff.length+manifestBytes.length});
 }
-export async function verifyProjectCandidateReviewPackage(reviewPackageDir,ports={}){
+export async function verifyProjectCandidateReviewPackage(reviewPackageDir,ports={},expectedManifestSha256){
   try{
-    const verified=await verifyInternal(capturePort(ports),reviewPackageDir,undefined);
+    if(expectedManifestSha256!==undefined&&(typeof expectedManifestSha256!=='string'||
+       expectedManifestSha256.length!==64||!SHA256.test(expectedManifestSha256)))invalid();
+    const verified=await verifyInternal(capturePort(ports),reviewPackageDir,undefined,expectedManifestSha256);
     return Object.freeze({status:'PROJECT_CANDIDATE_REVIEW_PACKAGE_VERIFIED',
       manifest_sha256:verified.manifest_sha256,
       base_commit:verified.manifest.base_commit,base_tree:verified.manifest.base_tree,

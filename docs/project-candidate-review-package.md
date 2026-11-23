@@ -257,9 +257,11 @@ Supply the caller's independently retained exact lowercase 64-hex manifest
 digest; do not derive it from the selected package to manufacture a match.
 The option follows the package path exactly and is valid only for verification.
 Malformed, missing or extra arguments return usage/2 before any input/API call.
-The command invokes the same complete package verifier once, validates the full
-existing result projection and compares the captured manifest digest before any
-success output. Mismatch or invalid metadata returns 2 with fixed
+The command invokes the package verifier once. It rejects a digest mismatch
+after the bounded stable manifest read, before reading side copies or the diff
+or walking the package inventory. A match still requires complete verification
+and validation of the full result projection before success output.
+Mismatch or invalid metadata returns 2 with fixed
 `PROJECT_CANDIDATE_REVIEW_REJECTED` when the channel is usable. No spec is read,
 no build runs and no package is changed or retried.
 

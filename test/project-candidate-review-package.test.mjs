@@ -595,6 +595,78 @@ test('original decision verifier CLI output failures preserve records without re
  const closed=await artifactCliChild(decisionCliUrl,['verify-decision',f.output,dir,recorded.decision_sha256],{closed:'stdout'});assert.equal(closed.code,2);assert.equal(closed.signal,null);assert.equal(closed.stdout,'');assert.equal(closed.stderr,'');const rejected=await artifactCliChild(decisionCliUrl,['verify-decision',f.output,dir,'0'.repeat(64)],{closed:'stderr'});assert.equal(rejected.code,2);assert.equal(rejected.signal,null);assert.equal(rejected.stdout,'');assert.equal(rejected.stderr,'');assert.deepEqual(await packageSnapshot(dir),before);assert.deepEqual(await packageSnapshot(f.output),pkg);
 }));
 
+test('original manifest digest preflight reads only a stable manifest on mismatch',async()=>{
+ const root='/synthetic/package',manifestPath=join(root,'review-manifest.json'),
+   sidePath=join(root,'changes','app.mjs.new'),diffPath=join(root,'diff.txt');
+ const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
+ const side=Buffer.from('export {};\n');
+ const oid=createHash('sha1').update(`blob ${side.length}\0`).update(side).digest('hex');
+ const diff=Buffer.from(`SQUIRE_FULL_CHANGED_CONTENT_V1\npath "app.mjs"\nold ABSENT\nnew ${oid}\n+ ${JSON.stringify(side.toString())}\n`);
+ const manifest=Buffer.from(JSON.stringify({
+  base_commit:'1'.repeat(40),base_tree:'2'.repeat(40),
+  boundaries:['SOURCE_REVIEW_PENDING','TASK_CORRECTNESS_NOT_EVALUATED','ORIGIN_SUPPLIED_NOT_AUTHENTICATED'],
+  candidate_commit:'3'.repeat(40),candidate_ref:'refs/heads/candidate-synthetic',candidate_tree:'4'.repeat(40),
+  changed_paths:['app.mjs'],diff:{bytes:diff.length,sha256:sha256(diff)},input_result_sha256:'5'.repeat(64),
+  paths:[{binary_review_required:false,new:{bytes:side.length,git_sha1:oid,mode:'100644',sha256:sha256(side)},old:null,path:'app.mjs'}],
+  schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_PACKAGE_V1'
+ }));
+ const expected=sha256(manifest),wrong='0'.repeat(64);
+ const rejected=error=>error.code==='PROJECT_CANDIDATE_REVIEW_REJECTED';
+ function fixture(corrupt){
+  const entries=new Map([
+   ['/',null],['/synthetic',null],[root,null],[join(root,'changes'),null],
+   [manifestPath,manifest],[sidePath,corrupt?Buffer.alloc(side.length,0x78):side],[diffPath,diff]
+  ]);
+  const trace=[];
+  const metadata=path=>{
+   assert.ok(entries.has(path));
+   const bytes=entries.get(path);
+   return {uid:process.getuid(),mode:bytes?0o400:0o700,nlink:1,dev:1,ino:[...entries.keys()].indexOf(path)+1,
+    size:bytes?.length??0,mtimeMs:1,ctimeMs:1,isFile:()=>bytes!==null,isDirectory:()=>bytes===null,isSymbolicLink:()=>false};
+  };
+  const fs={
+   lstat(path){trace.push(['stat',path]);return metadata(path);},
+   realpath(path){trace.push(['realpath',path]);return path;},
+   open(path){
+    trace.push(['open',path]);const bytes=entries.get(path);assert.ok(bytes);
+    return {stat:()=>metadata(path),read(buffer,offset,length,position){
+     trace.push(['read',path]);return {bytesRead:bytes.copy(buffer,offset,position,Math.min(bytes.length,position+length))};
+    },close(){trace.push(['close',path]);}};
+   },
+   opendir(path){
+    trace.push(['opendir',path]);
+    const prefix=path+'/';
+    const names=[...entries.keys()].filter(key=>key.startsWith(prefix)&&!key.slice(prefix.length).includes('/'))
+     .map(key=>({name:key.slice(prefix.length)}));
+    return {read:()=>names.shift()??null,close(){}};
+   },
+   mkdir(){assert.fail('verification must not reserve');},
+   chmod(){assert.fail('verification must not change modes');}
+  };
+  return {fs,trace};
+ }
+ const healthy=fixture(false);
+ const legacy=await verifyProjectCandidateReviewPackage(root,{fs:healthy.fs});
+ assert.equal(legacy.manifest_sha256,expected);
+ assert.deepEqual(healthy.trace.filter(([kind])=>kind==='open'),[['open',manifestPath],['open',sidePath],['open',diffPath]]);
+ assert.deepEqual(healthy.trace.filter(([kind])=>kind==='opendir'),[['opendir',root],['opendir',join(root,'changes')]]);
+ const matched=fixture(false);
+ assert.deepEqual(await verifyProjectCandidateReviewPackage(root,{fs:matched.fs},expected),legacy);
+ assert.deepEqual(matched.trace,healthy.trace);
+ for(const digest of [expected,undefined]){
+  const damaged=fixture(true);
+  await assert.rejects(verifyProjectCandidateReviewPackage(root,{fs:damaged.fs},digest),rejected);
+  assert.deepEqual(damaged.trace.filter(([kind])=>kind==='open'),[['open',manifestPath],['open',sidePath]]);
+ }
+ for(const corrupt of [false,true]){
+  const mismatch=fixture(corrupt);
+  const [outcome]=await Promise.allSettled([verifyProjectCandidateReviewPackage(root,{fs:mismatch.fs},wrong)]);
+  assert.deepEqual(mismatch.trace,healthy.trace.slice(0,healthy.trace.findIndex(([kind,path])=>kind==='close'&&path===manifestPath)+1));
+  assert.equal(outcome.status,'rejected');
+  assert.ok(rejected(outcome.reason));
+ }
+});
+
 test('expected manifest original package verification binds the caller digest offline and preserves bytes on failure',()=>withFixture(async f=>{
  const built=await buildProjectCandidateReviewPackage(f.spec),snapshot=await packageSnapshot(f.output),legacy=await artifactCliChild(reviewCliUrl,['--verify',f.output]);assert.equal(legacy.code,0);
  for(const [i,dir] of [f.spec.base_git_dir,f.spec.candidate_git_dir].entries())await fs.rename(dir,join(f.root,'unavailable-expected-'+i));
