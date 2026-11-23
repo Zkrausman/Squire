@@ -48,6 +48,12 @@ export async function prepareSingleJsCodexTask(root,source_commit,request,inputs
   const config={schema:'SQUIRE2_SINGLE_JS_OPERATION_V1',runtime_admitted:false,provider_id:'native_codex',job_id:inputs.job_id,scope:inputs.scope,source_commit,source_pins,node:NODE_RUNTIME,codex:inputs.codex,requested_model:inputs.requested_model,effort:inputs.effort,authorization:inputs.authorization,permissions,prompt:{path:join(root,'prompt.utf8'),bytes:prompt.length,sha256:hash(prompt)},target_file:{workspace_relative_path:'src/task.mjs'},diagnostic_retention:RETENTION_POLICY,generation_shutdown:GENERATION_SHUTDOWN,preflight_freshness_ms:300000,outer_observation_ms:140000,generation_wall_ms:120000,syntax_check_wall_ms:5000,max_direct_child_spawns:2,environment_policy:SINGLE_JS_ENVIRONMENT_POLICY};
   validateSingleJsCodexConfig(config);
   for(const identity of [NODE_RUNTIME,config.codex,...Object.entries(source_pins).map(([path,pin])=>({path,...pin}))])await verify(identity,reads);
+  // Injected adapters without lstat keep their existing exclusive mkdir path.
+  if(typeof fsPort.lstat==='function'){
+    let absent=false;
+    try{await fsPort.lstat(root);}catch(error){absent=error?.code==='ENOENT';}
+    if(!absent)throw Error('SINGLE_JS_PREPARATION_DESTINATION_UNAVAILABLE');
+  }
   const gate=await (ports.retention??createNativeRejectedRetention)(inputs.job_id).prepare();if(gate.capability_status!=='READY')throw Error('RETENTION_PRIVATE_CAPTURE_UNAVAILABLE');
   const target=join(config.scope,'output','run-'+config.job_id,'workspace','src','task.mjs');
   const manifest={schema:'SQUIRE2_SINGLE_JS_PREPARED_MANIFEST_V1',runtime_admitted:false,source_commit,source_pins,job_id:config.job_id,scope:config.scope,task_id:req.task_id,request_sha256:hash(canonicalBytes(req)),config_sha256:hash(canonicalBytes(config)),prompt:config.prompt,node:NODE_RUNTIME,codex:config.codex,generation:{argv:prepareCodexArgv({requested_model:config.requested_model,effort:config.effort,observed_cli_version:config.codex.version,prompt_bytes:prompt,authorization:config.authorization,permissions:config.permissions}).argv,stdin:config.prompt,wall_ms:120000},syntax:{argv:['--check',target],wall_ms:5000},task_correctness:'NOT_EVALUATED',limits:{max_direct_child_spawns:2,outer_observation_ms:140000,descendant_guarantee:'NONE',workspace_reuse:'NOT_AUTHORIZED'},admission_required:true};
