@@ -12,8 +12,11 @@ adapters or runtime qualification.
 # Squire replacement — core, execution candidate and artifact verifier
 
 Use the [offline run summary](docs/offline-run-summary.md) to read an existing
-Q218 receipt: `node bin/squire-report.mjs <receipt-path>`. It separates generation,
-syntax and fixture conformance without launching a task or reading its artifact.
+supported receipt with `node bin/squire-report.mjs <receipt-path>`. The
+[synthetic examples](examples/offline-report/) cover a Single-JS dry run, a
+canceled project, and a schema rejection. For legacy Q218 receipts, the report
+separates generation, syntax and fixture conformance without launching a task
+or reading its artifact.
 
 [Single-JavaScript task preparation](docs/single-js-tasks.md) accepts an explicit
 public-text request without editing the Q218 recipe. Generation and syntax-only
