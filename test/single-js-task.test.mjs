@@ -103,6 +103,31 @@ test('single-JS preparation refuses a repeated destination before retention and 
  assert.equal(late.dirs.has(root),true);
  assert.equal([...late.files.keys()].some(path=>path.startsWith(root+'/')),false);
 });
+test('Single-JS preparation rejects an equal execution scope before any I/O',async()=>{
+ const root='/synthetic/prepared',commit='a'.repeat(40);
+ const control=await prepared(undefined,async path=>enc('Synthetic source '+path));
+ const f=memoryFS(),effects=new Set();
+ for(const name of SINGLE_JS_SOURCE_FILES){
+  const path=join(SINGLE_JS_SOURCE_ROOT,name);
+  f.files.set(path,control.files.get(path));
+ }
+ const before=structuredClone(f.files),dirsBefore=new Set(f.dirs);
+ const fs={...f.fs};
+ for(const name of ['readFile','lstat','mkdir','writeFile'])fs[name]=(...args)=>{
+  effects.add(name);return f.fs[name](...args);
+ };
+ const ports={
+  fs,verifyFile:async()=>{effects.add('verifyFile');},
+  retention:()=>{effects.add('retention');return {prepare:async()=>({capability_status:'READY'})};}
+ };
+ const [outcome]=await Promise.allSettled([
+  prepareSingleJsCodexTask(root,commit,request(),{...control.inputs,scope:root},ports)
+ ]);
+ assert.deepEqual({status:outcome.status,effects:[...effects]},{status:'rejected',effects:[]});
+ assert.equal(outcome.reason.message,'SINGLE_JS_PREPARATION_DESTINATION_UNAVAILABLE');
+ assert.deepEqual(f.files,before);
+ assert.deepEqual(f.dirs,dirsBefore);
+});
 test('Single-JS preparation executable writes exact JSON and waits through backpressure',async()=>{
  const args=['--prepare-codex','out','commit','request','inputs'];
  const result={status:'PREPARED_NOT_EXECUTABLE',runtime_admitted:false};
