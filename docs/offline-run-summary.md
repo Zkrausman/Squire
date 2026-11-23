@@ -1,6 +1,6 @@
 # Offline run summary
 
-Read one explicit, previously saved Q218 JSON receipt:
+Read one explicit JSON receipt with a supported schema.
 
 ```
 node bin/squire-report.mjs <receipt-path>
@@ -107,3 +107,28 @@ their supplied streams. The executable does not end or destroy streams, await
 drain/flush, or prove consumer receipt. Already emitted bytes may remain, and
 errors not observed before process termination cannot be certified. Successful
 report bytes, receipt/readiness semantics and capability schema are unchanged.
+
+## Synthetic examples
+
+From the repository root, run the offline reporter against the files in
+[`examples/offline-report/`](../examples/offline-report/).
+
+```sh
+node bin/squire-report.mjs --capabilities --json
+node bin/squire-report.mjs examples/offline-report/single-js-dry-run.json
+node bin/squire-report.mjs examples/offline-report/project-canceled.json
+node bin/squire-report.mjs examples/offline-report/project-schema-only.json
+```
+
+| Input | Exit | Stdout | Stderr |
+|---|---:|---|---|
+| Capability discovery | 0 | Capability JSON | Empty |
+| Single-JS dry run | 1 | `NOT_RUN` and `NOT_EVALUATED` | Empty |
+| Canceled project | 1 | `INCOMPLETE`, `CANCELED`, and `generation=0` | Empty |
+| Project schema discriminator alone | 2 | `INVALID_RECEIPT` and `Diagnostic: SCHEMA_MISMATCH` | `SCHEMA_MISMATCH` |
+
+The dry-run input records zero child invocations. The canceled project records
+null generation and staging and zero generation invocations. The final file is
+valid JSON with an intentionally incomplete receipt. Its projection contains
+only the fixed invalid-receipt message and diagnostic. Discovery reads no
+receipt. These examples contain synthetic data and establish no task result.

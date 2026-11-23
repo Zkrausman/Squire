@@ -1,0 +1,7 @@
+{
+  "schema": "SQUIRE2_SINGLE_JS_DRY_RUN_V1",
+  "status": "DRY_RUN_NATIVE_DISABLED",
+  "direct_child_invocations": 0,
+  "task_correctness": "NOT_EVALUATED",
+  "runtime_admitted": false
+}

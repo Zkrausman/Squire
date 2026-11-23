@@ -1,0 +1,19 @@
+{
+  "schema": "SQUIRE2_PROJECT_RESULT_V1",
+  "status": "INCOMPLETE",
+  "reason": "CANCELED",
+  "generation": null,
+  "staging": null,
+  "task_correctness": "NOT_EVALUATED",
+  "task_outcome_evaluated": false,
+  "runtime_admitted": false,
+  "operator_admitted": false,
+  "workspace_disposition": "QUARANTINED",
+  "descendant_guarantee": "NONE",
+  "operator_receipt": "",
+  "direct_child_invocations": {
+    "generation": 0
+  },
+  "outer_observation_target_ms": 140000,
+  "event_loop_condition": "RESPONSIVE_PARENT_EVENT_LOOP"
+}
