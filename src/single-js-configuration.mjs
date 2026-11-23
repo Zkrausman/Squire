@@ -41,6 +41,7 @@ export async function prepareSingleJsCodexTask(root,source_commit,request,inputs
   const req=validateSingleJsRequest(request);inputs=snapshotReceiptData(inputs);closed(inputs,['job_id','scope','codex','requested_model','effort','authorization','permissions'],[],'single_js_private_inputs');
   const permissions=validateCodexPermissions(inputs.permissions);
   if(!absolute(root)||typeof source_commit!=='string'||!/^[a-f0-9]{40}$/.test(source_commit))fail('single_js_preparation');
+  if(root===inputs.scope)throw Error('SINGLE_JS_PREPARATION_DESTINATION_UNAVAILABLE');
   const fsPort=ports.fs??fs,verify=ports.verifyFile??verifyExactFile,reads={lstat:fsPort.lstat,readChunks:ports.readChunks??(p=>createReadStream(p))};
   const prompt=buildSingleJsCodegenPrompt(req),source_pins={};pin(inputs.codex,true);
   prepareCodexArgv({requested_model:inputs.requested_model,effort:inputs.effort,observed_cli_version:inputs.codex.version,prompt_bytes:prompt,authorization:inputs.authorization,permissions});
