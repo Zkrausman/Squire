@@ -228,6 +228,22 @@ const prepareNodeDestination=a=>prepareProjectCodexTask(
 );
 const nodePinChecks=Array(PROJECT_SOURCE_FILES.length+2).fill('verify');
 
+test('ordinary Node preparation refuses a destination equal to its execution scope before I/O',async()=>{
+  const a=nodeDestinationFixture(),before=new Map(a.map);
+  a.inputs.scope=a.root;
+  const readFile=a.ports.fs.readFile;
+  a.ports.fs.readFile=async path=>{
+    a.events.push('read');
+    return readFile(path);
+  };
+  const [result]=await Promise.allSettled([prepareNodeDestination(a)]);
+  assert.deepEqual(a.events,[]);
+  assert.deepEqual(a.writes,[]);
+  assert.deepEqual(a.map,before);
+  assert.equal(result.status,'rejected');
+  assert.equal(result.reason.message,'PROJECT_PREPARATION_DESTINATION_UNAVAILABLE');
+});
+
 test('ordinary Node preparation preserves bytes and acknowledgement with a fresh destination',async()=>{
   const a=nodeDestinationFixture(),ack=await prepareNodeDestination(a);
   const outputs=['prompt.utf8','config.json','operation-manifest.json'].map(name=>join(a.root,name));
