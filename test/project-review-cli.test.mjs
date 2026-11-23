@@ -47,13 +47,21 @@ test('default, malformed and help commands never read inputs or call adapters',a
   if(args[0]==='--help')assert.match(h.out.join(''),/--build-standard\|--revise-standard/);
  }
 });
-test('standard commands reject wrong-profile schemas before receipt or correction reads',async()=>{
- for(const [mode,value] of [['--build-standard',spec(false)],['--revise-standard',revision(false)],
- ['--revise-standard',{...revision(true),original:spec(false)}]]){
-  const h=harness(value);assert.equal(await run([mode,'/private/spec'],h.ports),2);
-  assert.equal(h.reads.length,1);assert.deepEqual(h.routes,[]);assert.deepEqual(h.out,[]);
+for(const [standard,suffix] of [[false,''],[true,'-standard']]){
+ for(const [mode,kind,value] of [
+  [`--build${suffix}`,'build',spec(!standard)],
+  [`--revise${suffix}`,'outer revision',{...revision(!standard),original:spec(standard)}],
+  [`--revise${suffix}`,'embedded original',{...revision(standard),original:spec(!standard)}]
+ ]){
+  test(`${mode} rejects a wrong-profile ${kind} schema before secondary reads`,async()=>{
+   const h=harness(value);
+   assert.equal(await run([mode,'/private/spec'],h.ports),2);
+   assert.deepEqual(h.reads,[['/private/spec',65536]]);
+   assert.deepEqual(h.routes,[]);assert.deepEqual(h.out,[]);
+   assert.deepEqual(h.err,['PROJECT_REVIEW_CANDIDATE_REJECTED\n']);
+  });
  }
-});
+}
 test('standard exact aggregate budget and overflow are distinct; large budget remains unchanged',async()=>{
  for(const [standard,count,code,expected] of [[true,2,0,[524288,524288]], [true,3,2,[524288,524288,0]],
  [false,3,0,[524288,524288,524288]]]){

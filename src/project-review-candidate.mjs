@@ -1379,7 +1379,7 @@ function validateRevisedBlobs(value){
 
 async function revisionCli(value,cli,profile=LARGE_IMPORT){
   try{closed(value,['schema','original','prior_candidate','corrections'],[],'revision_cli_spec');}catch{invalid();}
-  if(!profile.large&&(value.schema!==profile.revisionSchema||value.original?.schema!==profile.specSchema))invalid();
+  if(value.schema!==profile.revisionSchema||value.original?.schema!==profile.specSchema)invalid();
   const receiptPath=cliSpec(value.original),corrections=[];
   let receipt=null,total=0;
   try{
@@ -1438,16 +1438,16 @@ async function runProjectReviewCandidateCliInternal(argv,cli){
   }
   let receipt=null;
   try{
+    const profile=argv[0].endsWith('-standard')?STANDARD_IMPORT:LARGE_IMPORT;
     const specBytes=plainBytes(await cli.read(argv[1],MAX_SPEC_BYTES),MAX_SPEC_BYTES);
     try{
       const value=parseReceiptJson(specBytes);
-      if(argv[0]==='--revise'||argv[0]==='--revise-standard')return await revisionCli(value,cli,
-        argv[0]==='--revise-standard'?STANDARD_IMPORT:LARGE_IMPORT);
-      if(argv[0]==='--build-standard'&&value.schema!==STANDARD_SPEC_SCHEMA)invalid();
+      if(argv[0]==='--revise'||argv[0]==='--revise-standard')return await revisionCli(value,cli,profile);
+      if(value?.schema!==profile.specSchema)invalid();
       const receiptPath=cliSpec(value);
       receipt=plainBytes(await cli.read(receiptPath,MAX_RECEIPT_BYTES),MAX_RECEIPT_BYTES);
       const mutable={...value,receipt_bytes:receipt};delete mutable.receipt_path;
-      const build=argv[0]==='--build-standard'?cli.buildStandard:cli.build;
+      const build=profile.large?cli.build:cli.buildStandard;
       const result=await build(mutable);
       const changedPathCount=validateCliResult(result);
       cli.stdout([
