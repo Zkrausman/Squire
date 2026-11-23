@@ -40,8 +40,12 @@ export async function runPackageCli(args,ports={}){
     return outputFailed?2:code;
   }catch{return 2;}
 }
+const USAGE='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir>\n';
 async function runPackageCliInternal(args,ports,stdout,stderr){
-  if(!Array.isArray(args)||!((args[0]==='--build'&&args.length===4)||(args[0]==='--verify'&&args.length===2))){stderr.write('Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir>\n');return 2;}
+  if(Array.isArray(args)&&args.length===1&&args[0]==='--help'){
+    stdout.write(USAGE);return 0;
+  }
+  if(!Array.isArray(args)||!((args[0]==='--build'&&args.length===4)||(args[0]==='--verify'&&args.length===2))){stderr.write(USAGE);return 2;}
   try{
     const io={fs:ports.fs??{...fs,readdir:path=>nativePackageInventory(fs,path,ports.signal)},uid:ports.uid??(typeof process.getuid==='function'?process.getuid():null),signal:ports.signal};
     const result=args[0]==='--build'?await buildReviewPackage({receipt_path:args[1],source_path:args[2],output_dir:args[3]},io):await verifyReviewPackage(args[1],io);

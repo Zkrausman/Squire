@@ -241,11 +241,28 @@ test('CLI errors suppress private paths, native messages and Proxy error callbac
  assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],ports),2);assert.equal(out,'');assert.equal(err,'PACKAGE_IO_ERROR\n');assert.equal(traps,0);assert.equal((out+err).includes(f.root),false);
 }));
 
+test('package exact help prints existing usage without filesystem access',async()=>{
+ const usage='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir>\n';
+ let fsReads=0;
+ for(const [args,code,channel] of [[['--help'],0,'stdout'],[[],2,'stderr'],[['--help','extra'],2,'stderr'],[['--unknown'],2,'stderr']]){
+  const calls=[];
+  const ports={
+   get fs(){fsReads++;throw Error('UNEXPECTED_FS');},
+   stdout:{write(text){calls.push(['stdout',text]);return false;}},
+   stderr:{write(text){calls.push(['stderr',text]);}}
+  };
+  assert.equal(await runPackageCli(args,ports),code);
+  assert.deepEqual(calls,[[channel,usage]]);
+ }
+ assert.equal(fsReads,0);
+});
 test('acknowledgement package usage sink failures stay inert and bounded',async()=>{
- for(const args of [[],['--help']])for(const sink of [{},{write:7},{write(){throw Error('PRIVATE_USAGE');}},
+ for(const [args,channel] of [[[],'stderr'],[['--help'],'stdout']])for(const sink of [{},{write:7},{write(){throw Error('PRIVATE_USAGE');}},
   Object.defineProperty({},'write',{get(){throw Error('PRIVATE_GETTER');}})]){
-  let calls=0;assert.equal(await runPackageCli(args,{stdout:{write(){calls++;}},stderr:sink,
-   fs:{mkdir(){calls++;throw Error('UNEXPECTED_FS');}}}),2);assert.equal(calls,0);
+  let calls=0;assert.equal(await runPackageCli(args,{
+   stdout:{write(){calls++;}},stderr:{write(){calls++;}},[channel]:sink,
+   get fs(){calls++;throw Error('UNEXPECTED_FS');}
+  }),2);assert.equal(calls,0);
  }
 });
 test('acknowledgement package build failure never leaks a failing diagnostic sink',async()=>fixture(async f=>{
