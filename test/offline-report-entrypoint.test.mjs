@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {runOfflineReportCli,serializeOfflineReportCapabilities} from '../bin/squire-report.mjs';
+import {runOfflineReportCli,runOfflineReportExecutable,serializeOfflineReportCapabilities} from '../bin/squire-report.mjs';
 
 const cli=fileURLToPath(new URL('../bin/squire-report.mjs',import.meta.url));
 const preload=source=>'data:text/javascript,'+encodeURIComponent(source);
@@ -54,6 +54,93 @@ test('executable successful capabilities and usage retain exact bytes and exits'
 });
 const discoveryUsage='Usage: node bin/squire-report.mjs <receipt-path>\n'+
  '       node bin/squire-report.mjs --capabilities --json\n';
+
+const capabilityArgs=['--capabilities','--json'];
+const reportFixture=raw=>{
+ const bytes=Buffer.from(JSON.stringify(raw)),reads=[];
+ const stat=path=>{reads.push(['stat',path]);return {isFile:()=>true,size:bytes.length};};
+ const readFile=path=>{reads.push(['read',path]);return bytes;};
+ return {reads,ports:{stat,readFile}};
+};
+const turn=()=>new Promise(resolve=>setImmediate(resolve));
+function pendingReport(argv,ports={},throwChannel){
+ const writes=[];
+ const output=channel=>({write(text,complete){
+  writes.push({channel,text,complete});
+  if(channel===throwChannel)throw Error('SYNTHETIC_WRITE_FAILURE');
+  return false;
+ }});
+ let settled=false;
+ const result=runOfflineReportExecutable(argv,{
+  ...ports,stdout:output('stdout'),stderr:output('stderr')
+ }).then(code=>{settled=true;return code;});
+ return {writes,result,settled:()=>settled};
+}
+
+test('offline report write completion preserves codes 0 and 1 and rejects delayed callback errors',async()=>{
+ const argv=['/synthetic/receipt'];
+ const raw={schema:'SQUIRE2_SINGLE_JS_DRY_RUN_V1',status:'DRY_RUN_NATIVE_DISABLED',
+  direct_child_invocations:0,task_correctness:'NOT_EVALUATED',runtime_admitted:false};
+ const legacy=[];
+ const control=reportFixture(raw);
+ assert.equal(await runOfflineReportCli(argv,{
+  ...control.ports,stdout:{write:text=>legacy.push(text)},stderr:{write(){assert.fail('unexpected stderr');}}
+ }),1);
+ for(const [args,code,text] of [[capabilityArgs,0,serializeOfflineReportCapabilities()],[argv,1,legacy[0]]]){
+  for(const failed of [false,true]){
+   const f=reportFixture(raw),p=pendingReport(args,f.ports);
+   await turn();
+   assert.equal(p.settled(),false);
+   assert.deepEqual(p.writes.map(({channel,text})=>[channel,text]),[['stdout',text]]);
+   p.writes[0].complete(failed?Error('SYNTHETIC_DELAYED_WRITE_FAILURE'):undefined);
+   assert.equal(await p.result,failed?2:code);
+   assert.equal(p.writes.length,1);
+   assert.deepEqual(f.reads,code===0?[]:[['stat',argv[0]],['read',argv[0]]]);
+  }
+ }
+});
+
+test('offline report write completion preserves both channels and waits in either callback order',async()=>{
+ const argv=['/synthetic/receipt'],raw={schema:'SQUIRE2_SINGLE_JS_RESULT_V1'},expected=[];
+ const control=reportFixture(raw);
+ assert.equal(await runOfflineReportCli(argv,{
+  ...control.ports,stdout:{write:text=>expected.push(['stdout',text])},stderr:{write:text=>expected.push(['stderr',text])}
+ }),2);
+ assert.deepEqual(expected.map(([channel])=>channel),['stdout','stderr']);
+ for(const first of [0,1]){
+  const f=reportFixture(raw),p=pendingReport(argv,f.ports);
+  await turn();
+  assert.deepEqual(p.writes.map(({channel,text})=>[channel,text]),expected);
+  p.writes[first].complete(Error('SYNTHETIC_CHANNEL_FAILURE'));
+  await turn();
+  assert.equal(p.settled(),false);
+  p.writes[1-first].complete();
+  assert.equal(await p.result,2);
+  assert.equal(p.writes.length,2);
+  assert.deepEqual(f.reads,[['stat',argv[0]],['read',argv[0]]]);
+ }
+});
+
+test('offline report write completion preserves synchronous capability fallback and stderr-only usage',async()=>{
+ const f=reportFixture({}),fallback=pendingReport(capabilityArgs,f.ports,'stdout');
+ await turn();
+ assert.equal(fallback.settled(),false);
+ assert.deepEqual(fallback.writes.map(({channel,text})=>[channel,text]),[
+  ['stdout',serializeOfflineReportCapabilities()],['stderr','CAPABILITIES_INTERNAL_ERROR\n']
+ ]);
+ fallback.writes[1].complete();
+ assert.equal(await fallback.result,2);
+ assert.equal(fallback.writes.length,2);
+ const usage=pendingReport([],f.ports);
+ await turn();
+ assert.equal(usage.settled(),false);
+ assert.deepEqual(usage.writes.map(({channel,text})=>[channel,text]),[
+  ['stderr','Usage: node bin/squire-report.mjs <receipt-path>\n']
+ ]);
+ usage.writes[0].complete();
+ assert.equal(await usage.result,2);
+ assert.deepEqual(f.reads,[]);
+});
 
 test('exact --help writes usage to stdout without accessing receipts',async()=>{
  const accesses=[],writes=[];

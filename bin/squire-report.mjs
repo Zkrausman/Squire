@@ -252,12 +252,38 @@ async function runOfflineReportCliInternal(argv,ports) {
   }
   return route.write(route,summary,handoffReport,stdout,stderr);
 }
+
+export async function runOfflineReportExecutable(argv,ports={}){
+  const attempted=[];
+  let writeFailed=false;
+  const output=stream=>({write(text){
+    let complete;
+    attempted.push(new Promise(resolve=>{complete=resolve;}));
+    try{
+      return stream.write(text,error=>{
+        if(error)writeFailed=true;
+        complete();
+      });
+    }catch(error){
+      writeFailed=true;
+      complete();
+      // Keep synchronous sink behavior visible to the core's fallback path.
+      throw error;
+    }
+  }});
+  const code=await runOfflineReportCli(argv,{
+    ...ports,stdout:output(ports.stdout??process.stdout),stderr:output(ports.stderr??process.stderr)
+  });
+  await Promise.all(attempted);
+  return writeFailed?2:code;
+}
+
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   // Only the executable owns these process-lifetime observers. Do not log or
   // retry output on an error, including one emitted after the CLI resolves.
   let outputFailed=false;
   const outputError=()=>{outputFailed=true;process.exitCode=2;};
   process.stdout.on('error',outputError);process.stderr.on('error',outputError);
-  const code=await runOfflineReportCli(process.argv.slice(2));
+  const code=await runOfflineReportExecutable(process.argv.slice(2));
   process.exitCode=outputFailed?2:code;
 }
