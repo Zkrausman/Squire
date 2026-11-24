@@ -199,9 +199,12 @@ async function listPackage(fs,root,signal){const found=[];const walk=async relat
     if(dir(s)){if(s.uid!==process.getuid()||(s.mode&0o7777)!==0o700)rejected();found.push(`${child}/`);await walk(child);}
     else if(file(s)){if(s.uid!==process.getuid()||s.nlink!==1||(s.mode&0o7777)!==0o400)rejected();found.push(child);}else rejected();}}
     catch(error){if(error instanceof ReviewPackageError)throw error;rejected();}finally{if(handle)try{await handle.close();}catch{rejected();}}};await walk('');return found.sort();}
-async function verifyInternal(fs,root,signal){if(!absolute(root))invalid();await ancestors(fs,root);const rootStat=await stat(fs,root);
+async function verifyInternal(fs,root,signal,expectedManifestSha256){if(!absolute(root))invalid();await ancestors(fs,root);const rootStat=await stat(fs,root);
   if(!dir(rootStat)||rootStat.uid!==process.getuid()||(rootStat.mode&0o7777)!==0o700||await fs.realpath(root)!==root)rejected();
-  const manifestBytes=await readFile(fs,join(root,'revision-review-manifest.json'),MAX_MANIFEST,signal);let m;
+  const manifestBytes=await readFile(fs,join(root,'revision-review-manifest.json'),MAX_MANIFEST,signal);
+  const checkedDigest=expectedManifestSha256===undefined?undefined:digest(manifestBytes);
+  if(checkedDigest!==expectedManifestSha256)rejected();
+  let m;
   try{m=JSON.parse(decoder.decode(manifestBytes));}catch{rejected();}
   if(!matchesKeys(m,['schema','original_result_sha256','revised_result_sha256','original_package_sha256','prior_revise_decision_sha256','declared_decisions_sha256',
       'base_commit','base_tree','original_commit','original_tree','revised_commit','revised_tree','paths','base_to_revised','original_to_revised','displays','limits','boundaries'])||
@@ -233,7 +236,7 @@ async function verifyInternal(fs,root,signal){if(!absolute(root))invalid();await
     !m.paths.every(row=>m.base_to_revised.some(v=>v.path===row.path)||m.original_to_revised.some(v=>v.path===row.path)))rejected();
   const dirs=new Set(['changes/']);for(const path of expected.filter(v=>v.startsWith('changes/'))){const parts=path.split('/');for(let i=1;i<parts.length-1;i++)dirs.add(parts.slice(0,i+1).join('/')+'/');}
   if((await listPackage(fs,root,signal)).join('|')!==[...expected,...dirs].sort().join('|')||copies+displayBytes+manifestBytes.length>MAX_PACKAGE)rejected();
-  return {manifest:m,manifest_sha256:digest(manifestBytes),package_bytes:copies+displayBytes+manifestBytes.length};}
+  return {manifest:m,manifest_sha256:checkedDigest??digest(manifestBytes),package_bytes:copies+displayBytes+manifestBytes.length};}
 async function priorLinks(fs,spec,source,signal){
   const pkg=spec.original_package;closed(pkg,['dir','manifest_sha256']);if(!absolute(pkg.dir)||!SHA256.test(pkg.manifest_sha256))invalid();
   const verified=await verifyProjectCandidateReviewPackage(pkg.dir,{fs});if(verified.manifest_sha256!==pkg.manifest_sha256)rejected();
@@ -281,7 +284,10 @@ function captureBuildSpec(spec){closed(spec,['schema','original_result','revised
   for(let i=0;i<paths.length;i++)for(let j=i+1;j<paths.length;j++)if(paths[i]===paths[j]||paths[i].startsWith(paths[j]+'/')||paths[j].startsWith(paths[i]+'/'))invalid();
   return captureSignal(spec.signal);
 }
-export async function verifyProjectRevisionReviewPackage(dir,ports={}){try{const v=await verifyInternal(capturePort(ports),dir,undefined);return Object.freeze({status:'PROJECT_REVISION_REVIEW_PACKAGE_VERIFIED',
+export async function verifyProjectRevisionReviewPackage(dir,ports={},expectedManifestSha256){try{
+  if(expectedManifestSha256!==undefined&&(typeof expectedManifestSha256!=='string'||
+     expectedManifestSha256.length!==64||!SHA256.test(expectedManifestSha256)))invalid();
+  const v=await verifyInternal(capturePort(ports),dir,undefined,expectedManifestSha256);return Object.freeze({status:'PROJECT_REVISION_REVIEW_PACKAGE_VERIFIED',
   manifest_sha256:v.manifest_sha256,base_commit:v.manifest.base_commit,original_commit:v.manifest.original_commit,
   revised_commit:v.manifest.revised_commit,base_to_revised_count:v.manifest.base_to_revised.length,
   original_to_revised_count:v.manifest.original_to_revised.length,package_bytes:v.package_bytes});}catch(e){if(e instanceof ReviewPackageError)throw e;rejected();}}
