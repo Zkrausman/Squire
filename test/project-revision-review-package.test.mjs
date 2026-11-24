@@ -337,3 +337,73 @@ test('expected manifest revision package verification binds the caller digest of
  const late=await revisionCliChild(packageReviewCli,argv,{before:"const w=process.stdout.write.bind(process.stdout);process.stdout.write=(...a)=>{const v=w(...a);setImmediate(()=>process.stdout.emit('error',Error('PRIVATE_LATE_FAILURE')));return v;};"});assert.equal(late.code,2);assert.equal(late.stdout,legacy.stdout);assert.equal(late.stderr,'');assert.deepEqual(await snapshotPrivatePackage(f.spec.output_dir),snapshot);
  const diff=join(f.spec.output_dir,'original-to-revised.diff.txt');await fs.chmod(diff,0o600);await fs.appendFile(diff,'synthetic corruption');await fs.chmod(diff,0o400);const corruptSnapshot=await snapshotPrivatePackage(f.spec.output_dir),corrupt=await revisionCliChild(packageReviewCli,argv);assert.equal(corrupt.code,2);assert.equal(corrupt.stdout,'');assert.equal(corrupt.stderr,'PROJECT_REVISION_REVIEW_REJECTED\n');assert.deepEqual(await snapshotPrivatePackage(f.spec.output_dir),corruptSnapshot);
 }finally{await fs.rm(f.root,{recursive:true,force:true});}});
+
+test('first revision manifest preflight stops before side reads and preserves injected CLI verification',async t=>{
+ const {encode,makeDiff,manifestFor,rowsFor}=await import('../src/internal/revision-review-core.mjs');
+ const root=await fs.mkdtemp(join(tmpdir(),'squire-revision-manifest-'));
+ t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const changes=join(root,'changes'),name='app.mjs';
+ await fs.mkdir(changes,{mode:0o700});
+ const makeSide=text=>{
+  const data=Buffer.from(text);
+  const git_sha1=createHash('sha1').update(`blob ${data.length}\0`).update(data).digest('hex');
+  return {data,git_sha1,mode:'100644',bytes:data.length,sha256:sha(data)};
+ };
+ const row={path:name,base:makeSide('base\n'),original:makeSide('original\n'),revised:makeSide('revised\n')};
+ const source={files:[row],base_to_revised:[name],original_to_revised:[name],
+  original_result_sha256:'7'.repeat(64),revised_result_sha256:'8'.repeat(64),
+  original_result:{base_commit:'1'.repeat(40),base_tree:'2'.repeat(40),candidate_commit:'3'.repeat(40),candidate_tree:'4'.repeat(40)},
+  revised_result:{candidate_commit:'5'.repeat(40),candidate_tree:'6'.repeat(40)}};
+ const links={original_package_sha256:'9'.repeat(64),prior_revise_decision_sha256:'a'.repeat(64),declared_decisions_sha256:'b'.repeat(64)};
+ const displays={base:makeDiff(rowsFor([row],[name],'base'),'base'),original:makeDiff(rowsFor([row],[name],'original'),'original')};
+ const manifest=encode(manifestFor(source,links,displays));
+ const files=[
+  ['revision-review-manifest.json',manifest],
+  ...['base','original','revised'].map(key=>[`changes/${name}.${key}`,row[key].data]),
+  ['base-to-revised.diff.txt',displays.base],['original-to-revised.diff.txt',displays.original]
+ ];
+ for(const [path,bytes] of files)await fs.writeFile(join(root,path),bytes,{flag:'wx',mode:0o400});
+ const trace=[];
+ const port={lstat:fs.lstat,realpath:fs.realpath,
+  open(path,flags){trace.push(['open',path]);return fs.open(path,flags);},
+  opendir(path,options){trace.push(['inventory',path]);return fs.opendir(path,options);},
+  mkdir(){assert.fail('verification must not reserve');},
+  chmod(){assert.fail('verification must not change modes');}
+ };
+ const expected=sha(manifest),wrong='0'.repeat(64);
+ const verify=digest=>verifyProjectRevisionReviewPackage(root,{fs:port},digest);
+ const legacy=await verify();
+ assert.equal(legacy.manifest_sha256,expected);
+ const fullTrace=[...files.map(([path])=>['open',join(root,path)]),['inventory',root],['inventory',changes]];
+ assert.deepEqual(trace.splice(0),fullTrace);
+ assert.deepEqual(await verify(expected),legacy);
+ assert.deepEqual(trace.splice(0),fullTrace);
+ const [mismatch]=await Promise.allSettled([verify(wrong)]);
+ assert.deepEqual(trace.splice(0),fullTrace.slice(0,1));
+ assert.equal(mismatch.status,'rejected');
+ assert.equal(mismatch.reason.code,'PROJECT_REVISION_REVIEW_REJECTED');
+
+ const cli=async (digest,ports={})=>{
+  let out='',err='';
+  const argv=['--verify-revision',root,...(digest===undefined?[]:['--expect-sha256',digest])];
+  const code=await runRevisionPackageCli(argv,{stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},...ports});
+  return {code,out,err};
+ };
+ const rejection={code:2,out:'',err:'PROJECT_REVISION_REVIEW_REJECTED\n'};
+ const success=await cli();
+ assert.equal(success.code,0);
+ assert.equal(success.err,'');
+ assert.ok(success.out.includes(`Manifest SHA256: ${expected}\n`));
+ assert.deepEqual(await cli(expected),success);
+ assert.deepEqual(await cli(wrong),rejection);
+ let calls=0;
+ const injected={verifyRevision(...args){calls++;assert.deepEqual(args,[root]);return legacy;}};
+ assert.deepEqual(await cli(expected,injected),success);
+ assert.deepEqual(await cli(wrong,injected),rejection);
+ assert.equal(calls,2);
+
+ await replacePrivate(join(changes,name+'.revised'),Buffer.from('altered\n'));
+ await fail('PROJECT_REVISION_REVIEW_REJECTED',()=>verify(expected));
+ assert.deepEqual(trace,fullTrace.slice(0,4));
+ assert.deepEqual(await cli(expected),rejection);
+});
