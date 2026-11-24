@@ -60,9 +60,10 @@ and prohibited prototype keys. `formatSummaryTerminal(summary)` validates the
 summary and emits safe deterministic text. The async `runOfflineReportCli(argv,
 ports)` wrapper permits injected read/stat/output ports for tests.
 
-This first version recognizes the fixed Q218 campaign, its native wrapper, and
-the disabled dry-run wrapper. A campaign requires FIX-01 through FIX-17 exactly
-once in order. Expected nonzero exits can pass their recorded fixture oracle.
+The legacy campaign projector recognizes the fixed Q218 campaign, its native
+receipt wrapper, and its disabled dry-run wrapper. A Q218 campaign requires
+FIX-01 through FIX-17 exactly once in order. Expected nonzero exits can pass
+their recorded fixture oracle.
 Generation `LIMITED_SUCCESS` alone never becomes task PASS. Early abort and dry
 run preserve missing observations instead of inventing a completed matrix.
 Unsupported schemas and contradictory success claims fail closed.
@@ -76,8 +77,13 @@ claimed operator admission are shown separately from fixture conformance.
 
 The command grants no descendant containment, hostile-code safety, crash
 recovery, automatic workspace reuse or general software-quality guarantee.
-Generic single-JavaScript task reporting is a separate versioned successor;
-this format must not invent 17-fixture acceptance for such a task.
+
+The offline reporter has a separate projection for saved Single-JavaScript
+result and dry-run receipts (`SQUIRE2_SINGLE_JS_RESULT_V1` and
+`SQUIRE2_SINGLE_JS_DRY_RUN_V1`). A valid projection exits 1 when output
+succeeds. The 17-fixture Q218 oracle applies only to the legacy campaign.
+This projection reads the saved receipt independently of native reporting
+and task execution.
 
 ## Synchronous output failures
 
@@ -98,6 +104,11 @@ meaning and is not classified as a synchronous failure. Successful report text,
 route exits and capability JSON remain unchanged.
 
 ## Executable stdio error observation
+
+The executable wrapper waits for completion of the stdout and stderr writes
+the reporter attempts. An error reported by a write callback makes it return
+exit 2. Backpressure on its own leaves the result to the callback. Callback
+completion provides no proof of downstream receipt.
 
 The `node bin/squire-report.mjs` entry point installs stdout/stderr error
 listeners before invoking the reporter and retains them for that executable's
