@@ -597,7 +597,7 @@ workload or planning proposal.
 
 ## Delivered offline review handoffs (PR248–251)
 
-This appendix records source delivered through [main `b4ac7ccb`](https://github.com/Zkrausman/Squire/commit/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374). Select the route for the artifact already in authorized custody. Retain expected digests separately at the authorized handoff; do not derive the expectation from the copy being checked.
+This appendix records source delivered through [main `b4ac7ccb`](https://github.com/Zkrausman/Squire/commit/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374). The table also includes later direct verification routes for finished packages. Select the route for the artifact already in authorized custody. Retain expected digests separately at the authorized handoff; do not derive the expectation from the copy being checked.
 
 | If you have… | Use this route | Keep these inputs and receipts distinct |
 |---|---|---|
@@ -605,10 +605,14 @@ This appendix records source delivered through [main `b4ac7ccb`](https://github.
 | That snapshot and a need for a human-review package, even if the original Git stores are gone | [PR249](https://github.com/Zkrausman/Squire/pull/249): `node bin/squire-candidate-review.mjs --build-from-snapshot SPEC` | The spec names the snapshot, its retained manifest digest and a fresh output root. Keep the unchanged V1 `package/` and the separate `provenance.json` together; retain the returned provenance digest separately. The ordinary package/decision routes still take the package child. |
 | A copy of the original snapshot-review handoff | [PR250](https://github.com/Zkrausman/Squire/pull/250): `node bin/squire-candidate-review.mjs --verify-snapshot-handoff ROOT DIGEST` | Supply the separately retained **provenance digest**, not the snapshot or package-manifest digest. This read-only check verifies the copied receipt and its pairing with the V1 package, not the current source snapshot. |
 | A first revision with the base, original and revised stores still available, or its previously retained review-source copy | [PR251](https://github.com/Zkrausman/Squire/pull/251): `node bin/squire-candidate-review.mjs --retain-revision-source SPEC`, `node bin/squire-candidate-review.mjs --verify-retained-revision-source ROOT DIGEST`, then `node bin/squire-candidate-review.mjs --build-revision-from-retained SPEC` as applicable | Retention binds the three endpoints, required side bytes, supplied result records, original package and the complete caller-declared prior-decision set, including the explicitly selected prior REVISE. Verify/build from the retained source using the caller-retained **retained-source manifest digest**, with a fresh, disjoint output root for builds. The offline build produces the same V1 two-view package plus separate provenance. It is not a runnable export. |
+| A finished original-candidate review package | [PR284](https://github.com/Zkrausman/Squire/pull/284): `node bin/squire-candidate-review.mjs --verify PACKAGE --expect-sha256 DIGEST` | Use the package directory and the caller-retained **original package manifest digest**. |
+| A finished first-revision review package | [PR290](https://github.com/Zkrausman/Squire/pull/290): `node bin/squire-candidate-review.mjs --verify-revision PACKAGE --expect-sha256 DIGEST` | Use the package directory and the caller-retained **revision package manifest digest**. |
+
+For either package command, select the `package/` child when working from a two-part handoff. A mismatched expected digest is rejected after the bounded, stable manifest read, before side copies, diffs or the package inventory are read. A matching or omitted expectation still requires full package verification. See the [offline review guide](../../.agents/skills/squire-offline-review/SKILL.md) and the current [original-package](../project-candidate-review-package.md#compare-a-caller-retained-expected-package-digest) and [first-revision](../project-revision-review-package.md#compare-a-caller-retained-expected-revision-package-digest) verification contracts.
 
 See the pinned [portable snapshot](https://github.com/Zkrausman/Squire/blob/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374/docs/project-portable-candidate-snapshot.md), [original package and copied handoff](https://github.com/Zkrausman/Squire/blob/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374/docs/project-candidate-review-package.md), and [first-revision package](https://github.com/Zkrausman/Squire/blob/b4ac7ccb4b85f13c0f617ac84481bb76ab29d374/docs/project-revision-review-package.md) contracts for exact spec fields, limits and paths.
 
-All four PRs merged. Their receipts report independent review and synthetic validation, with successful final PR-head hosted checks, attempt 1:
+PR248 through PR251 all merged. Their receipts report independent review and synthetic validation, with successful final PR-head hosted checks, attempt 1:
 
 | PR | CI | Desktop source acceptance |
 |---|---|---|
