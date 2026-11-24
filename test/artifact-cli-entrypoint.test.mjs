@@ -32,6 +32,22 @@ for(const url of projects){
   const u=await child(url,[]);assert.equal(u.code,2);assert.equal(u.signal,null);assert.equal(u.stdout,'');assert.equal(u.stderr,usage);
  });
 }
+const projectPrepUrl=new URL('../acceptance/prepare-project-task.mjs',import.meta.url);
+test('project preparation executable rejects zero operands with fixed stderr',async()=>{
+ const r=await child(projectPrepUrl,[]);
+ assert.equal(r.code,2);
+ assert.equal(r.signal,null);
+ assert.equal(r.stdout,'');
+ assert.equal(r.stderr,'PROJECT_PREPARATION_FAILED\n');
+});
+test('project preparation executable rejects zero operands with closed stderr',async()=>{
+ const r=await child(projectPrepUrl,[],{closed:'stderr'});
+ assert.equal(r.code,2);
+ assert.equal(r.signal,null);
+ assert.equal(r.stdout,'');
+ assert.equal(r.stderr,'');
+ assert.equal(r.stdoutEof,true);
+});
 test('artifact executable modules stay inert when imported',()=>{
  const source=`const before=[process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode];
  for(const url of ${JSON.stringify([packageUrl,...projects].map(u=>u.href))})await import(url);
