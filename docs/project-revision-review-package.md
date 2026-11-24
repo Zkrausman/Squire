@@ -276,10 +276,13 @@ node bin/squire-candidate-review.mjs --verify-revision /absolute/revision-packag
 Supply the caller's independently retained exact lowercase 64-hex manifest
 digest; do not derive it from the package to manufacture a match. This additive
 option follows the package path exactly and is invalid for builds. Malformed,
-missing or extra input returns usage/2 before any reader or API call. The selected
-complete revision verifier runs once; all existing result metadata and the
-captured digest must validate before any success output. Mismatch or invalid
-metadata returns 2 with fixed `PROJECT_REVISION_REVIEW_REJECTED` when usable.
+missing or extra input returns usage/2 before any reader or API call. The
+verifier compares the expected digest immediately after the bounded, stable
+manifest read. It rejects a mismatch before parsing the manifest, reading side
+copies or diffs, or walking the package inventory. A matching or omitted
+expectation still requires full package verification and validation of the
+result before success output. Mismatch or invalid metadata returns 2 with fixed
+`PROJECT_REVISION_REVIEW_REJECTED` when usable.
 
 It reads no spec, source stores or prior-decision directories, and performs no
 build, recording, selection among conflicts or mutation. A match preserves exact
