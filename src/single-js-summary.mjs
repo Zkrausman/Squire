@@ -10,6 +10,12 @@ const reasonsByStatus=new Map([
   ['FAILED',['OPERATION_FAILED_OR_UNCERTAIN']]
 ]);
 const freeze=v=>{if(v&&typeof v==='object'){for(const x of Object.values(v))freeze(x);Object.freeze(v);}return v;};
+function syntaxProcessAccepted(execution){
+  return execution.status==='OBSERVED_EXIT'&&execution.observed_termination&&
+    execution.observed_exit_code===0&&execution.observed_exit_signal===null&&
+    execution.io_state.io_drained&&execution.io_state.stdout_bytes_observed===0&&
+    execution.io_state.stderr_bytes_observed===0&&execution.settlement_status==='SETTLED_DIRECT_CHILD_EXIT';
+}
 export function projectSingleJsRunSummary(value){
   try{
     const r=snapshotReceiptData(value);
@@ -26,6 +32,14 @@ export function projectSingleJsRunSummary(value){
     if(native){closed(r.direct_child_invocations,['generation','syntax'],[],'single_js_counts');if(typeof r.operator_admitted!=='boolean'||typeof r.operator_receipt!=='string'||r.outer_observation_target_ms!==140000||r.event_loop_condition!=='RESPONSIVE_PARENT_EVENT_LOOP'||Object.values(r.direct_child_invocations).some(v=>!Number.isSafeInteger(v)||v<0||v>1))throw 0;}
     const e=projectSingleJsEvidence({generation:r.generation,syntax:r.syntax,source:r.source});
     if(r.generation===null&&(r.syntax!==null||r.source!==null)||r.syntax!==null&&(e.generation.lifecycle_status!=='LIMITED_SUCCESS'||r.source===null))throw 0;
+    if(r.status==='GENERATION_REJECTED'){
+      if(r.generation===null||r.source!==null||r.syntax!==null||
+        ['LIMITED_SUCCESS','LIMITED_TIMEOUT','LIMITED_USER_ABORT'].includes(e.generation.lifecycle_status))throw 0;
+    }
+    if(r.status==='SYNTAX_REJECTED'){
+      if(r.syntax===null||e.syntax.wrapper_status!=='UNKNOWN'||e.syntax.syntax_valid!==null||
+        syntaxProcessAccepted(r.syntax.execution))throw 0;
+    }
     if(candidateReady&&(e.generation.lifecycle_status!=='LIMITED_SUCCESS'||e.syntax.wrapper_status!=='ACCEPTED'||e.syntax.syntax_valid!==true||!e.artifact.witness_present))throw 0;
     if(native&&(r.direct_child_invocations.generation<(r.generation===null?0:1)||r.direct_child_invocations.syntax<(r.syntax===null?0:1)))throw 0;
     return freeze({schema_version:'squire2.single_js_summary.v1',readiness:r.status,task_correctness:'NOT_EVALUATED',...e,admission_claimed:native?r.operator_admitted:false,has_operator_receipt:native&&r.operator_receipt.length>0,runtime_admitted_marker:false,descendant_guarantee:'NONE'});
