@@ -215,11 +215,56 @@ test('project preparation executable import leaves process output observers alon
  assert.deepEqual([process.stdout.listenerCount('error'),process.stderr.listenerCount('error'),process.exitCode],before);
 });
 
-test('project preparation binds request/prompt/source/config with inert flags and single-use admission',async()=>owned(async runtimeRoot=>{
- const files=new Map(),writes=[],identities=[],job=id(),scope='/synthetic/project-'+job,root='/synthetic/prepared-'+job;
- for(const n of PROJECT_SOURCE_FILES)files.set(join(PROJECT_SOURCE_ROOT,n),enc('PUBLIC SYNTHETIC PIN '+n));const io={readFile:async p=>{if(!files.has(p))throw Error('missing synthetic');return files.get(p);},mkdir:async p=>{writes.push(p);},writeFile:async(p,b,opts)=>{assert.equal(opts.flag,'wx');assert.equal(opts.mode,0o600);if(files.has(p))throw Error('exists');files.set(p,new Uint8Array(b));}};
+function projectPreparationFixture(){
+ const files=new Map(),createdDirectories=[],identities=[];
+ const job=id(),scope='/synthetic/project-'+job,root='/synthetic/prepared-'+job;
+ for(const name of PROJECT_SOURCE_FILES)files.set(join(PROJECT_SOURCE_ROOT,name),enc('PUBLIC SYNTHETIC PIN '+name));
+ const io={
+  async readFile(path){
+   if(!files.has(path))throw Error('missing synthetic');
+   return files.get(path);
+  },
+  async mkdir(path){createdDirectories.push(path);},
+  async writeFile(path,bytes,opts){
+   assert.equal(opts.flag,'wx');
+   assert.equal(opts.mode,0o600);
+   if(files.has(path))throw Error('exists');
+   files.set(path,new Uint8Array(bytes));
+  }
+ };
  const privateInputs={job_id:job,scope,codex:{path:'/synthetic/codex',version:'0.160.0',bytes:1,sha256:'a'.repeat(64)},requested_model:MODEL,effort:EFFORT,authorization,permissions:{sandbox:'read-only',approval_mode:'never',output_contract:'CODEX_JSONL_SINGLE_AGENT_V1'}};
- const p=await prepareProjectCodexTask(root,'b'.repeat(40),request,privateInputs,{fs:io,verifyFile:async pin=>{identities.push(pin);},retention:()=>({prepare:async()=>({capability_status:'READY'})})});assert.equal(p.status,'PREPARED_NOT_EXECUTABLE');assert.equal(p.runtime_admitted,false);assert.deepEqual(writes,[root]);assert.equal(PROJECT_SOURCE_FILES.includes('src/project-stream-collector.mjs'),true);assert.equal(PROJECT_SOURCE_FILES.includes('acceptance/prepare-project-task.mjs'),true);
+ const ports={fs:io,verifyFile:async pin=>{identities.push(pin);},retention:()=>({prepare:async()=>({capability_status:'READY'})})};
+ return {job,scope,root,files,createdDirectories,identities,prepare:()=>prepareProjectCodexTask(root,'b'.repeat(40),request,privateInputs,ports)};
+}
+
+for(const [outcome,writeError,expectedCode] of [['success',null,0],['failure',Error('synthetic output failure'),2]]){
+ test('project preparation executable binds the attempted ACK to stored artifacts on callback '+outcome,async()=>{
+  const fixture=projectPreparationFixture(),writes=[],diagnostics=[];
+  let preparations=0;
+  const code=await runProjectPreparationExecutable([],{
+   prepare(){preparations++;return fixture.prepare();},
+   stdout:{write(text,callback){writes.push(text);callback(writeError);}},
+   stderr:{write(text,callback){diagnostics.push(text);callback();}}
+  });
+  assert.equal(code,expectedCode);
+  assert.deepEqual(diagnostics,[]);
+  assert.equal(preparations,1);
+  assert.deepEqual(fixture.createdDirectories,[fixture.root]);
+  assert.equal(writes.length,1);
+  const ack=JSON.parse(writes[0]);
+  assert.equal(ack.status,'PREPARED_NOT_EXECUTABLE');
+  assert.equal(ack.runtime_admitted,false);
+  for(const [filename,field] of [['prompt.utf8','prompt_sha256'],['config.json','config_sha256'],['operation-manifest.json','manifest_sha256']]){
+   const bytes=fixture.files.get(join(fixture.root,filename));
+   assert.ok(bytes instanceof Uint8Array,filename);
+   assert.equal(ack[field],hash(bytes),filename);
+  }
+ });
+}
+
+test('project preparation binds request/prompt/source/config with inert flags and single-use admission',async()=>owned(async runtimeRoot=>{
+ const {files,createdDirectories,identities,job,scope,root,prepare}=projectPreparationFixture();
+ const p=await prepare();assert.equal(p.status,'PREPARED_NOT_EXECUTABLE');assert.equal(p.runtime_admitted,false);assert.deepEqual(createdDirectories,[root]);assert.equal(PROJECT_SOURCE_FILES.includes('src/project-stream-collector.mjs'),true);assert.equal(PROJECT_SOURCE_FILES.includes('acceptance/prepare-project-task.mjs'),true);
  const raw=files.get(join(root,'config.json')),c=validateProjectCodexConfig(JSON.parse(decode(raw))),manifest=JSON.parse(decode(files.get(join(root,'operation-manifest.json'))));assert.equal(c.max_direct_child_spawns,1);assert.equal('syntax_check_wall_ms'in c,false);assert.equal(c.target_mode.stage_subpath,'stage');assert.equal(c.prompt.bytes,buildProjectCodegenPrompt(request).length);assert.equal(p.config_sha256,hash(raw));assert.equal(identities.length,PROJECT_SOURCE_FILES.length+2);
  const rt=fakeRuntime(),launch=inputs(runtimeRoot,rt);assert.deepEqual(canonicalBytes(c.permissions),canonicalBytes(launch.ports.codex.permissions));
  const staged=await runProjectCodexTask(launch.spec,launch.options,launch.ports);assert.equal(staged.status,'CANDIDATE_STAGED');assert.deepEqual(rt.calls[0][1],manifest.generation.argv);assert.deepEqual(rt.calls[0][1].slice(0,2),['-c','forced_login_method="chatgpt"']);
