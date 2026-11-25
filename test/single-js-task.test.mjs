@@ -213,7 +213,7 @@ test('single-JS runner rejects missing permissions before fake dispatch or runti
 test('generation rejection, syntax failure and pre-abort stop without retry or functional evaluation',async()=>{
  for(const [settings,status,kinds]of [[{source:''},'GENERATION_REJECTED',['generation']],[{syntaxExit:1},'SYNTAX_REJECTED',['generation','syntax']],[{abort:true},'INCOMPLETE',[]]]){const f=runtime(settings),r=await f.run();assert.equal(r.status,status);assert.deepEqual(f.calls.map(c=>c.kind),kinds);assert.equal(r.task_correctness,'NOT_EVALUATED');assert.equal(r.workspace_disposition,'QUARANTINED');assert.equal(projectSingleJsRunSummary(JSON.parse(JSON.stringify(r))).readiness,status);}
 });
-test('Single-JS reporting accepts producer outcomes and rejects inconsistent reasons and dispositions',async()=>{
+test('Single-JS reporting binds rejection labels to producer evidence, reasons and dispositions',async()=>{
  const failed=runtime();
  const syntax=failed.ports.syntax;
  failed.ports.syntax=async(path,ports)=>{
@@ -246,6 +246,12 @@ test('Single-JS reporting accepts producer outcomes and rejects inconsistent rea
   assert.equal(summary.readiness,status);
   assert.equal(summary.task_correctness,'NOT_EVALUATED');
   if(status==='FAILED'||status==='SYNTAX_REJECTED')assert.equal(summary.syntax.wrapper_status,'UNKNOWN');
+  for(const [label,why] of [['GENERATION_REJECTED','GENERATION_REJECTED'],['SYNTAX_REJECTED','SYNTAX_PROCESS_REJECTED']]){
+   if(label===status)continue;
+   const relabeled={...receipt,status:label,reason:why,workspace_disposition:'QUARANTINED'};
+   if(projectSingleJsRunSummary(relabeled).readiness!=='INVALID_RECEIPT')
+    unexpected.push([status,reason,label]);
+  }
   const wrongReason=status==='INCOMPLETE'?'SYNTAX_PROCESS_REJECTED':'CANCELED';
   const wrongDisposition=disposition==='QUARANTINED'?'DEDICATED_NOT_REUSED':'QUARANTINED';
   for(const [field,value] of [['reason',wrongReason],['workspace_disposition',wrongDisposition]]){
@@ -254,6 +260,19 @@ test('Single-JS reporting accepts producer outcomes and rejects inconsistent rea
   }
  }
  assert.deepEqual(unexpected,[]);
+});
+test('Single-JS syntax rejection can record exit zero with output and unknown syntax validity',async()=>{
+ const fixture=runtime();
+ const observe=fixture.ports.syntax;
+ fixture.ports.syntax=async(path,ports)=>{
+  const execution=await observe(path,ports);
+  return {...execution,io_state:{...execution.io_state,stderr_bytes_observed:1}};
+ };
+ const receipt=JSON.parse(JSON.stringify(await fixture.run()));
+ assert.equal(receipt.syntax.execution.observed_exit_code,0);
+ assert.equal(projectSingleJsRunSummary(receipt).readiness,'SYNTAX_REJECTED');
+ receipt.syntax.observation={syntax_status:'SYNTAX_ERROR',syntax_valid:false};
+ assert.equal(projectSingleJsRunSummary(receipt).readiness,'INVALID_RECEIPT');
 });
 test('generic reporting has separate discriminator, no17fixture fabrication and no functional PASS exit',async()=>{
  const f=runtime(),r=JSON.parse(JSON.stringify(await f.run()));let out='',err='';const bytes=enc(JSON.stringify(r));
