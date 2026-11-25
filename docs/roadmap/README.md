@@ -73,6 +73,12 @@ For each completed major benchmark, retain an inspectable result and standardize
 
 This restoration adds no new research recommendation or implementation ticket. Historical research and tickets are not newly commissioned or made ready by publication. Stronger redesign is deferred.
 
+### A5/BP comparison readiness — 25 November 2026
+
+For a separately admitted comparison, retain the requested settings and the evidence of what each runner actually enforced for every assigned attempt. For CPU and RAM separately, record the guaranteed allocation, the enforceable ceiling, which processes or jobs share it, and what happens at the limit (for example, throttling, termination, or a permitted burst). Mark each effective value or behavior `UNKNOWN` where evidence is absent. Bind the same record to the runner and execution profile, their versions, concurrency, and the wall-time, step and call caps. Keep every assignment in the accounting, including cancellations and interruptions. If evidence is missing or conditions changed between arms, withhold matched-condition and improvement claims. The existing baseline and admission gates still apply. [A5 comparison protocol](https://github.com/Zkrausman/Squire/blob/ed119fb43367719daddb264821fb7cbf1cb648c5/docs/research/factory-acceptance.md) · [Benchmark portfolio protocol](https://github.com/Zkrausman/Squire/blob/ed119fb43367719daddb264821fb7cbf1cb648c5/docs/research/factory-benchmark-portfolio.md)
+
+Anthropic observed that resource limits affected coding-agent outcomes in its evaluation environments. In Squire, #291 increased the hosted Controller’s time allowance. The cause of the earlier cancellations remains unknown. [Anthropic study](https://www.anthropic.com/research/infrastructure-noise) · [Squire #291](https://github.com/Zkrausman/Squire/pull/291)
+
 ## Proposed HumanLayer synthesis — 25 October 2026
 
 The owner approved integrating this synthesis into the roadmap as documentation only. The verified canonical PR/commit receipt records whether documentation integration has landed. These six entries remain planning proposals: their implementations are not authorized by this integration, started, or delivered. This documentation does not constitute implementation delivery, native qualification, or benchmark release. No stack, framework, or provider replacement, installation, benchmark, or current native work is authorized.
