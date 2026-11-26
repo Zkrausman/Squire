@@ -1,4 +1,5 @@
 // Optional read-only check of one public-text request.
+import {pathToFileURL} from 'node:url';
 import {readReceiptBytes} from './squire-report.mjs';
 import {CODEX_BYTE_LIMITS} from '../src/codex-profile.mjs';
 import {ContractError} from '../src/job-spec.mjs';
@@ -62,7 +63,7 @@ async function check(args) {
   }
 }
 
-if (import.meta.main) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const outputError = () => { process.exitCode = 2; };
   process.stdout.on('error', outputError);
   process.stderr.on('error', outputError);

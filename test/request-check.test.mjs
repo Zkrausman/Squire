@@ -131,3 +131,13 @@ test('usage handles unknown families and extra operands before opening a file', 
     rejected(await artifactCliChild(cli, args), help.stdout.trimEnd());
   }
 });
+
+test('closed help output and a closed diagnostic stream exit quietly with code 2', async () => {
+  for (const [args, closed] of [[['--help'], 'stdout'], [[], 'stderr']]) {
+    const result = await artifactCliChild(cli, args, {closed});
+    assert.equal(result.code, 2);
+    assert.equal(result.signal, null);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+  }
+});
