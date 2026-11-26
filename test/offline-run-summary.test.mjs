@@ -55,7 +55,7 @@ test('public offline report examples preserve exact outputs, exits and receipt r
   'Tokens: input=UNKNOWN, output=UNKNOWN, cache_read=UNKNOWN, thinking=UNKNOWN, total=UNKNOWN, codex_reasoning=UNKNOWN',
   'Syntax: UNKNOWN',
   'Artifact: UNKNOWN; bytes: UNKNOWN',
-  'Diagnostic: UNKNOWN_REJECTION',
+  'Diagnostic: NONE',
   'Limits: direct child only; descendant guarantee NONE; no hostile containment, crash recovery or workspace reuse proof.',
  ].join('\n')+'\n';
  const canceledOutput=[

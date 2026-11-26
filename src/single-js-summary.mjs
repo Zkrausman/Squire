@@ -1,5 +1,6 @@
 // Versioned generic projection: candidate readiness is never functional task PASS.
 import {closed} from './job-spec.mjs';
+import {LIMITED_STATUSES} from './limited-job-record.mjs';
 import {snapshotReceiptData,projectSingleJsEvidence,validateProjectedEvidence} from './offline-run-summary.mjs';
 import {diagnosticReport} from './internal/limited-diagnostics.mjs';
 const reasonsByStatus=new Map([
@@ -45,20 +46,50 @@ export function projectSingleJsRunSummary(value){
     return freeze({schema_version:'squire2.single_js_summary.v1',readiness:r.status,task_correctness:'NOT_EVALUATED',...e,admission_claimed:native?r.operator_admitted:false,has_operator_receipt:native&&r.operator_receipt.length>0,runtime_admitted_marker:false,descendant_guarantee:'NONE'});
   }catch{return freeze({schema_version:'squire2.single_js_summary.v1',readiness:'INVALID_RECEIPT',task_correctness:'NOT_EVALUATED',diagnostic:{stage:'RECEIPT_VALIDATION',reason:'SCHEMA_MISMATCH'}});}
 }
+function validateSingleJsReadiness(summary){
+  const {readiness,generation,syntax,artifact,diagnostic}=summary;
+  if(readiness==='NOT_RUN'){
+    if(generation!==null||syntax!==null||artifact!==null||diagnostic!==null||
+       summary.admission_claimed||summary.has_operator_receipt)throw 0;
+    return;
+  }
+  if(!reasonsByStatus.has(readiness)||!generation||!syntax||!artifact||!diagnostic)throw 0;
+  validateProjectedEvidence({generation,syntax,artifact,diagnostic});
+
+  const lifecycle=generation.lifecycle_status;
+  if(lifecycle==='NOT_RUN'){
+    if(diagnostic.stage!==null||diagnostic.reason!==null)throw 0;
+    if(Object.entries(generation).some(([key,value])=>key!=='lifecycle_status'&&value!==null))throw 0;
+  }else if(!LIMITED_STATUSES.includes(lifecycle)||generation.task_outcome_evaluated_marker!==false||
+           (lifecycle==='LIMITED_SUCCESS'&&generation.provider_status!=='turn.completed'))throw 0;
+
+  if(artifact.witness_present){
+    if(lifecycle==='NOT_RUN'||artifact.sha256===null||artifact.byte_count===null||
+       artifact.format_inspection!=='ACTUAL_BYTES_COOPERATIVE_FORMAT_ONLY'||artifact.safety_evidence!=='NOT_ESTABLISHED')throw 0;
+  }else if(Object.entries(artifact).some(([key,value])=>key!=='witness_present'&&value!==null))throw 0;
+  if(syntax.wrapper_status==='NOT_RUN'){
+    if(syntax.observed_exit_code!==null||syntax.syntax_valid!==null)throw 0;
+  }else if(lifecycle!=='LIMITED_SUCCESS'||!artifact.witness_present)throw 0;
+  if(syntax.wrapper_status==='ACCEPTED'&&(syntax.syntax_valid!==true||syntax.observed_exit_code!==0))throw 0;
+
+  if(readiness==='CANDIDATE_READY'&&syntax.wrapper_status!=='ACCEPTED')throw 0;
+  if(readiness==='GENERATION_REJECTED'&&(['NOT_RUN','LIMITED_SUCCESS','LIMITED_TIMEOUT','LIMITED_USER_ABORT'].includes(lifecycle)||
+     syntax.wrapper_status!=='NOT_RUN'||artifact.witness_present))throw 0;
+  // Exit zero alone cannot rule out rejection: process output and settlement are not projected.
+  if(readiness==='SYNTAX_REJECTED'&&(syntax.wrapper_status!=='UNKNOWN'||syntax.syntax_valid!==null))throw 0;
+}
 export function formatSingleJsSummaryTerminal(summary){
   try{
   summary=snapshotReceiptData(summary);
   if(summary?.readiness==='INVALID_RECEIPT')return 'Squire single-JavaScript receipt: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
   closed(summary,['schema_version','readiness','task_correctness','generation','syntax','artifact','diagnostic','admission_claimed','has_operator_receipt','runtime_admitted_marker','descendant_guarantee'],[],'single_js_summary');
   if(summary.schema_version!=='squire2.single_js_summary.v1'||summary.task_correctness!=='NOT_EVALUATED'||summary.runtime_admitted_marker!==false||summary.descendant_guarantee!=='NONE')throw 0;
-  validateProjectedEvidence({generation:summary.generation,syntax:summary.syntax,artifact:summary.artifact,diagnostic:summary.diagnostic??{stage:null,reason:null}});
   if(typeof summary.admission_claimed!=='boolean'||typeof summary.has_operator_receipt!=='boolean')throw 0;
-  if(summary.readiness==='CANDIDATE_READY'&&(summary.generation?.lifecycle_status!=='LIMITED_SUCCESS'||summary.generation.task_outcome_evaluated_marker!==false||summary.generation.provider_status!=='turn.completed'||summary.syntax?.wrapper_status!=='ACCEPTED'||summary.syntax.syntax_valid!==true||summary.syntax.observed_exit_code!==0||summary.artifact?.witness_present!==true||typeof summary.artifact.sha256!=='string'||summary.artifact.byte_count===null))throw 0;
-  if(summary.readiness!=='NOT_RUN'&&!reasonsByStatus.has(summary.readiness))throw 0;
-  const readiness=['CANDIDATE_READY','GENERATION_REJECTED','SYNTAX_REJECTED','INCOMPLETE','FAILED','NOT_RUN','INVALID_RECEIPT'].includes(summary?.readiness)?summary.readiness:'INVALID_RECEIPT';
+  validateSingleJsReadiness(summary);
+  const readiness=summary.readiness;
   const model=v=>v==='gpt-6-luna'?'gpt-6-luna':'UNKNOWN',num=v=>Number.isSafeInteger(v)&&v>=0?String(v):'UNKNOWN';
   const g=summary?.generation,s=summary?.syntax,a=summary?.artifact;
-  const diagnostic=summary.diagnostic?.reason===null?'NONE':diagnosticReport(summary.diagnostic?.stage,summary.diagnostic?.reason).reason;
+  const diagnostic=summary.diagnostic===null||summary.diagnostic.reason===null?'NONE':diagnosticReport(summary.diagnostic?.stage,summary.diagnostic?.reason).reason;
   return [`Squire single-JavaScript receipt: ${readiness}`,'Task correctness: NOT_EVALUATED (no functional oracle or fixture PASS).','Recorded claims only; no artifact, authorization or execution re-verification.',`Generation: ${['LIMITED_SUCCESS','LIMITED_PROCESS_FAILED','LIMITED_TIMEOUT','LIMITED_USER_ABORT','LIMITED_CAPACITY_EXCEEDED','LIMITED_PARSER_ERROR','LIMITED_SPAWN_FAILED','LIMITED_PERSISTENCE_FAILED','LIMITED_INTERNAL_ERROR','NOT_RUN'].includes(g?.lifecycle_status)?g.lifecycle_status:'UNKNOWN'}`,`Requested model: ${model(g?.requested_model)}; reported model: ${model(g?.reported_model)}`,`Process wall ms: ${num(g?.process_wall_ms)}; provider duration seconds: ${typeof g?.provider_duration_sec==='number'&&Number.isFinite(g.provider_duration_sec)&&g.provider_duration_sec>=0?g.provider_duration_sec:'UNKNOWN'}; inference seconds: UNKNOWN`,`Tokens: ${['input','output','cache_read','thinking','total','codex_reasoning'].map(k=>`${k}=${num(g?.tokens?.[k])}`).join(', ')}`,`Syntax: ${['ACCEPTED','UNKNOWN','NOT_RUN'].includes(s?.wrapper_status)?s.wrapper_status:'UNKNOWN'}`,`Artifact: ${typeof a?.sha256==='string'&&/^[a-f0-9]{64}$/.test(a.sha256)?a.sha256:'UNKNOWN'}; bytes: ${num(a?.byte_count)}`,`Diagnostic: ${diagnostic}`,'Limits: direct child only; descendant guarantee NONE; no hostile containment, crash recovery or workspace reuse proof.'].join('\n')+'\n';
   }catch{return 'Squire single-JavaScript receipt: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';}
 }
