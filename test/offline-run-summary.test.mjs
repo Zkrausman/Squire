@@ -230,6 +230,48 @@ test('offline full Q218 conformance keeps generation and markers separate, inclu
  const r=receipt(),s=projectRunSummary(r);assert.equal(s.overall_outcome,'PASS');assert.equal(s.fixtures.passed_count,17);assert.equal(s.fixtures.cases[16].observed_exit_code,4);assert.equal(s.admission.operator_admitted,true);assert.equal(s.admission.runtime_admitted_marker,false);assert.equal(s.generation.task_outcome_evaluated_marker,false);assert.ok(Object.isFrozen(s.fixtures.cases[0]));assert.equal(s.generation.reported_model,'UNKNOWN');
  const c=await cli(r);assert.equal(c.code,0);assert.equal(c.err,'');assert.match(c.out,/17 PASS/);assert.match(c.out,/no artifact, authorization or execution re-verification/);assert.equal(c.out.includes(path),false);assert.match(c.out,/inference seconds: UNKNOWN/);
 });
+test('reported fixture passes require the exit and applicable checks in the frozen Q218 contract',async()=>{
+ const freezeUrl=new URL('../fixtures/q218/fixtures-freeze-manifest.json',import.meta.url);
+ const {fixtures}=JSON.parse(await fs.readFile(freezeUrl,'utf8'));
+ const campaign=receipt();
+ for(const [i,fixture] of fixtures.entries()){
+  assert.equal(campaign.fixtures[i].fixture_id,fixture.fixture_id);
+  Object.assign(campaign.fixtures[i],{
+   observed_exit_code:fixture.expected_exit_code,
+   summary_json_matched:fixture.expected_exit_code===0?true:'NOT_APPLICABLE',
+   manifest_json_matched:fixture.expected_exit_code===0?true:'NOT_APPLICABLE',
+   zero_files_verified:fixture.zero_files_required?true:'NOT_APPLICABLE'
+  });
+ }
+ assert.equal((await cli(campaign)).code,0);
+ for(const [i,row] of campaign.fixtures.entries()){
+  for(const field of ['observed_exit_code','summary_json_matched','manifest_json_matched','zero_files_verified']){
+   const changed=structuredClone(campaign);
+   if(field==='observed_exit_code')changed.fixtures[i][field]=row[field]===0?2:0;
+   else changed.fixtures[i][field]=row[field]===true?'NOT_APPLICABLE':true;
+   const result=await cli(changed);
+   const label=`${row.fixture_id} ${field}`;
+   assert.equal(result.code,2,label);
+   assert.equal(result.err,'SCHEMA_MISMATCH\n',label);
+   assert.match(result.out,/^Squire offline receipt summary: INVALID_RECEIPT\n/,label);
+  }
+ }
+});
+
+test('formatting a projected campaign PASS requires the complete matrix and matching exit codes',()=>{
+ const summary=projectRunSummary(receipt());
+ for(const change of [
+  s=>{s.fixtures.cases[16].observed_exit_code=0;},
+  s=>{s.fixtures.cases=null;},
+  s=>{s.fixtures.total_matrix=null;},
+  s=>{s.campaign.denominator=null;}
+ ]){
+  const changed=structuredClone(summary);
+  change(changed);
+  assert.equal(formatSummaryTerminal(changed),'Squire offline receipt summary: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n');
+ }
+});
+
 test('dry run and early abort preserve absent observations without invented fixtures',async()=>{
  const dry={status:'DRY_RUN_NATIVE_DISABLED',direct_child_invocations:0};const s=projectRunSummary(dry);assert.equal(s.overall_outcome,'INCOMPLETE');assert.equal(s.campaign.denominator,null);assert.equal(s.fixtures.cases,null);assert.equal(s.generation.tokens,null);assert.equal(s.admission.runtime_admitted_marker,null);assert.equal((await cli(dry)).code,1);
  const r=receipt();for(const k of ['direct_child_invocations','outer_observation_target_ms','event_loop_condition','operator_receipt','operator_admitted'])delete r[k];Object.assign(r,{status:'FAIL',reason:'CANCELED',generation:null,syntax:null,source:null,fixtures:notRun(),fixture_deadline_ms:null,workspace_disposition:'QUARANTINED'});const a=projectRunSummary(r);assert.equal(a.overall_outcome,'INCOMPLETE');assert.equal(a.fixtures.not_run_count,17);assert.equal(a.generation.lifecycle_status,'NOT_RUN');assert.equal(a.syntax.wrapper_status,'NOT_RUN');assert.equal(a.artifact.witness_present,false);assert.equal(a.execution.child_invocations.generation,null);
