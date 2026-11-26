@@ -30,3 +30,9 @@ is a personal checklist with a separate schema. To record a choice, the reviewer
 must separately construct and submit the family's decision request. See the
 [original decision contract](project-candidate-review-package.md) and
 [first-revision decision contract](project-revision-review-package.md).
+
+## Complete a new worksheet with the keyboard
+
+Use the [offline response form](project-review-response.md) to enter responses
+beside the selected evidence without editing JSON. It leaves the original
+blank worksheet available and creates a separate private worksheet only.

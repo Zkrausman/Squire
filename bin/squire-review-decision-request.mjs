@@ -25,7 +25,7 @@ async function verifiedManifest(family, packageDir, expected) {
   return JSON.parse(bytes.toString('utf8'));
 }
 
-async function readWorksheet(path) {
+export async function readWorksheet(path) {
   await ancestors(fs, path);
   const privateFile = s => s.isFile() && s.uid === process.getuid() &&
     s.nlink === 1 && (s.mode & 0o7777) === 0o600;
