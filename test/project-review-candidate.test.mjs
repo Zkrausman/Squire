@@ -30,7 +30,8 @@ import {
   buildProjectReviewCandidate,
   buildProjectReviewCandidateNative,
   buildProjectRevisionCandidate,
-  buildProjectRevisionCandidateNative
+  buildProjectRevisionCandidateNative,
+  draftProjectBasePreimages
 } from '../src/project-review-candidate.mjs';
 import {buildProjectCandidateReviewPackage,verifyProjectCandidateReviewPackage,recordProjectCandidateDecision} from '../src/project-candidate-review-package.mjs';
 import {buildProjectRevisionReviewPackage,verifyProjectRevisionReviewPackage,recordProjectRevisionDecision,verifyProjectRevisionDecision} from '../src/project-revision-review-package.mjs';
@@ -2349,3 +2350,112 @@ for(const standard of [false,true]){
     });
   });
 }
+
+// Pinned-base drafts reuse the already-registered synthetic candidate fixtures.
+// No candidate programs are executed, and the draft API/CLI writes no Git data.
+function draftInput(base,profile,paths){
+  return {profile,base_git_dir:base.gitDir,base_git_identity:base.identity,
+    base_commit:base.commit,base_tree:base.tree,paths};
+}
+function draftCommand(base,profile,destination,paths){
+  return spawnSync(process.execPath,[fileURLToPath(new URL('../bin/squire-base-preimage-draft.mjs',import.meta.url)),
+    profile,base.gitDir,String(base.identity.dev),String(base.identity.ino),base.commit,base.tree,destination,...paths],
+    {encoding:'utf8',timeout:15000});
+}
+
+test('pinned-base draft facts exactly match both original-import synthetic fixtures',async()=>{
+  for(const standard of [true,false])await ownedDirectory(async root=>{
+    const f=await makeReviewFixture(root,{standard,bare:!standard,
+      stageFiles:[sourceFile('src/main.js','new text\n'),assetFile('assets/new.bin',new Uint8Array([0,255,1])),
+        assetFile('assets/empty.bin',new Uint8Array([41]))],
+      baseFiles:[{path:'src/main.js',bytes:utf8.encode('old text\n')},
+        {path:'assets/empty.bin',bytes:new Uint8Array()},{path:'docs/keep.md',bytes:utf8.encode('keep\n')}]});
+    const before=await repoFileDigest(f.base.project);
+    const profile=standard?'standard':'large',paths=f.stageFiles.map(file=>file.path);
+    const draft=await draftProjectBasePreimages(draftInput(f.base,profile,paths));
+    assert.deepEqual(draft,f.spec.allowed_changes);
+    assert.deepEqual(await repoFileDigest(f.base.project),before);
+    assert.equal(await fs.access(f.candidateDir).then(()=>true,()=>false),false);
+    const output=join(root,'preimage-draft.json');
+    const cli=draftCommand(f.base,profile,output,paths);
+    assert.equal(cli.status,0,cli.stderr);assert.equal(cli.stdout,'PROJECT_BASE_PREIMAGE_DRAFT_PREPARED\n');
+    assert.equal(cli.stderr,'');
+    assert.equal((await fs.lstat(output)).mode&0o7777,0o600);
+    const initial=await fs.readFile(output);
+    assert.deepEqual(JSON.parse(initial),draft);
+    const occupied=draftCommand(f.base,profile,output,paths);
+    assert.equal(occupied.status,2);assert.equal(occupied.stdout,'');
+    assert.equal(occupied.stderr,'PROJECT_BASE_PREIMAGE_DRAFT_REJECTED\n');
+    assert.deepEqual(await fs.readFile(output),initial);
+    assert.deepEqual(await repoFileDigest(f.base.project),before);
+    // Explicit synthetic fixture consumer supplies its own receipt, stage,
+    // and permission list; the draft only replaces the exact preimage facts.
+    const build=standard?buildStandardProjectReviewCandidateNative:buildProjectReviewCandidateNative;
+    const result=await build({...f.spec,allowed_changes:JSON.parse(initial)});
+    assert.equal(result.status,'SOURCE_CANDIDATE_CREATED');
+    assert.deepEqual(result.changed_paths,['assets/empty.bin','assets/new.bin','src/main.js']);
+    assert.deepEqual(await repoFileDigest(f.base.project),before);
+  });
+});
+
+test('pinned-base draft rejects invalid identity, pin and path selections without output',async()=>{
+  await ownedDirectory(async root=>{
+    const base=await makeBase(root,[{path:'src/main.js',bytes:utf8.encode('fixture\n')}],{bare:false});
+    const input=draftInput(base,'standard',['src/main.js']),before=await repoFileDigest(base.project);
+    for(const override of [{base_git_identity:{...base.identity,ino:base.identity.ino+1}},
+      {base_commit:'0'.repeat(40)},{base_tree:'0'.repeat(40)},{profile:'unknown'},
+      {paths:[]},{paths:['src/main.js','src/main.js']},{paths:['src/main.js','SRC/main.js']},
+      {paths:['src']},{paths:['src/main.js/child.txt']},{paths:['SRC/other.txt']},
+      {paths:['../other.txt']},{paths:['.git/info']},{paths:Array.from({length:51},(_,i)=>`file-${i}.txt`)}]){
+      await assert.rejects(()=>draftProjectBasePreimages({...input,...override}),{code:'PROJECT_BASE_PREIMAGE_DRAFT_REJECTED'});
+    }
+    for(const [output,paths] of [[join(root,'unsafe.json'),['../other.txt']],
+      [join(base.project,'draft.json'),['new.txt']]]){
+      const cli=draftCommand(base,'standard',output,paths);
+      assert.equal(cli.status,2);assert.equal(cli.stdout,'');
+      assert.equal(cli.stderr,'PROJECT_BASE_PREIMAGE_DRAFT_REJECTED\n');
+      assert.equal(await fs.access(output).then(()=>true,()=>false),false);
+    }
+    assert.deepEqual(await repoFileDigest(base.project),before);
+  });
+});
+
+test('pinned-base draft bounds selected original blobs and rejects unavailable bytes',async()=>{
+  await ownedDirectory(async root=>{
+    const base=await makeBase(root,[{path:'exact.bin',bytes:new Uint8Array(4194304).fill(17)},
+      {path:'overflow.bin',bytes:new Uint8Array(4194305).fill(18)},
+      {path:'missing.bin',bytes:new Uint8Array([19])}]);
+    const exact=await draftProjectBasePreimages(draftInput(base,'standard',['exact.bin']));
+    assert.equal(exact[0].original.bytes,4194304);assert.equal(exact[0].original.blob,base.blobs.get('exact.bin'));
+    await assert.rejects(()=>draftProjectBasePreimages(draftInput(base,'large',['overflow.bin'])),
+      {code:'PROJECT_BASE_PREIMAGE_DRAFT_REJECTED'});
+    const missing=base.blobs.get('missing.bin');
+    await fs.unlink(join(base.gitDir,'objects',missing.slice(0,2),missing.slice(2)));
+    const output=join(root,'missing-draft.json');
+    const cli=draftCommand(base,'large',output,['missing.bin']);
+    assert.equal(cli.status,2);assert.equal(cli.stdout,'');
+    assert.equal(await fs.access(output).then(()=>true,()=>false),false);
+  });
+});
+
+test('pinned-base draft rejects an over-limit tree inventory even for an absent path',async()=>{
+  await ownedDirectory(async root=>{
+    const base=await makeBase(root,[{path:'fixture.txt',bytes:utf8.encode('fixture')}]);
+    const blob=base.blobs.get('fixture.txt');
+    const tree=writeGitTree(base.gitDir,Array.from({length:2049},(_,i)=>({path:`f-${i}.txt`,oid:blob})));
+    const commit=writeGitCommit(base.gitDir,tree);
+    const input={...draftInput(base,'large',['new.txt']),base_commit:commit,base_tree:tree};
+    await assert.rejects(()=>draftProjectBasePreimages(input),{code:'PROJECT_BASE_PREIMAGE_DRAFT_REJECTED'});
+  });
+});
+
+test('pinned-base draft rejects unsupported empty directory inventory instead of recording absence',async()=>{
+  await ownedDirectory(async root=>{
+    const base=await makeBase(root,[{path:'fixture.txt',bytes:utf8.encode('fixture')}],{
+      extraTreeEntries:[{path:'empty',mode:'040000',type:'tree',oid:'FIXTURE_EMPTY_TREE'}]});
+    const before=await repoFileDigest(base.project);
+    await assert.rejects(()=>draftProjectBasePreimages(draftInput(base,'standard',['empty/new.txt'])),{
+      code:'PROJECT_BASE_PREIMAGE_DRAFT_REJECTED'});
+    assert.deepEqual(await repoFileDigest(base.project),before);
+  });
+});
