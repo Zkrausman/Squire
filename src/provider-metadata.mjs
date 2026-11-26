@@ -394,27 +394,30 @@ function largeTerminalFacts(event,status){
 }
 
 export function decodeLargeProjectCodexJsonl(input){
+  return visitLargeProjectCodexJsonl(input,null);
+}
+
+// Shared with private response intake. Only the collector observes frames;
+// the public metadata decoder always returns the finite metadata projection.
+export function visitLargeProjectCodexJsonl(input,observeFrame){
   const captured=largeBoundary(input);
   const failureMetadata=code=>output(captured.raw_wrapper,code,null,null,null,null,true);
   if(captured.oversized)return failureMetadata('PAYLOAD_SIZE_EXCEEDED');
   let terminalCount=0,status=null,facts=null;
   try{
     for(const event of iterateLargeProjectCodexJsonlFrames(captured.bytes)){
-      if(!own(event,'type')||
-         !['turn.completed','turn.failed'].includes(event.type))continue;
-      terminalCount++;
-      if(terminalCount===1){
-        status=event.type;
-        facts=largeTerminalFacts(event,status);
-      }else if(terminalCount===2){
-        // Keep only the fixed status label needed to distinguish the two
-        // structural terminal errors; no event list is retained.
-        const firstStatus=status;
-        const current=event.type;
-        if(firstStatus!==current)return failureMetadata('CONFLICTING_TERMINAL_EVENTS');
-      }else{
-        return failureMetadata('REPEATED_TERMINAL_REJECTED');
+      if(own(event,'type')&&['turn.completed','turn.failed'].includes(event.type)){
+        terminalCount++;
+        if(terminalCount===1){
+          status=event.type;
+          facts=largeTerminalFacts(event,status);
+        }else if(terminalCount===2){
+          if(status!==event.type)return failureMetadata('CONFLICTING_TERMINAL_EVENTS');
+        }else{
+          return failureMetadata('REPEATED_TERMINAL_REJECTED');
+        }
       }
+      observeFrame?.(event);
     }
   }catch(caught){
     return failureMetadata(largeErrorField(caught)??'ENVELOPE_PARSE_ERROR');
