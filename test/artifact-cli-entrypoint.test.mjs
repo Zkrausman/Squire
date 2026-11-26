@@ -1,4 +1,5 @@
 import test from 'node:test';
+import './request-check.test.mjs';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {artifactCliChild as child} from './helpers/artifact-cli-child.mjs';
