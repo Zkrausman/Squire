@@ -63,7 +63,12 @@ ports)` wrapper permits injected read/stat/output ports for tests.
 The legacy campaign projector recognizes the fixed Q218 campaign, its native
 receipt wrapper, and its disabled dry-run wrapper. A Q218 campaign requires
 FIX-01 through FIX-17 exactly once in order. Expected nonzero exits can pass
-their recorded fixture oracle.
+their recorded fixture oracle. Each reported fixture PASS must match the frozen
+case's exit code and output checks. FIX-01 through FIX-10 require exit 0 and
+both summary and manifest matches. FIX-11 through FIX-13 require exit 2 and
+FIX-14 through FIX-16 require exit 3, all with both output files recorded
+absent. FIX-17 requires exit 4. Checks outside each case's contract must be
+marked `NOT_APPLICABLE`. A contradiction rejects the receipt with exit 2.
 Generation `LIMITED_SUCCESS` alone never becomes task PASS. Early abort and dry
 run preserve missing observations instead of inventing a completed matrix.
 Unsupported schemas and contradictory success claims fail closed.

@@ -131,6 +131,21 @@ function projectSyntax(v,out) {
   const e=v.execution;if(v.wrapper_status==='ACCEPTED'&&(e.status!=='OBSERVED_EXIT'||!e.observed_termination||e.observed_exit_code!==0||e.observed_exit_signal!==null||!e.io_state.io_drained||e.io_state.stdout_bytes_observed!==0||e.io_state.stderr_bytes_observed!==0||e.settlement_status!=='SETTLED_DIRECT_CHILD_EXIT'||v.observation.syntax_valid!==true))invalid('SCHEMA_MISMATCH');
   out.syntax={wrapper_status:v.wrapper_status,observed_exit_code:e.observed_exit_code,syntax_valid:v.observation.syntax_valid};
 }
+// The saved Q218 format identifies each frozen case by its position and FIX id.
+// Keep reporting independent of fixture files and the native verifier.
+const q218ExitCodes=Object.freeze([
+  0,0,0,0,0,0,0,0,0,0, // FIX-01..10 produce summary and manifest
+  2,2,2,3,3,3,          // FIX-11..16 require both files to be absent
+  4                     // FIX-17 checks the exit only
+]);
+function validateFixturePass(row,index){
+  const expectedExit=q218ExitCodes[index];
+  const outputMatch=expectedExit===0?true:'NOT_APPLICABLE';
+  const zeroFiles=expectedExit===2||expectedExit===3?true:'NOT_APPLICABLE';
+  if(!row.exit_code_matched||row.observed_exit_code!==expectedExit||row.observed_exit_signal!==null||
+     row.summary_json_matched!==outputMatch||row.manifest_json_matched!==outputMatch||
+     row.zero_files_verified!==zeroFiles)invalid('SCHEMA_MISMATCH');
+}
 function projectFixtures(v,out) {
   if(!Array.isArray(v)||v.length!==17)invalid('FINITE_FIXTURE_MATRIX_REQUIRED');
   const ids=new Set(),cases=[];let passed=0,failed=0,notRun=0;
@@ -140,7 +155,7 @@ function projectFixtures(v,out) {
     if(f.fixture_id!==`FIX-${String(i+1).padStart(2,'0')}`)invalid('FINITE_FIXTURE_MATRIX_REQUIRED');
     if(f.status==='NOT_RUN'){keys(f,['fixture_id','status']);notRun++;cases.push({fixture_id:f.fixture_id,verdict:'NOT_RUN',observed_exit_code:null});continue;}
     keys(f,fixtureKeys);if(!['PASS','FAIL','TIMEOUT'].includes(f.status)||f.status!==f.fixture_verdict||!exit(f.observed_exit_code)||f.observed_exit_signal!==null&&!isString(f.observed_exit_signal)||!nullableInteger(f.observed_wall_ms)||typeof f.exit_code_matched!=='boolean'||['summary_json_matched','manifest_json_matched','zero_files_verified'].some(k=>!['NOT_APPLICABLE',true,false].includes(f[k])))invalid('SCHEMA_MISMATCH');
-    if(f.status==='PASS'&&(!f.exit_code_matched||f.observed_exit_code===null||f.observed_exit_signal!==null||['summary_json_matched','manifest_json_matched','zero_files_verified'].some(k=>f[k]===false)))invalid('SCHEMA_MISMATCH');
+    if(f.status==='PASS')validateFixturePass(f,i);
     const verdict=f.status==='PASS'?'PASS':'FAIL';if(verdict==='PASS')passed++;else failed++;
     cases.push({fixture_id:f.fixture_id,verdict,observed_exit_code:f.observed_exit_code});
   }
@@ -189,10 +204,23 @@ function validateSummary(s) {
   const g=s.generation;if(g!==null){keys(g,['lifecycle_status','task_outcome_evaluated_marker','provider_status','requested_model','reported_model','process_wall_ms','provider_duration_sec','inference_duration_sec','tokens']);if(!['LIMITED_SUCCESS','LIMITED_PROCESS_FAILED','LIMITED_TIMEOUT','LIMITED_USER_ABORT','LIMITED_CAPACITY_EXCEEDED','LIMITED_PARSER_ERROR','LIMITED_SPAWN_FAILED','LIMITED_PERSISTENCE_FAILED','LIMITED_INTERNAL_ERROR','NOT_RUN','UNKNOWN'].includes(g.lifecycle_status)||![false,null].includes(g.task_outcome_evaluated_marker)||g.provider_status!==null&&!providerStatuses.has(g.provider_status)||![g.requested_model,g.reported_model].every(v=>['gpt-6-luna','UNKNOWN',null].includes(v))||!nullableInteger(g.process_wall_ms)||g.provider_duration_sec!==null&&(typeof g.provider_duration_sec!=='number'||!Number.isFinite(g.provider_duration_sec)||g.provider_duration_sec<0)||g.inference_duration_sec!==null)invalid('SCHEMA_MISMATCH');if(g.tokens!==null){keys(g.tokens,['input','output','cache_read','thinking','total','codex_reasoning']);if(Object.values(g.tokens).some(v=>!nullableInteger(v)))invalid('SCHEMA_MISMATCH');}}
   if(s.syntax!==null){keys(s.syntax,['wrapper_status','observed_exit_code','syntax_valid']);if(!['ACCEPTED','UNKNOWN','NOT_RUN'].includes(s.syntax.wrapper_status)||!exit(s.syntax.observed_exit_code)||![true,false,null].includes(s.syntax.syntax_valid))invalid('SCHEMA_MISMATCH');}
   if(s.artifact!==null){keys(s.artifact,['witness_present','sha256','byte_count','format_inspection','safety_evidence']);if(typeof s.artifact.witness_present!=='boolean'||s.artifact.sha256!==null&&!sha(s.artifact.sha256)||!nullableInteger(s.artifact.byte_count)||!['ACTUAL_BYTES_COOPERATIVE_FORMAT_ONLY','UNKNOWN',null].includes(s.artifact.format_inspection)||!['NOT_ESTABLISHED','UNKNOWN',null].includes(s.artifact.safety_evidence))invalid('SCHEMA_MISMATCH');}
-  const f=s.fixtures;if(f!==null){keys(f,['total_matrix','passed_count','failed_count','not_run_count','cases']);if(![17,null].includes(f.total_matrix)||[f.passed_count,f.failed_count,f.not_run_count].some(v=>!nullableInteger(v)||v>17))invalid('SCHEMA_MISMATCH');if(f.cases!==null){if(!Array.isArray(f.cases)||f.cases.length!==17)invalid('SCHEMA_MISMATCH');for(let i=0;i<17;i++){const c=f.cases[i];keys(c,['fixture_id','verdict','observed_exit_code']);if(c.fixture_id!==`FIX-${String(i+1).padStart(2,'0')}`||!['PASS','FAIL','NOT_RUN','INVALID'].includes(c.verdict)||!exit(c.observed_exit_code))invalid('SCHEMA_MISMATCH');}if(['PASS','FAIL','NOT_RUN'].some((v,i)=>f.cases.filter(c=>c.verdict===v).length!==[f.passed_count,f.failed_count,f.not_run_count][i]))invalid('CONTRADICTORY_COUNTS');}}
+  const f=s.fixtures;
+  if(f!==null){
+    keys(f,['total_matrix','passed_count','failed_count','not_run_count','cases']);
+    if(![17,null].includes(f.total_matrix)||[f.passed_count,f.failed_count,f.not_run_count].some(v=>!nullableInteger(v)||v>17))invalid('SCHEMA_MISMATCH');
+    if(f.cases!==null){
+      if(!Array.isArray(f.cases)||f.cases.length!==17)invalid('SCHEMA_MISMATCH');
+      for(const [i,c] of f.cases.entries()){
+        keys(c,['fixture_id','verdict','observed_exit_code']);
+        if(c.fixture_id!==`FIX-${String(i+1).padStart(2,'0')}`||!['PASS','FAIL','NOT_RUN','INVALID'].includes(c.verdict)||
+           !exit(c.observed_exit_code)||c.verdict==='PASS'&&c.observed_exit_code!==q218ExitCodes[i])invalid('SCHEMA_MISMATCH');
+      }
+      if(['PASS','FAIL','NOT_RUN'].some((v,i)=>f.cases.filter(c=>c.verdict===v).length!==[f.passed_count,f.failed_count,f.not_run_count][i]))invalid('CONTRADICTORY_COUNTS');
+    }
+  }
   keys(s.execution,['child_invocations','workspace_disposition','descendant_guarantee']);keys(s.execution.child_invocations,['generation','syntax','fixtures']);if(Object.values(s.execution.child_invocations).some(v=>!nullableInteger(v))||!['DEDICATED_NOT_REUSED','QUARANTINED','UNKNOWN'].includes(s.execution.workspace_disposition)||s.execution.descendant_guarantee!=='NONE')invalid('SCHEMA_MISMATCH');
   keys(s.diagnostic,['stage','reason']);if(s.diagnostic.stage!==null&&!stages.has(s.diagnostic.stage)&&s.diagnostic.stage!=='RECEIPT_VALIDATION'||s.diagnostic.reason!==null&&!diagnosticReasons.has(s.diagnostic.reason)&&invalidRunSummary(s.diagnostic.reason).diagnostic.reason!==s.diagnostic.reason)invalid('SCHEMA_MISMATCH');
-  if(s.overall_outcome==='PASS'&&(s.campaign.raw_status!=='PASS'||s.campaign.raw_reason!==null||g?.lifecycle_status!=='LIMITED_SUCCESS'||s.syntax?.wrapper_status!=='ACCEPTED'||s.syntax.syntax_valid!==true||s.artifact?.witness_present!==true||!sha(s.artifact.sha256)||f?.passed_count!==17||f.failed_count!==0||f.not_run_count!==0))invalid('SCHEMA_MISMATCH');
+  if(s.overall_outcome==='PASS'&&(s.campaign.raw_status!=='PASS'||s.campaign.raw_reason!==null||s.campaign.denominator!==17||g?.lifecycle_status!=='LIMITED_SUCCESS'||s.syntax?.wrapper_status!=='ACCEPTED'||s.syntax.syntax_valid!==true||s.artifact?.witness_present!==true||!sha(s.artifact.sha256)||f?.total_matrix!==17||f.cases===null||f.passed_count!==17||f.failed_count!==0||f.not_run_count!==0))invalid('SCHEMA_MISMATCH');
 }
 export function validateProjectedEvidence(value){
   const captured=copy(value);keys(captured,['generation','syntax','artifact','diagnostic']);
