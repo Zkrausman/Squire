@@ -18,6 +18,18 @@ canceled project, and a schema rejection. For legacy Q218 receipts, the report
 separates generation, syntax and fixture conformance without launching a task
 or reading its artifact.
 
+To create an editable request from a public UTF-8 instruction file, select
+`single-js`, `node` or `desktop`, supply a task ID, and name a fresh output:
+
+```sh
+node bin/squire-request-create.mjs node example-task instruction.txt request.json
+node bin/squire-request-check.mjs node request.json
+```
+
+The first command preserves the instruction text, checks the serialized request
+and prompt budgets, and writes the local JSON file. Run the checker again after
+editing the request.
+
 [Single-JavaScript task preparation](docs/single-js-tasks.md) accepts an explicit
 public-text request without editing the Q218 recipe. Generation and syntax-only
 readiness remain separate from functional correctness and native admission.
