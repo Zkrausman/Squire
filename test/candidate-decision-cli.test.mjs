@@ -91,7 +91,7 @@ test('executable closed pipes and early/late observed errors withhold success',a
   for(const timing of ['early','late']){
    const before=`const stream=process.${channel},write=stream.write.bind(stream);stream.write=(...args)=>{const r=write(...args);${timing==='early'?"stream.emit('error',Error('PRIVATE_ERROR'));":"setImmediate(()=>stream.emit('error',Error('PRIVATE_ERROR')));"}return r;};`;
    const r=await artifactCliChild(cli,argv,{before});assert.equal(r.code,2);assert.equal(r.signal,null);
-   assert.equal(r.stdout,channel==='stdout'?usage:'');assert.equal(r.stderr,channel==='stderr'?usage:'');
+   assert.equal(r.stdout,channel==='stdout'?usage+'Append --explain to record or record-revision for a fixed rejection category.\n':'');assert.equal(r.stderr,channel==='stderr'?usage:'');
   }
  }
 });
@@ -202,4 +202,27 @@ test('original decision verification output failure never retries or invokes a r
  const h=harness();let calls=0,writes=0,diagnostics=0;h.ports.verifyDecision=async()=>{calls++;return originalVerified();};h.ports.stdout={write(){writes++;throw Error('PRIVATE_WRITE');}};h.ports.stderr={write(){diagnostics++;}};assert.equal(await run(originalVerifyArgs,h.ports),2);assert.equal(calls,1);assert.equal(writes,1);assert.equal(diagnostics,0);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);
  const failed=harness();let errors=0;failed.ports.verifyDecision=async()=>{throw Error('PRIVATE_VERIFY');};failed.ports.stderr={write(){errors++;throw Error('PRIVATE_STDERR');}};assert.equal(await run(originalVerifyArgs,failed.ports),2);assert.equal(errors,1);
  const absent=harness();absent.ports.stdout={};let verifies=0;absent.ports.verifyDecision=async()=>{verifies++;return originalVerified();};assert.equal(await run(originalVerifyArgs,absent.ports),2);assert.equal(verifies,0);
+});
+
+test('record explanations distinguish unreadable and malformed requests before dispatch',async()=>{
+ for(const [argv,create] of [[args,harness],[revisionArgs,revisionHarness]]){
+  const rejected=argv===args?'PROJECT_CANDIDATE_DECISION_REJECTED':'PROJECT_REVISION_DECISION_REJECTED';
+  for(const [read,category] of [
+   [()=>{throw Error('PRIVATE_READ_FAILURE');},'REQUEST_UNREADABLE'],
+   [()=>encode('{"choice":"ACCEPT","choice":"REVISE"}'),'MALFORMED_REQUEST'],
+   [()=>new Uint8Array(MAX+1),'MALFORMED_REQUEST'],
+   [()=>{throw 'FILE_TOO_LARGE';},'MALFORMED_REQUEST']
+  ]){
+   const h=create();h.ports.readBytes=read;
+   assert.equal(await run([...argv,'--explain'],h.ports),2);
+   assert.deepEqual(h.err,[`${rejected}\nReason: ${category}\n`]);assert.deepEqual(h.out,[]);assert.deepEqual(h.records,[]);
+  }
+  const h=create();
+  assert.equal(await run([...argv,'--explain','--explain'],h.ports),2);assert.deepEqual(h.reads,[]);
+ }
+ for(const argv of [verifyDecisionArgs,originalVerifyArgs]){
+  const h=harness();let verifies=0;h.ports.verifyDecision=h.ports.verifyRevisionDecision=()=>{verifies++;};
+  assert.equal(await run([...argv,'--explain'],h.ports),2);assert.match(h.err[0],/^Usage:/);
+  assert.equal(verifies,0);assert.deepEqual(h.reads,[]);assert.deepEqual(h.records,[]);
+ }
 });

@@ -1,4 +1,5 @@
 // Explicit source-decision recording and selected revision verification. Import is inert.
+import {decisionFeedback} from '../src/internal/decision-request-feedback.mjs';
 import {pathToFileURL} from 'node:url';
 import {resolve,parse} from 'node:path';
 import {types} from 'node:util';
@@ -28,7 +29,7 @@ export async function runCandidateDecisionCli(argv,ports={}){
     };
     const stdout=output('stdout'),stderr=output('stderr');
     if(Array.isArray(argv)&&argv.length===1&&argv[0]==='--help'){
-      stdout(USAGE);return outputFailed?2:0;
+      stdout(USAGE+'Append --explain to record or record-revision for a fixed rejection category.\n');return outputFailed?2:0;
     }
     if(Array.isArray(argv)&&argv.length===4&&argv[0]==='verify-decision'){
       const [packageDir,decisionDir,expected]=[argv[1],argv[2],argv[3]];
@@ -61,7 +62,8 @@ export async function runCandidateDecisionCli(argv,ports={}){
         return outputFailed?2:0;
       }catch{stderr('PROJECT_REVISION_DECISION_REJECTED\n');return 2;}
     }
-    const paths=Array.isArray(argv)&&argv.length===4&&['record','record-revision'].includes(argv[0])?[argv[1],argv[2],argv[3]]:null;
+    const explain=Array.isArray(argv)&&argv.length===5&&argv[4]==='--explain';
+    const paths=Array.isArray(argv)&&(argv.length===4||explain)&&['record','record-revision'].includes(argv[0])?[argv[1],argv[2],argv[3]]:null;
     if(!paths||!paths.every(absolute)){
       stderr(USAGE);return 2;
     }
@@ -70,14 +72,17 @@ export async function runCandidateDecisionCli(argv,ports={}){
     const statusExpected=revision?'PROJECT_REVISION_DECISION_RECORDED':'PROJECT_CANDIDATE_DECISION_RECORDED';
     const digestKey=revision?'revision_package_sha256':'review_package_sha256';
     const rejected=revision?'PROJECT_REVISION_DECISION_REJECTED\n':'PROJECT_CANDIDATE_DECISION_REJECTED\n';
+    let category='REQUEST_UNREADABLE';
     try{
       const read=ports.readBytes??readReceiptBytes,record=revision?(ports.recordRevision??recordProjectRevisionDecision):(ports.record??recordProjectCandidateDecision);
       if(typeof read!=='function'||types.isProxy(read)||typeof record!=='function'||types.isProxy(record))throw null;
       const raw=await Reflect.apply(read,ports,[requestPath,MAX_REVIEW_DECISION_BYTES]);
       if(!types.isUint8Array(raw)||types.isProxy(raw))throw null;
+      category='MALFORMED_REQUEST';
       const length=Reflect.apply(byteLength,raw,[]);if(length>MAX_REVIEW_DECISION_BYTES)throw null;
       bytes=new Uint8Array(length);Uint8Array.prototype.set.call(bytes,raw);
       const request=revision?parseRevisionDecisionJson(bytes):parseReceiptJson(bytes);
+      category='RECORDING_OUTCOME_UNCERTAIN';
       const result=await Reflect.apply(record,ports,[packageDir,request,decisionDir]);
       const status=result?.status,packageDigest=result?.[digestKey],decisionDigest=result?.decision_sha256;
       if(status!==statusExpected||typeof packageDigest!=='string'||!SHA256.test(packageDigest)||
@@ -85,7 +90,12 @@ export async function runCandidateDecisionCli(argv,ports={}){
          result.choice!==request?.choice)throw null;
       stdout(`${statusExpected}\n${revision?'Revision package':'Package'} SHA256: ${packageDigest}\nDecision SHA256: ${decisionDigest}\nSOURCE_DECISION_ONLY; NO_EXECUTION_OR_MERGE_AUTHORITY\n`);
       return outputFailed?2:0;
-    }catch{stderr(rejected);return 2;}
+    }catch(error){
+      if(explain&&category==='RECORDING_OUTCOME_UNCERTAIN')category=decisionFeedback(error)??category;
+      if(category==='REQUEST_UNREADABLE'&&error==='FILE_TOO_LARGE')category='MALFORMED_REQUEST';
+      stderr(explain?rejected+`Reason: ${category}\n`:rejected);
+      return 2;
+    }
   }catch{return 2;}
   finally{bytes?.fill(0);}
 }

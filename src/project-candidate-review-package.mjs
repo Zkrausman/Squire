@@ -1,5 +1,6 @@
 // Private, bounded review and append-only decision records for one original PR210 candidate.
 // This module never executes candidate bytes or selects a decision implicitly.
+import {recordFailure} from './internal/decision-request-feedback.mjs';
 import * as nativeFs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -452,28 +453,34 @@ function captureDecision(value){
     attestations,note:value.note??null,
     boundaries:['REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_DECISION_ONLY','NO_EXECUTION_OR_MERGE_AUTHORITY']};
 }
-function validateDecision(captured,verified){
+function decisionBindingIssue(captured,verified){
   const manifest=verified.manifest;
   if(captured.review_package_sha256!==verified.manifest_sha256||
-     ['base_commit','base_tree','candidate_commit','candidate_tree'].some(key=>captured[key]!==manifest[key]))rejected();
+     ['base_commit','base_tree','candidate_commit','candidate_tree'].some(key=>captured[key]!==manifest[key]))return 'PACKAGE_BINDING_MISMATCH';
   const byPath=new Map(manifest.paths.map(item=>[item.path,item]));
   for(const item of captured.attestations){
-    const path=byPath.get(item.path);if(!path||item.old_sha256!==(path.old?.sha256??null)||
-       item.new_sha256!==path.new.sha256||
-       (captured.choice==='ACCEPT'&&path.binary_review_required&&!item.binary_inspected))rejected();
+    const path=byPath.get(item.path);
+    if(!path||item.old_sha256!==(path.old?.sha256??null)||item.new_sha256!==path.new.sha256)return 'PACKAGE_BINDING_MISMATCH';
+    if(captured.choice==='ACCEPT'&&path.binary_review_required&&!item.binary_inspected)return 'BINARY_ACKNOWLEDGEMENT_REQUIRED';
   }
-  if(captured.choice==='ACCEPT'&&captured.attestations.length!==manifest.paths.length)rejected();
+  if(captured.choice==='ACCEPT'&&captured.attestations.length!==manifest.paths.length)return 'ATTESTATION_REQUIRED';
+  return null;
 }
 
 export async function recordProjectCandidateDecision(reviewPackageDir,decision,freshDecisionDir,ports={}){
+  let issue;
   try{
-    const fs=capturePort(ports),captured=captureDecision(decision);
+    const fs=capturePort(ports);
+    issue='MALFORMED_REQUEST';
+    const captured=captureDecision(decision);
+    issue=null;
     if(!absolute(reviewPackageDir)||!absolute(freshDecisionDir)||
        reviewPackageDir===freshDecisionDir||freshDecisionDir.startsWith(reviewPackageDir+'/')||
        reviewPackageDir.startsWith(freshDecisionDir+'/'))invalid();
     const verified=await verifyInternal(fs,reviewPackageDir,undefined),manifest=verified.manifest;
-    validateDecision(captured,verified);
-    const bytes=encode(captured);if(bytes.length>MAX_REVIEW_DECISION_BYTES)invalid();
+    issue=decisionBindingIssue(captured,verified);
+    if(issue)rejected();
+    const bytes=encode(captured);if(bytes.length>MAX_REVIEW_DECISION_BYTES){issue='MALFORMED_REQUEST';invalid();}
     await reserve(fs,freshDecisionDir,undefined);
     await writeFile(fs,freshDecisionDir,'decision.json',bytes,undefined);
     const readback=await readFile(fs,join(freshDecisionDir,'decision.json'),bytes.length,undefined);
@@ -485,7 +492,10 @@ export async function recordProjectCandidateDecision(reviewPackageDir,decision,f
       base_commit:captured.base_commit,base_tree:captured.base_tree,
       candidate_commit:captured.candidate_commit,candidate_tree:captured.candidate_tree,
       changed_path_count:manifest.paths.length,attested_path_count:captured.attestations.length});
-  }catch(error){if(error instanceof ReviewPackageError)throw error;rejected();}
+  }catch(error){
+    const failure=error instanceof ReviewPackageError?error:new ReviewPackageError('PROJECT_CANDIDATE_REVIEW_REJECTED');
+    throw recordFailure(failure,issue);
+  }
 }
 
 /** Verify one explicitly selected stored original decision; no writes or choice selection. */
@@ -512,7 +522,7 @@ export async function verifyProjectCandidateDecision(reviewPackageDir,decisionDi
       captured=captureDecision(note===null?request:{...request,note});
       if(!encode(captured).equals(bytes))rejected();
     }catch{rejected();}
-    validateDecision(captured,verified);
+    if(decisionBindingIssue(captured,verified))rejected();
     const again=await verifyInternal(fs,reviewPackageDir,undefined),after=await stat(fs,decisionDir),leafAfter=await stat(fs,decisionPath);
     if(again.manifest_sha256!==verified.manifest_sha256||!file(leafAfter)||!stable(leafBefore,leafAfter)||leafAfter.uid!==process.getuid()||
        leafAfter.nlink!==1||(leafAfter.mode&0o7777)!==0o400||!dir(after)||!stable(before,after)||after.uid!==process.getuid()||
