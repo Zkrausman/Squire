@@ -129,6 +129,30 @@ test('request creation preserves occupied destinations and rejects invalid outpu
   assert.equal(await readFile(input, 'utf8'), 'synthetic text');
 });
 
+test('failed partial write leaves the destination available for retry', async t => {
+  const {dir, input, output} = await fixture(t);
+  await writeFile(input, 'synthetic instruction');
+  const args = ['node', taskId, input, output];
+  const before = `
+    const {default: fs} = await import('node:fs/promises');
+    const {syncBuiltinESMExports} = await import('node:module');
+    const open = fs.open;
+    fs.open = async (path, flags, mode) => {
+      const handle = await open(path, flags, mode);
+      if (flags === 'wx') handle.writeFile = async bytes => {
+        await handle.write(bytes.subarray(0, 16));
+        throw Object.assign(Error(), {code: 'ENOSPC'});
+      };
+      return handle;
+    };
+    syncBuiltinESMExports();
+  `;
+  rejected(await artifactCliChild(author, args, {before}), 'REQUEST_WRITE_FAILED');
+  assert.deepEqual(await readdir(dir), ['instruction.txt']);
+  created(await artifactCliChild(author, args));
+  assert.equal(parseProjectRequest(await readFile(output)).task_prompt, 'synthetic instruction');
+});
+
 test('request creation requires an explicit family, ID, input and output', async () => {
   const help = await artifactCliChild(author, ['--help']);
   assert.equal(help.code, 0);

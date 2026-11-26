@@ -1,4 +1,6 @@
-import {writeFile} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
+import {link, open, unlink} from 'node:fs/promises';
+import {dirname, format} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {readReceiptBytes} from './squire-report.mjs';
 import {CODEX_BYTE_LIMITS} from '../src/codex-profile.mjs';
@@ -17,6 +19,35 @@ function requestBytes(family, task_id, task_prompt) {
   if (single) buildSingleJsCodegenPrompt(parseSingleJsRequest(bytes));
   else buildProjectCodegenPrompt(parseProjectRequest(bytes));
   return bytes;
+}
+
+async function publish(destination, bytes) {
+  const temporary = format({dir: dirname(destination), base: '.squire-request-' + randomUUID()});
+  let handle;
+  try {
+    handle = await open(temporary, 'wx', 0o600);
+  } catch {
+    return {error: 'REQUEST_WRITE_FAILED\n'};
+  }
+  let result;
+  try {
+    try {
+      await handle.writeFile(bytes);
+    } finally {
+      await handle.close();
+    }
+    // link publishes the complete file only if the destination is still fresh.
+    await link(temporary, destination);
+    result = {output: 'REQUEST_CREATED\n'};
+  } catch (error) {
+    result = {error: error.code === 'EEXIST' ? 'DESTINATION_OCCUPIED\n' : 'REQUEST_WRITE_FAILED\n'};
+  }
+  try {
+    await unlink(temporary);
+  } catch {
+    return {error: result.output ? 'REQUEST_CREATED_TEMP_CLEANUP_FAILED\n' : 'TEMP_CLEANUP_FAILED\n'};
+  }
+  return result;
 }
 
 async function create(args) {
@@ -40,12 +71,7 @@ async function create(args) {
   } catch (error) {
     return {error: error.field === 'PAYLOAD_SIZE_EXCEEDED' ? 'REQUEST_TOO_LARGE\n' : 'INVALID_REQUEST\n'};
   }
-  try {
-    await writeFile(destination, bytes, {flag: 'wx', mode: 0o600});
-  } catch (error) {
-    return {error: error.code === 'EEXIST' ? 'DESTINATION_OCCUPIED\n' : 'REQUEST_WRITE_FAILED\n'};
-  }
-  return {output: 'REQUEST_CREATED\n'};
+  return publish(destination, bytes);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
