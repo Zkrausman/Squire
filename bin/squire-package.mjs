@@ -40,15 +40,18 @@ export async function runPackageCli(args,ports={}){
     return outputFailed?2:code;
   }catch{return 2;}
 }
-const USAGE='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir>\n';
+const USAGE='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir> [expected-manifest-sha256]\n';
 async function runPackageCliInternal(args,ports,stdout,stderr){
   if(Array.isArray(args)&&args.length===1&&args[0]==='--help'){
     stdout.write(USAGE);return 0;
   }
-  if(!Array.isArray(args)||!((args[0]==='--build'&&args.length===4)||(args[0]==='--verify'&&args.length===2))){stderr.write(USAGE);return 2;}
+  const build=Array.isArray(args)&&args[0]==='--build'&&args.length===4;
+  const verify=Array.isArray(args)&&args[0]==='--verify'&&
+    (args.length===2||(args.length===3&&typeof args[2]==='string'));
+  if(!build&&!verify){stderr.write(USAGE);return 2;}
   try{
     const io={fs:ports.fs??{...fs,readdir:path=>nativePackageInventory(fs,path,ports.signal)},uid:ports.uid??(typeof process.getuid==='function'?process.getuid():null),signal:ports.signal};
-    const result=args[0]==='--build'?await buildReviewPackage({receipt_path:args[1],source_path:args[2],output_dir:args[3]},io):await verifyReviewPackage(args[1],io);
+    const result=build?await buildReviewPackage({receipt_path:args[1],source_path:args[2],output_dir:args[3]},io):await verifyReviewPackage(args[1],io,args[2]);
     if(result.status==='CORRUPT_OR_INCOMPLETE'){stderr.write('CORRUPT_OR_INCOMPLETE\n');return 2;}
     if(result.status==='VERIFICATION_ABORTED'){stderr.write('PACKAGE_ABORTED\n');return 2;}
     stdout.write('Squire local review package: '+(result.status==='VERIFIED'?'VERIFIED':'COMPLETE')+'\nSchema: squire3.package_manifest.v1\nManifest SHA256: '+result.manifest_sha256+'\nFiles: artifact.mjs, summary.json, README.txt, package-manifest.json\nOutcome: '+result.readiness_or_outcome+'\nTask correctness: '+result.task_correctness+'\nOriginal acknowledgement/provenance/crash durability are not proven by verification.\n');return result.exit_code;
