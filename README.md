@@ -43,6 +43,12 @@ The additive [multifile staging/export library](docs/multifile-staging-export.md
 plans bounded local project files and separately partitioned evidence, with
 fresh no-overwrite directories and content-integrity receipts. It adds no
 project execution, GUI observation, grading, publication or runtime admission.
+The [profile-aware stage transfer guide](docs/stage-transfer.md) covers local export
+and digest-bound verification of a selected stage or export copy.
+
+The [synthetic envelope author](docs/synthetic-project-envelope.md) and
+[synthetic stage materializer](docs/synthetic-stage-fixture.md) prepare local
+test fixtures from selected bytes, not generation or candidate receipts.
 
 The additive [Codex project candidate path](docs/project-candidates.md) validates
 one bounded file envelope, persists its exact bytes and then obtains a separate
@@ -55,6 +61,8 @@ project stage through its separate API, into a base-bound Git candidate in a
 fresh local repository. It does not execute generated code,
 modify the base checkout or publish the candidate. Human review and functional
 acceptance remain separate.
+The [pinned-base preimage draft](docs/project-base-preimage-draft.md) prepares
+selected original-file facts from a synthetic base, not approval for import.
 
 The [portable review snapshot](docs/project-portable-candidate-snapshot.md)
 packages one original PR210 candidate's two selected trees and required blobs
@@ -64,9 +72,14 @@ history, execute candidate bytes, authenticate the producer, or publish source.
 The [original-candidate review workflow](docs/project-candidate-review-package.md)
 and [first-revision review workflow](docs/project-revision-review-package.md)
 provide explicit offline package build/verification and supplied decision
-recording/verification commands. A [private review worksheet](docs/project-review-worksheet.md)
-lists the exact sides to inspect for a digest-bound package. Start with the
-[offline-review agent skill](.agents/skills/squire-offline-review/SKILL.md) to
+recording/verification commands. The [review spec composer](docs/project-review-spec-composer.md)
+prepares builder specs from explicitly saved results and supplied bindings. A
+[private review worksheet](docs/project-review-worksheet.md) lists the exact
+sides to inspect for a digest-bound package. The [decision request preparer](docs/project-review-decision-request.md)
+converts completed worksheets into editable requests, not recorded decisions.
+The [synthetic offline review walkthrough](examples/offline-review/README.md)
+illustrates original review and first-revision review using disposable fixtures.
+Start with the [offline-review agent skill](.agents/skills/squire-offline-review/SKILL.md) to
 choose the candidate family and operation. Verification establishes retained
 integrity, not reviewer authenticity, functional acceptance, original
 acknowledgement or execution/integration authority; artifacts remain private.
