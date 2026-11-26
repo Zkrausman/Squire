@@ -75,7 +75,9 @@ provide explicit offline package build/verification and supplied decision
 recording/verification commands. The [review spec composer](docs/project-review-spec-composer.md)
 prepares builder specs from explicitly saved results and supplied bindings. A
 [private review worksheet](docs/project-review-worksheet.md) lists the exact
-sides to inspect for a digest-bound package. The [decision request preparer](docs/project-review-decision-request.md)
+sides to inspect for a digest-bound package. The [prepare-only review workflow](docs/project-review-prepare.md)
+composes the existing spec, build, digest-bound verification and blank worksheet
+stages in one explicit command. The [decision request preparer](docs/project-review-decision-request.md)
 converts completed worksheets into editable requests, not recorded decisions.
 The [synthetic offline review walkthrough](examples/offline-review/README.md)
 illustrates original review and first-revision review using disposable fixtures.
