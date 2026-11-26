@@ -2,8 +2,7 @@
 import {types} from 'node:util';
 import {fail} from './job-spec.mjs';
 import {
- decodeCodexJsonl,decodeLargeProjectCodexJsonl,
- iterateLargeProjectCodexJsonlFrames
+ decodeCodexJsonl,visitLargeProjectCodexJsonl
 } from './provider-metadata.mjs';
 import {diagnosticReport} from './internal/limited-diagnostics.mjs';
 import {
@@ -57,11 +56,10 @@ export function createCodexLargeProjectStreamCollector(){
  const stderrLimit=PROJECT_OUTPUT_LARGE_PROFILE.max_stderr_bytes;
  let arena=new Uint8Array(stdoutLimit),out=0,err=0,used=0;
  let outEof=false,errEof=false,failed=false,sealed=false;
- let report=null,capture=null,accepted=null,loopActive=false,loopRejected=false;
+ let report=null,capture=null,accepted=null;
  const clearCapture=()=>{capture?.response_bytes?.fill(0);capture=null;};
  const reject=(stage,reason,metadata=null)=>{
   report=diagnosticReport(stage,reason,metadata);
-  if(loopActive)loopRejected=true;
   fail(reason);
  };
  const capturePayload=(reason,bytes)=>{
@@ -116,13 +114,37 @@ export function createCodexLargeProjectStreamCollector(){
     if(sealed||failed||!outEof||!errEof||!arena){
      reject('COLLECTION','COLLECTION_FAILED');
     }
-    const metadata=decodeLargeProjectCodexJsonl({
+    let terminal=false,started=false,sawMessage=false,response;
+    let responseError=null;
+    // Remember the first response-order failure while metadata finishes its
+    // bounded scan. Structural and provider-status failures take precedence.
+    const observeFrame=event=>{
+     if(responseError)return;
+     if(terminal){
+      responseError=['ENVELOPE','TRAILING_DATA_AFTER_TERMINAL'];
+     }else if(event.type==='turn.started'){
+      if(started)responseError=['ENVELOPE','ENVELOPE_PARSE_ERROR'];
+      started=true;
+     }else if(event.type==='error'){
+      responseError=['PROVIDER_STATUS','PROVIDER_NON_SUCCESS'];
+     }else if(event.type==='item.completed'&&event.item?.type==='agent_message'){
+      if(!started)responseError=['ENVELOPE','ENVELOPE_PARSE_ERROR'];
+      else if(sawMessage)responseError=['RESPONSE','AMBIGUOUS_AGENT_MESSAGE'];
+      else{
+       sawMessage=true;
+       if(typeof event.item.text==='string')response=event.item.text;
+      }
+     }else if(event.type==='turn.completed'){
+      terminal=true;
+     }
+    };
+    const metadata=visitLargeProjectCodexJsonl({
      raw_payload_bytes:Uint8Array.prototype.subarray.call(arena,0,used),
      max_response_bytes:stdoutLimit,
      wrapper_exit_code:raw.exit_code??null,
      wrapper_signal:raw.exit_signal??null,
      wrapper_wall_ms:raw.process_wall_ms??null
-    });
+    },observeFrame);
     if(metadata.parser_status==='PARSE_ERROR'){
      const reason=largeEnvelopeReasons.has(metadata.diagnostic_code)
       ?metadata.diagnostic_code:'ENVELOPE_PARSE_ERROR';
@@ -137,43 +159,9 @@ export function createCodexLargeProjectStreamCollector(){
      );
     }
 
-    let terminal=false,started=false,messages=0,response;
-    loopActive=true;loopRejected=false;
-    try{
-     for(const event of iterateLargeProjectCodexJsonlFrames(
-      Uint8Array.prototype.subarray.call(arena,0,used)
-     )){
-      if(terminal)reject('ENVELOPE','TRAILING_DATA_AFTER_TERMINAL');
-      if(event.type==='turn.started'){
-       if(started||messages)reject('ENVELOPE','ENVELOPE_PARSE_ERROR');
-       started=true;
-      }
-      if(event.type==='error'){
-       reject('PROVIDER_STATUS','PROVIDER_NON_SUCCESS',metadata);
-      }
-      if(event.type==='item.completed'&&event.item?.type==='agent_message'){
-       if(!started)reject('ENVELOPE','ENVELOPE_PARSE_ERROR');
-       if(++messages>1)reject('RESPONSE','AMBIGUOUS_AGENT_MESSAGE',metadata);
-       response=event.item.text;
-      }
-      if(event.type==='turn.completed')terminal=true;
-     }
-     loopActive=false;
-    }catch(caught){
-     loopActive=false;
-     if(loopRejected)throw caught;
-      let field=null;
-      try{
-       if(caught&&typeof caught==='object'&&!types.isProxy(caught)){
-        const d=Object.getOwnPropertyDescriptor(caught,'field');
-        if(d&&Object.hasOwn(d,'value'))field=d.value;
-       }
-      }catch{}
-      reject('ENVELOPE',largeEnvelopeReasons.has(field)
-       ?field:'ENVELOPE_PARSE_ERROR');
-     }
+    if(responseError)reject(responseError[0],responseError[1],metadata);
     if(!started)reject('ENVELOPE','ENVELOPE_PARSE_ERROR');
-    if(messages!==1||typeof response!=='string'){
+    if(typeof response!=='string'){
      reject('RESPONSE','RESPONSE_STRING_REQUIRED',metadata);
     }
     if(/[\u0000\uFEFF\uD800-\uDFFF]/u.test(response)){

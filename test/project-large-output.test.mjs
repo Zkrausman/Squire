@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {mixedTransport,mixedEnvelope,mixedFiles,rejections} from './fixtures/project-collector/vectors.mjs';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {EventEmitter} from 'node:events';
@@ -513,6 +514,90 @@ test('large metadata usage rejects rounded, fractional and negative numeric lexe
   )));
   assert.equal(zero.diagnostic_code,'PARSE_OK');
   assert.equal(zero.usage.output,0);
+});
+
+const collectorProfiles={
+  standard:createCodexProjectStreamCollector,
+  large:createCodexLargeProjectStreamCollector
+};
+function checkCollectorInput(collector,transport,stdoutBytes,{cuts=[],stderrEof=true}={}){
+  let offset=0;
+  for(const end of [...cuts,transport.length]){
+    assert.equal(collector.chunk('stdout',transport.subarray(offset,end)),true);
+    offset=end;
+  }
+  assert.equal(collector.chunk('stderr',Uint8Array.of(0x6f,0x6b,0x0a)),true);
+  collector.eof('stdout');
+  if(stderrEof)collector.eof('stderr');
+  assert.deepEqual(collector.snapshot(),{
+    stdout_bytes_observed:stdoutBytes,stderr_bytes_observed:3,
+    stdout_eof:true,stderr_eof:stderrEof,io_drained:stderrEof
+  });
+}
+function checkCollectorRejection(collector,stage,reason){
+  assert.throws(()=>collector.decode(),error=>error.field===reason);
+  assert.equal(collector.diagnosticReport().stage,stage);
+  assert.equal(collector.diagnosticReport().reason,reason);
+}
+for(const [profile,createCollector] of Object.entries(collectorProfiles)){
+  // Byte cuts follow the first record, bisect é, and bisect the wire escape for \n.
+  for(const [layout,cuts] of Object.entries({whole:[],fragmented:[24,245,247]})){
+    test('collector corpus: '+profile+' '+layout+' mixed response',t=>{
+      const collector=createCollector();
+      t.after(()=>collector.close());
+      checkCollectorInput(collector,mixedTransport,436,{cuts});
+      const result=collector.decode();
+      assert.equal(collector.diagnosticReport(),null);
+      assert.equal(result.metadata.parser_status,'OK');
+      assert.equal(result.metadata.diagnostic_code,'PARSE_OK');
+      assert.equal(result.metadata.provider_reported_status,'turn.completed');
+      assert.deepEqual(result.metadata.usage,{
+        input:null,output:0,cache_read:null,thinking:null,total:null
+      });
+      assert.equal(result.bytes.length,247);
+      assert.deepEqual(result.bytes,encoder.encode(mixedEnvelope));
+      assert.deepEqual(result.payload.files.map(({path,classification,bytes,content})=>({
+        path,classification,bytes,content
+      })),mixedFiles);
+    });
+  }
+  for(const [label,transport,stdoutBytes,stderrEof,stage,reason] of rejections){
+    test('collector corpus: '+profile+' '+label,t=>{
+      const collector=createCollector();
+      t.after(()=>collector.close());
+      checkCollectorInput(collector,transport,stdoutBytes,{stderrEof});
+      checkCollectorRejection(collector,stage,reason);
+    });
+  }
+}
+
+test('collector corpus: 65,537 SOURCE bytes exceed standard and fit large',t=>{
+  const response='{"schema":"SQUIRE2_PROJECT_FILE_ENVELOPE_V1","files":['+
+    '{"path":"limit.js","classification":"SOURCE","encoding":"utf-8","content":"A'+
+    'x'.repeat(65535)+'Z"}]}';
+  const [start,message]=responseEvents(response);
+  const transport=jsonl(start,message,{type:'turn.completed',usage:{output_tokens:0}});
+  const standard=createCodexProjectStreamCollector();
+  const large=createCodexLargeProjectStreamCollector();
+  t.after(()=>standard.close());
+  t.after(()=>large.close());
+  checkCollectorInput(standard,transport,65838);
+  checkCollectorInput(large,transport,65838);
+  checkCollectorRejection(standard,'PAYLOAD','PROJECT_FILE_SIZE_EXCEEDED');
+
+  const result=large.decode();
+  assert.equal(large.diagnosticReport(),null);
+  assert.equal(result.metadata.diagnostic_code,'PARSE_OK');
+  assert.equal(result.bytes.length,65670);
+  assert.deepEqual(result.bytes,encoder.encode(response));
+  const expected=new Uint8Array(65537).fill(0x78);
+  expected[0]=0x41;
+  expected[65536]=0x5a;
+  assert.equal(result.payload.files.length,1);
+  const [file]=result.payload.files;
+  assert.equal(file.path,'limit.js');
+  assert.equal(file.bytes,65537);
+  assert.deepEqual(file.content,expected);
 });
 
 test('large collector accepts fragmented UTF-8 and SOURCE above the legacy file cap',()=>{
