@@ -6,6 +6,8 @@ original and first-revision review-package CLI specs. Start with the full
 not terminal output. Provide all other bindings yourself, in a separate JSON
 file. Neither Git stores nor an original package are discovered or inspected
 by the composer; it does not create a candidate, review package or decision.
+For keyboard-guided creation of either bindings file without editing JSON,
+see [the guided bindings draft](project-review-bindings.md).
 
 ## Original candidate
 
