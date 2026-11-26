@@ -52,7 +52,8 @@ history, execute candidate bytes, authenticate the producer, or publish source.
 The [original-candidate review workflow](docs/project-candidate-review-package.md)
 and [first-revision review workflow](docs/project-revision-review-package.md)
 provide explicit offline package build/verification and supplied decision
-recording/verification commands. Start with the
+recording/verification commands. A [private review worksheet](docs/project-review-worksheet.md)
+lists the exact sides to inspect for a digest-bound package. Start with the
 [offline-review agent skill](.agents/skills/squire-offline-review/SKILL.md) to
 choose the candidate family and operation. Verification establishes retained
 integrity, not reviewer authenticity, functional acceptance, original
