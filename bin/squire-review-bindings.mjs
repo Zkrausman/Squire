@@ -15,6 +15,12 @@ const identityNumber = n => Number.isSafeInteger(n) && n >= 0;
 const originalKeys = ['result_file', 'base_git_dir', 'base_git_identity',
   'candidate_git_dir', 'candidate_git_identity', 'output_dir'];
 
+// Keep the local confirmation display unambiguous without changing input bytes.
+const preview = value => JSON.stringify(value, null, 2).replace(
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu, character =>
+    character === '\n' ? character : character.split('').map(unit =>
+      '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')).join(''));
+
 function validateIdentity(value) {
   closed(value, ['dev', 'ino']);
   if (!identityNumber(value.dev) || !identityNumber(value.ino)) reject();
@@ -111,7 +117,7 @@ async function guide(family, destination, ask, show) {
         original_git_identity: original.candidate_git_identity,
       };
       await show('Review the exact reused fields (not the original output destination):\n' +
-        JSON.stringify(bindings, null, 2) + '\n');
+        preview(bindings) + '\n');
       await confirm('Use these exact original fields? Type yes');
     } else if (selection === 'enter') {
       bindings.original_result_file = await path('Saved original result file');
@@ -139,7 +145,7 @@ async function guide(family, destination, ask, show) {
   bindings.output_dir = await path('Fresh package directory');
   await fresh(destination, bindings, reused);
   await show('Review all supplied bindings and destination (private):\n' +
-    JSON.stringify({destination, bindings}, null, 2) + '\n');
+    preview({destination, bindings}) + '\n');
   await confirm('Write this new bindings document? Type yes');
   await fresh(destination, bindings, reused);
   return bindings;

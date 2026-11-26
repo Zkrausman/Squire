@@ -195,6 +195,29 @@ test('guided draft preserves wrong evidence values, rejected by existing prepare
   await absent(noReuse);
 });
 
+test('guided review escapes format controls in previews without changing supplied values', async t => {
+  const f = await setup(t);
+  const original = {...f.original, result_file: f.file('synthetic\u202e-result.json')};
+  const originalPath = f.file('original-bindings.json');
+  const output = ok(guide('original', originalPath, [...values(original), 'yes']));
+  assert.doesNotMatch(output, /\u202e/u);
+  assert.match(output, /\\u202e-result\.json/);
+  assert.deepEqual(await read(originalPath), original);
+  const revisionPath = f.file('revision-bindings.json');
+  const revision = {
+    revised_result_file: f.file('revised-result.json'),
+    revised_git_dir: f.stores.revised.dir, revised_git_identity: f.stores.revised.identity,
+    output_dir: f.file('revision-package'),
+    original_package: {dir: original.output_dir, manifest_sha256: 'a'.repeat(64)},
+    prior_decisions: [{dir: f.file('prior-dir'), file_sha256: 'b'.repeat(64)}],
+    selected_decision_id: 'selected',
+  };
+  const reused = ok(guide('revision', revisionPath, ['reuse', originalPath, 'yes', ...revisionTail(revision), 'yes']));
+  assert.doesNotMatch(reused, /\u202e/u);
+  assert.equal((reused.match(/\\u202e-result\.json/g) ?? []).length, 2);
+  assert.equal((await read(revisionPath)).original_result_file, original.result_file);
+});
+
 test('guided help and import are inert', () => {
   assert.match(ok(run(cli('review-bindings'), ['--help'])), /^Usage:/);
   const r = spawnSync(process.execPath, ['--input-type=module', '--eval',
