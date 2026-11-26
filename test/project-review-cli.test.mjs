@@ -161,3 +161,23 @@ test('result reservation excludes a concurrent producer and reports a post-creat
  assert.deepEqual(h.err,['PROJECT_REVIEW_CANDIDATE_CREATED_RESULT_SAVE_UNCONFIRMED\n']);
  assert.equal(await fs.readFile(dest,'utf8'),'preserve');
 });
+
+test('retention includes validated non-enumerable original and revision witness fields',async t=>{
+ const root=await fs.mkdtemp(join(tmpdir(),'squire-result-'));
+ t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ for(const revise of [false,true]){
+  const value=revise?{...revision(false),prior_candidate:{git_dir:'/private/prior'}}:spec(false);
+  const h=harness(value),route=revise?'revise':'build',build=h.ports[route];
+  const path=join(root,route);
+  let expected;
+  h.ports[route]=async spec=>{
+   const returned=await build(spec);
+   expected=structuredClone(returned);
+   if(revise)Object.defineProperty(returned.revised_blobs[0],'previous_sha256',{enumerable:false});
+   else Object.defineProperty(returned,'receipt_sha256',{enumerable:false});
+   return returned;
+  };
+  assert.equal(await run(['--'+route,'/private/spec','--result-file',path],h.ports),0);
+  assert.deepEqual(JSON.parse(await fs.readFile(path,'utf8')),expected);
+ }
+});

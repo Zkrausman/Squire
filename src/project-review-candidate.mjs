@@ -1396,6 +1396,13 @@ function cliChangedCount(result,revision){
   return validateCliResult({...common,schema:RESULT_SCHEMA,status:'SOURCE_CANDIDATE_CREATED'});
 }
 
+// The closed result schema accepts non-enumerable own data properties too.
+// JSON already visits array indices; expose every validated record field.
+function resultJsonRecord(key,value){
+  if(value===null||typeof value!=='object'||Array.isArray(value))return value;
+  return Object.fromEntries(Object.getOwnPropertyNames(value).map(name=>[name,value[name]]));
+}
+
 async function checkResultFile(handle,path,size){
   const opened=await handle.stat(),leaf=await fs.lstat(path);
   if(!statKind(leaf,'file')||leaf.uid!==process.getuid()||leaf.nlink!==1||
@@ -1425,7 +1432,7 @@ async function createCliCandidate(build,spec,resultPath,revision,cli){
         `Changed path count: ${count}`,''
       ].join('\n');
       if(handle){
-        const bytes=encoder.encode(JSON.stringify(result)+'\n');
+        const bytes=encoder.encode(JSON.stringify(result,resultJsonRecord)+'\n');
         try{
           await checkResultFile(handle,resultPath,0);
           await handle.writeFile(bytes);
