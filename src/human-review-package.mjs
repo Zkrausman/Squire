@@ -162,15 +162,26 @@ export async function buildReviewPackage(spec,ports){
     checkAbort(ports);return result;
   }catch(e){const code=errorCode(e);if(errors.has(code))stop(code);stop('PACKAGE_IO_ERROR');}
 }
-export async function verifyReviewPackage(package_dir,ports){
+export async function verifyReviewPackage(package_dir,ports,expectedManifestSha256){
   let signal;
   try{
+    if(expectedManifestSha256!==undefined&&(typeof expectedManifestSha256!=='string'||
+       expectedManifestSha256.length!==64||!/^[a-f0-9]{64}$/.test(expectedManifestSha256)))stop('PACKAGE_IO_ERROR');
     ports=ioPorts(ports);signal=ports.signal;
     const root=selectedPath(package_dir);await components(root,ports);const st=await checked(ports,()=>ports.fs.lstat(root));
     if(!st.isDirectory()||st.isSymbolicLink()||(st.mode&0o777)!==0o700)stop('SPECIAL_FILE_REJECTED');
-    const entries=await checked(ports,()=>ports.fs.readdir(root));if(entries.length!==4||entries.some(n=>!names.includes(n)))stop('PACKAGE_IO_ERROR');
+    const verifyInventory=async()=>{
+      const entries=await checked(ports,()=>ports.fs.readdir(root));
+      if(entries.length!==4||entries.some(n=>!names.includes(n)))stop('PACKAGE_IO_ERROR');
+    };
+    // Directory-only callers keep their original inventory-first behavior.
+    if(expectedManifestSha256===undefined)await verifyInventory();
     const read=name=>readBounded(join(root,name),caps[name],ports,{mode:0o400,verifying:true});
-    const manifestBytes=await read(names[3]),m=parseReceiptJson(manifestBytes);
+    const manifestBytes=await read(names[3]);
+    const manifestSha256=hash(manifestBytes);
+    if(expectedManifestSha256!==undefined&&manifestSha256!==expectedManifestSha256)stop('PACKAGE_IO_ERROR');
+    if(expectedManifestSha256!==undefined)await verifyInventory();
+    const m=parseReceiptJson(manifestBytes);
     closed(m,['schema_version','completion_status','task_profile','readiness_or_outcome','task_correctness','files'],[],'package_manifest');
     if(m.schema_version!=='squire3.package_manifest.v1'||m.completion_status!=='COMPLETE'||!profiles.includes(m.task_profile)||!Array.isArray(m.files)||m.files.length!==3)stop('PACKAGE_IO_ERROR');
     const bytes={};for(let i=0;i<3;i++){
@@ -179,8 +190,8 @@ export async function verifyReviewPackage(package_dir,ports){
       bytes[name]=await read(name);if(bytes[name].length!==record.bytes||hash(bytes[name])!==record.sha256)stop('PACKAGE_IO_ERROR');
     }
     const summary=parseReceiptJson(bytes['summary.json']),p=makePlan(summary,m.task_profile,m.files[0],bytes['artifact.mjs']);
-    if(m.readiness_or_outcome!==p.readiness_or_outcome||m.task_correctness!==p.task_correctness||names.slice(0,3).some(n=>hash(bytes[n])!==p.files[n].sha256)||hash(manifestBytes)!==p.files[names[3]].sha256)stop('PACKAGE_IO_ERROR');
-    checkAbort(ports);return Object.freeze({schema_version:'squire3.package_verification.v1',status:'VERIFIED',manifest_sha256:hash(manifestBytes),task_profile:p.task_profile,readiness_or_outcome:p.readiness_or_outcome,task_correctness:p.task_correctness,exit_code:p.exit_code,original_operation_acknowledgement:'UNKNOWN',provenance_authenticity:'NOT_ESTABLISHED',crash_durability:'NOT_ESTABLISHED'});
+    if(m.readiness_or_outcome!==p.readiness_or_outcome||m.task_correctness!==p.task_correctness||names.slice(0,3).some(n=>hash(bytes[n])!==p.files[n].sha256)||manifestSha256!==p.files[names[3]].sha256)stop('PACKAGE_IO_ERROR');
+    checkAbort(ports);return Object.freeze({schema_version:'squire3.package_verification.v1',status:'VERIFIED',manifest_sha256:manifestSha256,task_profile:p.task_profile,readiness_or_outcome:p.readiness_or_outcome,task_correctness:p.task_correctness,exit_code:p.exit_code,original_operation_acknowledgement:'UNKNOWN',provenance_authenticity:'NOT_ESTABLISHED',crash_durability:'NOT_ESTABLISHED'});
   }catch(error){
     const status=signal&&observedPackageAborts.get(error)===signal?'VERIFICATION_ABORTED':'CORRUPT_OR_INCOMPLETE';
     return Object.freeze({schema_version:'squire3.package_verification.v1',status,exit_code:2,original_operation_acknowledgement:'UNKNOWN'});

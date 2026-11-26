@@ -7,7 +7,7 @@ const packageUrl=new URL('../bin/squire-package.mjs',import.meta.url);
 const projects=[new URL('../bin/squire-project-review.mjs',import.meta.url),new URL('../src/project-review-candidate.mjs',import.meta.url)];
 const help='Usage: node bin/squire-project-review.mjs <--build|--revise|--build-standard|--revise-standard> <spec.json>\n';
 const usage='Usage: node bin/squire-project-review.mjs --build <spec.json>\n';
-const packageUsage='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir>\n';
+const packageUsage='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir> [expected-manifest-sha256]\n';
 for(const url of [packageUrl,...projects]){
  test(`artifact executable closed stderr: ${url.pathname.split('/').slice(-2).join('/')}`,async()=>{
   const r=await child(url,[],{closed:'stderr'});assert.equal(r.code,2);assert.equal(r.signal,null);assert.equal(r.stdout,'');assert.equal(r.stderr,'');

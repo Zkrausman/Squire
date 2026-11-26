@@ -5,7 +5,7 @@ source, under a fresh destination with an existing caller-owned parent:
 
 ```
 node bin/squire-package.mjs --build <receipt-path> <source-path> <new-output-dir>
-node bin/squire-package.mjs --verify <output-dir>
+node bin/squire-package.mjs --verify <output-dir> [expected-manifest-sha256]
 ```
 
 The tool never discovers runs, reads captures or neighboring files, launches
@@ -49,7 +49,7 @@ This adds no hard I/O deadline or crash recovery.
 
 Manifest presence alone cannot establish original completion: a later close,
 readback, chmod, cancellation or final source-check failure can occur after its
-bytes exist. `verifyReviewPackage(dir, ports)` checks the current exact inventory,
+bytes exist. `verifyReviewPackage(dir, ports, expectedManifestSha256?)` checks the current exact inventory,
 modes, bounded bytes, digests and safe summary/README/manifest consistency. It
 returns `VERIFIED` or `CORRUPT_OR_INCOMPLETE`. When a cancellation check
 observes an explicitly supplied AbortSignal, it returns `VERIFICATION_ABORTED`
@@ -58,6 +58,15 @@ existing classification even if the signal was also aborted. All statuses leave
 original operation acknowledgement UNKNOWN. Verification proves neither
 provenance authenticity nor crash durability and cannot repair an earlier failed
 operation.
+
+To verify the intended copy, supply the manifest SHA-256 retained separately
+from the build receipt or terminal output. The verifier requires exactly 64
+lowercase hexadecimal characters before accessing the package. It compares the
+bounded manifest bytes with that digest before listing the directory or opening
+the three data files. Invalid or mismatched digests yield
+`CORRUPT_OR_INCOMPLETE` (exit 2). A match continues through all integrity
+checks and preserves the recorded outcome. Omitting the digest verifies the
+selected package without binding it to a separately retained value.
 
 The CLI's default native filesystem adapter enumerates this exact inventory
 incrementally with `opendir` using a one-entry internal buffer, retaining at

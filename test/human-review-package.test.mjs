@@ -79,6 +79,65 @@ test('generic candidate package retains NOT_EVALUATED and no invented17-fixture 
  assert.equal(await runPackageCli(['--build',f.spec.receipt_path,f.path,f.spec.output_dir],ports),1);assert.equal(err,'');assert.match(out,/CANDIDATE_READY/);assert.equal(out.includes(f.root),false);
  const s=JSON.parse(await fs.readFile(join(f.spec.output_dir,'summary.json'),'utf8'));assert.equal(s.task_correctness,'NOT_EVALUATED');assert.equal(Object.hasOwn(s,'fixtures'),false);assert.equal((await verifyReviewPackage(f.spec.output_dir,f.ports)).exit_code,1);
 },{generic:true}));
+test('verification with a retained manifest digest preserves both package profiles and CLI output',async()=>{
+ for(const generic of [true,false])await fixture(async f=>{
+  const built=await buildReviewPackage(f.spec,f.ports);
+  const root=f.spec.output_dir;
+  const verified=await verifyReviewPackage(root,f.ports,built.manifest_sha256);
+  assert.equal(verified.status,'VERIFIED');
+  assert.equal(verified.exit_code,generic?1:0);
+  assert.deepEqual(verified,await verifyReviewPackage(root,f.ports));
+
+  const output=[];
+  const ports={...f.ports,stdout:{write:value=>output.push(value)},stderr:{write:assert.fail}};
+  assert.equal(await runPackageCli(['--verify',root],ports),verified.exit_code);
+  assert.equal(await runPackageCli(['--verify',root,built.manifest_sha256],ports),verified.exit_code);
+  assert.equal(output.length,2);
+  assert.match(output[0],/Squire local review package: VERIFIED/);
+  assert.equal(output[1],output[0]);
+ },{generic});
+});
+test('malformed expected digests reject before filesystem access',async()=>{
+ let calls=0;
+ const unexpected=()=>{calls++;throw Error('unexpected filesystem access');};
+ const fsPort={lstat:unexpected,readdir:unexpected,open:unexpected};
+ for(const value of ['', 'a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64), 'g'.repeat(64), '0'.repeat(64)+'\n', null, 0]){
+  const result=await verifyReviewPackage('/synthetic/package',{fs:fsPort,uid:0},value);
+  assert.equal(result.status,'CORRUPT_OR_INCOMPLETE');
+  assert.equal(result.exit_code,2);
+ }
+ assert.equal(calls,0);
+});
+test('a different valid package stops at its manifest and matching digests still require intact content',async()=>fixture(async f=>{
+ const intended=await buildReviewPackage(f.spec,f.ports);
+ const otherBytes=new TextEncoder().encode('// another synthetic candidate\n'.repeat(5));
+ const otherPlan=planReviewPackage(receipt(f.path,otherBytes,true),otherBytes);
+ const otherDir=join(f.root,'other-package');
+ const other=await writeReviewPackage(otherPlan,otherDir,f.ports);
+ assert.notEqual(other.manifest_sha256,intended.manifest_sha256);
+ assert.equal((await verifyReviewPackage(otherDir,f.ports,other.manifest_sha256)).status,'VERIFIED');
+
+ const reads=[];
+ const traced={...fs,
+  open(path,...args){reads.push(basename(path));return fs.open(path,...args);},
+  readdir(path){reads.push('inventory');return fs.readdir(path);}
+ };
+ const stdout=[],stderr=[];
+ const code=await runPackageCli(['--verify',otherDir,intended.manifest_sha256],{
+  ...f.ports,fs:traced,stdout:{write:value=>stdout.push(value)},stderr:{write:value=>stderr.push(value)}
+ });
+ assert.equal(code,2);
+ assert.deepEqual(stdout,[]);
+ assert.deepEqual(stderr,['CORRUPT_OR_INCOMPLETE\n']);
+ assert.deepEqual(reads,['package-manifest.json']);
+
+ const artifact=join(otherDir,'artifact.mjs');
+ await fs.unlink(artifact);
+ await fs.writeFile(artifact,Buffer.alloc(otherBytes.length),{flag:'wx',mode:0o400});
+ const damaged=await verifyReviewPackage(otherDir,f.ports,other.manifest_sha256);
+ assert.equal(damaged.status,'CORRUPT_OR_INCOMPLETE');
+ assert.equal(damaged.exit_code,2);
+},{generic:true}));
 test('existing empty/nonempty/file/symlink destinations stop before input open with no mutation',async()=>{
  for(const kind of ['empty','nonempty','file','symlink'])await fixture(async f=>{
   const target=f.spec.output_dir;if(kind==='file')await fs.writeFile(target,'SENTINEL');else if(kind==='symlink')await fs.symlink(f.root,target);else{await fs.mkdir(target);if(kind==='nonempty')await fs.writeFile(join(target,'sentinel'),'SENTINEL');}
@@ -156,7 +215,7 @@ test('failed conformance can be packaged honestly, with private control strings 
  r.generation.record.requested_model='PRIVATE_MODEL\x1b[31m';r.generation.record.error_details.message='PRIVATE_PROMPT_OR_SECRET';Object.assign(r,{operator_admitted:true,operator_receipt:'/home/PRIVATE_OPERATOR\0',direct_child_invocations:{generation:1,syntax:1,fixtures:17},outer_observation_target_ms:250000,event_loop_condition:'RESPONSIVE_PARENT_EVENT_LOOP'});
  await fs.writeFile(f.spec.receipt_path,JSON.stringify(r));const result=await buildReviewPackage(f.spec,f.ports);assert.equal(result.exit_code,1);assert.equal(result.readiness_or_outcome,'FAIL');
  for(const n of names.slice(1)){const text=await fs.readFile(join(f.spec.output_dir,n),'utf8');assert.equal(/PRIVATE_|\x1b|\0/.test(text),false);}
- assert.equal((await verifyReviewPackage(f.spec.output_dir,f.ports)).exit_code,1);
+ assert.equal((await verifyReviewPackage(f.spec.output_dir,f.ports,result.manifest_sha256)).exit_code,1);
 }));
 test('aborted packaging does not create a destination or claim completion',async()=>fixture(async f=>{
  const controller=new AbortController();controller.abort();await assert.rejects(buildReviewPackage(f.spec,{...f.ports,signal:controller.signal}),e=>e.code==='PACKAGE_ABORTED');await assert.rejects(fs.lstat(f.spec.output_dir));
@@ -249,7 +308,7 @@ test('CLI errors suppress private paths, native messages and Proxy error callbac
 }));
 
 test('package exact help prints existing usage without filesystem access',async()=>{
- const usage='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir>\n';
+ const usage='Usage: node bin/squire-package.mjs --build <receipt> <source> <output-dir> | --verify <output-dir> [expected-manifest-sha256]\n';
  let fsReads=0;
  for(const [args,code,channel] of [[['--help'],0,'stdout'],[[],2,'stderr'],[['--help','extra'],2,'stderr'],[['--unknown'],2,'stderr']]){
   const calls=[];
