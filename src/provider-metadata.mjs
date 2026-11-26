@@ -406,22 +406,18 @@ export function visitLargeProjectCodexJsonl(input,observeFrame){
   let terminalCount=0,status=null,facts=null;
   try{
     for(const event of iterateLargeProjectCodexJsonlFrames(captured.bytes)){
-      observeFrame?.(event);
-      if(!own(event,'type')||
-         !['turn.completed','turn.failed'].includes(event.type))continue;
-      terminalCount++;
-      if(terminalCount===1){
-        status=event.type;
-        facts=largeTerminalFacts(event,status);
-      }else if(terminalCount===2){
-        // Keep only the fixed status label needed to distinguish the two
-        // structural terminal errors; no event list is retained.
-        const firstStatus=status;
-        const current=event.type;
-        if(firstStatus!==current)return failureMetadata('CONFLICTING_TERMINAL_EVENTS');
-      }else{
-        return failureMetadata('REPEATED_TERMINAL_REJECTED');
+      if(own(event,'type')&&['turn.completed','turn.failed'].includes(event.type)){
+        terminalCount++;
+        if(terminalCount===1){
+          status=event.type;
+          facts=largeTerminalFacts(event,status);
+        }else if(terminalCount===2){
+          if(status!==event.type)return failureMetadata('CONFLICTING_TERMINAL_EVENTS');
+        }else{
+          return failureMetadata('REPEATED_TERMINAL_REJECTED');
+        }
       }
+      observeFrame?.(event);
     }
   }catch(caught){
     return failureMetadata(largeErrorField(caught)??'ENVELOPE_PARSE_ERROR');
