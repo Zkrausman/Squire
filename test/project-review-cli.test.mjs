@@ -1,4 +1,7 @@
 import test from 'node:test';
+import * as fs from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import {runProjectReviewCandidateCli as run} from '../bin/squire-project-review.mjs';
 const enc=new TextEncoder();
@@ -108,4 +111,53 @@ test('acknowledgement project false-return sink preserves receiver and successfu
  const h=harness(spec(true));const out={text:'',write(text){assert.equal(this,out);this.text+=text;return false;}};
  h.ports.stdout=out;assert.equal(await run(['--build-standard','/private/spec'],h.ports),0);
  assert.match(out.text,/^SOURCE_CANDIDATE_CREATED\n/);assert.deepEqual(h.err,[]);
+});
+
+test('result destination rejects occupied leaves and malformed arguments before input reads',async t=>{
+ const root=await fs.mkdtemp(join(tmpdir(),'squire-result-'));
+ t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const occupied=join(root,'occupied'),link=join(root,'link');
+ await fs.writeFile(occupied,'keep');
+ await fs.symlink(join(root,'missing'),link);
+ for(const tail of [['--result-file',occupied],['--result-file',link],['--result-file',root],
+  ['--result-file','relative'],['--result-file'],['--other',occupied],['--result-file',occupied,'extra']]){
+  const h=harness(spec(false));
+  assert.equal(await run(['--build','/private/spec',...tail],h.ports),2);
+  assert.deepEqual(h.reads,[]);assert.deepEqual(h.routes,[]);assert.deepEqual(h.out,[]);
+ }
+ assert.equal(await fs.readFile(occupied,'utf8'),'keep');
+});
+
+test('result destinations inside the base worktree, stage or prior store reject before creation',async t=>{
+ const root=await fs.mkdtemp(join(tmpdir(),'squire-result-'));
+ t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const dest=join(root,'new');
+ for(const [value,mode] of [
+  [{...spec(true),base_git_dir:join(root,'.git')},'--build-standard'],
+  [{...spec(false),stage_dir:root},'--build'],
+  [{...revision(true),prior_candidate:{git_dir:root}},'--revise-standard']
+ ]){
+  const h=harness(value);
+  assert.equal(await run([mode,'/private/spec','--result-file',dest],h.ports),2);
+  assert.deepEqual(h.routes,[]);await assert.rejects(fs.stat(dest),{code:'ENOENT'});
+ }
+});
+
+test('result reservation excludes a concurrent producer and reports a post-creation save failure once',async t=>{
+ const root=await fs.mkdtemp(join(tmpdir(),'squire-result-'));
+ t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const dest=join(root,'result.json'),args=['--build','/private/spec','--result-file',dest];
+ const h=harness(spec(false)),other=harness(spec(false)),build=h.ports.build;
+ h.ports.build=async input=>{
+  const created=await build(input);
+  assert.equal(await run(args,other.ports),2);
+  await fs.rename(dest,join(root,'reserved'));
+  await fs.writeFile(dest,'preserve');
+  return created;
+ };
+ assert.equal(await run(args,h.ports),2);
+ assert.deepEqual(other.reads,[]);assert.deepEqual(other.routes,[]);
+ assert.deepEqual(h.routes,['build']);assert.deepEqual(h.out,[]);
+ assert.deepEqual(h.err,['PROJECT_REVIEW_CANDIDATE_CREATED_RESULT_SAVE_UNCONFIRMED\n']);
+ assert.equal(await fs.readFile(dest,'utf8'),'preserve');
 });

@@ -1377,7 +1377,72 @@ function validateRevisedBlobs(value){
   }
 }
 
-async function revisionCli(value,cli,profile=LARGE_IMPORT){
+function cliChangedCount(result,revision){
+  if(!revision)return validateCliResult(result);
+  try{closed(result,[
+    'schema','status','operation_id','candidate_ref','base_commit','base_tree',
+    'candidate_commit','candidate_tree','receipt_sha256','stage_manifest_sha256',
+    'changed_paths','task_correctness','human_review','native_acceptance',
+    'benchmark_acceptance','origin_authenticity','base_alternate_dependency',
+    'correction_origin','revision_of','revised_blobs'
+  ],[],'revision_cli_result');}catch{rejected();}
+  if(result.schema!=='SQUIRE_PROJECT_REVISION_CANDIDATE_V1'||result.status!=='SOURCE_REVISION_CANDIDATE_CREATED'||
+     result.correction_origin!=='OPERATOR_SUPPLIED')rejected();
+  try{closed(result.revision_of,['commit','tree'],[],'revision_of');}catch{rejected();}
+  if(typeof result.revision_of.commit!=='string'||!SHA1.test(result.revision_of.commit)||
+     typeof result.revision_of.tree!=='string'||!SHA1.test(result.revision_of.tree))rejected();
+  validateRevisedBlobs(result.revised_blobs);
+  const {correction_origin,revision_of,revised_blobs,...common}=result;
+  return validateCliResult({...common,schema:RESULT_SCHEMA,status:'SOURCE_CANDIDATE_CREATED'});
+}
+
+async function checkResultFile(handle,path,size){
+  const opened=await handle.stat(),leaf=await fs.lstat(path);
+  if(!statKind(leaf,'file')||leaf.uid!==process.getuid()||leaf.nlink!==1||
+     (leaf.mode&0o7777)!==0o600||leaf.size!==size||!stable(opened,leaf))rejected();
+}
+
+async function createCliCandidate(build,spec,resultPath,revision,cli){
+  let handle=null,summary=null;
+  try{
+    try{
+      if(resultPath){
+        const original=revision?spec.original:spec;
+        const base=original.base_git_dir;
+        const roots=[basename(base)==='.git'?dirname(base):base,original.stage_dir,original.snapshot_dir,original.candidate_dir];
+        if(revision)roots.push(spec.prior_candidate.git_dir);
+        if(roots.some(root=>!absolutePath(root)||pathsOverlap(root,resultPath)))invalid();
+        await ancestorChecks(nativeArtifactCheckPortsImpl(),resultPath);
+        handle=await fs.open(resultPath,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+        await checkResultFile(handle,resultPath,0);
+      }
+      const result=await build(spec);
+      const count=cliChangedCount(result,revision);
+      summary=[
+        result.status,`Base commit: ${result.base_commit}`,`Base tree: ${result.base_tree}`,
+        `Candidate commit: ${result.candidate_commit}`,`Candidate tree: ${result.candidate_tree}`,
+        ...(revision?[`Revision of commit: ${result.revision_of.commit}`,`Revision of tree: ${result.revision_of.tree}`]:[]),
+        `Changed path count: ${count}`,''
+      ].join('\n');
+      if(handle){
+        const bytes=encoder.encode(JSON.stringify(result)+'\n');
+        try{
+          await checkResultFile(handle,resultPath,0);
+          await handle.writeFile(bytes);
+          await checkResultFile(handle,resultPath,bytes.length);
+        }finally{bytes.fill(0);}
+      }
+    }finally{if(handle)await handle.close();}
+  }catch(error){
+    if(summary===null)throw error;
+    cli.stderr('PROJECT_REVIEW_CANDIDATE_CREATED_RESULT_SAVE_UNCONFIRMED\n');
+    return 2;
+  }
+  cli.stdout(summary);
+  return 0;
+}
+
+async function revisionCli(value,cli,profile,resultPath){
   try{closed(value,['schema','original','prior_candidate','corrections'],[],'revision_cli_spec');}catch{invalid();}
   if(value.schema!==profile.revisionSchema||value.original?.schema!==profile.specSchema)invalid();
   const receiptPath=cliSpec(value.original),corrections=[];
@@ -1394,28 +1459,7 @@ async function revisionCli(value,cli,profile=LARGE_IMPORT){
     }
     const original={...value.original,receipt_bytes:receipt};delete original.receipt_path;
     const revise=profile.large?cli.revise:cli.reviseStandard;
-    const result=await revise({schema:value.schema,original,prior_candidate:value.prior_candidate,corrections});
-    try{closed(result,[
-      'schema','status','operation_id','candidate_ref','base_commit','base_tree',
-      'candidate_commit','candidate_tree','receipt_sha256','stage_manifest_sha256',
-      'changed_paths','task_correctness','human_review','native_acceptance',
-      'benchmark_acceptance','origin_authenticity','base_alternate_dependency',
-      'correction_origin','revision_of','revised_blobs'
-    ],[],'revision_cli_result');}catch{rejected();}
-    if(result.schema!=='SQUIRE_PROJECT_REVISION_CANDIDATE_V1'||result.status!=='SOURCE_REVISION_CANDIDATE_CREATED'||
-       result.correction_origin!=='OPERATOR_SUPPLIED')rejected();
-    try{closed(result.revision_of,['commit','tree'],[],'revision_of');}catch{rejected();}
-    if(typeof result.revision_of.commit!=='string'||!SHA1.test(result.revision_of.commit)||
-       typeof result.revision_of.tree!=='string'||!SHA1.test(result.revision_of.tree))rejected();
-    validateRevisedBlobs(result.revised_blobs);
-    const {correction_origin,revision_of,revised_blobs,...common}=result;
-    const count=validateCliResult({...common,schema:RESULT_SCHEMA,status:'SOURCE_CANDIDATE_CREATED'});
-    cli.stdout([
-      'SOURCE_REVISION_CANDIDATE_CREATED',`Base commit: ${result.base_commit}`,`Base tree: ${result.base_tree}`,
-      `Candidate commit: ${result.candidate_commit}`,`Candidate tree: ${result.candidate_tree}`,
-      `Revision of commit: ${revision_of.commit}`,`Revision of tree: ${revision_of.tree}`,`Changed path count: ${count}`,''
-    ].join('\n'));
-    return 0;
+    return await createCliCandidate(revise,{schema:value.schema,original,prior_candidate:value.prior_candidate,corrections},resultPath,true,cli);
   }finally{receipt?.fill(0);for(const item of corrections)item.bytes_data.fill(0);}
 }
 
@@ -1431,35 +1475,30 @@ async function runProjectReviewCandidateCliInternal(argv,cli){
     cli.stdout('Usage: node bin/squire-project-review.mjs <--build|--revise|--build-standard|--revise-standard> <spec.json>\n');
     return 0;
   }
-  if(!Array.isArray(argv)||argv.length!==2||!['--build','--revise','--build-standard','--revise-standard'].includes(argv[0])||
+  const resultPath=Array.isArray(argv)&&argv.length===4&&argv[2]==='--result-file'&&absolutePath(argv[3])?argv[3]:null;
+  if(!Array.isArray(argv)||(argv.length!==2&&!resultPath)||!['--build','--revise','--build-standard','--revise-standard'].includes(argv[0])||
      typeof argv[1]!=='string'||!absolutePath(argv[1])){
     cli.stderr('Usage: node bin/squire-project-review.mjs --build <spec.json>\n');
     return 2;
   }
   let receipt=null;
   try{
+    if(resultPath){
+      const ports=nativeArtifactCheckPortsImpl();
+      await ancestorChecks(ports,resultPath);
+      if(!await absent(ports,resultPath))rejected();
+    }
     const profile=argv[0].endsWith('-standard')?STANDARD_IMPORT:LARGE_IMPORT;
     const specBytes=plainBytes(await cli.read(argv[1],MAX_SPEC_BYTES),MAX_SPEC_BYTES);
     try{
       const value=parseReceiptJson(specBytes);
-      if(argv[0]==='--revise'||argv[0]==='--revise-standard')return await revisionCli(value,cli,profile);
+      if(argv[0]==='--revise'||argv[0]==='--revise-standard')return await revisionCli(value,cli,profile,resultPath);
       if(value?.schema!==profile.specSchema)invalid();
       const receiptPath=cliSpec(value);
       receipt=plainBytes(await cli.read(receiptPath,MAX_RECEIPT_BYTES),MAX_RECEIPT_BYTES);
       const mutable={...value,receipt_bytes:receipt};delete mutable.receipt_path;
       const build=profile.large?cli.build:cli.buildStandard;
-      const result=await build(mutable);
-      const changedPathCount=validateCliResult(result);
-      cli.stdout([
-        'SOURCE_CANDIDATE_CREATED',
-        `Base commit: ${result.base_commit}`,
-        `Base tree: ${result.base_tree}`,
-        `Candidate commit: ${result.candidate_commit}`,
-        `Candidate tree: ${result.candidate_tree}`,
-        `Changed path count: ${changedPathCount}`,
-        ''
-      ].join('\n'));
-      return 0;
+      return await createCliCandidate(build,mutable,resultPath,false,cli);
     }finally{specBytes.fill(0);}
   }catch{
     cli.stderr('PROJECT_REVIEW_CANDIDATE_REJECTED\n');
