@@ -394,12 +394,19 @@ function largeTerminalFacts(event,status){
 }
 
 export function decodeLargeProjectCodexJsonl(input){
+  return visitLargeProjectCodexJsonl(input,null);
+}
+
+// Shared with private response intake. Only the collector observes frames;
+// the public metadata decoder always returns the finite metadata projection.
+export function visitLargeProjectCodexJsonl(input,observeFrame){
   const captured=largeBoundary(input);
   const failureMetadata=code=>output(captured.raw_wrapper,code,null,null,null,null,true);
   if(captured.oversized)return failureMetadata('PAYLOAD_SIZE_EXCEEDED');
   let terminalCount=0,status=null,facts=null;
   try{
     for(const event of iterateLargeProjectCodexJsonlFrames(captured.bytes)){
+      observeFrame?.(event);
       if(!own(event,'type')||
          !['turn.completed','turn.failed'].includes(event.type))continue;
       terminalCount++;
