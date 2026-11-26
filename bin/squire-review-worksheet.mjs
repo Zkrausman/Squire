@@ -9,7 +9,7 @@ import {absolute, ancestors, digest, readFile, stable, verifyInternal as verifyR
 
 const usage = 'Usage: node bin/squire-review-worksheet.mjs <original|revision> <package-dir> <expected-manifest-sha256> <fresh-worksheet.json>\n';
 
-async function verifiedManifest(family, packageDir, expected) {
+export async function verifiedManifest(family, packageDir, expected) {
   if (family === 'revision') return (await verifyRevision(fs, packageDir, undefined, expected)).manifest;
   await verifyProjectCandidateReviewPackage(packageDir, {}, expected);
   // The original public verifier returns only a summary. Bind the bounded reread
@@ -36,7 +36,7 @@ function view(name, display, paths, oldSuffix, newSuffix) {
   };
 }
 
-function worksheet(family, expected, manifest) {
+export function worksheet(family, expected, manifest) {
   const bindings = {base_commit: manifest.base_commit, base_tree: manifest.base_tree};
   let views;
   if (family === 'original') {
@@ -68,7 +68,7 @@ function worksheet(family, expected, manifest) {
   };
 }
 
-async function writeWorksheet(destination, document) {
+export async function writeWorksheet(destination, document) {
   const bytes = Buffer.from(JSON.stringify(document, null, 2) + '\n');
   await ancestors(fs, destination);
   const handle = await fs.open(destination, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
