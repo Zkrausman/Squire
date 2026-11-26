@@ -1,4 +1,6 @@
 import test from 'node:test';
+// Keep the dedicated stage-transfer CLI suite selected by the existing multifile test entry.
+import './stage-transfer.test.mjs';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {constants} from 'node:fs';
