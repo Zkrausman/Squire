@@ -44,6 +44,9 @@ async function collect(blank, packageDir, expected) {
     await emit(`Selected package: ${JSON.stringify(packageDir)}\nManifest SHA-256: ${expected}\n` +
       'Inspect the exact evidence in a separate local viewer. Reading evidence does not set responses.\n' +
       'Enter yes, no, or a blank line to leave each response unset.\n');
+    result.choice = (await ask('Choice [ACCEPT/REVISE/REJECT/blank]', value => value === '' || selections.includes(value))) || null;
+    const leaveUnset = (result.choice === 'REVISE' || result.choice === 'REJECT') &&
+      (await ask('Row responses [rows=answer individually/unset=leave all row responses unset]', value => ['rows', 'unset'].includes(value))) === 'unset';
     for (const view of result.views) {
       await emit(`\nView: ${view.view}\nDisplay: ${JSON.stringify(view.display)}\n`);
       for (const row of view.paths) {
@@ -51,13 +54,15 @@ async function collect(blank, packageDir, expected) {
           `Old copy: ${JSON.stringify(row.old_copy)}\nOld SHA-256: ${row.old_sha256}\n` +
           `New copy: ${JSON.stringify(row.new_copy)}\nNew SHA-256: ${row.new_sha256}\n` +
           `Binary review required: ${row.binary_review_required}\n`);
-        row.attested = boolean(await ask('Attest this exact comparison? [yes/no/blank]', booleanAnswer));
-        row.binary_inspected = boolean(await ask('Binary inspected for this exact comparison? [yes/no/blank]', booleanAnswer));
+        if (!leaveUnset) {
+          row.attested = boolean(await ask('Attest this exact comparison? [yes/no/blank]', booleanAnswer));
+          row.binary_inspected = boolean(await ask('Binary inspected for this exact comparison? [yes/no/blank]', booleanAnswer));
+        }
       }
     }
+    if (leaveUnset) await emit('All row responses remain unset; no attestation or binary inspection is claimed.\n');
     result.decision_id = (await ask('Decision ID [letters/digits/_/- or blank; 1–64 characters]', identityAnswer)) || null;
     result.reviewer_label = (await ask('Reviewer label [letters/digits/_/- or blank; 1–64 characters]', identityAnswer)) || null;
-    result.choice = (await ask('Choice [ACCEPT/REVISE/REJECT/blank]', value => value === '' || selections.includes(value))) || null;
     const note = await ask('Optional note [single line, at most 4096 UTF-8 bytes; blank to omit]', value => Buffer.byteLength(value) <= 4096);
     if (note !== '') result.note = note;
     const save = await ask('Save a fresh worksheet only? [yes/no]', value => ['yes', 'no'].includes(value));
