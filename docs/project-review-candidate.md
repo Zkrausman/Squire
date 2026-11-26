@@ -234,6 +234,9 @@ For explicit CLI intake, use:
 node bin/squire-project-review.mjs --revise <revision-spec.json>
 ```
 
+To prepare only an owner-selected corrections array from a verified original
+review package, see [the corrections draft command](project-corrections-draft.md).
+
 Its `original` object uses `receipt_path` instead of `receipt_bytes`. Each
 correction uses `content_path` instead of `bytes_data`; these must be explicit
 bounded local regular files. Correction files use a separate private stable,
