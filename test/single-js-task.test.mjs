@@ -245,6 +245,11 @@ test('Single-JS reporting binds rejection labels to producer evidence, reasons a
   const summary=projectSingleJsRunSummary(receipt);
   assert.equal(summary.readiness,status);
   assert.equal(summary.task_correctness,'NOT_EVALUATED');
+  assert.equal(formatSingleJsSummaryTerminal(summary).split('\n')[0],
+   'Squire single-JavaScript receipt: '+status);
+  if(reason==='GENERATION_REJECTED'&&status==='INCOMPLETE'){
+   assert.match(formatSingleJsSummaryTerminal({...summary,readiness:'GENERATION_REJECTED'}),/receipt: INVALID_RECEIPT\n/);
+  }
   if(status==='FAILED'||status==='SYNTAX_REJECTED')assert.equal(summary.syntax.wrapper_status,'UNKNOWN');
   for(const [label,why] of [['GENERATION_REJECTED','GENERATION_REJECTED'],['SYNTAX_REJECTED','SYNTAX_PROCESS_REJECTED']]){
    if(label===status)continue;
@@ -270,9 +275,47 @@ test('Single-JS syntax rejection can record exit zero with output and unknown sy
  };
  const receipt=JSON.parse(JSON.stringify(await fixture.run()));
  assert.equal(receipt.syntax.execution.observed_exit_code,0);
- assert.equal(projectSingleJsRunSummary(receipt).readiness,'SYNTAX_REJECTED');
+ const summary=projectSingleJsRunSummary(receipt);
+ assert.equal(summary.readiness,'SYNTAX_REJECTED');
+ assert.match(formatSingleJsSummaryTerminal(summary),/^Squire single-JavaScript receipt: SYNTAX_REJECTED$/m);
  receipt.syntax.observation={syntax_status:'SYNTAX_ERROR',syntax_valid:false};
  assert.equal(projectSingleJsRunSummary(receipt).readiness,'INVALID_RECEIPT');
+});
+test('Single-JS terminal labels must agree with the retained phase evidence',async()=>{
+ const project=async settings=>projectSingleJsRunSummary(JSON.parse(JSON.stringify(await runtime(settings).run())));
+ const ready=await project(),rejected=await project({source:''}),syntax=await project({syntaxExit:1});
+ const canceled=await project({abort:true}),dry=projectSingleJsRunSummary(singleJsDryRun());
+ const invalid='Squire single-JavaScript receipt: INVALID_RECEIPT\nDiagnostic: SCHEMA_MISMATCH\n';
+ for(const readiness of ['NOT_RUN','GENERATION_REJECTED','SYNTAX_REJECTED']){
+  assert.equal(formatSingleJsSummaryTerminal({...ready,readiness}),invalid,readiness);
+ }
+ for(const summary of [
+  {...dry,has_operator_receipt:true},{...dry,admission_claimed:true},
+  {...dry,diagnostic:rejected.diagnostic},
+  {...canceled,diagnostic:rejected.diagnostic},
+  {...canceled,readiness:'GENERATION_REJECTED'},
+  {...canceled,readiness:'SYNTAX_REJECTED'},
+  {...rejected,syntax:syntax.syntax},{...rejected,artifact:ready.artifact},
+  {...syntax,artifact:canceled.artifact},{...syntax,generation:rejected.generation},
+  {...syntax,syntax:{...syntax.syntax,syntax_valid:false}},
+ ]){
+  assert.equal(formatSingleJsSummaryTerminal(summary),invalid);
+ }
+});
+test('Single-JS dry-run example reports no diagnostic and exits unevaluated',async()=>{
+ const bytes=await readFile(new URL('../examples/offline-report/single-js-dry-run.json',import.meta.url));
+ const projected=projectSingleJsRunSummary(JSON.parse(bytes));
+ assert.equal(projected.diagnostic,null);
+ const terminal=formatSingleJsSummaryTerminal(projected);
+ assert.match(terminal,/^Squire single-JavaScript receipt: NOT_RUN$/m);
+ assert.match(terminal,/^Task correctness: NOT_EVALUATED /m);
+ assert.match(terminal,/^Diagnostic: NONE$/m);
+ let out='',err='';
+ const code=await runOfflineReportCli(['/synthetic/dry-run'],{
+  stat:async()=>({isFile:()=>true,size:bytes.length}),readFile:async()=>bytes,
+  stdout:{write:s=>out+=s},stderr:{write:s=>err+=s}
+ });
+ assert.deepEqual({code,out,err},{code:1,out:terminal,err:''});
 });
 test('generic reporting has separate discriminator, no17fixture fabrication and no functional PASS exit',async()=>{
  const f=runtime(),r=JSON.parse(JSON.stringify(await f.run()));let out='',err='';const bytes=enc(JSON.stringify(r));
