@@ -119,6 +119,36 @@ all-descendant shutdown guarantee. This operation grants no authority to retry
 an earlier job, use a quarantined namespace, run applications or providers,
 install dependencies, publish source, or start a benchmark.
 
+### Retain the result for local human review
+
+Append `--result-file /absolute/fresh-result.json` to any of the four original
+or first-revision build commands to save the complete returned V1 object as
+private UTF-8 JSON. For example:
+
+```sh
+node bin/squire-project-review.mjs --build-standard /absolute/spec.json --result-file /absolute/private/original.json
+```
+
+Use an existing protected parent directory under the caller's stable custody.
+Choose a fresh file outside the stage, snapshot, base checkout or bare store,
+candidate store and any prior candidate store. The command checks the destination
+before reading inputs and reserves it exclusively with mode `0600` before
+calling the builder. A successful save prints the usual terminal summary.
+
+Supply the parsed object as `result` in the [original package spec](project-candidate-review-package.md).
+For a [revision package](project-revision-review-package.md), use the saved original
+and revision objects as `original_result` and `revised_result`. Supply the bound
+stores and physical identities separately, along with the required original
+package and explicit prior decision set for a revision. Keep the result local.
+It contains private path names and witnesses and grants no review decision.
+
+A failed build can leave an empty reservation or partial candidate output. If
+a validated candidate was returned but writing, checking or closing its result
+file fails, the command exits 2 and reports
+`PROJECT_REVIEW_CANDIDATE_CREATED_RESULT_SAVE_UNCONFIRMED` on stderr. Preserve
+the candidate and any result file in that disposition. The command never
+replays the build, overwrites a previous file or removes partial output.
+
 ## Source validation
 
 The focused `test/project-review-candidate.test.mjs` suite uses synthetic saved

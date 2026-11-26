@@ -2285,3 +2285,67 @@ test('standard CLI revisions preserve prior inputs and create a fresh candidate'
     assert.deepEqual(await revisionInputsDigest(f),before);
   });
 });
+
+for(const standard of [false,true]){
+  test(`saved ${standard?'standard':'large'} CLI results build and verify original and revision review packages`,async()=>{
+    await ownedDirectory(async root=>{
+      const path='src/example.js',staged=utf8.encode('synthetic staged bytes\n');
+      const f=await makeReviewFixture(root,{standard,stageFiles:[sourceFile(path,staged)]});
+      const receiptPath=join(root,'receipt.json'),contentPath=join(root,'edit.bin');
+      const {receipt_bytes,...original}=f.spec;
+      await fs.writeFile(receiptPath,receipt_bytes,{mode:0o400});
+      await fs.writeFile(contentPath,'synthetic revised bytes\n',{mode:0o400});
+      async function retain(mode,spec,adapter,nativeBuild){
+        const specPath=join(root,mode+'-spec.json'),resultPath=join(root,mode+'-result.json');
+        await fs.writeFile(specPath,JSON.stringify(spec),{mode:0o400});
+        let returned;
+        const stdout=[],stderr=[];
+        assert.equal(await runProjectReviewCandidateCli([
+          mode+(standard?'-standard':''),specPath,'--result-file',resultPath
+        ],{[adapter]:async input=>(returned=await nativeBuild(input)),
+          stdout:{write:s=>stdout.push(s)},stderr:{write:s=>stderr.push(s)}}),0);
+        assert.deepEqual(stderr,[]);
+        assert.doesNotMatch(stdout.join(''),/example|synthetic|result\.json|changed_paths/);
+        assert.equal((await fs.lstat(resultPath)).mode&0o777,0o600);
+        const saved=JSON.parse(await fs.readFile(resultPath,'utf8'));
+        assert.deepEqual(saved,returned);
+        return saved;
+      }
+      const cliOriginal={...original,receipt_path:receiptPath};
+      const result=await retain('--build',cliOriginal,standard?'buildStandard':'build',
+        standard?buildStandardProjectReviewCandidateNative:buildProjectReviewCandidateNative);
+      async function identity(dir){const {dev,ino}=await fs.lstat(dir);return {dev,ino};}
+      const originalDir=join(root,'original-review');
+      const packageSpec={schema:'SQUIRE_PROJECT_CANDIDATE_REVIEW_SPEC_V1',result,
+        candidate_git_dir:f.candidateDir,candidate_git_identity:await identity(f.candidateDir),
+        base_git_dir:f.base.gitDir,base_git_identity:f.base.identity,output_dir:originalDir};
+      const originalPackage=await buildProjectCandidateReviewPackage(packageSpec);
+      assert.equal((await verifyProjectCandidateReviewPackage(originalDir)).manifest_sha256,originalPackage.manifest_sha256);
+      const revisedDir=join(root,'revised.git');
+      const revised=await retain('--revise',{
+        schema:standard?'SQUIRE_STANDARD_PROJECT_REVIEW_REVISION_V1':'SQUIRE_PROJECT_REVIEW_REVISION_V1',
+        original:{...cliOriginal,operation_id:'revision',snapshot_dir:join(root,'revised-snapshot'),candidate_dir:revisedDir},
+        prior_candidate:{git_dir:f.candidateDir,identity:packageSpec.candidate_git_identity,operation_id:result.operation_id,
+          commit:result.candidate_commit,tree:result.candidate_tree},
+        corrections:[{path,original:{blob:sha1Git('blob',staged),bytes:staged.length,sha256:hashBytes(staged)},content_path:contentPath}]
+      },standard?'reviseStandard':'revise',standard?buildStandardProjectRevisionCandidateNative:buildProjectRevisionCandidateNative);
+
+      await assert.rejects(()=>buildProjectCandidateReviewPackage({...packageSpec,
+        result:{...result,candidate_tree:revised.candidate_tree},output_dir:join(root,'mismatched')}));
+      const priorDir=join(root,'prior');
+      const prior=await recordProjectCandidateDecision(originalDir,{
+        schema:'SQUIRE_PROJECT_CANDIDATE_DECISION_V1',decision_id:'prior',reviewer_label:'fixture',
+        review_package_sha256:originalPackage.manifest_sha256,base_commit:result.base_commit,base_tree:result.base_tree,
+        candidate_commit:result.candidate_commit,candidate_tree:result.candidate_tree,choice:'REVISE',attestations:[]},priorDir);
+      const reviewDir=join(root,'revision-review');
+      const review=await buildProjectRevisionReviewPackage({
+        schema:'SQUIRE_PROJECT_REVISION_REVIEW_SPEC_V1',original_result:result,revised_result:revised,
+        base_git_dir:f.base.gitDir,base_git_identity:f.base.identity,
+        original_git_dir:f.candidateDir,original_git_identity:packageSpec.candidate_git_identity,
+        revised_git_dir:revisedDir,revised_git_identity:await identity(revisedDir),output_dir:reviewDir,
+        original_package:{dir:originalDir,manifest_sha256:originalPackage.manifest_sha256},
+        prior_decisions:[{dir:priorDir,file_sha256:prior.decision_sha256}],selected_decision_id:'prior'});
+      assert.equal((await verifyProjectRevisionReviewPackage(reviewDir)).manifest_sha256,review.manifest_sha256);
+    });
+  });
+}
