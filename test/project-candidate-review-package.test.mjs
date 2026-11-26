@@ -400,10 +400,10 @@ async function decisionRequest(f,built,choice='ACCEPT'){
   attestations:choice==='ACCEPT'?manifest.paths.map(p=>({path:p.path,old_sha256:p.old?.sha256??null,new_sha256:p.new.sha256,
    binary_inspected:p.binary_review_required})):[],note:'SYNTHETIC_PRIVATE_NOTE'};
 }
-async function recordCli(f,request,suffix,{text,ports={}}={}){
+async function recordCli(f,request,suffix,{text,ports={},explain=false}={}){
  const input=join(f.root,`request-${suffix}.json`),dest=join(f.root,`decision-${suffix}`);let out='',err='';
  await fs.writeFile(input,text??JSON.stringify(request),{mode:0o600});
- const code=await runCandidateDecisionCli(['record',f.output,input,dest],{stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},...ports});
+ const code=await runCandidateDecisionCli(['record',f.output,input,dest,...(explain?['--explain']:[])],{stdout:{write:s=>out+=s},stderr:{write:s=>err+=s},...ports});
  return {code,out,err,input,dest};
 }
 test('decision CLI records all explicit synthetic choices without changing package or earlier decisions',()=>withFixture(async f=>{
@@ -455,15 +455,18 @@ test('decision CLI preserves an existing destination and never treats a stored r
 }));
 test('decision CLI retains prior records and partial output after API I/O failure',()=>withFixture(async f=>{
  const built=await buildProjectCandidateReviewPackage(f.spec),first=await recordCli(f,await decisionRequest(f,built,'REJECT'),'prior');
- assert.equal(first.code,0);const before=await fs.readFile(join(first.dest,'decision.json')),d=await decisionRequest(f,built),target=join(f.root,'decision-close-failure');
- let calls=0;const port=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(name=>[name,(...a)=>fs[name](...a)]));
- port.open=async(...a)=>{const h=await fs.open(...a);if(a[0]!==join(target,'decision.json'))return h;
-  return {stat:(...v)=>h.stat(...v),writeFile:(...v)=>h.writeFile(...v),close:async()=>{await h.close();throw Error('PRIVATE_CLOSE_FAILURE');}};};
- // Only the existing closed six-key filesystem port is supplied to the API.
- const apiPort=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(k=>[k,port[k]]));
- const r=await recordCli(f,d,'close-failure',{ports:{record:async(...a)=>{calls++;return recordProjectCandidateDecision(...a,{fs:apiPort});}}});
- assert.equal(r.code,2);assert.equal(r.err,'PROJECT_CANDIDATE_DECISION_REJECTED\n');assert.equal(calls,1);
- assert.equal((await fs.lstat(join(target,'decision.json'))).isFile(),true);assert.deepEqual(await fs.readFile(join(first.dest,'decision.json')),before);
+ assert.equal(first.code,0);const before=await fs.readFile(join(first.dest,'decision.json')),d=await decisionRequest(f,built);
+ for(const explain of [false,true]){
+  const suffix='close-failure-'+explain,target=join(f.root,'decision-'+suffix);
+  let calls=0;const port=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(name=>[name,(...a)=>fs[name](...a)]));
+  port.open=async(...a)=>{const h=await fs.open(...a);if(a[0]!==join(target,'decision.json'))return h;
+   return {stat:(...v)=>h.stat(...v),writeFile:(...v)=>h.writeFile(...v),close:async()=>{await h.close();throw Error('PRIVATE_CLOSE_FAILURE');}};};
+  // Only the existing closed six-key filesystem port is supplied to the API.
+  const apiPort=Object.fromEntries(['lstat','realpath','mkdir','open','chmod','opendir'].map(k=>[k,port[k]]));
+  const r=await recordCli(f,d,suffix,{explain,ports:{record:async(...a)=>{calls++;return recordProjectCandidateDecision(...a,{fs:apiPort});}}});
+  assert.equal(r.code,2);assert.equal(r.out,'');assert.equal(r.err,'PROJECT_CANDIDATE_DECISION_REJECTED\n'+(explain?'Reason: RECORDING_OUTCOME_UNCERTAIN\n':''));assert.equal(calls,1);
+  assert.equal((await fs.lstat(join(target,'decision.json'))).isFile(),true);assert.deepEqual(await fs.readFile(join(first.dest,'decision.json')),before);
+ }
 }));
 test('decision CLI failed synchronous or closed-pipe acknowledgement leaves the synthetic record',()=>withFixture(async f=>{
  const built=await buildProjectCandidateReviewPackage(f.spec),d=await decisionRequest(f,built,'REVISE');
@@ -903,3 +906,25 @@ test('copied handoff maximum paths and executable output failures retain unchang
  const late=await artifactCliChild(reviewCliUrl,args,{before:"const w=process.stdout.write.bind(process.stdout);process.stdout.write=(...v)=>{const r=w(...v);setImmediate(()=>process.stdout.emit('error',Error('PRIVATE_LATE')));return r;};"});assert.equal(late.code,2);assert.equal(late.signal,null);assert.equal(late.stderr,'');assert.match(late.stdout,/^PROJECT_CANDIDATE_REVIEW_SNAPSHOT_HANDOFF_VERIFIED/);assert.deepEqual(await packageSnapshot(a.copy),before);
  }finally{await fs.rm(f.root,{recursive:true,force:true});}
 });
+
+test('explained original decisions classify input before reservation and preserve successful record bytes',()=>withFixture(async f=>{
+ const built=await buildProjectCandidateReviewPackage(f.spec),accept=await decisionRequest(f,built);
+ for(const [category,change] of [
+  ['MALFORMED_REQUEST',{review_package_sha256:{}}],
+  ['PACKAGE_BINDING_MISMATCH',{review_package_sha256:'0'.repeat(64)}],
+  ['ATTESTATION_REQUIRED',{attestations:[]}],
+  ['BINARY_ACKNOWLEDGEMENT_REQUIRED',{attestations:accept.attestations.map(row=>({...row,binary_inspected:false}))}]
+ ]){
+  const r=await recordCli(f,{...accept,...change},category,{explain:true});
+  assert.equal(r.code,2);assert.equal(r.out,'');assert.equal(r.err,`PROJECT_CANDIDATE_DECISION_REJECTED\nReason: ${category}\n`);
+  await assert.rejects(fs.lstat(r.dest),{code:'ENOENT'});
+ }
+ for(const choice of ['REVISE','REJECT']){
+  const request=await decisionRequest(f,built,choice),plain=await recordCli(f,request,'plain-'+choice);
+  let calls=0;
+  const explained=await recordCli(f,request,'explained-'+choice,{explain:true,ports:{record:(...args)=>{calls++;return recordProjectCandidateDecision(...args);}}});
+  assert.equal(plain.code,0);assert.equal(explained.code,0);assert.equal(calls,1);
+  assert.equal(explained.out,plain.out);assert.equal(explained.err,'');
+  assert.deepEqual(await fs.readFile(join(explained.dest,'decision.json')),await fs.readFile(join(plain.dest,'decision.json')));
+ }
+}));

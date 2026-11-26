@@ -407,3 +407,29 @@ test('first revision manifest preflight stops before side reads and preserves in
  assert.deepEqual(trace,fullTrace.slice(0,4));
  assert.deepEqual(await cli(expected),rejection);
 });
+
+test('explained revision decisions classify request, package and two-view attestations before reservation',async()=>{
+ const f=await fixture();
+ try{
+  await buildProjectRevisionReviewPackage(f.spec);
+  const accept=await cliDecision(f),pkg=f.spec.output_dir;
+  for(const [category,change] of [
+   ['MALFORMED_REQUEST',{revision_package_sha256:{}}],
+   ['PACKAGE_BINDING_MISMATCH',{revision_package_sha256:'0'.repeat(64)}],
+   ['ATTESTATION_REQUIRED',{attestations:accept.attestations.filter(a=>a.view==='base_to_revised')}],
+   ['BINARY_ACKNOWLEDGEMENT_REQUIRED',{attestations:accept.attestations.map(row=>({...row,binary_inspected:false}))}]
+  ]){
+   const path=join(f.root,category+'.json'),dest=join(f.root,category);
+   await fs.writeFile(path,JSON.stringify({...accept,...change}),{mode:0o600});
+   const r=await revisionCliChild(revisionCli,['record-revision',pkg,path,dest,'--explain']);
+   assert.equal(r.code,2);assert.equal(r.stdout,'');assert.equal(r.stderr,`PROJECT_REVISION_DECISION_REJECTED\nReason: ${category}\n`);
+   await assert.rejects(fs.lstat(dest),{code:'ENOENT'});
+  }
+  for(const choice of ['REVISE','REJECT']){
+   const request=await cliDecision(f,choice),plain=await cliRecord(f,request,'plain-'+choice),dest=join(f.root,'explained-'+choice);
+   const r=await revisionCliChild(revisionCli,['record-revision',pkg,plain.input,dest,'--explain']);
+   assert.equal(plain.code,0);assert.equal(r.code,0);assert.equal(r.stderr,'');assert.equal(r.stdout,plain.out);
+   assert.deepEqual(await fs.readFile(join(dest,'decision.json')),await fs.readFile(join(plain.dest,'decision.json')));
+  }
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});

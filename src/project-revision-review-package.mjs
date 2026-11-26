@@ -1,4 +1,5 @@
 // Private first-revision review APIs; shared validation keeps live and retained paths aligned.
+import {recordFailure} from './internal/decision-request-feedback.mjs';
 import {join} from 'node:path';
 import {types} from 'node:util';
 import {readProjectRevisionReviewSource} from './project-portable-candidate-snapshot.mjs';
@@ -55,12 +56,19 @@ function captureDecision(value){closed(value,['schema','decision_id','reviewer_l
     base_commit:value.base_commit,base_tree:value.base_tree,original_commit:value.original_commit,original_tree:value.original_tree,
     revised_commit:value.revised_commit,revised_tree:value.revised_tree,choice:value.choice,attestations,note:value.note??null,
     boundaries:['REVIEWER_LABEL_NOT_AUTHENTICATED','SOURCE_DECISION_ONLY','NO_EXECUTION_OR_MERGE_AUTHORITY','NO_IMPLICIT_WINNER']};}
-function validateDecision(d,v){const m=v.manifest;if(d.revision_package_sha256!==v.manifest_sha256||
-  d.original_package_sha256!==m.original_package_sha256||d.prior_revise_decision_sha256!==m.prior_revise_decision_sha256||
-  ['base_commit','base_tree','original_commit','original_tree','revised_commit','revised_tree'].some(k=>d[k]!==m[k]))rejected();
-  for(const a of d.attestations){const row=m[a.view].find(v=>v.path===a.path);if(!row||a.old_sha256!==(row.old?.sha256??null)||
-    a.new_sha256!==row.new.sha256||(d.choice==='ACCEPT'&&row.binary_review_required&&!a.binary_inspected))rejected();}
-  if(d.choice==='ACCEPT'&&d.attestations.length!==m.base_to_revised.length+m.original_to_revised.length)rejected();}
+function decisionBindingIssue(d,v){
+  const m=v.manifest;
+  if(d.revision_package_sha256!==v.manifest_sha256||d.original_package_sha256!==m.original_package_sha256||
+     d.prior_revise_decision_sha256!==m.prior_revise_decision_sha256||
+     ['base_commit','base_tree','original_commit','original_tree','revised_commit','revised_tree'].some(k=>d[k]!==m[k]))return 'PACKAGE_BINDING_MISMATCH';
+  for(const a of d.attestations){
+    const row=m[a.view].find(v=>v.path===a.path);
+    if(!row||a.old_sha256!==(row.old?.sha256??null)||a.new_sha256!==row.new.sha256)return 'PACKAGE_BINDING_MISMATCH';
+    if(d.choice==='ACCEPT'&&row.binary_review_required&&!a.binary_inspected)return 'BINARY_ACKNOWLEDGEMENT_REQUIRED';
+  }
+  if(d.choice==='ACCEPT'&&d.attestations.length!==m.base_to_revised.length+m.original_to_revised.length)return 'ATTESTATION_REQUIRED';
+  return null;
+}
 async function verifyDecisionInternal(fs,packageDir,decisionDir,expectedSha256){if(!absolute(packageDir)||!absolute(decisionDir)||
   !SHA256.test(expectedSha256)||packageDir===decisionDir||packageDir.startsWith(decisionDir+'/')||decisionDir.startsWith(packageDir+'/'))invalid();
   const v=await verifyInternal(fs,packageDir,undefined);await ancestors(fs,decisionDir);const s=await stat(fs,decisionDir);
@@ -74,20 +82,32 @@ async function verifyDecisionInternal(fs,packageDir,decisionDir,expectedSha256){
       'choice','attestations','note','boundaries'])||!Array.isArray(raw.boundaries)||
     raw.boundaries.join('|')!=='REVIEWER_LABEL_NOT_AUTHENTICATED|SOURCE_DECISION_ONLY|NO_EXECUTION_OR_MERGE_AUTHORITY|NO_IMPLICIT_WINNER')rejected();
   let d;try{const {boundaries,...input}=raw;d=captureDecision(input);}catch(e){rejected();}
-  if(!Buffer.from(encode(d)).equals(bytes))rejected();validateDecision(d,v);return {decision:d,decision_sha256:expectedSha256,verified:v};}
+  if(!Buffer.from(encode(d)).equals(bytes)||decisionBindingIssue(d,v))rejected();return {decision:d,decision_sha256:expectedSha256,verified:v};}
 export async function verifyProjectRevisionDecision(revisionPackageDir,decisionDir,expectedSha256,ports={}){try{
   const v=await verifyDecisionInternal(capturePort(ports),revisionPackageDir,decisionDir,expectedSha256);
   return Object.freeze({status:'PROJECT_REVISION_DECISION_VERIFIED',choice:v.decision.choice,decision_sha256:v.decision_sha256,
     revision_package_sha256:v.verified.manifest_sha256,attested_path_count:v.decision.attestations.length});
   }catch(e){if(e instanceof ReviewPackageError)throw e;rejected();}}
-export async function recordProjectRevisionDecision(revisionPackageDir,decision,freshDecisionDir,ports={}){try{
-  const fs=capturePort(ports),d=captureDecision(decision);if(!absolute(freshDecisionDir)||!absolute(revisionPackageDir)||
-    freshDecisionDir===revisionPackageDir||freshDecisionDir.startsWith(revisionPackageDir+'/')||revisionPackageDir.startsWith(freshDecisionDir+'/'))invalid();
-  const v=await verifyInternal(fs,revisionPackageDir,undefined);validateDecision(d,v);const bytes=encode(d);if(bytes.length>MAX_REVIEW_DECISION_BYTES)invalid();
-  await reserve(fs,freshDecisionDir,undefined);await writeFile(fs,freshDecisionDir,'decision.json',bytes,undefined);
-  const checked=await verifyDecisionInternal(fs,revisionPackageDir,freshDecisionDir,digest(bytes));
-  return Object.freeze({status:'PROJECT_REVISION_DECISION_RECORDED',choice:d.choice,decision_sha256:checked.decision_sha256,
-    revision_package_sha256:v.manifest_sha256,attested_path_count:d.attestations.length});
-  }catch(e){if(e instanceof ReviewPackageError)throw e;rejected();}}
+export async function recordProjectRevisionDecision(revisionPackageDir,decision,freshDecisionDir,ports={}){
+  let issue;
+  try{
+    const fs=capturePort(ports);
+    issue='MALFORMED_REQUEST';
+    const d=captureDecision(decision);
+    issue=null;
+    if(!absolute(freshDecisionDir)||!absolute(revisionPackageDir)||
+      freshDecisionDir===revisionPackageDir||freshDecisionDir.startsWith(revisionPackageDir+'/')||revisionPackageDir.startsWith(freshDecisionDir+'/'))invalid();
+    const v=await verifyInternal(fs,revisionPackageDir,undefined);issue=decisionBindingIssue(d,v);
+    if(issue)rejected();
+    const bytes=encode(d);if(bytes.length>MAX_REVIEW_DECISION_BYTES){issue='MALFORMED_REQUEST';invalid();}
+    await reserve(fs,freshDecisionDir,undefined);await writeFile(fs,freshDecisionDir,'decision.json',bytes,undefined);
+    const checked=await verifyDecisionInternal(fs,revisionPackageDir,freshDecisionDir,digest(bytes));
+    return Object.freeze({status:'PROJECT_REVISION_DECISION_RECORDED',choice:d.choice,decision_sha256:checked.decision_sha256,
+      revision_package_sha256:v.manifest_sha256,attested_path_count:d.attestations.length});
+  }catch(error){
+    const failure=error instanceof ReviewPackageError?error:new ReviewPackageError('PROJECT_REVISION_REVIEW_REJECTED');
+    throw recordFailure(failure,issue);
+  }
+}
 
 export {buildProjectRevisionReviewPackageFromRetainedSource} from './project-retained-revision-review-source.mjs';
