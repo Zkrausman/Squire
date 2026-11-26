@@ -1427,6 +1427,17 @@ function captureRevisionResults(originalValue,revisedValue){
     }
     return {original,revision,witnesses};
 }
+// Pure supplied-record validation for the offline review-spec composer.
+// The live source readers still make their own checks against pinned stores.
+export function validateProjectReviewResultWitnesses(original,revised){
+  if(arguments.length===1){captureResult(original);return;}
+  // The existing revision witness parser validates hash format. Require explicit
+  // string values here as well, rather than permitting RegExp coercion of JSON.
+  captureRevisionResults(original,revised);
+  for(const row of revised.revised_blobs){
+    if(['previous_blob','previous_sha256','blob','sha256'].some(k=>typeof row[k]!=='string'))invalid();
+  }
+}
 async function readRevisionSource(spec,options={},retained=false){
   let signal;
   try{
