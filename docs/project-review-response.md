@@ -18,15 +18,22 @@ view, row and null response. It rejects an edited, nonprivate, or mismatched
 blank and an existing or overlapping destination. It does not search for or
 select any package for you.
 
-The terminal shows the package root, manifest digest, ordered view and diff
-reference, then each row's exact old and new side references and SHA-256
-values. A null old copy means an addition. Open the displayed references in a
+The terminal shows the package root and manifest digest and asks for your
+explicit choice (`ACCEPT`, `REVISE`, `REJECT`, or blank). Only after entering
+`REVISE` or `REJECT`, choose `rows` to answer each row individually or
+`unset` to deliberately leave every row response null. There is no default
+for this selection. `ACCEPT` and a blank choice go directly to individual
+row prompts; there is no bulk response option for them.
+
+In either route, the terminal shows the ordered view and diff reference,
+then each row's exact old and new side references and SHA-256 values.
+A null old copy means an addition. Open the displayed references in a
 separate local viewer, including the exact side files for binary inspection;
 the form does not open or execute them. Opening or reading any evidence does
 not set an attestation. Keep the terminal private; the references are not a
 sanitized report.
 
-For **each** row, answer two independent prompts with `yes` (true), `no`
+When answering rows individually, for **each** row answer two independent prompts with `yes` (true), `no`
 (false), or a blank line (null):
 
 - Attest this exact comparison?
@@ -36,11 +43,13 @@ The binary requirement is displayed for every row. Even a text row has a
 separate binary response field under the existing worksheet contract. The
 same path in multiple views gets separate prompts and responses; nothing is
 copied between views, including when an original change was restored to base.
-No response is inferred from verified bytes or a choice.
+No response is inferred from verified bytes or a choice. The `unset` route
+does not fill any row response, including binary inspections; it retains the
+exact blank rows and displays that no attestation or inspection is claimed.
 
 After the rows, supply your own decision ID and reviewer label (1–64 ASCII
-letters/digits/underscores/hyphens), exact `ACCEPT`, `REVISE` or `REJECT`, and
-an optional single-line note (up to 4096 UTF-8 bytes). Blank identity or choice
+letters/digits/underscores/hyphens), and an optional single-line note (up to
+4096 UTF-8 bytes). Blank identity or choice
 remains null; a blank note is omitted. Invalid line inputs re-prompt. Only an
 explicit `yes` at the final save prompt creates a separate worksheet; `no`
 or EOF before completing the prompts stops. The form does not authenticate
@@ -59,11 +68,12 @@ existing request preparation, inspection, and recording commands separately
 only after supplying and checking your explicit responses.
 
 For the historical #315 synthetic original example (five rows), the fixed
-REVISE input with no attestations uses ten blank row answers, three explicit
-identity/choice answers, a blank note, and a final `yes`: 15 prompts and 15
-line inputs. A seven-row first revision uses 19 prompts and 19 line inputs
-without corrections. Each invalid answer adds another prompt and input.
-These counts describe the form, replacing one worksheet JSON edit in the
-proposed workflow; they do not establish elapsed-time or human usability
-improvement. The independent combined workflow comparison and real reviewer
-score are separate and not established by this command.
+REVISE input with no attestations can use `REVISE`, `unset`, two explicit
+identity answers, a blank note, and a final `yes`: six prompts and six
+line inputs, compared with 15 in the earlier form. Choosing `rows` instead
+uses 16 prompts including ten row answers. A seven-row first revision with
+`ACCEPT` still has 19 prompts and 19 line inputs without corrections. Each
+invalid answer adds another prompt and input. These counts describe the
+form and its prospective prompt reduction, not a measured combined workflow,
+elapsed-time or human usability improvement. Real reviewer value remains
+separate and is not established by this command.

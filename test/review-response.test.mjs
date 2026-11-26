@@ -23,7 +23,7 @@ function success(file, args = []) {
   return r.stdout;
 }
 const lines = args => args.join('\n') + '\n';
-const promptCount = stdout => stdout.split('\n').filter(line => /^(Attest this|Binary inspected|Decision ID|Reviewer label|Choice \[|Optional note|Save a fresh)/.test(line)).length;
+const promptCount = stdout => stdout.split('\n').filter(line => /^(Attest this|Binary inspected|Decision ID|Reviewer label|Choice \[|Row responses \[|Optional note|Save a fresh)/.test(line)).length;
 async function inventory(root) {
   const result = {};
   for (const entry of await fs.readdir(root, {recursive: true, withFileTypes: true})) {
@@ -87,12 +87,14 @@ test('fixed synthetic REVISE flows through existing request and recorder; first 
   const f = await setup(t), original = f.first;
   const blankBytes = await fs.readFile(original.blank), originalInventory = await inventory(original.dir);
   const out = f.file('original-completed.json'), request = f.file('original-request.json'), prior = f.file('prior-record');
-  const answers = [...Array(10).fill(''), 'synthetic-revise', 'synthetic-test-operator', 'REVISE', '', 'yes'];
+  const answers = ['REVISE', 'unset', 'synthetic-revise', 'synthetic-test-operator', '', 'yes'];
   const beforeForm = (await fs.readdir(f.root)).sort();
   const r = form(original, out, answers);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /PROJECT_REVIEW_RESPONSE_SAVED\n$/);
-  assert.equal(promptCount(r.stdout), answers.length); // 15 prompts and explicit line inputs; no JSON edits by form.
+  assert.equal(promptCount(r.stdout), 6);
+  assert.doesNotMatch(r.stdout, /^(Attest this|Binary inspected)/m);
+  assert.match(r.stdout, /All row responses remain unset; no attestation or binary inspection is claimed\./);
   checkTranscript(original, r.stdout);
   assert.deepEqual((await fs.readdir(f.root)).sort(), [...beforeForm, 'original-completed.json'].sort());
   assert.equal((await fs.stat(out)).mode & 0o7777, 0o600);
@@ -115,11 +117,12 @@ test('fixed synthetic REVISE flows through existing request and recorder; first 
   // The same binary path occurs independently in the two views. Leave only
   // the later comparison's binary response blank despite explicit attestation.
   const missingBinary = rows.findLastIndex(row => row.binary_review_required);
-  const revisedAnswers = [...rows.flatMap((row, i) => ['yes', i === missingBinary ? '' : row.binary_review_required ? 'yes' : 'no']),
-    'synthetic-incomplete', 'synthetic-test-operator', 'ACCEPT', 'Synthetic note — café', 'yes'];
+  const revisedAnswers = ['ACCEPT', ...rows.flatMap((row, i) => ['yes', i === missingBinary ? '' : row.binary_review_required ? 'yes' : 'no']),
+    'synthetic-incomplete', 'synthetic-test-operator', 'Synthetic note — café', 'yes'];
   const control = form(revision, revised, revisedAnswers);
   assert.equal(control.status, 0, control.stderr);
   assert.equal(promptCount(control.stdout), revisedAnswers.length); // 19 prompts and inputs, not raw JSON editing.
+  assert.doesNotMatch(control.stdout, /Row responses \[/);
   checkTranscript(revision, control.stdout);
   const response = await read(revised);
   const actual = response.views.flatMap(view => view.paths);
@@ -129,6 +132,42 @@ test('fixed synthetic REVISE flows through existing request and recorder; first 
   const rejectedRequest = f.file('rejected-request.json');
   assert.equal(run(cli('review-decision-request'), [...revision.args.slice(0,3), revised, rejectedRequest]).status, 2);
   await missing(rejectedRequest);
+  // Both binary obligations must be independently affirmative, and every
+  // other row must have its own explicit attestation and inspection answer.
+  const accepted = f.file('revision-accepted.json'), acceptedRequest = f.file('accepted-request.json');
+  const completeAnswers = ['ACCEPT', ...rows.flatMap(row => ['yes', row.binary_review_required ? 'yes' : 'no']),
+    'synthetic-accept', 'synthetic-test-operator', '', 'yes'];
+  const complete = form(revision, accepted, completeAnswers);
+  assert.equal(complete.status, 0, complete.stderr);
+  assert.equal(promptCount(complete.stdout), 19);
+  assert.doesNotMatch(complete.stdout, /Row responses \[/);
+  success(cli('review-decision-request'), [...revision.args.slice(0,3), accepted, acceptedRequest]);
+  assert.equal((await read(acceptedRequest)).attestations.length, rows.length);
+  // Both families and both non-accept choices produce exactly the same
+  // bytes as individually leaving each row blank, including request bytes.
+  for (const v of [original, revision]) for (const choice of ['REVISE', 'REJECT']) {
+    const name = `${v.family}-${choice}`;
+    const skipped = f.file(`${name}-unset.json`), manual = f.file(`${name}-rows.json`);
+    const metadata = [`synthetic-${choice.toLowerCase()}`, 'synthetic-test-operator', 'Explicit test note', 'yes'];
+    const rowCount = v.sheet.views.flatMap(view => view.paths).length;
+    const skipInputs = [choice, 'unset', ...metadata];
+    const manualInputs = [choice, 'rows', ...Array(rowCount * 2).fill(''), ...metadata];
+    const before = (await fs.readdir(f.root)).sort();
+    const skip = form(v, skipped, skipInputs), individual = form(v, manual, manualInputs);
+    assert.equal(skip.status, 0, skip.stderr); assert.equal(individual.status, 0, individual.stderr);
+    assert.equal(promptCount(skip.stdout), 6); assert.equal(promptCount(individual.stdout), 6 + 2 * rowCount);
+    assert.doesNotMatch(skip.stdout, /^(Attest this|Binary inspected)/m);
+    checkTranscript(v, skip.stdout); checkTranscript(v, individual.stdout);
+    assert.deepEqual((await fs.readdir(f.root)).sort(), [...before, `${name}-unset.json`, `${name}-rows.json`].sort());
+    assert.equal((await fs.stat(skipped)).mode & 0o7777, 0o600);
+    assert.deepEqual(await fs.readFile(skipped), await fs.readFile(manual));
+    assert.deepEqual(await read(skipped), {...v.sheet, decision_id: metadata[0], reviewer_label: metadata[1], choice, note: metadata[2]});
+    const skipRequest = f.file(`${name}-unset-request.json`), manualRequest = f.file(`${name}-rows-request.json`);
+    success(cli('review-decision-request'), [...v.args.slice(0,3), skipped, skipRequest]);
+    success(cli('review-decision-request'), [...v.args.slice(0,3), manual, manualRequest]);
+    assert.deepEqual(await fs.readFile(skipRequest), await fs.readFile(manualRequest));
+    assert.deepEqual((await read(skipRequest)).attestations, []);
+  }
   assert.deepEqual(await fs.readFile(revision.blank), revisionBytes);
   assert.deepEqual(await fs.readFile(join(prior, 'decision.json')), decisionBytes);
   assert.deepEqual(await inventory(original.dir), originalInventory);
@@ -140,16 +179,50 @@ test('blank choices stay blank, invalid inputs re-prompt and EOF or explicit can
   const f = await setup(t), v = f.first;
   const out = f.file('blank-copy.json');
   // 10 row answers, three blank metadata answers, blank note, save.
-  const corrected = ['y', ...Array(12).fill(''), 'wrong choice', '', '', 'yes'];
+  const corrected = ['wrong choice', '', 'y', ...Array(13).fill(''), 'yes'];
   const r = form(v, out, corrected);
   assert.equal(r.status, 0, r.stderr);
   assert.equal(promptCount(r.stdout), corrected.length);
+  assert.doesNotMatch(r.stdout, /Row responses \[/);
   assert.deepEqual(await read(out), v.sheet);
   const aborted = f.file('aborted.json');
   assert.equal(form(v, aborted, ['yes']).status, 2);
   await missing(aborted);
   assert.equal(form(v, aborted, [...Array(14).fill(''), 'no']).status, 2);
   await missing(aborted);
+  for (const choice of ['REVISE', 'REJECT']) {
+    assert.equal(form(v, aborted, [choice]).status, 2);
+    await missing(aborted);
+    assert.equal(form(v, aborted, [choice, 'unset', 'id', 'label', '', 'no']).status, 2);
+    await missing(aborted);
+    const selected = f.file(`${choice}-corrected.json`);
+    const correction = form(v, selected, [choice, '', 'yes', 'unset', 'id', 'label', '', 'yes']);
+    assert.equal(correction.status, 0, correction.stderr);
+    assert.equal(promptCount(correction.stdout), 8);
+    assert.deepEqual((await read(selected)).views, v.sheet.views);
+  }
+  const partial = f.file('partial-revise.json'), partialRequest = f.file('partial-request.json');
+  const manual = form(v, partial, ['REVISE', 'rows', 'yes', 'no', ...Array(8).fill(''), 'id', 'label', '', 'yes']);
+  assert.equal(manual.status, 0, manual.stderr);
+  assert.equal(promptCount(manual.stdout), 16);
+  const partialSheet = await read(partial);
+  assert.deepEqual(partialSheet.views[0].paths[0], {...v.sheet.views[0].paths[0], attested: true, binary_inspected: false});
+  assert.deepEqual(partialSheet.views[0].paths.slice(1), v.sheet.views[0].paths.slice(1));
+  success(cli('review-decision-request'), [...v.args.slice(0,3), partial, partialRequest]);
+  assert.equal((await read(partialRequest)).attestations.length, 1);
+  // Attempting the unset token on ACCEPT is an invalid per-row response,
+  // not a way around explicit row entry.
+  const invalidAccept = form(v, aborted, ['ACCEPT', 'unset']);
+  assert.equal(invalidAccept.status, 2);
+  assert.doesNotMatch(invalidAccept.stdout, /Row responses \[/);
+  assert.match(invalidAccept.stdout, /Invalid response/);
+  await missing(aborted);
+  const incomplete = f.file('blank-accept.json'), incompleteRequest = f.file('blank-accept-request.json');
+  const accept = form(v, incomplete, ['ACCEPT', ...Array(10).fill(''), 'id', 'label', '', 'yes']);
+  assert.equal(accept.status, 0, accept.stderr);
+  assert.equal(promptCount(accept.stdout), 15);
+  assert.equal(run(cli('review-decision-request'), [...v.args.slice(0,3), incomplete, incompleteRequest]).status, 2);
+  await missing(incompleteRequest);
   const request = f.file('missing-choice.json');
   assert.equal(run(cli('review-decision-request'), [...v.args.slice(0,3), out, request]).status, 2);
   await missing(request);
@@ -200,7 +273,7 @@ test('package or blank changes during input stop saving; no inspection response 
     t.after(() => proc.kill());
     proc.stdout.on('data', async bytes => {
       stdout += bytes;
-      if (!triggered && stdout.includes('Attest this exact comparison?')) {
+      if (!triggered && stdout.includes('Save a fresh worksheet only?')) {
         triggered = true;
         if (change === 'blank') await json(v.blank, {...v.sheet, choice: 'REVISE'});
         else {
@@ -209,9 +282,10 @@ test('package or blank changes during input stop saving; no inspection response 
           await fs.writeFile(path, Buffer.from([1, 2, 3]));
           await fs.chmod(path, 0o400);
         }
-        proc.stdin.end(lines([...Array(14).fill(''), 'yes']));
+        proc.stdin.end('yes\n');
       }
     });
+    proc.stdin.write(lines(['REVISE', 'unset', 'synthetic', 'test', '']));
     assert.equal(await finish, 2, stderr);
     assert.equal(triggered, true);
     assert.doesNotMatch(stdout, /PROJECT_REVIEW_RESPONSE_SAVED/);
