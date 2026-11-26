@@ -1249,6 +1249,59 @@ function nativeArtifactCheckPortsImpl(signal){
     uid:process.getuid(),signal
   });
 }
+/** Read-only facts for explicitly selected paths in a pinned protected base.
+ * The common original-import preimage limit is 4 MiB per blob in either
+ * profile. These rows are a draft, not approval to import any change.
+ */
+export async function draftProjectBasePreimages(input){
+  try{
+    closed(input,['profile','base_git_dir','base_git_identity','base_commit','base_tree','paths'],[],'preimage_draft');
+    const {profile,base_git_dir,base_git_identity,base_commit,base_tree}=input;
+    if(!['standard','large'].includes(profile)||!absolutePath(base_git_dir)||
+       typeof base_commit!=='string'||!SHA1.test(base_commit)||
+       typeof base_tree!=='string'||!SHA1.test(base_tree))invalid();
+    closed(base_git_identity,['dev','ino'],[],'base_git_identity');
+    const {dev,ino}=base_git_identity;
+    if(![dev,ino].every(value=>Number.isSafeInteger(value)&&value>=0))invalid();
+    const paths=denseArray(input.paths,50);
+    if(!paths.length||paths.some(path=>!stageRelative(path))||new Set(paths).size!==paths.length)invalid();
+    checkPathCollisions(paths);
+    const spec=Object.freeze({base_git_dir,base_git_identity:Object.freeze({dev,ino}),base_commit,base_tree});
+    // Only the read methods are exposed to the shared inspection routines.
+    const ports=Object.freeze({uid:process.getuid(),fs:Object.freeze({lstat:fs.lstat,realpath:fs.realpath}),
+      git:Object.freeze({inspectCommit:nativeInspectCommit,inspectTree:nativeInspectTree,readBlob:nativeReadBlob})});
+    await validateBaseDirectory(spec,ports);
+    const base=await inspectBase(spec,ports);
+    if(entriesTreeOid(base.entries)!==base_tree)rejected();
+    checkPathCollisions([...base.entries.map(entry=>entry.path),...paths]);
+    // A new sibling may not silently introduce a second, differently-cased
+    // spelling of an existing directory.
+    const spellings=new Map();
+    for(const path of [...base.trees.map(entry=>entry.path),...paths]){
+      const parts=path.split('/');
+      for(let i=1;i<=parts.length;i++){
+        const prefix=parts.slice(0,i).join('/'),key=prefix.toLowerCase();
+        if(spellings.has(key)&&spellings.get(key)!==prefix)rejected();
+        spellings.set(key,prefix);
+      }
+    }
+    const rows=[];
+    for(const path of paths.sort()){
+      const entry=base.byPath.get(path);
+      if(!entry){rows.push(Object.freeze({path,original:null}));continue;}
+      const bytes=await ports.git.readBlob({git_dir:base_git_dir,oid:entry.oid,max_bytes:MAX_PROJECT_BYTES});
+      try{
+        if(gitObjectId('blob',bytes)!==entry.oid)rejected();
+        rows.push(Object.freeze({path,original:Object.freeze({blob:entry.oid,bytes:bytes.length,sha256:sha256(bytes)})}));
+      }finally{bytes.fill(0);}
+    }
+    await validateBaseDirectory(spec,ports);
+    return Object.freeze(rows);
+  }catch{
+    throw new ReviewCandidateError('PROJECT_BASE_PREIMAGE_DRAFT_REJECTED');
+  }
+}
+
 /** Fixed native filesystem/Git bridge. No source content is executed. */
 export async function buildProjectReviewCandidateNative(spec){
   const captured=captureSpec(spec);
