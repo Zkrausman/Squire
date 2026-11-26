@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {passingQ218Rows} from './helpers/q218-passing-rows.mjs';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
@@ -16,7 +17,7 @@ function execution(){return {status:'OBSERVED_EXIT',observed_exit_code:0,observe
 function receipt(){
  const record={job_id:'ba586107-7240-4d89-88d3-d71005bce32f',task_class:'BOUNDED_CODEGEN_SUMMARIZER_V5',lifecycle_status:'LIMITED_SUCCESS',requested_model:'gpt-6-luna',reported_model:'UNKNOWN',process_exit:{pid:1,exit_code:0,exit_signal:null,process_wall_ms:0,observed_termination:true},io_state:{stdout_bytes_observed:100,stderr_bytes_observed:0,stdout_eof:true,stderr_eof:true,io_drained:true},containment_evidence:{containment_level:'DIRECT_CHILD_ONLY_NO_DESCENDANT_TRACKING',settlement_status:'SETTLED_DIRECT_CHILD_EXIT',descendant_guarantee:'NONE'},provider_metadata:{provider_reported_status:'turn.completed',duration_seconds:null,usage_tokens:{input:0,output:8,cache_read:0,thinking:'UNKNOWN',total:'UNKNOWN'},codex_reasoning_output_tokens:3},output_custody:{persisted:true,path,byte_count:100,persistence_error:null},task_outcome_evaluated:false,task_payload_valid:true,error_details:{code:null,classification:null,message:null}};
  const generation={record,diagnostic_retention:{retention_status:'NOT_REQUESTED',rejection_stage:null,rejection_reason:null,exact_response_bytes:null,retained_bytes_count:null,retained_truncated:false,retention_error:null},runtime_evidence:{deadline_ms:120000,timeout_latched:false,abort_latched:false,signal_attempts:[],event_loop_condition:'RESPONSIVE_PARENT_EVENT_LOOP',workspace_reuse:'NOT_AUTHORIZED',workspace_disposition:'DEDICATED_NOT_REUSED',max_steps:'UNSUPPORTED'},physical_source_witness:{source_path:path,source_sha256:digest,source_byte_count:100,format_status:'FORMAT_VALID',syntax_observation:'UNESTABLISHED_NO_NATIVE_PARSER',witness_locked:true,destination_mode:'0o400',witness_timestamp_ms:0},runtime_admitted:false};
- const fixtures=notRun().map((f,i)=>({...f,status:'PASS',fixture_verdict:'PASS',observed_exit_code:i<10?0:i<13?2:i<16?3:4,observed_exit_signal:null,observed_wall_ms:0,exit_code_matched:true,summary_json_matched:i<10?true:'NOT_APPLICABLE',manifest_json_matched:i<10?true:'NOT_APPLICABLE',zero_files_verified:i<10||i===16?'NOT_APPLICABLE':true}));
+ const fixtures=passingQ218Rows();
  return {status:'PASS',reason:null,generation,syntax:{execution:execution(),wrapper_status:'ACCEPTED',observation:{syntax_status:'SYNTAX_VALID',syntax_valid:true}},source:{source_path:path,source_sha256:digest,source_byte_count:100,inspection:'ACTUAL_BYTES_COOPERATIVE_FORMAT_ONLY',safety:'NOT_ESTABLISHED'},fixture_deadline_ms:85000,fixtures,denominator:17,runtime_admitted:false,workspace_disposition:'DEDICATED_NOT_REUSED',descendant_guarantee:'NONE',direct_child_invocations:{generation:1,syntax:1,fixtures:17},outer_observation_target_ms:250000,event_loop_condition:'RESPONSIVE_PARENT_EVENT_LOOP',operator_receipt:'/PUBLIC_SYNTHETIC/operator',operator_admitted:true};
 }
 function largeObservationReceipt(){
@@ -231,18 +232,7 @@ test('offline full Q218 conformance keeps generation and markers separate, inclu
  const c=await cli(r);assert.equal(c.code,0);assert.equal(c.err,'');assert.match(c.out,/17 PASS/);assert.match(c.out,/no artifact, authorization or execution re-verification/);assert.equal(c.out.includes(path),false);assert.match(c.out,/inference seconds: UNKNOWN/);
 });
 test('reported fixture passes require the exit and applicable checks in the frozen Q218 contract',async()=>{
- const freezeUrl=new URL('../fixtures/q218/fixtures-freeze-manifest.json',import.meta.url);
- const {fixtures}=JSON.parse(await fs.readFile(freezeUrl,'utf8'));
  const campaign=receipt();
- for(const [i,fixture] of fixtures.entries()){
-  assert.equal(campaign.fixtures[i].fixture_id,fixture.fixture_id);
-  Object.assign(campaign.fixtures[i],{
-   observed_exit_code:fixture.expected_exit_code,
-   summary_json_matched:fixture.expected_exit_code===0?true:'NOT_APPLICABLE',
-   manifest_json_matched:fixture.expected_exit_code===0?true:'NOT_APPLICABLE',
-   zero_files_verified:fixture.zero_files_required?true:'NOT_APPLICABLE'
-  });
- }
  assert.equal((await cli(campaign)).code,0);
  for(const [i,row] of campaign.fixtures.entries()){
   for(const field of ['observed_exit_code','summary_json_matched','manifest_json_matched','zero_files_verified']){

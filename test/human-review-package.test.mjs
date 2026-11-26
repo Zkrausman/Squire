@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {passingQ218Rows} from './helpers/q218-passing-rows.mjs';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {join,basename} from 'node:path';
@@ -16,7 +17,7 @@ function receipt(path,bytes=source,generic=false){
  const syntax={wrapper_status:'ACCEPTED',observation:{syntax_status:'SYNTAX_VALID',syntax_valid:true},execution:{status:'OBSERVED_EXIT',observed_exit_code:0,observed_exit_signal:null,observed_wall_ms:0,observed_termination:true,io_state:{stdout_bytes_observed:0,stderr_bytes_observed:0,stdout_eof:true,stderr_eof:true,io_drained:true},settlement_status:'SETTLED_DIRECT_CHILD_EXIT',signal_attempts:[],deadline_ms:5000,runtime_admitted:false,descendant_guarantee:'NONE',workspace_reuse:'NOT_AUTHORIZED'}};
  const r={status:generic?'CANDIDATE_READY':'PASS',reason:null,generation,syntax,source:{source_path:path,source_sha256:sha,source_byte_count:bytes.length,inspection:'ACTUAL_BYTES_COOPERATIVE_FORMAT_ONLY',safety:'NOT_ESTABLISHED'},runtime_admitted:false,workspace_disposition:'DEDICATED_NOT_REUSED',descendant_guarantee:'NONE'};
  if(generic)Object.assign(r,{schema:'SQUIRE2_SINGLE_JS_RESULT_V1',task_correctness:'NOT_EVALUATED',task_outcome_evaluated:false});
- else Object.assign(r,{fixture_deadline_ms:85000,denominator:17,fixtures:Array.from({length:17},(_,i)=>({fixture_id:`FIX-${String(i+1).padStart(2,'0')}`,status:'PASS',fixture_verdict:'PASS',observed_exit_code:i<10?0:i<13?2:i<16?3:4,observed_exit_signal:null,observed_wall_ms:0,exit_code_matched:true,summary_json_matched:i<10?true:'NOT_APPLICABLE',manifest_json_matched:i<10?true:'NOT_APPLICABLE',zero_files_verified:'NOT_APPLICABLE'}))});
+ else Object.assign(r,{fixture_deadline_ms:85000,denominator:17,fixtures:passingQ218Rows()});
  return r;
 }
 async function fixture(fn,{generic=false,bytes=source}={}){
@@ -33,6 +34,12 @@ test('pure package plan preserves exact source and closed safe projections; sele
  const summary=JSON.parse(new TextDecoder().decode(p.files['summary.json'].content));assert.equal(summary.generation.tokens.input,0);assert.equal(summary.generation.tokens.total,null);assert.equal(summary.generation.inference_duration_sec,null);
  for(const name of names.slice(1)){const text=new TextDecoder().decode(p.files[name].content);assert.equal(/PRIVATE_ERROR|PUBLIC_SYNTHETIC_CODE_BODY|\/public\/|\x1b/.test(text),false);}
  assert.throws(()=>planReviewPackage({...r,schema:'SQUIRE2_SINGLE_JS_OPERATION_V1'},source,{target_profile:'GENERIC_SINGLE_JS'}));assert.throws(()=>planReviewPackage(r,source,{target_profile:'GENERIC_SINGLE_JS'}));assert.throws(()=>planReviewPackage(r,new Uint8Array(99)));assert.throws(()=>planReviewPackage(r,new Uint8Array(65537)));
+});
+test('package planning rejects a fixture PASS that omits a required file-absence check',()=>{
+ const path='/public/output/run-'+id+'/workspace/src/summarizer.mjs';
+ const r=receipt(path);
+ r.fixtures[10].zero_files_verified='NOT_APPLICABLE';
+ assert.throws(()=>planReviewPackage(r,source),{code:'INVALID_RECEIPT'});
 });
 test('owned-file build produces four independent copies and read-only verification, without original ACK claim',async()=>fixture(async f=>{
  const p=await buildReviewPackage(f.spec,f.ports);assert.equal(p.completion_status,'COMPLETE');assert.equal(p.exit_code,0);assert.deepEqual((await fs.readdir(f.spec.output_dir)).sort(),[...names].sort());
