@@ -1,0 +1,3 @@
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"agent_message","text":"{\"schema\": \"SQUIRE2_PROJECT_FILE_ENVELOPE_V1\",\"files\":[{\"path\":\"src/mix.js\",\"classification\":\"SOURCE\",\"encoding\":\"utf-8\",\"content\":\"café\\n\\\"\\\\Ω\"},{\"path\":\"assets/mix.bin\",\"classification\":\"LOCAL_ASSET\",\"encoding\":\"base64\",\"content\":\"AP+AQQ==\"}]}"}}
+{"type":"turn.completed","usage":{"output_tokens":0}}
