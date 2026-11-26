@@ -2,8 +2,28 @@
 
 This additive library accepts explicit caller-owned bytes. It does not generate,
 import, evaluate, launch, grade or publish a project. PR175's fixed four-file
-single-source package and its CLI are unchanged. No new CLI or runtime route is
-provided. All evidence and frames remain local-only and potentially sensitive.
+single-source package and its CLI are unchanged. All evidence and frames remain local-only and potentially sensitive.
+
+## Export a standard stage from the shell
+
+Supply the SHA-256 from the separately retained stage receipt, the export operation
+ID, the caller label and a fresh destination under a protected parent. Both
+directories must be specified as canonical absolute paths.
+
+```sh
+node bin/squire-stage-export.mjs "$stage_dir" "$expected_stage_manifest_sha256" "$operation_id" "$caller_label" "$export_dir"
+```
+
+The command copies the complete project under `project/` and writes
+`export-manifest.json`. It accepts no evidence, log or frame attachments. On
+success it prints one JSON line containing `operation_acknowledgement`,
+`manifest_sha256` (the **export** manifest digest), `total_files` and
+`total_bytes`. The acknowledgement covers copy integrity. A rejected export
+exits 2 with a diagnostic on stderr and no receipt on stdout. The exporter
+can reserve the destination before detecting a binding mismatch. Any partial
+output is retained for inspection.
+
+## Library
 
 ```js
 import {planStaging, writeStage, verifyStage} from '../src/multifile-staging.mjs';

@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {constants} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {basename,dirname,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {PROJECT_OUTPUT_LARGE_PROFILE} from '../src/project-coding-profile.mjs';
@@ -277,4 +279,80 @@ test('native ports create only fresh owned test roots under ordinary protected a
  const root=await fs.mkdtemp('/tmp/squire-multifile-owned-fixture-');await fs.chmod(root,0o700);const ports={fs,uid:process.getuid()};try{
   const p=stage(),dest=join(root,'stage'),out=join(root,'export');assert.equal((await writeStage(p,dest,ports)).completion_status,'COMPLETE');assert.equal((await verifyStage(dest,ports)).status,'VERIFIED');assert.equal((await writeExport(eplan(p),dest,out,ports)).completion_status,'COMPLETE');assert.equal((await verifyExport(out,ports)).status,'VERIFIED');
  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
+const exportCli = fileURLToPath(new URL('../bin/squire-stage-export.mjs', import.meta.url));
+function runExportCli(args, expectedStatus) {
+  const result = spawnSync(process.execPath, [exportCli, ...args], {encoding: 'utf8', timeout: 10000});
+  assert.ifError(result.error);
+  assert.equal(result.status, expectedStatus, result.stderr);
+  return result;
+}
+
+test('standard export command copies the bound stage and returns the verified export digest', async t => {
+  const root = await fs.mkdtemp('/tmp/squire-stage-export-');
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const ports = {fs, uid: process.getuid()};
+  const source = join(root, 'stage'), destination = join(root, 'export');
+  const files = [
+    file('src/main.mjs', 'SOURCE', enc.encode('// synthetic\r\n')),
+    file('notes/readme.md', 'DOC', enc.encode('Café\n')),
+    file('assets/palette.bin', 'LOCAL_ASSET', Uint8Array.of(0, 128, 255, 10)),
+  ];
+  const retained = await writeStage(stage(files), source, ports);
+  const result = runExportCli([source, retained.manifest_sha256, 'copy-1', 'local', destination], 0);
+  const verified = await verifyExport(destination, ports);
+  assert.equal(verified.status, 'VERIFIED');
+  assert.deepEqual(verified.stage_binding, {
+    stage_operation_id: retained.stage_operation_id, stage_manifest_sha256: retained.manifest_sha256,
+  });
+  assert.equal(verified.export_operation_id, 'copy-1');
+  assert.equal(verified.caller_label, 'local');
+  assert.deepEqual(JSON.parse(result.stdout), {
+    operation_acknowledgement: 'ACKNOWLEDGED', manifest_sha256: verified.manifest_sha256,
+    total_files: files.length, total_bytes: files.reduce((sum, entry) => sum + entry.content.length, 0),
+  });
+  assert.equal(result.stderr, '');
+  assert.equal((await fs.stat(destination)).mode & 0o777, 0o700);
+  assert.deepEqual((await fs.readdir(destination)).sort(), ['export-manifest.json', 'project']);
+  for (const entry of files) {
+    assert.deepEqual(await fs.readFile(join(destination, 'project', entry.path)), Buffer.from(entry.content));
+  }
+  assert.equal((await verifyStage(source, ports)).manifest_sha256, retained.manifest_sha256);
+});
+
+test('standard export command withholds receipts and preserves stages and reserved destinations', async t => {
+  const root = await fs.mkdtemp('/tmp/squire-stage-export-');
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const ports = {fs, uid: process.getuid()};
+  const source = join(root, 'first'), other = join(root, 'second');
+  const retained = await writeStage(stage(), source, ports);
+  const second = await writeStage(stage([file('other.mjs')]), other, ports);
+  const args = (input, digest, out) => [input, digest, 'copy', 'local', out];
+  function reject(argv, diagnostic) {
+    const result = runExportCli(argv, 2);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, diagnostic);
+  }
+  for (const [input, digest, leaf] of [
+    [other, retained.manifest_sha256, 'swapped'],
+    [source, '0'.repeat(64), 'wrong-digest'],
+  ]) {
+    const out = join(root, leaf);
+    reject(args(input, digest, out), /^STAGE_BINDING_MISMATCH\n$/);
+    assert.deepEqual(await fs.readdir(out), []);
+  }
+  const occupied = join(root, 'occupied');
+  await fs.mkdir(occupied, {mode: 0o700});
+  await fs.writeFile(join(occupied, 'sentinel'), 'preserve');
+  reject(args(source, retained.manifest_sha256, occupied), /^DESTINATION_ALREADY_EXISTS\n$/);
+  assert.equal(await fs.readFile(join(occupied, 'sentinel'), 'utf8'), 'preserve');
+  reject(args(source, retained.manifest_sha256, join(source, 'nested')), /^INVALID_EXPORT_SPEC\n$/);
+  const unused = join(root, 'unused');
+  reject(args(source, 'invalid-digest', unused), /^INVALID_EXPORT_SPEC\n$/);
+  reject([...args(source, retained.manifest_sha256, unused), '--evidence', 'extra.log'], /^Usage:/);
+  await assert.rejects(fs.lstat(unused), {code: 'ENOENT'});
+  for (const [dir, receipt] of [[source, retained], [other, second]]) {
+    assert.equal((await verifyStage(dir, ports)).manifest_sha256, receipt.manifest_sha256);
+  }
 });
