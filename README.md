@@ -19,16 +19,20 @@ separates generation, syntax and fixture conformance without launching a task
 or reading its artifact.
 
 To create an editable request from a public UTF-8 instruction file, select
-`single-js`, `node` or `desktop`, supply a task ID, and name a fresh output:
+`single-js`, `node` or `desktop`, supply a task ID, and name a fresh output.
+From the repository root, this example creates its own harmless sample instruction
+and request in a fresh temporary directory:
 
 ```sh
-node bin/squire-request-create.mjs node example-task instruction.txt request.json
-node bin/squire-request-check.mjs node request.json
+example_dir=$(mktemp -d) &&
+printf '%s\n' 'Create a program that prints Hello, world!' > "$example_dir/instruction.txt" &&
+node bin/squire-request-create.mjs node example-task "$example_dir/instruction.txt" "$example_dir/request.json" &&
+node bin/squire-request-check.mjs node "$example_dir/request.json"
 ```
 
-The first command preserves the instruction text, checks the serialized request
+The request creator preserves the instruction text, checks the serialized request
 and prompt budgets, and writes the local JSON file. Run the checker again after
-editing the request.
+editing the request. Neither command submits a task or executes generated code.
 
 [Single-JavaScript task preparation](docs/single-js-tasks.md) accepts an explicit
 public-text request without editing the Q218 recipe. Generation and syntax-only
